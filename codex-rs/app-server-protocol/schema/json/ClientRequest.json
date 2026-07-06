@@ -94,6 +94,18 @@
         "kind": {
           "$ref": "#/definitions/AdditionalContextKind"
         },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalContextSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional provenance for client-supplied context from a local app store.\n\nThis metadata is for clients and auditability. It does not change model-visible content or trust: `kind` remains the authority for whether `value` is injected as untrusted user context or application context."
+        },
         "value": {
           "type": "string"
         }
@@ -110,6 +122,37 @@
         "application"
       ],
       "type": "string"
+    },
+    "AdditionalContextSource": {
+      "properties": {
+        "id": {
+          "description": "Stable record id inside the source namespace.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional user-facing label for rendering/editing the context source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "description": "Stable source namespace, for example `open-projects`, `open-todos`, `open-conversations`, or `open-mementos`.",
+          "type": "string"
+        },
+        "recordType": {
+          "description": "Optional source record kind, for example `project`, `task`, `conversation`, or `memento`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "namespace"
+      ],
+      "type": "object"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
@@ -375,6 +418,33 @@
       ]
     },
     "AuthProfileListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AuthProfileSaveCurrentParams": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
       "type": "object"
     },
     "AuthProfileSwitchParams": {
@@ -3887,6 +3957,32 @@
       ],
       "type": "object"
     },
+    "SessionWorktreeMode": {
+      "description": "Session-level managed worktree behavior.",
+      "oneOf": [
+        {
+          "description": "Use the current shared checkout and disallow session-managed worktree create/attach operations for this thread.",
+          "enum": [
+            "shared"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Allow this session to manually create or attach managed worktrees.",
+          "enum": [
+            "manual"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Pull-request mode. The session must work inside an attached isolated managed worktree before model turns can continue.",
+          "enum": [
+            "pullRequest"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Settings": {
       "description": "Settings for a collaboration mode.",
       "properties": {
@@ -4229,6 +4325,21 @@
       ],
       "type": "object"
     },
+    "ThreadGoalPlanAddGoalParams": {
+      "properties": {
+        "objective": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadGoalSetParams": {
       "properties": {
         "objective": {
@@ -4249,6 +4360,12 @@
         },
         "threadId": {
           "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tokenBudget": {
           "format": "int64",
@@ -4500,6 +4617,7 @@
           "type": "string"
         },
         "cwd": {
+          "description": "Optional working directory relative to the thread cwd. Parent directory traversal and absolute paths are rejected.",
           "type": [
             "string",
             "null"
@@ -4509,6 +4627,7 @@
           "type": "string"
         },
         "outputFile": {
+          "description": "Optional output file relative to the monitor cwd. Parent directory traversal, absolute paths, and symlink targets are rejected.",
           "type": [
             "string",
             "null"
@@ -4847,6 +4966,78 @@
         "noLongerWaiting"
       ],
       "type": "string"
+    },
+    "ThreadQueuedMessageListParams": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional page size; defaults to no limit.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadQueuedMessageMoveDirection": {
+      "enum": [
+        "up",
+        "down"
+      ],
+      "type": "string"
+    },
+    "ThreadQueuedMessageMoveParams": {
+      "properties": {
+        "direction": {
+          "$ref": "#/definitions/ThreadQueuedMessageMoveDirection"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "direction",
+        "messageId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadQueuedMessageUpdateParams": {
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageId",
+        "text",
+        "threadId"
+      ],
+      "type": "object"
     },
     "ThreadReadParams": {
       "properties": {
@@ -5572,6 +5763,13 @@
             "null"
           ]
         },
+        "parentThreadId": {
+          "description": "Optional parent thread id when starting a fresh subagent child thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "personality": {
           "anyOf": [
             {
@@ -6018,6 +6216,129 @@
           "type": "object"
         }
       ]
+    },
+    "WebhookEventIngestParams": {
+      "properties": {
+        "eventType": {
+          "type": "string"
+        },
+        "externalDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payloadJson": true,
+        "sourceAppId": {
+          "type": "string"
+        },
+        "sourceAppName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "eventType",
+        "payloadJson",
+        "sourceAppId"
+      ],
+      "type": "object"
+    },
+    "WebhookEventListParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceAppId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statuses": {
+          "items": {
+            "$ref": "#/definitions/WebhookEventStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "targetThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WebhookEventMarkParams": {
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/WebhookEventStatus"
+        }
+      },
+      "required": [
+        "eventId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "WebhookEventReadParams": {
+      "properties": {
+        "eventId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventId"
+      ],
+      "type": "object"
+    },
+    "WebhookEventStatus": {
+      "enum": [
+        "unread",
+        "processed",
+        "archived",
+        "injected",
+        "queued"
+      ],
+      "type": "string"
     },
     "WindowsSandboxSetupMode": {
       "enum": [
@@ -6601,6 +6922,30 @@
         },
         "method": {
           "enum": [
+            "thread/goalPlan/addGoal"
+          ],
+          "title": "Thread/goalPlan/addGoalRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadGoalPlanAddGoalParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/goalPlan/addGoalRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "thread/goal/clear"
           ],
           "title": "Thread/goal/clearRequestMethod",
@@ -6952,6 +7297,102 @@
         "params"
       ],
       "title": "Thread/monitor/deleteRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/list"
+          ],
+          "title": "Webhook/event/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/read"
+          ],
+          "title": "Webhook/event/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/mark"
+          ],
+          "title": "Webhook/event/markRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventMarkParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/markRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "webhook/event/ingest"
+          ],
+          "title": "Webhook/event/ingestRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/WebhookEventIngestParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Webhook/event/ingestRequest",
       "type": "object"
     },
     {
@@ -7456,6 +7897,78 @@
         "params"
       ],
       "title": "Thread/shellCommandRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/queuedMessage/list"
+          ],
+          "title": "Thread/queuedMessage/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadQueuedMessageListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/queuedMessage/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/queuedMessage/update"
+          ],
+          "title": "Thread/queuedMessage/updateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadQueuedMessageUpdateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/queuedMessage/updateRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/queuedMessage/move"
+          ],
+          "title": "Thread/queuedMessage/moveRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadQueuedMessageMoveParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/queuedMessage/moveRequest",
       "type": "object"
     },
     {
@@ -8823,6 +9336,30 @@
         "params"
       ],
       "title": "AuthProfile/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "authProfile/saveCurrent"
+          ],
+          "title": "AuthProfile/saveCurrentRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthProfileSaveCurrentParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "AuthProfile/saveCurrentRequest",
       "type": "object"
     },
     {

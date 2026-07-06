@@ -129,6 +129,11 @@ fn file_system_policy_has_cwd_dependent_entries(
 
 pub type FileSystemResult<T> = io::Result<T>;
 
+pub const SYMLINKED_FILE_ERROR: &str = "symlinked files are not allowed";
+pub const FILE_CHANGED_DURING_OPEN_ERROR: &str = "file changed while opening";
+pub const SYMLINK_SAFE_READ_UNSUPPORTED_ERROR: &str =
+    "filesystem does not support symlink-safe reads";
+
 /// Abstract filesystem access used by components that may operate locally or via
 /// a remote environment.
 #[async_trait]
@@ -155,6 +160,18 @@ pub trait ExecutorFileSystem: Send + Sync {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<u8>>;
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        let _ = (path, sandbox);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            SYMLINK_SAFE_READ_UNSUPPORTED_ERROR,
+        ))
+    }
 
     /// Reads a file and decodes it as UTF-8 text.
     async fn read_file_text(

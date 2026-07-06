@@ -15,6 +15,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use std::sync::OnceLock;
@@ -52,6 +53,7 @@ pub(crate) struct SessionConfiguration {
     pub(super) provider: ModelProviderInfo,
 
     pub(super) collaboration_mode: CollaborationMode,
+    pub(super) worktree_mode: SessionWorktreeMode,
     pub(super) model_reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(super) service_tier: Option<String>,
 
@@ -141,6 +143,16 @@ impl SessionConfiguration {
         self.permission_profile_state.profile_workspace_roots()
     }
 
+    pub(super) fn effective_workspace_roots_for_summary(&self) -> Vec<AbsolutePathBuf> {
+        let mut workspace_roots = self.workspace_roots.clone();
+        for root in self.profile_workspace_roots() {
+            if !workspace_roots.iter().any(|existing| existing == root) {
+                workspace_roots.push(root.clone());
+            }
+        }
+        workspace_roots
+    }
+
     pub(super) fn apply_permission_profile_to_permissions(
         &self,
         permissions: &mut crate::config::Permissions,
@@ -197,6 +209,7 @@ impl SessionConfiguration {
             personality: self.personality,
             collaboration_mode: self.collaboration_mode.clone(),
             session_prompt: self.session_prompt.clone(),
+            worktree_mode: self.worktree_mode,
             selected_auth_profile: self
                 .original_config_do_not_use
                 .selected_auth_profile
@@ -236,6 +249,9 @@ impl SessionConfiguration {
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
+        }
+        if let Some(worktree_mode) = updates.worktree_mode {
+            next_configuration.worktree_mode = worktree_mode;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
@@ -548,6 +564,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) model_provider_id: Option<String>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
+    pub(crate) worktree_mode: Option<SessionWorktreeMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
     pub(crate) session_prompt: Option<Option<String>>,
@@ -1239,6 +1256,9 @@ impl Session {
                     permission_profile: session_configuration.permission_profile(),
                     active_permission_profile: session_configuration.active_permission_profile(),
                     cwd: session_configuration.cwd.clone(),
+                    workspace_roots: Some(
+                        session_configuration.effective_workspace_roots_for_summary(),
+                    ),
                     reasoning_effort: session_configuration.collaboration_mode.reasoning_effort(),
                     initial_messages,
                     network_proxy: session_network_proxy.filter(|_| {

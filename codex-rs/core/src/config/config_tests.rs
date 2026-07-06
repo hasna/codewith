@@ -735,6 +735,46 @@ model_gateway = "{OPENROUTER_GATEWAY_ID}"
 }
 
 #[tokio::test]
+async fn load_config_resolves_ollama_local_provider() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "{OLLAMA_OSS_PROVIDER_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_provider_id, OLLAMA_OSS_PROVIDER_ID);
+}
+
+#[tokio::test]
+async fn load_config_resolves_lmstudio_local_provider() {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "{LMSTUDIO_OSS_PROVIDER_ID}"
+"#
+    ))
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    assert_eq!(config.model_provider_id, LMSTUDIO_OSS_PROVIDER_ID);
+}
+
+#[tokio::test]
 async fn load_config_rejects_incompatible_gateway_provider_pair() {
     let cfg = toml::from_str::<ConfigToml>(&format!(
         r#"
@@ -9598,6 +9638,8 @@ model = "gpt-5.4"
 auto_execute = "ai-directed"
 max_auto_goals_per_plan = 9999
 max_tokens_per_goal_plan = 123456
+post_goal_context = "compact"
+post_goal_plan_context = "compact"
 "#,
     )
     .expect("TOML deserialization should succeed for goals config");
@@ -9615,6 +9657,14 @@ max_tokens_per_goal_plan = 123456
         config.goals.max_auto_goals_per_plan
     );
     assert_eq!(Some(123456), config.goals.max_tokens_per_goal_plan);
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_context
+    );
+    assert_eq!(
+        PostGoalContextAction::Compact,
+        config.goals.post_goal_plan_context
+    );
     Ok(())
 }
 
@@ -10799,6 +10849,100 @@ max_threads = 3
 }
 
 #[tokio::test]
+async fn agents_max_threads_from_config_file_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 4
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::Disabled),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_defaults_to_builtin_when_unset() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    // Unset preserves current behavior: the built-in default cap applies.
+    assert_eq!(config.agent_max_threads, None);
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        DEFAULT_AGENT_MAX_THREADS
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_cli_override_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    // Mirrors `-c agents.max_threads=4` on the command line.
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .cli_overrides(vec![(
+            "agents.max_threads".to_string(),
+            toml::Value::Integer(4),
+        )])
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_zero_is_rejected() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 0
+"#,
+    )?;
+
+    let err = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("agents.max_threads = 0 should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(err.to_string(), "agents.max_threads must be at least 1");
+    Ok(())
+}
+
+#[tokio::test]
 async fn multi_agent_v2_rejects_invalid_wait_timeouts() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
@@ -11320,6 +11464,66 @@ disabled_tools = [
             ToolSuggestDisabledTool::connector("project_connector"),
             ToolSuggestDisabledTool::plugin("project_plugin"),
         ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn experimental_smart_suggest_defaults_disabled() -> std::io::Result<()> {
+    let cfg: ConfigToml = toml::from_str("").expect("TOML deserialization should succeed");
+
+    assert_eq!(cfg.experimental_smart_suggest, None);
+
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.experimental_smart_suggest,
+        SmartSuggestConfig::default()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn experimental_smart_suggest_loads_trimmed_bounded_config() -> std::io::Result<()> {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[experimental_smart_suggest]
+enabled = true
+model_provider = " cerebras "
+model = " llama-3.3-70b "
+service_tier = " fast "
+timeout_ms = 1
+max_input_chars = 10
+max_suggestion_chars = 100000
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.experimental_smart_suggest,
+        SmartSuggestConfig {
+            enabled: true,
+            model_provider: Some("cerebras".to_string()),
+            model: Some("llama-3.3-70b".to_string()),
+            service_tier: Some("fast".to_string()),
+            timeout_ms: 50,
+            max_input_chars: 512,
+            max_suggestion_chars: 4000,
+        }
     );
     Ok(())
 }

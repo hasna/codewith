@@ -325,7 +325,7 @@ impl TurnDiffTracker {
 }
 
 fn git_blob_oid(data: &[u8]) -> String {
-    format!("{:x}", git_blob_sha1_hex_bytes(data))
+    sha1_output_to_hex(&git_blob_sha1_hex_bytes(data))
 }
 
 /// Compute the Git SHA-1 blob object ID for the given content (bytes).
@@ -336,6 +336,17 @@ fn git_blob_sha1_hex_bytes(data: &[u8]) -> Output<sha1::Sha1> {
     hasher.update(header.as_bytes());
     hasher.update(data);
     hasher.finalize()
+}
+
+fn sha1_output_to_hex(output: &Output<sha1::Sha1>) -> String {
+    let bytes: &[u8] = output.as_ref();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    hex
 }
 
 #[cfg(test)]

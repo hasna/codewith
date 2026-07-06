@@ -1,3 +1,5 @@
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::Turn;
@@ -187,6 +189,8 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: vec![Turn {
                 id: "turn-1".to_string(),

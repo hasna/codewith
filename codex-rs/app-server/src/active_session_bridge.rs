@@ -153,7 +153,10 @@ impl ActiveChannelRouter {
                     }
                 };
                 match target_thread
-                    .deliver_inter_agent_communication(communication)
+                    .deliver_inter_agent_communication_with_id(
+                        envelope.message_id.clone(),
+                        communication,
+                    )
                     .await
                 {
                     Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
@@ -215,9 +218,16 @@ impl ActiveChannelRouter {
                     )
                     .await
                 {
-                    Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
-                        message_id: envelope.message_id.clone(),
-                    }),
+                    Ok(()) => {
+                        if envelope.delivery.trigger_turn() {
+                            // Durable mailbox dispatch acks after this method returns, so make
+                            // the first wake attempt before releasing the unload serialization.
+                            let _ = target_thread.maybe_start_turn_for_pending_work().await;
+                        }
+                        Ok(ActiveChannelDeliveryOutcome::Delivered {
+                            message_id: envelope.message_id.clone(),
+                        })
+                    }
                     Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
                         Ok(ActiveChannelDeliveryOutcome::NotLoaded {
                             recipient_id: recipient.peer_id.clone(),
@@ -312,7 +322,7 @@ mod tests {
                 label: Some("Codewith".to_string()),
                 agent_path: Some("/root".to_string()),
             },
-            None,
+            /*claimed_sender*/ None,
             ActiveChannelEndpoint {
                 id: "claude:session-1".to_string(),
                 kind: ActiveChannelEndpointKind::ClaudeCodeSession,

@@ -11,6 +11,7 @@ use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
@@ -411,6 +412,73 @@ async fn mcp_control_center_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn mcp_agent_mutation_approval_popup_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let request_id = RequestId::String("mcp-request-1".to_string());
+
+    chat.open_mcp_agent_mutation_confirmation(
+        request_id.clone(),
+        McpAgentMutationApprovalSummary {
+            title: "Add MCP server `docs`".to_string(),
+            rows: vec![
+                ("Server".to_string(), "docs".to_string()),
+                (
+                    "Transport".to_string(),
+                    "stdio; command: npx".to_string(),
+                ),
+                (
+                    "Args / cwd".to_string(),
+                    "args: -y, @scope/docs-mcp, --project, docs; cwd: /workspace/docs"
+                        .to_string(),
+                ),
+                (
+                    "Env / headers".to_string(),
+                    "env vars: DOCS_API_KEY; headers: not applicable".to_string(),
+                ),
+                (
+                    "Tool config".to_string(),
+                    "default approval: prompt; enabled: none; disabled: none".to_string(),
+                ),
+                (
+                    "Scope / refresh".to_string(),
+                    "user config.toml mcp_servers.<name>; MCP refresh is queued for loaded threads; new tools are available before the next turn."
+                        .to_string(),
+                ),
+            ],
+        },
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 112);
+    assert!(popup.contains("Approve MCP Config Change"));
+    assert!(popup.contains("Approve and save"));
+    assert!(popup.contains("DOCS_API_KEY"));
+    assert_chatwidget_snapshot!("mcp_agent_mutation_approval_popup", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::DenyAgentMcpMutation { request_id: id }) if id == request_id
+    );
+
+    chat.open_mcp_agent_mutation_confirmation(
+        request_id.clone(),
+        McpAgentMutationApprovalSummary {
+            title: "Enable MCP server `docs`".to_string(),
+            rows: vec![
+                ("Server".to_string(), "docs".to_string()),
+                ("Change".to_string(), "enabled = true".to_string()),
+            ],
+        },
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ConfirmAgentMcpMutation { request_id: id }) if id == request_id
+    );
+}
+
+#[tokio::test]
 async fn background_terminal_manager_popup_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.unified_exec_processes.push(UnifiedExecProcessSummary {
@@ -531,7 +599,13 @@ async fn mcp_manager_empty_popup_snapshot() {
 #[tokio::test]
 async fn mcp_manager_configured_only_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_mcp_test_config(&mut chat, vec![("docs", mcp_test_config(false, None))]);
+    set_mcp_test_config(
+        &mut chat,
+        vec![(
+            "docs",
+            mcp_test_config(/*enabled*/ false, /*disabled_tools*/ None),
+        )],
+    );
 
     chat.on_mcp_manager_loaded(
         Ok(Vec::new()),
@@ -613,7 +687,10 @@ async fn mcp_manager_server_and_tool_config_actions() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_mcp_test_config(
         &mut chat,
-        vec![("linear", mcp_test_config(true, Some(vec!["create_issue"])))],
+        vec![(
+            "linear",
+            mcp_test_config(/*enabled*/ true, Some(vec!["create_issue"])),
+        )],
     );
     let linear = mcp_test_statuses()
         .into_iter()
@@ -2943,7 +3020,8 @@ async fn profile_login_prompt_snapshot_and_submit() {
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_prompt", popup);
     assert!(popup.contains("ChatGPT"));
-    assert!(popup.contains("Claude.ai / Claude Code"));
+    assert!(!popup.contains("Claude.ai"));
+    assert!(!popup.contains("Claude Code"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let subscription_provider = match rx.try_recv() {
@@ -3184,6 +3262,22 @@ async fn usage_heartbeat_includes_saved_chatgpt_profile_when_active_session_is_a
     );
 }
 
+#[tokio::test]
+async fn usage_heartbeat_failure_backs_off_profile_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    chat.record_auth_profile_usage_heartbeat_failure(Some("work".to_string()));
+    assert!(chat.auth_profile_usage_refresh_targets().is_empty());
+
+    chat.record_auth_profile_usage_heartbeat_success(Some("work".to_string()));
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+}
+
 fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
     while let Ok(event) = rx.try_recv() {
         assert!(
@@ -3279,6 +3373,53 @@ async fn config_popup_snapshot_and_toggle() {
             && value == serde_json::json!(true)
             && label == "Auth profile auto-switch"
     );
+}
+
+#[tokio::test]
+async fn config_agent_max_threads_popup_selects_value() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    // Start from a known current value so the initial highlight is deterministic (index 0 = "1").
+    chat.config.agent_max_threads = Some(1);
+    while rx.try_recv().is_ok() {}
+
+    chat.open_agent_max_threads_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Agent subagent threads"), "{popup}");
+    assert!(popup.contains("(default)"), "{popup}");
+
+    // Presets are [1, 2, 3, 4, 6, 8, 12]; move from "1" to "4" and select it.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "agents.max_threads"
+            && value == serde_json::json!(4)
+            && label == "Agent subagent thread limit"
+    );
+}
+
+#[tokio::test]
+async fn config_agent_max_threads_menu_item_disabled_under_multi_agent_v2() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config
+        .features
+        .enable(codex_features::Feature::MultiAgentV2)
+        .expect("enable multi_agent_v2");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_config_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Agent subagent threads"), "{popup}");
+    assert!(popup.contains("multi_agent_v2"), "{popup}");
 }
 
 #[tokio::test]

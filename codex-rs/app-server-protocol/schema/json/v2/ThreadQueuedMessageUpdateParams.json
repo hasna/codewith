@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "messageId": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "messageId",
+    "text",
+    "threadId"
+  ],
+  "title": "ThreadQueuedMessageUpdateParams",
+  "type": "object"
+}

@@ -72,6 +72,20 @@ final class MessageRoutingTests: XCTestCase {
     func testMalformedIgnored() { XCTAssertEqual(classify("not json"), .ignored) }
     func testEmptyObjectIgnored() { XCTAssertEqual(classify("{}"), .ignored) }
     func testNullErrorIsSuccess() { XCTAssertEqual(classify("{\"id\":7,\"result\":1,\"error\":null}"), .response(id: 7, result: .number(1))) }
+
+    func testThreadStartParamsIncludeSelectedAuthProfile() {
+        XCTAssertEqual(
+            AppServerClient.threadStartParams(cwd: "/tmp/project", authProfile: "work"),
+            .object([
+                "cwd": .string("/tmp/project"),
+                "authProfile": .string("work"),
+            ])
+        )
+        XCTAssertEqual(
+            AppServerClient.threadStartParams(cwd: "/tmp/project", authProfile: ""),
+            .object(["cwd": .string("/tmp/project")])
+        )
+    }
 }
 
 // Regression: the app must never resolve its own GUI executable as the "codewith"
@@ -149,6 +163,10 @@ final class BackendModelsTests: XCTestCase {
                                       "modelProvider": .string("openai"), "status": .string("idle")]))
         XCTAssertEqual(t.id, "x"); XCTAssertEqual(t.name, "My Thread")
         XCTAssertEqual(t.cwd, "/a/b"); XCTAssertEqual(t.modelProvider, "openai")
+    }
+    func testThreadInfoDecodesMachineId() {
+        let t = ThreadInfo(from: obj(["machineId": .string("machine-a")]))
+        XCTAssertEqual(t.machineId, "machine-a")
     }
     func testThreadNameFallbackToPreview() {
         XCTAssertEqual(ThreadInfo(from: obj(["name": .string(""), "preview": .string("Do X")])).name, "Do X")
@@ -388,6 +406,21 @@ final class BackendModelsTests: XCTestCase {
             .fileOpenDestination,
             "finder")
     }
+    func testAuthProfileMapsStableProviderIdsToDisplayNames() {
+        let p = AuthProfileInfo(from: obj([
+            "name": .string("work"),
+            "subscriptionProvider": .string("chatgpt"),
+            "authMode": .string("apiKey"),
+            "active": .bool(true),
+        ]))
+        XCTAssertEqual(p.name, "work")
+        XCTAssertEqual(p.provider, "ChatGPT")
+        XCTAssertEqual(p.plan, "apiKey")
+        XCTAssertTrue(p.active)
+        XCTAssertEqual(
+            AuthProfileInfo(from: obj(["subscriptionProvider": .string("claudeAi")])).provider,
+            "Claude.ai")
+    }
     func testGoalInfoDecodesThreadGoal() {
         let goal = GoalInfo(from: obj([
             "goalId": .string("goal-1"),
@@ -606,6 +639,42 @@ final class BackendModelsTests: XCTestCase {
         XCTAssertEqual(attachment.eventCount, 1)
         XCTAssertEqual(attachment.pendingCount, 1)
         XCTAssertEqual(attachment.pendingInteractions.first?.summary, "Approve command")
+    }
+    func testMachineInfoKeepsStableMachineIdAndDisplayName() {
+        let machine = MachineInfo(registryValue: obj([
+            "machineId": .string("machine-1"),
+            "displayName": .string("Laptop"),
+            "healthState": .string("online"),
+        ]))
+        XCTAssertEqual(machine.id, "machine-1")
+        XCTAssertEqual(machine.machineId, "machine-1")
+        XCTAssertEqual(machine.displayName, "Laptop")
+    }
+    func testWorkflowInfoDecodesSpecAndRun() {
+        let workflow = WorkflowInfo(workflow: obj([
+            "threadId": .string("thread-1"),
+            "workflowRecordId": .string("workflow-1"),
+            "displayName": .string("Ship"),
+            "status": .string("draft"),
+            "stepCount": .number(2),
+            "agentCount": .number(1),
+            "updatedAt": .number(20),
+        ]), fallbackThreadId: "fallback")
+        XCTAssertEqual(workflow.id, "workflow:workflow-1")
+        XCTAssertEqual(workflow.threadId, "thread-1")
+        XCTAssertEqual(workflow.title, "Ship")
+        XCTAssertEqual(workflow.subtitle, "2 steps · 1 agent")
+
+        let run = WorkflowInfo(run: obj([
+            "runId": .string("run-1"),
+            "status": .string("running"),
+            "succeededStepCount": .number(1),
+            "failedStepCount": .number(0),
+            "activeStepCount": .number(1),
+        ]), fallbackThreadId: "thread-2")
+        XCTAssertEqual(run.id, "run:run-1")
+        XCTAssertEqual(run.threadId, "thread-2")
+        XCTAssertEqual(run.subtitle, "1 succeeded · 0 failed · 1 active")
     }
 }
 
@@ -965,5 +1034,94 @@ final class AppServerRequestShapeTests: XCTestCase {
                 "threadId": .string("thread-1"),
                 "mode": .string("disabled"),
             ]))
+    }
+    func testThreadSettingsUpdateParamsIncludesPermissionsAndAuthProfile() {
+        XCTAssertEqual(
+            AppServerClient.threadSettingsUpdateParams(
+                threadId: "thread-1",
+                model: "gpt-5.5-codex",
+                provider: "openai",
+                effort: "high",
+                permissions: ":workspace",
+                authProfile: .set("work")),
+            obj([
+                "threadId": .string("thread-1"),
+                "model": .string("gpt-5.5-codex"),
+                "modelProvider": .string("openai"),
+                "effort": .string("high"),
+                "permissions": .string(":workspace"),
+                "authProfile": .string("work"),
+            ]))
+    }
+
+    func testThreadSettingsUpdateParamsCanClearAuthProfile() {
+        XCTAssertEqual(
+            AppServerClient.threadSettingsUpdateParams(
+                threadId: "thread-1",
+                authProfile: .clearDefault),
+            obj([
+                "threadId": .string("thread-1"),
+                "authProfile": .null,
+            ]))
+    }
+
+    func testEmptyThreadSettingsUpdateResponseHasNoSettings() {
+        XCTAssertNil(ThreadSessionSettings(from: obj([:])))
+    }
+
+    func testThreadSessionSettingsParseCamelAndSnakeCase() {
+        XCTAssertEqual(
+            ThreadSessionSettings(from: obj([
+                "threadSettings": obj([
+                    "model": .string("gpt-5.5-codex"),
+                    "model_provider": .string("openai"),
+                    "reasoningEffort": .string("high"),
+                    "active_permission_profile": obj(["id": .string(":workspace")]),
+                    "auth_profile": .string("work"),
+                ]),
+            ])),
+            ThreadSessionSettings(
+                model: "gpt-5.5-codex",
+                provider: "openai",
+                effort: "high",
+                permissionProfileId: ":workspace",
+                authProfile: "work"))
+    }
+
+    func testThreadSessionSettingsCanClearAuthProfile() {
+        XCTAssertEqual(
+            ThreadSessionSettings(from: obj([
+                "threadSettings": obj([
+                    "authProfile": .null,
+                ]),
+            ])),
+            ThreadSessionSettings(clearsAuthProfile: true))
+    }
+
+    func testConfigRequirementsKeepGranularApprovalPolicy() {
+        let requirements = ConfigRequirementsInfo(from: obj([
+            "allowedApprovalPolicies": .array([
+                .string("on-request"),
+                obj(["granular": obj(["read": .string("ask")])]),
+            ]),
+        ]))
+        XCTAssertEqual(requirements.allowedApprovalPolicies, ["on-request", "granular"])
+    }
+
+    func testConfigRequirementsDecodesPermissionProfileConstraints() {
+        let requirements = ConfigRequirementsInfo(from: obj([
+            "allowedPermissionProfiles": obj([
+                ":read-only": .bool(true),
+                ":workspace": .bool(true),
+                ":danger-full-access": .bool(false),
+            ]),
+            "defaultPermissions": .string(":workspace"),
+        ]))
+
+        XCTAssertEqual(requirements.allowedPermissionProfiles, [":read-only", ":workspace"])
+        XCTAssertEqual(requirements.defaultPermissions, ":workspace")
+        XCTAssertEqual(
+            requirements.permissionProfileOptions(defaults: [":read-only", ":workspace", ":danger-full-access"]),
+            [":read-only", ":workspace"])
     }
 }

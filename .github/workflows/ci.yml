@@ -42,7 +42,7 @@ jobs:
         run: python3 .github/scripts/test_sdk_workflow.py
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           run_install: false
 
@@ -68,7 +68,7 @@ jobs:
           echo "pack_output=$PACK_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged npm package artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codewith-npm-staging
           path: ${{ steps.stage_npm_package.outputs.pack_output }}
@@ -78,11 +78,11 @@ jobs:
       - name: Check root README ToC
         run: python3 scripts/readme_toc.py README.md
 
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
           tool: just@1.51.0
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           version: "0.11.3"
       - name: Check formatting (run `just fmt` to fix)

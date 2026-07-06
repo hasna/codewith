@@ -57,7 +57,7 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         (
             "cwd".to_string(),
             JsonSchema::string(Some(
-                "Optional working directory for the command. Relative output_file paths are resolved from this directory."
+                "Optional thread-cwd-relative working directory for the command. Relative output_file paths are resolved from this directory."
                     .to_string(),
             )),
         ),
@@ -74,14 +74,28 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         (
             "output_file".to_string(),
             JsonSchema::string(Some(
-                "Required when routing is file or both. Absolute or cwd-relative file path where monitor output should be appended."
+                "Required when routing is file or both. Thread-cwd-relative path where monitor output should be appended."
+                    .to_string(),
+            )),
+        ),
+        (
+            "cursor".to_string(),
+            JsonSchema::string(Some(
+                "Cursor from a prior read. Omit to return the most recent events, or pass \"0\" to page from the oldest events."
                     .to_string(),
             )),
         ),
         (
             "limit".to_string(),
             JsonSchema::integer(Some(
-                "Maximum number of events to return when action is read. Defaults to 50."
+                "Maximum number of events to return when action is read. Defaults to 20."
+                    .to_string(),
+            )),
+        ),
+        (
+            "verbose".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. When true, return full prompts, commands, paths, errors, and event text instead of compact previews."
                     .to_string(),
             )),
         ),
@@ -92,6 +106,7 @@ pub fn create_manage_monitor_tool() -> ToolSpec {
         description: r#"Manage generic monitors for the current thread.
 Use `create` after dynamically designing a monitor from the user's natural-language request. Do not use predefined monitor categories or hardcoded source types.
 The monitor command is a model-designed shell command or script. It should emit concise single-line stdout updates when something relevant happens.
+List and read responses are compact by default: they include ids, status, command/event previews, and counts. Set `verbose=true` only when full command text or full event output is needed.
 `stream` routing attempts to steer stdout updates into the active turn and always records events. `file` routing appends output to `output_file`. `both` does both.
 Use `list` before mutating when the user did not name a specific monitor.
 `stop` halts the monitor process. `restart` reruns the monitor command. `delete` removes the selected monitor.

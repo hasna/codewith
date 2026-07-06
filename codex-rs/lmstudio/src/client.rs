@@ -1,5 +1,6 @@
 use codex_core::config::Config;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::WireApi;
 use std::io;
 use std::path::Path;
 
@@ -7,6 +8,7 @@ use std::path::Path;
 pub struct LMStudioClient {
     client: reqwest::Client,
     base_url: String,
+    wire_api: WireApi,
 }
 
 const LMSTUDIO_CONNECTION_ERROR: &str = "LM Studio is not responding. Install from https://lmstudio.ai/download and run 'lms server start'.";
@@ -37,6 +39,7 @@ impl LMStudioClient {
         let client = LMStudioClient {
             client,
             base_url: base_url.to_string(),
+            wire_api: provider.wire_api,
         };
         client.check_server().await?;
 
@@ -63,13 +66,27 @@ impl LMStudioClient {
 
     // Load a model by sending an empty request with max_tokens 1
     pub async fn load_model(&self, model: &str) -> io::Result<()> {
-        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
-
-        let request_body = serde_json::json!({
-            "model": model,
-            "input": "",
-            "max_output_tokens": 1
-        });
+        // LM Studio speaks the OpenAI wire protocols, so the warm-up endpoint
+        // and payload shape must follow the provider's configured wire_api.
+        let base_url = self.base_url.trim_end_matches('/');
+        let (url, request_body) = match self.wire_api {
+            WireApi::Chat => (
+                format!("{base_url}/chat/completions"),
+                serde_json::json!({
+                    "model": model,
+                    "messages": [{ "role": "user", "content": "" }],
+                    "max_tokens": 1
+                }),
+            ),
+            WireApi::Responses => (
+                format!("{base_url}/responses"),
+                serde_json::json!({
+                    "model": model,
+                    "input": "",
+                    "max_output_tokens": 1
+                }),
+            ),
+        };
 
         let response = self
             .client
@@ -199,6 +216,7 @@ impl LMStudioClient {
         Self {
             client,
             base_url: host_root.into(),
+            wire_api: WireApi::Responses,
         }
     }
 }

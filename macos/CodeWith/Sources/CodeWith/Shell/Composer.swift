@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// The prompt composer. Send button, "+", and the inline config pills are all
-/// real, clickable controls.
+/// The prompt composer. The config pills are real controls; the trailing filled
+/// action swaps from microphone at rest to send/stop while active.
 struct Composer: View {
     var placeholder: String = "Do anything"
     var showSend: Bool = true
     var stopMode: Bool = false
     var text: Binding<String>? = nil
+    var model: AppModel? = nil
     var onSubmit: (() -> Void)? = nil
     var onStop: (() -> Void)? = nil
     var onPlus: (() -> Void)? = nil
@@ -14,6 +15,7 @@ struct Composer: View {
     var modelLabel: String = "gpt-5.5"
     var effortLabel: String = "Low"
     @Environment(\.snapshotMode) private var snapshot
+    @State private var pendingFullAccessProfile: String?
 
     /// Short model label to match the reference pill (e.g. "gpt-5.5-codex" → "5.5-codex").
     private var shortModel: String {
@@ -22,13 +24,13 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(alignment: .top) {
                 if let text, !snapshot {
                     TextField(placeholder, text: text, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.textPrimary)
-                        .lineLimit(1...5)
+                        .lineLimit(2...6)
                         .onSubmit { onSubmit?() }
                 } else {
                     // Static placeholder (also used in snapshot mode — ImageRenderer
@@ -36,71 +38,235 @@ struct Composer: View {
                     Text(text?.wrappedValue.isEmpty == false ? text!.wrappedValue : placeholder)
                         .font(.system(size: 13))
                         .foregroundStyle(text?.wrappedValue.isEmpty == false ? Theme.textPrimary : Theme.textTertiary)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
                 }
                 Spacer()
             }
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+            .frame(minHeight: 38, alignment: .topLeading)
+            .padding(.horizontal, 14).padding(.top, 13).padding(.bottom, 13)
 
             HStack(spacing: 10) {
                 Button { onPlus?() } label: {
-                    Image(systemName: "plus").font(.system(size: 13, weight: .regular)).foregroundStyle(Theme.textTertiary)
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(Theme.textTertiary)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).disabled(onPlus == nil)
+                .buttonStyle(.plain)
+                .disabled(onPlus == nil)
                 .accessibilityLabel("Add")
 
-                // Full access pill — subtle; opens the in-session config panel.
-                Button { onConfigTap?() } label: {
-                    HStack(spacing: 4) {
-                        Text("Full access").font(.system(size: 11.5, weight: .regular))
-                        Image(systemName: "chevron.down").font(.system(size: 8))
-                    }
-                    .foregroundStyle(Theme.textSecondary).contentShape(Rectangle())
+                if let model {
+                    permissionMenu(model)
                 }
-                .buttonStyle(.plain).disabled(onConfigTap == nil)
-                .accessibilityLabel("Permissions")
-
                 Spacer()
 
-                // Model + effort pill — opens the config panel.
-                Button { onConfigTap?() } label: {
-                    HStack(spacing: 3) {
-                        Text(shortModel).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
-                        Text(effortLabel).font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
-                        Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
+                if let model {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            ProjectMenu(model: model, compact: true)
+                            modelMenu(model)
+                            providerMenu(model)
+                            effortMenu(model)
+                            if !model.authProfiles.isEmpty {
+                                authProfileMenu(model)
+                            }
+                        }
+                        compactSessionButton(model)
                     }
-                    .contentShape(Rectangle())
+                } else {
+                    Button { onConfigTap?() } label: {
+                        HStack(spacing: 3) {
+                            Text(shortModel).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                            Text(effortLabel).font(.system(size: 11.5)).foregroundStyle(Theme.textTertiary)
+                            Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(Theme.textTertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(onConfigTap == nil)
+                    .accessibilityLabel("Model and effort")
                 }
-                .buttonStyle(.plain).disabled(onConfigTap == nil)
-                .accessibilityLabel("Model and effort")
-
-                Image(systemName: "mic").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    .accessibilityLabel("Voice input")
 
                 if showSend {
-                    // Active (black) while typing or running; gray only when empty/idle.
                     let hasText = !(text?.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                    let active = stopMode || hasText
-                    let enabled = stopMode ? onStop != nil : (hasText && onSubmit != nil)
-                    Button { stopMode ? onStop?() : onSubmit?() } label: {
+                    let icon = stopMode ? "stop.fill" : (hasText ? "arrow.up" : "mic.fill")
+                    Button {
+                        if stopMode {
+                            onStop?()
+                        } else if hasText {
+                            onSubmit?()
+                        }
+                    } label: {
                         Circle()
-                            .fill(active ? Color(hex: 0x202020) : Color(hex: 0xBEBEBE))
-                            .frame(width: 22, height: 22)
-                            .overlay(Image(systemName: stopMode ? "stop.fill" : "arrow.up")
-                                .font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
+                            .fill(Theme.accent)
+                            .frame(width: 28, height: 28)
+                            .overlay(Image(systemName: icon)
+                                .font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.accentForeground))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(!enabled)
-                    .accessibilityLabel(stopMode ? "Stop" : "Send")
+                    .disabled(!stopMode && !hasText)
+                    .accessibilityLabel(stopMode ? "Stop" : (hasText ? "Send" : "Send unavailable"))
                 }
             }
-            .padding(.horizontal, 12).padding(.bottom, 10)
+            .padding(.horizontal, 12).padding(.bottom, 12)
         }
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .fill(Theme.fieldFill)
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
+        .shadow(color: Theme.accent.opacity(0.05), radius: 18, x: 0, y: 10)
+        .confirmationDialog(
+            "Allow full access?",
+            isPresented: Binding(
+                get: { pendingFullAccessProfile != nil },
+                set: { if !$0 { pendingFullAccessProfile = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Allow full access", role: .destructive) {
+                if let profile = pendingFullAccessProfile {
+                    model?.setPermissionProfile(profile)
+                }
+                pendingFullAccessProfile = nil
+            }
+            Button("Cancel", role: .cancel) { pendingFullAccessProfile = nil }
+        } message: {
+            Text("This lets CodeWith edit any file and use network without approval for this session.")
+        }
+    }
+
+    @ViewBuilder
+    private func permissionMenu(_ model: AppModel) -> some View {
+        let label = pill(AppModel.displayPermissionProfile(model.permissionProfileId), icon: "lock.shield")
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availablePermissionProfiles, id: \.self) { profile in
+                    Button(AppModel.displayPermissionProfile(profile)) {
+                        if profile == ":danger-full-access" && model.permissionProfileId != ":danger-full-access" {
+                            pendingFullAccessProfile = profile
+                        } else {
+                            model.setPermissionProfile(profile)
+                        }
+                    }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Permissions")
+        }
+    }
+
+    @ViewBuilder
+    private func modelMenu(_ model: AppModel) -> some View {
+        let label = pill(AppModel.displayModel(model.model ?? modelLabel))
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableModels, id: \.self) { option in
+                    Button(AppModel.displayModel(option)) { model.setModel(option) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func providerMenu(_ model: AppModel) -> some View {
+        let label = pill(AppModel.displayProvider(model.provider ?? "openai"))
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableProviders, id: \.self) { option in
+                    Button(AppModel.displayProvider(option)) { model.setProvider(option) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func effortMenu(_ model: AppModel) -> some View {
+        let label = pill(model.effort)
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.availableEfforts, id: \.self) { option in
+                    Button(option) { model.setEffort(option) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func authProfileMenu(_ model: AppModel) -> some View {
+        let label = pill(activeProfileLabel(model), icon: "person.crop.circle")
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.authProfiles) { profile in
+                    Button(profile.name) { model.setSessionAuthProfile(profile.name) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    private func compactSessionButton(_ model: AppModel) -> some View {
+        Button { onConfigTap?() } label: {
+            pill("\(AppModel.displayModel(model.model ?? modelLabel)) · \(model.effort)", icon: "slider.horizontal.3")
+        }
+        .buttonStyle(.plain)
+        .disabled(onConfigTap == nil)
+    }
+
+    private func activeProfileLabel(_ model: AppModel) -> String {
+        model.sessionAuthProfileName
+            ?? model.authProfiles.first(where: { $0.active })?.name
+            ?? (model.account.name == "Signed out" ? "Profile" : model.account.name)
+    }
+
+    private func pill(_ text: String, icon: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            if let icon {
+                Image(systemName: icon).font(.system(size: 10))
+            }
+            Text(text)
+                .font(.system(size: 11.5, weight: .regular))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8))
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .contentShape(Rectangle())
+        .frame(maxWidth: 120)
     }
 }

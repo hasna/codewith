@@ -25,6 +25,7 @@ use std::sync::Arc;
 pub struct ModelsClient<T: HttpTransport> {
     session: EndpointSession<T>,
     provider_id: Option<String>,
+    append_client_version: bool,
 }
 
 impl<T: HttpTransport> ModelsClient<T> {
@@ -32,6 +33,12 @@ impl<T: HttpTransport> ModelsClient<T> {
         Self {
             session: EndpointSession::new(transport, provider, auth),
             provider_id: None,
+            // The `client_version` query param is a Codex-backend feature. It is
+            // appended by default to preserve behavior for the Codex `/models`
+            // endpoint; callers that talk to a third-party OpenAI-compatible
+            // endpoint (for example Google Gemini's `/v1beta/openai`, which
+            // rejects unknown query parameters) should disable it.
+            append_client_version: true,
         }
     }
 
@@ -39,15 +46,26 @@ impl<T: HttpTransport> ModelsClient<T> {
         let Self {
             session,
             provider_id,
+            append_client_version,
         } = self;
         Self {
             session: session.with_request_telemetry(request),
             provider_id,
+            append_client_version,
         }
     }
 
     pub fn with_provider_id(mut self, provider_id: Option<String>) -> Self {
         self.provider_id = provider_id;
+        self
+    }
+
+    /// Control whether the `client_version` query parameter is appended to the
+    /// `/models` request. Only the Codex backend understands this parameter;
+    /// third-party OpenAI-compatible endpoints (such as Google Gemini) reject
+    /// it with a 400 error, so it must be disabled for those providers.
+    pub fn with_client_version_query(mut self, enabled: bool) -> Self {
+        self.append_client_version = enabled;
         self
     }
 
@@ -73,7 +91,9 @@ impl<T: HttpTransport> ModelsClient<T> {
                 extra_headers,
                 /*body*/ None,
                 |req| {
-                    Self::append_client_version_query(req, client_version);
+                    if self.append_client_version {
+                        Self::append_client_version_query(req, client_version);
+                    }
                 },
             )
             .await?;
@@ -619,6 +639,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn omits_client_version_query_when_disabled() {
+        // Third-party OpenAI-compatible endpoints (e.g. Google Gemini's
+        // `/v1beta/openai`) reject the unknown `client_version` query param, so
+        // it must not be appended when disabled.
+        let response = ModelsResponse { models: Vec::new() };
+
+        let transport = CapturingTransport {
+            last_request: Arc::new(Mutex::new(None)),
+            body: Arc::new(response),
+            etag: None,
+        };
+
+        let client = ModelsClient::new(
+            transport.clone(),
+            provider("https://generativelanguage.googleapis.com/v1beta/openai"),
+            Arc::new(DummyAuth),
+        )
+        .with_client_version_query(false);
+
+        client
+            .list_models("0.99.0", HeaderMap::new())
+            .await
+            .expect("request should succeed");
+
+        let url = transport
+            .last_request
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .url
+            .clone();
+        assert_eq!(
+            url,
+            "https://generativelanguage.googleapis.com/v1beta/openai/models"
+        );
+        assert!(
+            !url.contains("client_version"),
+            "client_version must not be appended when disabled"
+        );
+    }
+
+    #[tokio::test]
     async fn parses_models_response() {
         let response = ModelsResponse {
             models: vec![
@@ -834,6 +897,42 @@ mod tests {
         assert_eq!(model.max_context_window, Some(1_048_576));
         assert_eq!(model.experimental_supported_tools, vec!["tools"]);
         assert!(!model.supports_parallel_tool_calls);
+    }
+
+    #[test]
+    fn openrouter_sparse_glm52_response_uses_openrouter_reasoning_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "data": [
+                    {
+                        "id": "z-ai/glm-5.2"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("openrouter"),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1"),
+        )
+        .expect("OpenAI-compatible model response should decode");
+
+        let model = &models[0];
+        assert_eq!(model.display_name, "Z.ai GLM 5.2");
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.max_context_window, Some(1_048_576));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(model.supports_parallel_tool_calls);
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+        assert_eq!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort.clone())
+                .collect::<Vec<_>>(),
+            vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+        );
+        assert!(model.supports_reasoning_summaries);
     }
 
     #[test]

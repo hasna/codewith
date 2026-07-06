@@ -38,6 +38,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
@@ -2935,6 +2936,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3026,6 +3029,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
             },
@@ -3085,6 +3090,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: Some("read thread".to_string()),
         turns: Vec::new(),
     };
@@ -3163,6 +3170,93 @@ fn agent_picker_item_name_snapshot() {
     ]
     .join("\n");
     assert_app_snapshot!("agent_picker_item_name", snapshot);
+}
+
+#[tokio::test]
+async fn agent_picker_selection_items_include_new_agent_snapshot() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread id");
+    let worker_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread id");
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        worker_thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    let (items, initial_selected_idx) =
+        app.agent_picker_selection_items(/*can_create_agent*/ true);
+    let mut lines = vec![format!("initial_selected_idx={initial_selected_idx:?}")];
+    for (idx, item) in items.iter().enumerate() {
+        let prefix = item
+            .name_prefix_spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        lines.push(format!(
+            "{idx}: {prefix}{} | {} | current={}",
+            item.name,
+            item.description.as_deref().unwrap_or(""),
+            item.is_current
+        ));
+    }
+
+    assert_app_snapshot!(
+        "agent_picker_selection_items_with_new_agent",
+        lines.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn open_agent_picker_new_agent_row_emits_create_event() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::CreateAgentThread));
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_enter_still_switches_active_existing_thread() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.active_thread_id = Some(thread_id);
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -4152,6 +4246,7 @@ async fn make_test_app() -> App {
         pending_startup_thread_start: false,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
+        pending_mcp_dynamic_tool_mutations: HashMap::new(),
     }
 }
 
@@ -4218,6 +4313,7 @@ async fn make_test_app_with_channels() -> (
             pending_startup_thread_start: false,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_dynamic_tool_mutations: HashMap::new(),
         },
         rx,
         op_rx,
@@ -4472,6 +4568,88 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         }
         other => panic!("expected current-profile rate limits to auto-switch, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn usage_panel_usage_refresh_completion_requests_frame() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+    app.chat_widget.open_usage_panel();
+    let request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected usage-panel refresh request, got {other:?}"),
+    };
+
+    let rate_limit_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel { request_id },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![]),
+    );
+
+    assert_eq!(
+        rate_limit_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::ScheduleFrame
+    );
+    assert!(app.apply_minimax_usage_loaded(
+        crate::app_event::MiniMaxUsageRefreshOrigin::UsagePanel { request_id: 1 },
+        app.config.selected_auth_profile.clone(),
+        Err("temporarily unavailable".to_string()),
+    ));
+}
+
+#[tokio::test]
+async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    set_chatgpt_auth(&mut app.chat_widget);
+
+    app.chat_widget.open_usage_panel();
+    let first_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected first usage-panel refresh request, got {other:?}"),
+    };
+    app.chat_widget.open_usage_panel();
+    let second_request_id = match app_event_rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected second usage-panel refresh request, got {other:?}"),
+    };
+    assert_ne!(first_request_id, second_request_id);
+
+    let stale_completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::UsagePanel {
+            request_id: first_request_id,
+        },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
+        )]),
+    );
+    assert_eq!(
+        stale_completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+
+    app.chat_widget.show_status_report();
+    let rendered = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected status output, got {other:?}"),
+    };
+    assert!(
+        !rendered.contains("60m limit"),
+        "superseded /usage refresh must not update cached limits, got: {rendered}"
+    );
 }
 
 #[tokio::test]
@@ -5088,6 +5266,28 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
             expected
         );
     }
+}
+
+#[test]
+fn fork_error_message_guides_when_thread_has_no_rollout() {
+    let err = color_eyre::eyre::eyre!(
+        "thread/fork failed during TUI bootstrap: thread/fork failed: no rollout found for thread id 019da1a1-bed9-7a43-88a2-b49d43915021 (code -32600)"
+    );
+
+    assert_eq!(
+        fork_error_message(&err),
+        "Nothing to fork yet — send a message first, then try /fork again."
+    );
+}
+
+#[test]
+fn fork_error_message_falls_back_to_generic_wording() {
+    let err = color_eyre::eyre::eyre!("transport disconnected");
+
+    assert_eq!(
+        fork_error_message(&err),
+        "Failed to fork current session through the app server: transport disconnected"
+    );
 }
 
 #[test]
@@ -5777,6 +5977,8 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
+                auth_profile: None,
+                auth_profile_kind: AuthProfileKind::Unknown,
                 name: None,
                 turns: Vec::new(),
             },
@@ -6321,6 +6523,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
             session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         },
     };
     app.enqueue_thread_notification(

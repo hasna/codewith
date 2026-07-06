@@ -51,3 +51,87 @@ async fn sqlite_sink_drops_low_level_opentelemetry_sdk_logs() {
 
     let _ = tokio::fs::remove_dir_all(codex_home).await;
 }
+
+#[tokio::test]
+async fn default_filter_drops_low_value_persistent_log_targets() {
+    let codex_home =
+        std::env::temp_dir().join(format!("codex-state-log-db-filter-{}", Uuid::new_v4()));
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize runtime");
+    let layer = start(runtime.clone());
+
+    let guard = tracing_subscriber::registry()
+        .with(layer.clone().with_filter(default_filter()))
+        .set_default();
+
+    tracing::trace!(target: "log", "dropped-bridged-log");
+    tracing::info!(target: "codex_otel.log_only", "dropped-otel-log");
+    tracing::info!(target: "codex_otel.trace_safe", "dropped-otel-trace");
+    // The default capture level is INFO, so sub-INFO events are dropped even
+    // for otherwise-retained targets; INFO and above are kept.
+    tracing::trace!(target: "codex_state", "dropped-trace");
+    tracing::debug!(target: "codex_state", "dropped-debug");
+    tracing::info!(target: "codex_state", "retained-info");
+
+    layer.flush().await;
+    drop(guard);
+
+    let logs = runtime
+        .query_logs(&crate::LogQuery::default())
+        .await
+        .expect("query logs after flush");
+    assert_eq!(
+        logs.iter()
+            .map(|row| (
+                row.level.as_str(),
+                row.target.as_str(),
+                row.message.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("INFO", "codex_state", Some("retained-info"))]
+    );
+
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
+async fn sqlite_sink_drops_bridged_log_events_before_queueing() {
+    let codex_home =
+        std::env::temp_dir().join(format!("codex-state-log-db-filter-{}", Uuid::new_v4()));
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize runtime");
+    let layer = start(runtime.clone());
+
+    let guard = tracing_subscriber::registry()
+        .with(
+            layer
+                .clone()
+                .with_filter(Targets::new().with_default(tracing::Level::TRACE)),
+        )
+        .set_default();
+
+    tracing::trace!(target: "log", "dropped-bridged-log");
+    tracing::trace!(target: "codex_state", "retained-trace");
+
+    layer.flush().await;
+    drop(guard);
+
+    let logs = runtime
+        .query_logs(&crate::LogQuery::default())
+        .await
+        .expect("query logs after flush");
+    assert_eq!(
+        logs.iter()
+            .map(|row| (
+                row.level.as_str(),
+                row.target.as_str(),
+                row.message.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("TRACE", "codex_state", Some("retained-trace"))]
+    );
+
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}

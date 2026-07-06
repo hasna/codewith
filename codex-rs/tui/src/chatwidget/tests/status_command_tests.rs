@@ -14,6 +14,24 @@ use crate::minimax_usage::MiniMaxUsageSnapshot;
 use crate::minimax_usage::MiniMaxUsageWindow;
 use crate::status::StatusAccountDisplay;
 
+fn usage_panel_token_info(
+    input_tokens: i64,
+    output_tokens: i64,
+    context_window: i64,
+) -> TokenUsageInfo {
+    let usage = TokenUsage {
+        total_tokens: input_tokens + output_tokens,
+        input_tokens,
+        output_tokens,
+        ..TokenUsage::default()
+    };
+    TokenUsageInfo {
+        total_token_usage: usage.clone(),
+        last_token_usage: usage,
+        model_context_window: Some(context_window),
+    }
+}
+
 #[tokio::test]
 async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -202,6 +220,18 @@ async fn status_command_opens_interactive_panel_instead_of_dumping_text() {
         !chat.bottom_pane.no_modal_or_popup_active(),
         "/status should open the interactive status panel"
     );
+    let popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100))
+        .lines()
+        .map(|line| {
+            if let Some(version_start) = line.find("Version    ") {
+                format!("{}Version    <test-version>", &line[..version_start])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_chatwidget_snapshot!("status_panel_overview", popup);
     assert!(
         !std::iter::from_fn(|| rx.try_recv().ok())
             .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),
@@ -218,6 +248,134 @@ async fn stats_alias_opens_interactive_panel() {
     assert!(
         !chat.bottom_pane.no_modal_or_popup_active(),
         "/stats should open the same interactive status panel"
+    );
+}
+
+#[tokio::test]
+async fn usage_command_opens_panel_refreshes_rate_limits_and_avoids_history() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ChatGpt {
+            email: Some("dev@example.com".to_string()),
+            plan: Some("Pro".to_string()),
+        }),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+    );
+    handle_token_count(
+        &mut chat,
+        Some(usage_panel_token_info(50_000, 2_000, 128_000)),
+    );
+
+    chat.dispatch_command(SlashCommand::Usage);
+
+    let loading_popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100));
+    assert_chatwidget_snapshot!("usage_panel_loading", loading_popup);
+    let request_id = match rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected usage-panel rate-limit refresh request, got {other:?}"),
+    };
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::InsertHistoryCell(_))),
+        "/usage should not append a transcript cell"
+    );
+    assert_no_submit_op(&mut op_rx);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 27.0)));
+    chat.finish_usage_panel_rate_limit_refresh(request_id, Ok(()));
+    let refreshed_popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100));
+    assert_chatwidget_snapshot!("usage_panel_with_limits", refreshed_popup);
+}
+
+#[tokio::test]
+async fn usage_command_marks_account_limits_unavailable_without_refresh() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 27.0)));
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ApiKey),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ false,
+    );
+    handle_token_count(
+        &mut chat,
+        Some(usage_panel_token_info(35_000, 7_000, 128_000)),
+    );
+
+    chat.dispatch_command(SlashCommand::Usage);
+
+    let popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100));
+    assert_chatwidget_snapshot!("usage_panel_unavailable_limits", popup);
+    assert!(
+        !render_bottom_popup(&chat, /*width*/ 100).contains("60m limit"),
+        "/usage should not show stale ChatGPT account limits for API-key providers"
+    );
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::RefreshRateLimits { .. }
+                | AppEvent::InsertHistoryCell(_)
+                | AppEvent::CodexOp(_)
+        )),
+        "/usage should not refresh unsupported account limits or submit a turn"
+    );
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn usage_panel_shows_rate_limit_refresh_error() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.update_account_state(
+        Some(StatusAccountDisplay::ChatGpt {
+            email: Some("dev@example.com".to_string()),
+            plan: Some("Pro".to_string()),
+        }),
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+    );
+
+    chat.dispatch_command(SlashCommand::Usage);
+    let request_id = match rx.try_recv() {
+        Ok(AppEvent::RefreshRateLimits {
+            origin: RateLimitRefreshOrigin::UsagePanel { request_id },
+            target: RateLimitRefreshTarget::Selected,
+        }) => request_id,
+        other => panic!("expected usage-panel rate-limit refresh request, got {other:?}"),
+    };
+    chat.finish_usage_panel_rate_limit_refresh(request_id, Err("temporary outage".to_string()));
+
+    let popup = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 100));
+    assert_chatwidget_snapshot!("usage_panel_rate_limit_error", popup);
+}
+
+#[tokio::test]
+async fn usage_command_refreshes_minimax_usage_without_user_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model_provider_id = MINIMAX_PROVIDER_ID.to_string();
+    chat.config.model_provider = ModelProviderInfo::create_minimax_provider();
+
+    chat.dispatch_command(SlashCommand::Usage);
+
+    let request_id = match rx.try_recv() {
+        Ok(AppEvent::RefreshMiniMaxUsage {
+            origin: MiniMaxUsageRefreshOrigin::UsagePanel { request_id },
+        }) => request_id,
+        other => panic!("expected usage-panel MiniMax refresh request, got {other:?}"),
+    };
+    assert_no_submit_op(&mut op_rx);
+
+    chat.finish_usage_panel_minimax_usage_refresh(request_id, Ok(minimax_usage_snapshot()));
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        popup.contains("Token Plan general bucket")
+            && popup.contains("72% left")
+            && popup.contains("20 / 100 used"),
+        "expected MiniMax usage data in /usage panel, got:\n{popup}"
     );
 }
 

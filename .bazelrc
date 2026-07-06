@@ -102,6 +102,31 @@ common:ci --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebuginfo=0
 # Disable disk cache in CI since we have a remote one and aren't using persistent workers.
 common:ci --disk_cache=
 
+# Keyless CI (no BuildBuddy). Selected by `.github/scripts/run-bazel-ci.sh` on
+# Linux when BUILDBUDDY_API_KEY is absent (fork/community PRs, and the Codewith
+# fleet until a key is provisioned). This is the FALLBACK path; the keyed RBE
+# path (`ci`/`ci-linux`) is unchanged and remains preferred whenever the key is
+# present. Unlike `ci`, this intentionally does NOT set
+# `--remote_download_minimal` (there is no remote cache to download from) and it
+# RE-ENABLES a bounded local disk cache so compiled action outputs survive
+# across runs when the workflow persists `~/.cache/bazel-disk-cache` via
+# actions/cache. The repository cache is already actions/cache-backed by the
+# `prepare-bazel-ci` action.
+common:ci-keyless --keep_going
+common:ci-keyless --verbose_failures
+common:ci-keyless --build_metadata=ROLE=CI
+common:ci-keyless --build_metadata=TAG_workflow=bazel-keyless
+# Lean Rust actions (mirrors `ci`) to cut build time and shrink the disk cache.
+common:ci-keyless --@rules_rust//rust/settings:extra_rustc_flag=-Cdebuginfo=0
+common:ci-keyless --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebuginfo=0
+# Persisted local disk cache (re-enables the base setting that `ci` clears).
+common:ci-keyless --disk_cache=~/.cache/bazel-disk-cache
+# In-build size bound. Bazel's disk-cache GC is idle-triggered and usually does
+# not run in one-shot CI, so the workflow also prunes before saving; see
+# `.github/scripts/prune-bazel-disk-cache.sh`. Keep both bounds under GitHub's
+# 10 GB actions/cache entry limit.
+common:ci-keyless --experimental_disk_cache_gc_max_size=8G
+
 # Shared config for the main Bazel CI workflow.
 common:ci-bazel --config=ci
 common:ci-bazel --build_metadata=TAG_workflow=bazel

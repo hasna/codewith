@@ -361,7 +361,7 @@ WHERE
             return Ok(None);
         }
 
-        let event_id = super::events::append_background_agent_event_in_tx(
+        let event = super::events::append_background_agent_event_in_tx(
             &mut tx,
             params.run_id,
             params.event_type,
@@ -369,22 +369,21 @@ WHERE
             now,
         )
         .await?;
-        let (last_event_seq, desired_state): (i64, String) = sqlx::query_as(
-            "SELECT last_event_seq, desired_state FROM background_agent_runs WHERE id = ?",
-        )
-        .bind(params.run_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let desired_state: String =
+            sqlx::query_scalar("SELECT desired_state FROM background_agent_runs WHERE id = ?")
+                .bind(params.run_id)
+                .fetch_one(&mut *tx)
+                .await?;
         super::snapshots::upsert_background_agent_status_snapshot_in_tx(
             &mut tx,
             &BackgroundAgentStatusSnapshotParams {
                 run_id: params.run_id.to_string(),
-                seq: last_event_seq,
+                seq: event.seq,
                 status: params.status,
                 desired_state: BackgroundAgentDesiredState::parse(desired_state.as_str())?,
                 summary: params.summary.map(str::to_string),
                 pending_interaction_count: params.pending_interaction_count,
-                last_event_seq,
+                last_event_seq: event.seq,
                 payload_json: params.status_payload_json.clone(),
             },
             now,
@@ -392,7 +391,7 @@ WHERE
         .await?;
         tx.commit().await?;
 
-        self.get_background_agent_event(event_id).await
+        Ok(Some(event))
     }
 
     pub async fn bind_background_agent_thread(

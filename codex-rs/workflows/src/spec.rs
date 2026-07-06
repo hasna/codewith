@@ -61,6 +61,159 @@ pub struct WorkflowModelRoute {
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub permission_profile: Option<String>,
+    #[serde(default)]
+    pub routing: Option<WorkflowModelRoutingContract>,
+}
+
+/// Policy-free contract that a future open-router integration can satisfy.
+///
+/// The surrounding [`WorkflowModelRoute`] remains exact and executable today.
+/// This contract only records the request/decision boundary so Codewith
+/// workflow specs can be validated without embedding provider ranking policy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingContract {
+    pub contract_version: String,
+    pub router: WorkflowModelRouter,
+    pub request: WorkflowModelRoutingRequest,
+    #[serde(default)]
+    pub decision: Option<WorkflowModelRoutingDecision>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowModelRouter {
+    OpenRouter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingRequest {
+    pub requested_capability: WorkflowModelRoutingCapability,
+    #[serde(default)]
+    pub context: WorkflowModelRoutingContext,
+    #[serde(default)]
+    pub constraints: WorkflowModelRoutingConstraints,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowModelRoutingCapability {
+    AgentWorker,
+    CodeEdit,
+    CodeReview,
+    Planning,
+    Release,
+    Verification,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingContext {
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub task_title: Option<String>,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub auth_profile: Option<String>,
+    #[serde(default)]
+    pub approval_policy: Option<String>,
+    #[serde(default)]
+    pub permission_profile: Option<String>,
+    #[serde(default)]
+    pub worktree_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingConstraints {
+    #[serde(default)]
+    pub allowed_model_gateways: Vec<String>,
+    #[serde(default)]
+    pub preferred_model_gateways: Vec<String>,
+    #[serde(default)]
+    pub allowed_providers: Vec<String>,
+    #[serde(default)]
+    pub preferred_providers: Vec<String>,
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    #[serde(default)]
+    pub preferred_models: Vec<String>,
+    #[serde(default)]
+    pub allowed_reasoning: Vec<String>,
+    #[serde(default)]
+    pub preferred_reasoning: Vec<String>,
+    #[serde(default)]
+    pub allowed_service_tiers: Vec<String>,
+    #[serde(default)]
+    pub preferred_service_tiers: Vec<String>,
+    #[serde(default)]
+    pub allowed_auth_profiles: Vec<String>,
+    #[serde(default)]
+    pub allowed_approval_policies: Vec<String>,
+    #[serde(default)]
+    pub allowed_permission_profiles: Vec<String>,
+    #[serde(default)]
+    pub allowed_worktree_modes: Vec<String>,
+    #[serde(default)]
+    pub max_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub budget_usd: Option<String>,
+    #[serde(default)]
+    pub fallback_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowModelRoutingDecisionStatus {
+    Selected,
+    Fallback,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingDecision {
+    pub status: WorkflowModelRoutingDecisionStatus,
+    #[serde(default)]
+    pub model_gateway: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub auth_profile: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
+    #[serde(default)]
+    pub fallback: Option<WorkflowModelRoutingFallback>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub errors: Vec<WorkflowModelRoutingError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingFallback {
+    pub used: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowModelRoutingError {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

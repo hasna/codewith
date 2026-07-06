@@ -74,6 +74,7 @@ use crate::reducer::normalize_path_for_skill_id;
 use crate::reducer::skill_id_for_local_skill;
 use codex_app_server_protocol::ApprovalsReviewer as AppServerApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval as AppServerAskForApproval;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ClientResponsePayload;
@@ -185,6 +186,8 @@ fn sample_thread_with_metadata(
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: None,
         turns: Vec::new(),
     }
@@ -208,6 +211,7 @@ fn sample_thread_start_response(
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AppServerAskForApproval::OnFailure,
         approvals_reviewer: AppServerApprovalsReviewer::User,
@@ -273,6 +277,7 @@ fn sample_thread_resume_response_with_source(
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AppServerAskForApproval::OnFailure,
         approvals_reviewer: AppServerApprovalsReviewer::User,

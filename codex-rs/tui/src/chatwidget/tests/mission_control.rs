@@ -1,6 +1,7 @@
 use super::*;
 use codex_app_server_protocol::ActiveSessionCapability;
 use codex_app_server_protocol::ActiveSessionPeerKind;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::LocalSession;
 use codex_app_server_protocol::LocalSessionGitInfo;
 use codex_app_server_protocol::LocalSessionPeer;
@@ -280,8 +281,8 @@ async fn mission_control_not_loaded_session_row_selects_thread() {
         "Archived operator session",
         "/tmp/codewith/archived",
         LocalSessionStatus::NotLoaded,
-        None,
-        None,
+        /*model*/ None,
+        /*branch*/ None,
     );
     local_session.runtime_session_id = None;
     local_session.peer = None;
@@ -541,6 +542,9 @@ fn test_local_session(
         agent_path: None,
         model_provider: "openai".to_string(),
         model: model.map(ToString::to_string),
+        auth_profile: Some("work".to_string()),
+        auth_profile_kind: AuthProfileKind::Named,
+        account_label: Some("work@example.com".to_string()),
         source: SessionSource::Cli,
         thread_source: Some(ThreadSource::User),
         created_at: 1_700,
@@ -559,6 +563,7 @@ fn test_goal(thread_id: &str, status: ThreadGoalStatus) -> ThreadGoal {
         thread_id: thread_id.to_string(),
         goal_id: format!("goal-{thread_id}"),
         objective: "Build the operator overview without touching workflow internals".to_string(),
+        title: None,
         status,
         token_budget: Some(80_000),
         tokens_used: 12_345,
@@ -671,10 +676,12 @@ fn test_plan_node(
         node_id: format!("node-{key}"),
         plan_id: format!("plan-{thread_id}"),
         thread_id: thread_id.to_string(),
+        assigned_thread_id: thread_id.to_string(),
         key: key.to_string(),
         sequence: 1,
         priority: 0,
         objective: format!("Execute {key}"),
+        title: None,
         status,
         ready,
         token_budget: Some(50_000),

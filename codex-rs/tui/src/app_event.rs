@@ -24,6 +24,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadGoalPlan;
@@ -31,8 +32,10 @@ use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadPendingInteraction;
 use codex_app_server_protocol::ThreadPendingInteractionResponsePayload;
 use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::WebhookEventStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
@@ -68,7 +71,11 @@ pub(crate) enum RealtimeAudioDeviceKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
+    // Kept for explicit replace-confirmation flows; plain `/goal <objective>`
+    // now uses QueueIfExists so it cannot overwrite existing work by default.
+    #[allow(dead_code)]
     ConfirmIfExists,
+    QueueIfExists,
     ReplaceExisting,
     UpdateExisting {
         status: ThreadGoalStatus,
@@ -136,7 +143,8 @@ pub(crate) struct ConnectorsSnapshot {
 /// A `StartupPrefetch` fires once, concurrently with the rest of TUI init, and
 /// only updates the cached snapshots (no status card to finalize). A `Heartbeat`
 /// is the same cache-only refresh path, but repeats at a low frequency so usage
-/// data does not go stale while the TUI remains open. A
+/// data does not go stale while the TUI remains open. A `UsagePanel` refresh is
+/// tied to the interactive `/usage` popup and should update that popup in place. A
 /// `StatusCommand` is tied to a specific `/status` invocation and must call
 /// `finish_status_rate_limit_refresh` when done so the card stops showing a
 /// "refreshing" state.
@@ -146,6 +154,9 @@ pub(crate) enum RateLimitRefreshOrigin {
     StartupPrefetch,
     /// Low-frequency background refresh for cached account usage.
     Heartbeat,
+    /// User-initiated via `/usage`; the `request_id` correlates with the
+    /// active usage popup state.
+    UsagePanel { request_id: u64 },
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -179,6 +190,9 @@ impl RateLimitRefreshTarget {
 /// Distinguishes why a MiniMax usage refresh was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MiniMaxUsageRefreshOrigin {
+    /// User-initiated via `/usage`; the `request_id` correlates with the
+    /// active usage popup state.
+    UsagePanel { request_id: u64 },
     /// User-initiated via `/status` or `/stats`; the `request_id` correlates with
     /// the status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
@@ -196,6 +210,8 @@ pub(crate) enum KeymapEditIntent {
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Create a fresh child agent thread and switch to it.
+    CreateAgentThread,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
     /// Prompt for a persisted name for a selected agent thread.
@@ -422,6 +438,25 @@ pub(crate) enum AppEvent {
         node_id: String,
     },
 
+    /// Show queued user inputs and queued agent mailbox messages.
+    OpenQueuedMessages {
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Update one queued agent mailbox message.
+    UpdateQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        text: String,
+    },
+
+    /// Move one queued agent mailbox message.
+    MoveQueuedThreadMessage {
+        thread_id: ThreadId,
+        message_id: String,
+        direction: ThreadQueuedMessageMoveDirection,
+    },
+
     /// Open the current thread loop schedule summary.
     OpenThreadLoopManager {
         thread_id: ThreadId,
@@ -578,6 +613,16 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    /// Approve an agent-requested MCP config mutation.
+    ConfirmAgentMcpMutation {
+        request_id: AppServerRequestId,
+    },
+
+    /// Deny an agent-requested MCP config mutation.
+    DenyAgentMcpMutation {
+        request_id: AppServerRequestId,
+    },
+
     /// Start OAuth login for a configured MCP server.
     StartMcpServerOauthLogin {
         name: String,
@@ -632,6 +677,36 @@ pub(crate) enum AppEvent {
     ReadThreadMonitor {
         thread_id: ThreadId,
         monitor_id: Option<String>,
+    },
+
+    /// Open the app webhook/event inbox.
+    OpenWebhookInbox {
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Open actions for one app webhook/event.
+    OpenWebhookEventActions {
+        event_id: String,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Mark an app webhook/event status.
+    MarkWebhookEvent {
+        event_id: String,
+        status: WebhookEventStatus,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Inject an app webhook/event into the current chat.
+    InjectWebhookEvent {
+        event_id: String,
+        thread_id: Option<ThreadId>,
+    },
+
+    /// Queue an app webhook/event through the durable thread mailbox.
+    QueueWebhookEvent {
+        event_id: String,
+        thread_id: Option<ThreadId>,
     },
 
     /// Stop a thread monitor.
@@ -719,6 +794,21 @@ pub(crate) enum AppEvent {
         name: Option<String>,
         branch: Option<String>,
         start_point: Option<String>,
+    },
+
+    /// Start pull-request mode in a fresh Codewith-managed worktree.
+    StartPullRequestMode {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+
+    /// Create implementation variants in managed worktrees and start one background agent each.
+    StartVariants {
+        count: u8,
+        name: Option<String>,
+        start_point: Option<String>,
+        prompt: String,
     },
 
     /// Open actions for one Codewith-managed worktree.
@@ -1242,6 +1332,9 @@ pub(crate) enum AppEvent {
     OpenConfigSection {
         section: crate::common_config_options::CommonConfigSection,
     },
+
+    /// Open the agent subagent-thread-limit picker from the root config menu.
+    OpenAgentMaxThreadsMenu,
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {

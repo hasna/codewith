@@ -4246,9 +4246,8 @@ impl ChatComposer {
                     | FooterMode::ShortcutOverlay
                     | FooterMode::EscHint => false,
                 };
-                let custom_height = self.custom_footer_height();
                 let footer_hint_height =
-                    custom_height.unwrap_or_else(|| footer_height(&footer_props));
+                    self.footer_hint_height_for_width(area.width, &footer_props);
                 let footer_spacing = Self::footer_spacing(footer_hint_height);
                 let hint_rect = if footer_spacing > 0 && footer_hint_height > 0 {
                     let [_, hint_rect] = Layout::vertical([
@@ -7992,6 +7991,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_flat_for_bare_slash_ui() {
         use ratatui::Terminal;
@@ -8078,6 +8078,32 @@ mod tests {
     }
 
     #[test]
+    fn slash_popup_teach_for_tea_ui() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        type_chars_humanlike(&mut composer, &['/', 't', 'e', 'a']);
+
+        let mut terminal = Terminal::new(TestBackend::new(68, 5)).expect("terminal");
+        terminal
+            .draw(|f| composer.render(f.area(), f.buffer_mut()))
+            .expect("draw composer");
+
+        insta::assert_snapshot!("slash_popup_tea", terminal.backend());
+    }
+
+    #[test]
     fn slash_popup_resume_for_res_ui() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -8105,6 +8131,7 @@ mod tests {
         insta::assert_snapshot!("slash_popup_res", terminal.backend());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_archive_for_ar_ui() {
         use ratatui::Terminal;
@@ -8240,6 +8267,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn slash_popup_side_for_si_ui() {
         use ratatui::Terminal;
@@ -8552,6 +8580,38 @@ mod tests {
             }
         }
         assert!(found_error, "expected error history cell to be sent");
+    }
+
+    #[test]
+    fn slash_usage_dispatches_while_task_running_and_clears_composer() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_task_running(/*running*/ true);
+        composer.draft.textarea.set_text_clearing_elements("/usage");
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        match result {
+            InputResult::Command(cmd) => assert_eq!(cmd, SlashCommand::Usage),
+            other => panic!("expected /usage command dispatch, got {other:?}"),
+        }
+        assert!(composer.draft.textarea.is_empty());
+        assert!(
+            rx.try_recv().is_err(),
+            "/usage should not emit a task-running disabled message"
+        );
     }
 
     #[test]

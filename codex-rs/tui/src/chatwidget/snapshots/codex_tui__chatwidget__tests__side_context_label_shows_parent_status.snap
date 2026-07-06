@@ -1,10 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/side.rs
-expression: terminal.backend()
+expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
 "                                                                                "
 "› Check recently modified functions for compatibility                           "
 "                                                                                "
-"  gpt-5.5 default · /tmp/project                                                "
-"                   Side from main thread · main needs input · Ctrl+C to return  "
+"  gpt-5.5 default                                                               "
+"  /tmp/project     Side from main thread · main needs input · Ctrl+C to return  "

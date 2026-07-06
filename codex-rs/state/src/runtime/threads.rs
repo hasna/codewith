@@ -37,7 +37,8 @@ WHERE threads.id = ?
             "#,
         )
         .bind(id.to_string())
-        .fetch_optional(self.pool.as_ref())
+        // Read-only query: route to the reader pool for read concurrency.
+        .fetch_optional(self.reader_pool.as_ref())
         .await?;
         row.map(|row| ThreadRow::try_from_row(&row).and_then(ThreadMetadata::try_from))
             .transpose()
@@ -46,7 +47,8 @@ WHERE threads.id = ?
     pub async fn get_thread_memory_mode(&self, id: ThreadId) -> anyhow::Result<Option<String>> {
         let row = sqlx::query("SELECT memory_mode FROM threads WHERE id = ?")
             .bind(id.to_string())
-            .fetch_optional(self.pool.as_ref())
+            // Read-only query: route to the reader pool for read concurrency.
+            .fetch_optional(self.reader_pool.as_ref())
             .await?;
         Ok(row.and_then(|row| row.try_get("memory_mode").ok()))
     }
@@ -176,7 +178,7 @@ LIMIT 2
         )
         .bind(parent_thread_id.to_string())
         .bind(agent_path)
-        .fetch_all(self.pool.as_ref())
+        .fetch_all(self.reader_pool.as_ref())
         .await?;
         one_thread_id_from_rows(rows, agent_path)
     }
@@ -208,7 +210,7 @@ LIMIT 2
         )
         .bind(root_thread_id.to_string())
         .bind(agent_path)
-        .fetch_all(self.pool.as_ref())
+        .fetch_all(self.reader_pool.as_ref())
         .await?;
         one_thread_id_from_rows(rows, agent_path)
     }
@@ -227,7 +229,7 @@ LIMIT 2
         }
         builder.push(" ORDER BY child_thread_id");
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(self.reader_pool.as_ref()).await?;
         rows.into_iter()
             .map(|row| {
                 ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
@@ -281,7 +283,7 @@ ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(self.reader_pool.as_ref()).await?;
         rows.into_iter()
             .map(|row| {
                 ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
@@ -342,7 +344,11 @@ ON CONFLICT(child_thread_id) DO NOTHING
             }
             None => {}
         }
-        let row = builder.build().fetch_optional(self.pool.as_ref()).await?;
+        // Read-only query: route to the reader pool for read concurrency.
+        let row = builder
+            .build()
+            .fetch_optional(self.reader_pool.as_ref())
+            .await?;
         Ok(row
             .and_then(|r| r.try_get::<String, _>("rollout_path").ok())
             .map(PathBuf::from))
@@ -387,7 +393,11 @@ ON CONFLICT(child_thread_id) DO NOTHING
             /*limit*/ 1,
         );
 
-        let row = builder.build().fetch_optional(self.pool.as_ref()).await?;
+        // Read-only query: route to the reader pool for read concurrency.
+        let row = builder
+            .build()
+            .fetch_optional(self.reader_pool.as_ref())
+            .await?;
         row.map(|row| ThreadRow::try_from_row(&row).and_then(crate::ThreadMetadata::try_from))
             .transpose()
     }
@@ -408,7 +418,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         push_thread_filters(&mut builder, filters);
         push_thread_order_and_limit(&mut builder, sort_key, sort_direction, limit);
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(self.reader_pool.as_ref()).await?;
         let mut items = rows
             .into_iter()
             .map(|row| ThreadRow::try_from_row(&row).and_then(ThreadMetadata::try_from))
@@ -455,7 +465,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         );
         push_thread_order_and_limit(&mut builder, sort_key, SortDirection::Desc, limit);
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(self.reader_pool.as_ref()).await?;
         rows.into_iter()
             .map(|row| {
                 let id: String = row.try_get("id")?;
@@ -586,6 +596,20 @@ ON CONFLICT(id) DO NOTHING
         thread_id: ThreadId,
         updated_at: DateTime<Utc>,
     ) -> anyhow::Result<bool> {
+        // Hot rollout write path (called on every rollout flush). Retry
+        // transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517) so a raced touch
+        // is not silently dropped.
+        crate::busy_retry::retry_on_busy("touch thread updated_at", || {
+            self.touch_thread_updated_at_once(thread_id, updated_at)
+        })
+        .await
+    }
+
+    async fn touch_thread_updated_at_once(
+        &self,
+        thread_id: ThreadId,
+        updated_at: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
         let updated_at = self.allocate_thread_updated_at(updated_at)?;
         let result =
             sqlx::query("UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?")
@@ -673,6 +697,21 @@ WHERE id = ?
     }
 
     async fn upsert_thread_with_creation_memory_mode(
+        &self,
+        metadata: &crate::ThreadMetadata,
+        creation_memory_mode: Option<&str>,
+    ) -> anyhow::Result<()> {
+        // Hot rollout write path (live rollout flushes call `upsert_thread`).
+        // Retry transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517); the upsert
+        // is an idempotent ON CONFLICT statement so re-running an attempt is
+        // safe.
+        crate::busy_retry::retry_on_busy("upsert thread", || {
+            self.upsert_thread_with_creation_memory_mode_once(metadata, creation_memory_mode)
+        })
+        .await
+    }
+
+    async fn upsert_thread_with_creation_memory_mode_once(
         &self,
         metadata: &crate::ThreadMetadata,
         creation_memory_mode: Option<&str>,
@@ -892,6 +931,9 @@ ON CONFLICT(id) DO UPDATE SET
 
         self.memories.delete_thread_memory(thread_id).await?;
         self.thread_goals.delete_thread_goal(thread_id).await?;
+        self.thread_goals
+            .cancel_pending_goal_plan_nodes_assigned_to_thread(thread_id)
+            .await?;
         self.thread_goals
             .delete_thread_goal_plans_for_thread(thread_id)
             .await?;

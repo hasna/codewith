@@ -22,6 +22,21 @@ fn thread_realtime_started_notification() -> ServerNotification {
     })
 }
 
+#[test]
+fn connection_state_preserves_origin_in_session() {
+    let connection_state = ConnectionState::new(
+        ConnectionOrigin::RemoteControl,
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(RwLock::new(HashSet::new())),
+    );
+
+    assert_eq!(
+        ConnectionOrigin::RemoteControl,
+        connection_state.session.origin()
+    );
+}
+
 #[tokio::test]
 async fn to_connection_notification_respects_opt_out_filters() {
     let connection_id = ConnectionId(7);

@@ -177,8 +177,8 @@ fn background_agent_manager_params(mut agents: Vec<AgentRun>) -> SelectionViewPa
     items.push(background_agent_action_item(
         "Start background agent",
         "Start a new durable background-agent run",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         || AppEvent::PrefillComposer {
             text: "/agent start ".to_string(),
         },
@@ -186,8 +186,8 @@ fn background_agent_manager_params(mut agents: Vec<AgentRun>) -> SelectionViewPa
     items.push(background_agent_action_item(
         "Daemon diagnostics",
         "Show supervisor and queue diagnostics",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         || AppEvent::ShowBackgroundAgentDiagnostics,
     ));
     if agents.is_empty() {
@@ -250,8 +250,8 @@ fn background_agent_actions_params(agent: AgentRun) -> SelectionViewParams {
         background_agent_action_item(
             "Read state",
             "Show latest status, execution snapshot, and pending interactions",
-            false,
-            None,
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
             move || AppEvent::ReadBackgroundAgent {
                 agent_id: Some(read_agent_id.clone()),
             },
@@ -259,8 +259,8 @@ fn background_agent_actions_params(agent: AgentRun) -> SelectionViewParams {
         background_agent_action_item(
             "Attach",
             "Replay events and mark pending interactions delivered",
-            false,
-            None,
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
             move || AppEvent::AttachBackgroundAgent {
                 agent_id: Some(attach_agent_id.clone()),
             },
@@ -268,8 +268,8 @@ fn background_agent_actions_params(agent: AgentRun) -> SelectionViewParams {
         background_agent_action_item(
             "Detach",
             "Detach this client from the agent",
-            false,
-            None,
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
             move || AppEvent::DetachBackgroundAgent {
                 agent_id: Some(detach_agent_id.clone()),
             },
@@ -298,8 +298,8 @@ fn background_agent_actions_params(agent: AgentRun) -> SelectionViewParams {
     items.push(background_agent_action_item(
         "Back to background agents",
         "Return to all background agents",
-        false,
-        None,
+        /*is_disabled*/ false,
+        /*disabled_reason*/ None,
         || AppEvent::OpenBackgroundAgentManager,
     ));
 
@@ -411,7 +411,11 @@ fn background_agent_summary_lines(agents: &[AgentRun]) -> Vec<Line<'static>> {
     for agent in agents {
         lines.push(background_agent_header_line(agent));
         if let Some(reason) = agent.status_reason.as_ref() {
-            lines.push(format!("    {}", truncate_text(reason, 96)).dim().into());
+            lines.push(
+                format!("    {}", truncate_text(reason, /*max_graphemes*/ 96))
+                    .dim()
+                    .into(),
+            );
         }
     }
     lines
@@ -434,19 +438,19 @@ fn background_agent_detail_lines(
     if let Some(thread_id) = agent.thread_id.as_ref() {
         lines.push(Line::from(vec![
             "  thread ".dim(),
-            truncate_text(thread_id, 48).into(),
+            truncate_text(thread_id, /*max_graphemes*/ 48).into(),
         ]));
     }
     if let Some(parent_thread_id) = agent.parent_thread_id.as_ref() {
         lines.push(Line::from(vec![
             "  parent ".dim(),
-            truncate_text(parent_thread_id, 48).into(),
+            truncate_text(parent_thread_id, /*max_graphemes*/ 48).into(),
         ]));
     }
     if let Some(reason) = agent.status_reason.as_ref() {
         lines.push(Line::from(vec![
             "  reason ".dim(),
-            truncate_text(reason, 120).into(),
+            truncate_text(reason, /*max_graphemes*/ 120).into(),
         ]));
     }
     if let Some(snapshot) = status_snapshot {
@@ -458,7 +462,7 @@ fn background_agent_detail_lines(
             "  status snapshot #".dim(),
             snapshot.seq.to_string().dim(),
             " ".into(),
-            truncate_text(&summary, 120).into(),
+            truncate_text(&summary, /*max_graphemes*/ 120).into(),
             "  pending ".dim(),
             snapshot.pending_interaction_count.to_string().into(),
         ]));
@@ -492,7 +496,11 @@ fn background_agent_pending_interaction_lines(
             " ".into(),
             short_background_agent_id(interaction.interaction_id.as_str()).dim(),
             "  ".dim(),
-            truncate_text(&json_summary(&interaction.request_payload), 100).dim(),
+            truncate_text(
+                &json_summary(&interaction.request_payload),
+                /*max_graphemes*/ 100,
+            )
+            .dim(),
         ]));
     }
     lines
@@ -543,7 +551,7 @@ fn background_agent_detail(agent: &AgentRun) -> String {
     );
     if let Some(reason) = agent.status_reason.as_ref() {
         detail.push_str(" - ");
-        detail.push_str(&truncate_text(reason, 120));
+        detail.push_str(&truncate_text(reason, /*max_graphemes*/ 120));
     }
     detail
 }
@@ -563,7 +571,7 @@ fn background_agent_event_line(event: &AgentEvent) -> Line<'static> {
         " #".dim(),
         event.seq.to_string().dim(),
         " ".into(),
-        truncate_text(&json_summary(&event.payload), 120).into(),
+        truncate_text(&json_summary(&event.payload), /*max_graphemes*/ 120).into(),
     ])
 }
 
@@ -661,7 +669,7 @@ fn pending_interaction_kind_name(kind: AgentPendingInteractionKind) -> &'static 
 }
 
 fn background_agent_source_label(agent: &AgentRun) -> String {
-    truncate_text(agent.source.as_str(), 72)
+    truncate_text(agent.source.as_str(), /*max_graphemes*/ 72)
 }
 
 fn json_summary(value: &JsonValue) -> String {
@@ -744,9 +752,17 @@ mod tests {
     #[test]
     fn manager_sorts_waiting_and_running_first() {
         let params = background_agent_manager_params(vec![
-            test_agent("done-agent", AgentRunStatus::Completed, 3),
-            test_agent("run-agent", AgentRunStatus::Running, 2),
-            test_agent("wait-agent", AgentRunStatus::WaitingOnUser, 1),
+            test_agent(
+                "done-agent",
+                AgentRunStatus::Completed,
+                /*updated_at*/ 3,
+            ),
+            test_agent("run-agent", AgentRunStatus::Running, /*updated_at*/ 2),
+            test_agent(
+                "wait-agent",
+                AgentRunStatus::WaitingOnUser,
+                /*updated_at*/ 1,
+            ),
         ]);
 
         let item_names = params
@@ -793,7 +809,7 @@ mod tests {
 
     #[test]
     fn source_label_uses_agent_source_when_status_reason_exists() {
-        let mut agent = test_agent("run-agent", AgentRunStatus::Running, 2);
+        let mut agent = test_agent("run-agent", AgentRunStatus::Running, /*updated_at*/ 2);
         agent.source = "cli".to_string();
         agent.status_reason = Some("claimed by background supervisor".to_string());
 

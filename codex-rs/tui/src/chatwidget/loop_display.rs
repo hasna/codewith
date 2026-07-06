@@ -598,7 +598,10 @@ fn thread_schedule_actions_params(
     let delete_schedule_id = schedule_id;
     items.push(loop_action_item(
         "Delete",
-        format!("Remove this {} from the thread", kind.lower_label()),
+        format!(
+            "Remove this {} and any nested child loops from the thread",
+            kind.lower_label()
+        ),
         /*is_disabled*/ false,
         /*disabled_reason*/ None,
         move || kind.delete_event(thread_id, Some(delete_schedule_id.clone())),
@@ -681,17 +684,29 @@ fn loop_manager_row_name(schedule: &ThreadSchedule) -> String {
 }
 
 fn loop_manager_row_description(schedule: &ThreadSchedule) -> String {
-    format!(
-        "{} · {} · {}",
-        thread_schedule_status_label(schedule.status),
+    let mut parts = vec![
+        thread_schedule_status_label(schedule.status).to_string(),
         thread_schedule_spec_label(&schedule.schedule),
-        short_schedule_id(&schedule.schedule_id)
-    )
+    ];
+    if let Some(nesting_label) = loop_nesting_label(schedule) {
+        parts.push(nesting_label);
+    }
+    if let Some(parent_schedule_id) = schedule.parent_schedule_id.as_deref() {
+        parts.push(format!("parent {}", short_schedule_id(parent_schedule_id)));
+    }
+    parts.push(short_schedule_id(&schedule.schedule_id));
+    loop_detail_join(parts)
 }
 
 fn loop_schedule_detail(schedule: &ThreadSchedule) -> String {
     let mut parts = vec![thread_schedule_status_label(schedule.status).to_string()];
     parts.push(thread_schedule_spec_label(&schedule.schedule));
+    if let Some(nesting_label) = loop_nesting_label(schedule) {
+        parts.push(nesting_label);
+    }
+    if let Some(parent_schedule_id) = schedule.parent_schedule_id.as_deref() {
+        parts.push(format!("parent {}", short_schedule_id(parent_schedule_id)));
+    }
     parts.push(format!("next {}", schedule_next_label(schedule)));
     if let Some(lease_expires_at) = schedule.lease_expires_at {
         parts.push(format!(
@@ -732,11 +747,13 @@ fn loop_detail_join(parts: Vec<String>) -> String {
 
 fn loop_schedule_search_value(schedule: &ThreadSchedule) -> String {
     format!(
-        "{} {} {} {} {}",
+        "{} {} {} {} {} {} {}",
         schedule.schedule_id,
         thread_schedule_status_label(schedule.status),
         thread_schedule_spec_label(&schedule.schedule),
         schedule.timezone,
+        schedule.nesting_depth,
+        schedule.parent_schedule_id.as_deref().unwrap_or_default(),
         schedule.prompt
     )
 }
@@ -799,6 +816,14 @@ fn thread_schedule_summary_lines(
             "  Timezone: ".dim(),
             schedule.timezone.clone().into(),
         ]));
+        if let Some(parent_schedule_id) = schedule.parent_schedule_id.as_deref() {
+            lines.push(Line::from(vec![
+                "  Level: ".dim(),
+                schedule.nesting_depth.to_string().into(),
+                "  Parent: ".dim(),
+                parent_schedule_id.to_string().into(),
+            ]));
+        }
         let mut run_parts = Vec::new();
         if schedule.lease_expires_at.is_some() {
             run_parts.push("Running now".to_string());
@@ -826,6 +851,11 @@ fn thread_schedule_summary_lines(
         .dim(),
     ));
     lines
+}
+
+fn loop_nesting_label(schedule: &ThreadSchedule) -> Option<String> {
+    (schedule.parent_schedule_id.is_some() || schedule.nesting_depth > 1)
+        .then(|| format!("level {}", schedule.nesting_depth))
 }
 
 fn thread_schedule_stats_lines(
@@ -1047,6 +1077,31 @@ mod tests {
         assert!(
             manager_description.contains("active · every 5 minutes · sch_123"),
             "manager row should show active lease: {manager_description}"
+        );
+    }
+
+    #[test]
+    fn loop_summary_surfaces_nested_parent_and_depth() {
+        let mut schedule = test_schedule(
+            "sch_child",
+            ThreadScheduleStatus::Active,
+            Some(1_700_000_000),
+        );
+        schedule.parent_schedule_id = Some("sch_parent".to_string());
+        schedule.nesting_depth = 2;
+
+        let rendered = lines_to_plain_strings(&loop_summary_lines(&[schedule.clone()])).join("\n");
+        assert!(
+            rendered.contains("Level: 2  Parent: sch_parent"),
+            "summary should show nested loop parent and depth: {rendered}"
+        );
+        assert_eq!(
+            "active · every 5 minutes · level 2 · parent sch_pare · sch_chil",
+            loop_manager_row_description(&schedule)
+        );
+        assert!(
+            loop_schedule_detail(&schedule).contains("level 2 · parent sch_pare"),
+            "detail should show nested parent and depth"
         );
     }
 

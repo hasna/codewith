@@ -209,6 +209,10 @@ impl TurnState {
         self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
     }
 
+    pub(crate) fn mailbox_delivery_phase(&self) -> MailboxDeliveryPhase {
+        self.mailbox_delivery_phase
+    }
+
     pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {
         self.mailbox_delivery_phase = phase;
     }

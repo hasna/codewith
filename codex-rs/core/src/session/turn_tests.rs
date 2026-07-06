@@ -2,6 +2,7 @@ use super::*;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::items::AgentMessageContent;
+use codex_protocol::models::FunctionCallOutputPayload;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -73,6 +74,45 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         last_agent_message.as_deref(),
         Some("plan contributed assistant text")
     );
+}
+
+#[tokio::test]
+async fn headless_prompt_bounding_leaves_stored_history_untouched() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    let large_output = "headless fan-in stdout line\n".repeat(2_500);
+    let mut items = Vec::new();
+    for index in 0..8 {
+        let call_id = format!("call-{index}");
+        items.push(ResponseItem::FunctionCall {
+            id: None,
+            name: "shell".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: call_id.clone(),
+        });
+        items.push(ResponseItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload::from_text(large_output.clone()),
+        });
+    }
+    session
+        .replace_history(items.clone(), /*reference_context_item*/ None)
+        .await;
+
+    // Autonomous headless-style turns bound the PROMPT clone...
+    turn_context.bound_headless_tool_outputs_for_prompt = true;
+    let bounded = sampling_prompt_history(&session, &turn_context).await;
+    assert_ne!(items, bounded.raw_items());
+
+    // ...while the session's stored history keeps the full tool outputs for
+    // later interactive turns and compaction.
+    let stored = session.clone_history().await;
+    assert_eq!(items, stored.raw_items());
+
+    // Turns without the flag build prompts from the untouched history.
+    turn_context.bound_headless_tool_outputs_for_prompt = false;
+    let unbounded = sampling_prompt_history(&session, &turn_context).await;
+    assert_eq!(items, unbounded.raw_items());
 }
 
 #[tokio::test]

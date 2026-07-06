@@ -58,10 +58,7 @@ pub(crate) async fn repair_files(
         Err(err) => return Err(err),
     }
 
-    for path in codex_state::runtime_db_paths(sqlite_home)
-        .into_iter()
-        .flat_map(|db| sqlite_paths(db.path.as_path()))
-    {
+    for path in repair_candidate_paths(sqlite_home, startup_error.detail()).await? {
         if tokio::fs::try_exists(path.as_path()).await? {
             backups.push(backup_path(path.as_path(), &repair_suffix).await?);
         }
@@ -74,6 +71,23 @@ pub(crate) async fn repair_files(
     }
 
     Ok(backups)
+}
+
+async fn repair_candidate_paths(sqlite_home: &Path, detail: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = codex_state::runtime_db_paths(sqlite_home)
+        .into_iter()
+        .flat_map(|db| sqlite_paths(db.path.as_path()))
+        .collect();
+    if detail.contains("failed to acquire state runtime startup lock") {
+        let startup_lock_path = codex_state::state_runtime_startup_lock_path(sqlite_home);
+        match tokio::fs::metadata(startup_lock_path.as_path()).await {
+            Ok(metadata) if !metadata.is_file() => paths.push(startup_lock_path),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(paths)
 }
 
 pub(crate) fn print_repair_backups(backups: &[PathBuf]) {
@@ -261,6 +275,7 @@ fn linux_process_command(pid: u32) -> String {
         .unwrap_or_else(|| "<unknown command>".to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn summarize_cmdline(cmdline: &[u8]) -> Option<String> {
     let args: Vec<String> = cmdline
         .split(|byte| *byte == b'\0')
@@ -346,6 +361,7 @@ fn summarize_cmdline(cmdline: &[u8]) -> Option<String> {
     Some(truncate_for_display(summary.join(" ").as_str()))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn command_name(command: &str) -> String {
     Path::new(command)
         .file_name()
@@ -355,6 +371,7 @@ fn command_name(command: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn flag_contains_sensitive_name(flag: &str) -> bool {
     let flag = flag.to_ascii_lowercase();
     flag.contains("api-key")
@@ -365,6 +382,7 @@ fn flag_contains_sensitive_name(flag: &str) -> bool {
         || flag.contains("credential")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn is_safe_inline_flag(flag: &str) -> bool {
     matches!(
         flag,
@@ -491,6 +509,28 @@ mod tests {
         assert_eq!(backups.len(), 1);
         assert!(tokio::fs::metadata(sqlite_home.as_path()).await?.is_dir());
         assert!(tokio::fs::try_exists(backups[0].as_path()).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repair_replaces_blocking_startup_lock_directory() -> std::io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let state_path = codex_state::state_db_path(temp_dir.path());
+        let startup_lock_path = codex_state::state_runtime_startup_lock_path(temp_dir.path());
+        tokio::fs::create_dir(startup_lock_path.as_path()).await?;
+        let startup_error = LocalStateDbStartupError::new(
+            state_path,
+            format!(
+                "failed to acquire state runtime startup lock at {}: Is a directory",
+                temp_dir.path().display()
+            ),
+        );
+
+        let backups = repair_files(&startup_error).await?;
+
+        assert_eq!(backups.len(), 1);
+        assert!(!tokio::fs::try_exists(startup_lock_path.as_path()).await?);
+        assert!(tokio::fs::metadata(backups[0].as_path()).await?.is_dir());
         Ok(())
     }
 

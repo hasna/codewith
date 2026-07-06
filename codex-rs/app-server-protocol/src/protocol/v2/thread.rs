@@ -16,6 +16,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -27,6 +28,21 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use ts_rs::TS;
+
+// Schemars' `required` attribute otherwise emits the inner string schema for
+// `Option<String>`, so keep the required field nullable in generated fixtures.
+fn required_nullable_string_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    schemars::schema::SchemaObject {
+        instance_type: Some(schemars::schema::SingleOrVec::Vec(vec![
+            schemars::schema::InstanceType::String,
+            schemars::schema::InstanceType::Null,
+        ])),
+        ..Default::default()
+    }
+    .into()
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +167,9 @@ pub struct ThreadStartParams {
     /// Optional client-supplied analytics source classification for this thread.
     #[ts(optional = nullable)]
     pub thread_source: Option<ThreadSource>,
+    /// Optional parent thread id when starting a fresh subagent child thread.
+    #[ts(optional = nullable)]
+    pub parent_thread_id: Option<String>,
     /// Optional sticky environments for this thread.
     ///
     /// Omitted selects the default environment when environment access is
@@ -206,6 +225,11 @@ pub struct ThreadStartResponse {
     #[experimental("thread/start.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/start.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -304,6 +328,9 @@ pub struct ThreadSettingsUpdateParams {
     )]
     #[ts(optional = nullable)]
     pub session_prompt: Option<Option<String>>,
+    /// Override session-level managed worktree behavior.
+    #[ts(optional = nullable)]
+    pub worktree_mode: Option<SessionWorktreeMode>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -329,6 +356,7 @@ pub struct ThreadSettings {
     pub collaboration_mode: CollaborationMode,
     pub personality: Option<Personality>,
     pub session_prompt: Option<String>,
+    pub worktree_mode: SessionWorktreeMode,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -337,6 +365,91 @@ pub struct ThreadSettings {
 pub struct ThreadSettingsUpdatedNotification {
     pub thread_id: String,
     pub thread_settings: ThreadSettings,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListParams {
+    pub thread_id: String,
+    /// Opaque pagination cursor returned by a previous call.
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    /// Optional page size; defaults to no limit.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageListResponse {
+    pub data: Vec<ThreadQueuedMessage>,
+    pub next_cursor: Option<String>,
+    pub stats: ThreadQueuedMessageStats,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessage {
+    pub message_id: String,
+    pub thread_id: String,
+    /// 1-based position in the pending agent-message mailbox.
+    pub position: u32,
+    pub author: String,
+    pub recipient: String,
+    pub text: String,
+    pub trigger_turn: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageStats {
+    pub total: u32,
+    pub trigger_turn: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageUpdateResponse {
+    pub message: Option<ThreadQueuedMessage>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadQueuedMessageMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveParams {
+    pub thread_id: String,
+    pub message_id: String,
+    pub direction: ThreadQueuedMessageMoveDirection,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueuedMessageMoveResponse {
+    pub moved: bool,
+    pub message: Option<ThreadQueuedMessage>,
 }
 
 #[derive(
@@ -458,6 +571,11 @@ pub struct ThreadResumeResponse {
     #[experimental("thread/resume.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/resume.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -619,6 +737,11 @@ pub struct ThreadForkResponse {
     #[experimental("thread/fork.runtimeWorkspaceRoots")]
     #[serde(default)]
     pub runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    /// Profile-defined workspace roots that are active for this thread in
+    /// addition to `runtimeWorkspaceRoots`.
+    #[experimental("thread/fork.profileWorkspaceRoots")]
+    #[serde(default)]
+    pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
     pub instruction_sources: Vec<AbsolutePathBuf>,
@@ -755,6 +878,8 @@ pub struct ThreadGoal {
     pub thread_id: String,
     pub goal_id: String,
     pub objective: String,
+    #[ts(type = "string | null")]
+    pub title: Option<String>,
     pub status: ThreadGoalStatus,
     #[ts(type = "number | null")]
     pub token_budget: Option<i64>,
@@ -774,6 +899,7 @@ impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
             thread_id: value.thread_id.to_string(),
             goal_id: value.goal_id,
             objective: value.objective,
+            title: value.title,
             status: value.status.into(),
             token_budget: value.token_budget,
             tokens_used: value.tokens_used,
@@ -791,6 +917,14 @@ pub struct ThreadGoalSetParams {
     pub thread_id: String,
     #[ts(optional = nullable)]
     pub objective: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub title: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub status: Option<ThreadGoalStatus>,
     #[serde(
@@ -860,19 +994,22 @@ pub enum ThreadGoalPlanNodeStatus {
     Cancelled,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalPlanNode {
     pub node_id: String,
     pub plan_id: String,
     pub thread_id: String,
+    pub assigned_thread_id: String,
     pub key: String,
     #[ts(type = "number")]
     pub sequence: i64,
     #[ts(type = "number")]
     pub priority: i64,
     pub objective: String,
+    #[ts(type = "string | null")]
+    pub title: Option<String>,
     pub status: ThreadGoalPlanNodeStatus,
     pub ready: bool,
     #[ts(type = "number | null")]
@@ -888,6 +1025,62 @@ pub struct ThreadGoalPlanNode {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+}
+
+impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireThreadGoalPlanNode {
+            node_id: String,
+            plan_id: String,
+            thread_id: String,
+            #[serde(default)]
+            assigned_thread_id: Option<String>,
+            key: String,
+            sequence: i64,
+            priority: i64,
+            objective: String,
+            #[serde(default)]
+            title: Option<String>,
+            status: ThreadGoalPlanNodeStatus,
+            ready: bool,
+            token_budget: Option<i64>,
+            tokens_used: i64,
+            time_used_seconds: i64,
+            projected_goal_id: Option<String>,
+            depends_on: Vec<String>,
+            created_at: i64,
+            updated_at: i64,
+        }
+
+        let value = WireThreadGoalPlanNode::deserialize(deserializer)?;
+        Ok(Self {
+            node_id: value.node_id,
+            plan_id: value.plan_id,
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or_else(|| value.thread_id.clone()),
+            thread_id: value.thread_id,
+            key: value.key,
+            sequence: value.sequence,
+            priority: value.priority,
+            objective: value.objective,
+            title: value.title,
+            status: value.status,
+            ready: value.ready,
+            token_budget: value.token_budget,
+            tokens_used: value.tokens_used,
+            time_used_seconds: value.time_used_seconds,
+            projected_goal_id: value.projected_goal_id,
+            depends_on: value.depends_on,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -974,10 +1167,15 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
             node_id: value.node_id,
             plan_id: value.plan_id,
             thread_id: value.thread_id.to_string(),
+            assigned_thread_id: value
+                .assigned_thread_id
+                .unwrap_or(value.thread_id)
+                .to_string(),
             key: value.key,
             sequence: value.sequence,
             priority: value.priority,
             objective: value.objective,
+            title: value.title,
             status: value.status.into(),
             ready: value.ready,
             token_budget: value.token_budget,
@@ -1066,6 +1264,24 @@ pub struct ThreadGoalPlanActivateNodeParams {
 pub struct ThreadGoalPlanActivateNodeResponse {
     pub goal: ThreadGoal,
     pub plan: ThreadGoalPlan,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalParams {
+    pub thread_id: String,
+    pub objective: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanAddGoalResponse {
+    pub goal: Option<ThreadGoal>,
+    pub plan: ThreadGoalPlan,
+    pub added_node: ThreadGoalPlanNode,
+    pub created_plan: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1449,10 +1665,14 @@ pub struct ThreadMonitorCreateParams {
     pub name: String,
     pub prompt: String,
     pub command: String,
+    /// Optional working directory relative to the thread cwd. Parent directory
+    /// traversal and absolute paths are rejected.
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[ts(optional = nullable)]
     pub routing: Option<ThreadMonitorRouting>,
+    /// Optional output file relative to the monitor cwd. Parent directory
+    /// traversal, absolute paths, and symlink targets are rejected.
     #[ts(optional = nullable)]
     pub output_file: Option<String>,
 }
@@ -2258,8 +2478,7 @@ pub struct ThreadClosedNotification {
 #[ts(export_to = "v2/")]
 pub struct ThreadNameUpdatedNotification {
     pub thread_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[schemars(required, schema_with = "required_nullable_string_schema")]
     pub thread_name: Option<String>,
 }
 

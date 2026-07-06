@@ -25,6 +25,7 @@ use crate::types::SandboxWorkspaceWrite;
 use crate::types::SessionRecapToml;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
+use crate::types::SmartSuggestConfigToml;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
@@ -149,6 +150,14 @@ pub enum GoalsAutoExecuteToml {
     AiDirected,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PostGoalContextActionToml {
+    #[default]
+    Keep,
+    Compact,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct GoalsConfigToml {
@@ -164,6 +173,13 @@ pub struct GoalsConfigToml {
     /// Optional combined token cap for all goals in a plan. Omit for unlimited.
     #[schemars(range(min = 1))]
     pub max_tokens_per_goal_plan: Option<i64>,
+
+    /// Context lifecycle action after a completed goal when no next goal is
+    /// immediately activated.
+    pub post_goal_context: Option<PostGoalContextActionToml>,
+
+    /// Context lifecycle action after a goal plan completes.
+    pub post_goal_plan_context: Option<PostGoalContextActionToml>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
@@ -495,6 +511,11 @@ pub struct ConfigToml {
     /// Experimental / do not use. When set, app-server fetches thread-scoped
     /// config from a remote service at this endpoint.
     pub experimental_thread_config_endpoint: Option<String>,
+
+    /// Experimental / do not use. Opt-in advisory model pass before tool
+    /// execution for suggesting better tools or commands.
+    #[serde(default)]
+    pub experimental_smart_suggest: Option<SmartSuggestConfigToml>,
 
     /// Removed. Former remote thread-store endpoint setting kept only so we can
     /// fail fast instead of silently falling back to local persistence.

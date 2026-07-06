@@ -20,6 +20,7 @@ pub(crate) struct EnvironmentContext {
     pub(crate) environments: EnvironmentContextEnvironments,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
+    pub(crate) machine: Option<MachineContext>,
     pub(crate) network: Option<NetworkContext>,
     pub(crate) filesystem: Option<FileSystemContext>,
     pub(crate) subagents: Option<String>,
@@ -89,6 +90,36 @@ impl EnvironmentContextEnvironments {
             }
             _ => false,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MachineContext {
+    id: String,
+    name: Option<String>,
+}
+
+impl MachineContext {
+    fn from_id_and_name(id: impl Into<String>, name: Option<String>) -> Option<Self> {
+        let id = id.into().trim().to_string();
+        if id.is_empty() {
+            return None;
+        }
+        let name = name.and_then(|name| {
+            let name = name.trim().to_string();
+            (!name.is_empty()).then_some(name)
+        });
+        Some(Self { id, name })
+    }
+
+    fn render(&self) -> String {
+        let mut rendered = "<machine>".to_string();
+        push_text_element(&mut rendered, "id", &self.id);
+        if let Some(name) = &self.name {
+            push_text_element(&mut rendered, "name", name);
+        }
+        rendered.push_str("</machine>");
+        rendered
     }
 }
 
@@ -339,6 +370,7 @@ impl EnvironmentContext {
             environments: EnvironmentContextEnvironments::from_vec(environments),
             current_date,
             timezone,
+            machine: None,
             network,
             filesystem: None,
             subagents,
@@ -349,6 +381,7 @@ impl EnvironmentContext {
         environments: EnvironmentContextEnvironments,
         current_date: Option<String>,
         timezone: Option<String>,
+        machine: Option<MachineContext>,
         network: Option<NetworkContext>,
         filesystem: Option<FileSystemContext>,
         subagents: Option<String>,
@@ -357,6 +390,7 @@ impl EnvironmentContext {
             environments,
             current_date,
             timezone,
+            machine,
             network,
             filesystem,
             subagents,
@@ -370,6 +404,7 @@ impl EnvironmentContext {
         self.environments.equals_except_shell(&other.environments)
             && self.current_date == other.current_date
             && self.timezone == other.timezone
+            && self.machine == other.machine
             && self.network == other.network
             && self.filesystem == other.filesystem
             && self.subagents == other.subagents
@@ -381,6 +416,7 @@ impl EnvironmentContext {
     ) -> Self {
         let before_network = Self::network_from_turn_context_item(before);
         let before_filesystem = Self::filesystem_from_turn_context_item(before);
+        let before_machine = Self::machine_from_turn_context_item(before);
         let environments = match &after.environments {
             EnvironmentContextEnvironments::Single(environment) => {
                 if before.cwd.as_path() != environment.cwd.as_path() {
@@ -407,10 +443,16 @@ impl EnvironmentContext {
         } else {
             before_filesystem
         };
+        let machine = if before_machine != after.machine {
+            after.machine.clone()
+        } else {
+            before_machine
+        };
         EnvironmentContext::new_with_environments(
             environments,
             after.current_date.clone(),
             after.timezone.clone(),
+            machine,
             network,
             filesystem,
             /*subagents*/ None,
@@ -432,6 +474,10 @@ impl EnvironmentContext {
             &turn_context.permission_profile,
             &turn_context.config.effective_workspace_roots(),
         ));
+        context.machine = MachineContext::from_id_and_name(
+            turn_context.machine_id.clone(),
+            turn_context.machine_name.clone(),
+        );
         context
     }
 
@@ -449,6 +495,7 @@ impl EnvironmentContext {
             )]),
             turn_context_item.current_date.clone(),
             turn_context_item.timezone.clone(),
+            Self::machine_from_turn_context_item(turn_context_item),
             Self::network_from_turn_context_item(turn_context_item),
             Self::filesystem_from_turn_context_item(turn_context_item),
             /*subagents*/ None,
@@ -482,6 +529,15 @@ impl EnvironmentContext {
                 .and_then(codex_config::NetworkDomainPermissionsToml::denied_domains)
                 .unwrap_or_default(),
         ))
+    }
+
+    fn machine_from_turn_context_item(
+        turn_context_item: &TurnContextItem,
+    ) -> Option<MachineContext> {
+        MachineContext::from_id_and_name(
+            turn_context_item.machine_id.clone()?,
+            turn_context_item.machine_name.clone(),
+        )
     }
 
     fn network_from_turn_context_item(
@@ -568,6 +624,9 @@ impl ContextualUserFragment for EnvironmentContext {
         }
         if let Some(timezone) = &self.timezone {
             lines.push(format!("  <timezone>{timezone}</timezone>"));
+        }
+        if let Some(machine) = &self.machine {
+            lines.push(format!("  {}", machine.render()));
         }
         match &self.network {
             Some(network) => {

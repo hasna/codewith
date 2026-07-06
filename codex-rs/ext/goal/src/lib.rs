@@ -13,10 +13,13 @@ mod tool;
 mod tool_plan;
 
 pub use api::GoalObjectiveUpdate;
+pub use api::GoalPlanAddOutcome;
+pub use api::GoalPlanAddRequest;
 pub use api::GoalService;
 pub use api::GoalServiceError;
 pub use api::GoalSetOutcome;
 pub use api::GoalSetRequest;
+pub use api::GoalTitleUpdate;
 pub use api::GoalTokenBudgetUpdate;
 pub use extension::GoalExtension;
 pub use extension::GoalExtensionConfig;

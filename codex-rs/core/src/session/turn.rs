@@ -247,11 +247,10 @@ pub(crate) async fn run_turn(
         }
 
         // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
-            sess.clone_history()
+        let sampling_request_input: Vec<ResponseItem> =
+            sampling_prompt_history(&sess, &turn_context)
                 .await
-                .for_prompt(&turn_context.model_info.input_modalities)
-        };
+                .for_prompt(&turn_context.model_info.input_modalities);
 
         let window_id = sess.runtime_model_client().current_window_id();
         let turn_metadata_header = turn_context
@@ -1202,7 +1201,7 @@ async fn run_sampling_request(
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
-            sess.clone_history()
+            sampling_prompt_history(&sess, &turn_context)
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
@@ -2433,6 +2432,22 @@ async fn try_run_sampling_request(
     }
 
     outcome
+}
+
+/// Clones the session history for building a sampling prompt, applying the
+/// headless tool-output bound to the CLONE when the turn asks for it. The
+/// session's stored history is never mutated: autonomous turns on a live
+/// interactive thread must not permanently truncate historical tool outputs
+/// that later interactive turns (or compaction) still need.
+pub(super) async fn sampling_prompt_history(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> crate::context_manager::ContextManager {
+    let mut history = sess.clone_history().await;
+    if turn_context.bound_headless_tool_outputs_for_prompt {
+        history.bound_headless_turn_tool_outputs();
+    }
+    history
 }
 
 fn reject_oversized_sampling_prompt(

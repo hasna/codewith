@@ -8,7 +8,7 @@ final class AppModelTests: XCTestCase {
     func testInitialState() {
         let m = AppModel()
         XCTAssertEqual(m.route, .home)
-        XCTAssertEqual(m.sidebarSelection, "New chat")
+        XCTAssertEqual(m.sidebarSelection, "Home")
         XCTAssertFalse(m.showSettings)
         XCTAssertEqual(m.connection, .connecting)
         XCTAssertFalse(m.turnInProgress)
@@ -262,6 +262,35 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(m.turnInProgress)
     }
 
+    func testStaleLoginCompletionDoesNotConsumePendingProfileSave() {
+        let m = AppModel()
+        m.loginInProgress = true
+        m.pendingLoginId = "new-login"
+        m.pendingAuthProfileSave = .init(name: "work", loginId: "new-login")
+
+        m.handleNotification(method: "account/login/completed", params: obj([
+            "loginId": .string("old-login"),
+            "success": .bool(true),
+        ]))
+
+        XCTAssertTrue(m.loginInProgress)
+        XCTAssertEqual(m.pendingLoginId, "new-login")
+        XCTAssertEqual(m.pendingAuthProfileSave, .init(name: "work", loginId: "new-login"))
+    }
+
+    func testAccountUpdatedDoesNotClearPendingProfileSave() {
+        let m = AppModel()
+        m.loginInProgress = true
+        m.pendingLoginId = "new-login"
+        m.pendingAuthProfileSave = .init(name: "work", loginId: "new-login")
+
+        m.handleNotification(method: "account/updated", params: .null)
+
+        XCTAssertTrue(m.loginInProgress)
+        XCTAssertEqual(m.pendingLoginId, "new-login")
+        XCTAssertEqual(m.pendingAuthProfileSave, .init(name: "work", loginId: "new-login"))
+    }
+
     func testNotificationForDifferentThreadIgnored() {
         let m = AppModel()
         m.activeThreadId = "thread-a"
@@ -271,6 +300,48 @@ final class AppModelTests: XCTestCase {
         m.handleNotification(method: "item/agentMessage/delta",
                              params: obj(["threadId": .string("thread-a"), "delta": .string("right")]))
         XCTAssertEqual(m.activeMessages.first?.text, "right")
+    }
+
+    func testOpeningDifferentThreadDetachesVisibleTurnState() {
+        let m = AppModel()
+        m.activeThreadId = "thread-a"
+        m.activeTurnThreadId = "thread-a"
+        m.activeTurnId = "turn-a"
+        m.turnInProgress = true
+
+        m.activeThreadId = "thread-b"
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testCommandOutputForPreviousTurnIgnoredAfterDetach() {
+        let m = AppModel()
+        m.activeThreadId = "thread-b"
+        m.activeTurnThreadId = "thread-a"
+        m.turnInProgress = true
+
+        m.handleNotification(method: "item/commandExecution/outputDelta",
+                             params: obj(["threadId": .string("thread-a"), "delta": .string("wrong")]))
+
+        XCTAssertTrue(m.activeMessages.isEmpty)
+    }
+
+    func testCompletionForPreviousVisibleTurnStillClearsTracking() {
+        let m = AppModel()
+        m.activeThreadId = "thread-b"
+        m.activeTurnThreadId = "thread-a"
+        m.activeTurnId = "turn-a"
+        m.turnInProgress = true
+
+        m.handleNotification(method: "turn/completed",
+                             params: obj(["threadId": .string("thread-a"), "turn": obj(["status": .string("completed")])]))
+
+        XCTAssertFalse(m.turnInProgress)
+        XCTAssertNil(m.activeTurnId)
+        XCTAssertNil(m.activeTurnThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
     }
 
     func testPermissionsApprovalRequestQueuedAndResolved() {
@@ -731,6 +802,17 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(AppModel.goalObjective(from: "ship it"), "ship it")
         XCTAssertEqual(AppModel.goalObjective(from: "Goal:   "), "")
     }
+    func testAuthProfileNameValidation() {
+        XCTAssertNil(AppModel.authProfileNameValidationMessage("work.dev_1"))
+        XCTAssertNil(AppModel.authProfileNameValidationMessage("  work  "))
+        XCTAssertEqual(AppModel.authProfileNameValidationMessage(""), "Enter a profile name.")
+        XCTAssertEqual(
+            AppModel.authProfileNameValidationMessage(".hidden"),
+            "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number.")
+        XCTAssertEqual(
+            AppModel.authProfileNameValidationMessage("nested/work"),
+            "Use letters, numbers, dots, dashes, or underscores, and start with a letter or number.")
+    }
     func testIsGoalCommandIgnoresLeadingWhitespaceAndCase() {
         XCTAssertTrue(AppModel.isGoalCommand("Goal: ship it"))
         XCTAssertTrue(AppModel.isGoalCommand("  goal: ship it"))
@@ -953,6 +1035,103 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(AppModel.loginURL(from: obj([:])))
     }
 
+    func testPermissionProfileMappingFromSandbox() {
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "danger-full-access"), ":danger-full-access")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "read-only"), ":read-only")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: "workspace-write"), ":workspace")
+        XCTAssertEqual(AppModel.permissionProfileId(forSandbox: nil), ":workspace")
+    }
+
+    func testMachineScopedThreadsFallsBackWhenThreadMetadataHasNoMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1", "t2"])
+    }
+
+    func testMachineScopedThreadsFilterWhenMetadataHasMachineIds() {
+        let m = AppModel()
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("t1"), "cwd": .string("/a"), "machineId": .string("machine-a")])),
+            ThreadInfo(from: obj(["id": .string("t2"), "cwd": .string("/b"), "machineId": .string("machine-b")])),
+        ]
+        m.selectedMachineId = "machine-a"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["t1"])
+    }
+
+    func testLocalMachineScopeIncludesLegacyThreadsWhenMetadataIsMixed() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "local", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "remote", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.threads = [
+            ThreadInfo(from: obj(["id": .string("legacy"), "cwd": .string("/legacy")])),
+            ThreadInfo(from: obj(["id": .string("local-thread"), "cwd": .string("/local"), "machineId": .string("local")])),
+            ThreadInfo(from: obj(["id": .string("remote-thread"), "cwd": .string("/remote"), "machineId": .string("remote")])),
+        ]
+        m.selectedMachineId = "local"
+        XCTAssertEqual(m.machineScopedThreads.map(\.id), ["legacy", "local-thread"])
+    }
+
+    func testSelectingDifferentMachineClearsActiveSessionAndSearch() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "a", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "b", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.selectedMachineId = "a"
+        m.activeThreadId = "thread-a"
+        m.activeMessages = [ChatMessage(role: .assistant, text: "old")]
+        m.route = .chat("thread-a")
+        m.remoteSearchThreads = [ThreadInfo(from: obj(["id": .string("thread-a"), "machineId": .string("a")]))]
+
+        m.selectMachine(m.machines[1])
+
+        XCTAssertEqual(m.selectedMachineId, "b")
+        XCTAssertNil(m.activeThreadId)
+        XCTAssertTrue(m.activeMessages.isEmpty)
+        XCTAssertTrue(m.remoteSearchThreads.isEmpty)
+        XCTAssertEqual(m.route, .home)
+    }
+
+    func testSelectingDifferentMachineBlockedWithPendingPrompt() {
+        let m = AppModel()
+        m.machines = [
+            MachineInfo(id: "a", os: "macos", status: "online", role: "local", isLocal: true),
+            MachineInfo(id: "b", os: "linux", status: "online", role: "remote", isLocal: false),
+        ]
+        m.selectedMachineId = "a"
+        m.activeThreadId = "thread-a"
+        m.pendingServerRequests = [
+            PendingServerRequest(
+                requestId: .number(1),
+                threadId: "thread-a",
+                method: "serverRequest/permissions",
+                kind: .permissionsApproval,
+                title: "Approve?",
+                detail: "Approve?")
+        ]
+
+        m.selectMachine(m.machines[1])
+
+        XCTAssertEqual(m.selectedMachineId, "a")
+        XCTAssertEqual(m.activeThreadId, "thread-a")
+        XCTAssertEqual(m.pendingServerRequests.count, 1)
+        XCTAssertEqual(m.pendingMachineSwitchWarning, "Resolve the pending request before switching machines.")
+    }
+
+    func testSelectingMachineClearsProjectContext() {
+        let m = AppModel()
+        m.currentProjectPath = "/old/project"
+        m.selectMachine(MachineInfo(id: "machine-a", os: "macos", status: "online", role: "local", isLocal: true))
+        XCTAssertNil(m.currentProjectPath)
+        XCTAssertEqual(m.selectedMachineId, "machine-a")
+    }
+
     func testSubmitNoOpWhenNotConnected() async {
         let m = AppModel()   // connection == .connecting
         m.composerText = "hello"
@@ -961,12 +1140,49 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.composerText, "hello")
     }
 
+    func testPrepareLoopComposerDoesNotCreateLoopImmediately() {
+        let m = AppModel()
+        m.prepareLoopComposer()
+        XCTAssertEqual(m.route, .home)
+        XCTAssertEqual(m.sidebarSelection, "New loop")
+        XCTAssertTrue(m.composerText.hasPrefix("Loop: "))
+        XCTAssertTrue(m.loops.isEmpty)
+    }
+
+    func testMcpElicitationValueParsesTypedFields() {
+        let integerField = PendingMcpElicitationField(
+            id: "count",
+            label: "Count",
+            prompt: "Count",
+            required: true,
+            kind: .integer)
+        let numberField = PendingMcpElicitationField(
+            id: "ratio",
+            label: "Ratio",
+            prompt: "Ratio",
+            required: true,
+            kind: .number)
+        let textField = PendingMcpElicitationField(
+            id: "name",
+            label: "Name",
+            prompt: "Name",
+            required: true,
+            kind: .text)
+
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: integerField, rawValue: "3"), .number(3))
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: numberField, rawValue: "3.5"), .number(3.5))
+        XCTAssertEqual(AppModel.mcpElicitationValue(field: textField, rawValue: "3"), .string("3"))
+        XCTAssertNil(AppModel.mcpElicitationValue(field: integerField, rawValue: "3.5"))
+    }
+
     func testSampleModelHasData() {
         let m = AppModel.sample()
         XCTAssertEqual(m.connection, .connected)
         XCTAssertFalse(m.threads.isEmpty)
         XCTAssertFalse(m.projects.isEmpty)
         XCTAssertFalse(m.loops.isEmpty)
+        XCTAssertFalse(m.goalStates.isEmpty)
+        XCTAssertFalse(m.workflows.isEmpty)
         XCTAssertEqual(m.account.name, "Andrei Hasna")
     }
 }

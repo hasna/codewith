@@ -30,6 +30,7 @@ use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use core_test_support::responses::mount_models_once;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -583,11 +584,11 @@ async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> 
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
         ("minimax", "MiniMax-M3"),
-        ("nvidia", "openai/gpt-oss-120b"),
-        ("openrouter", "openai/gpt-oss-120b"),
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("openrouter", "z-ai/glm-5.2"),
         ("qwen", "qwen3.5-flash"),
         ("xai", "grok-4.3"),
-        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("xiaomi", "mimo-v2.5-pro"),
         ("zai", "glm-5.2"),
     ];
     let mut config = String::new();
@@ -668,7 +669,7 @@ experimental_bearer_token = "test-token"
             include_hidden: None,
             model_provider: None,
             model_gateway: Some(OPENROUTER_PROVIDER_ID.to_string()),
-            upstream_provider: Some("deepseek".to_string()),
+            upstream_provider: Some("z-ai".to_string()),
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -687,16 +688,36 @@ experimental_bearer_token = "test-token"
                     model.model_gateway.as_str(),
                     model.model_gateway_kind,
                     model.upstream_provider.as_deref(),
+                    model.default_reasoning_effort.clone(),
                 )
             })
             .collect::<Vec<_>>(),
-        vec![(
-            "deepseek/deepseek-v4-flash",
-            OPENROUTER_PROVIDER_ID,
-            OPENROUTER_PROVIDER_ID,
-            ModelGatewayKind::Aggregator,
-            Some("deepseek"),
-        )]
+        vec![
+            (
+                "z-ai/glm-5.2",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::High,
+            ),
+            (
+                "z-ai/glm-4.7",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::Medium,
+            ),
+            (
+                "z-ai/glm-5.1",
+                OPENROUTER_PROVIDER_ID,
+                OPENROUTER_PROVIDER_ID,
+                ModelGatewayKind::Aggregator,
+                Some("z-ai"),
+                ReasoningEffort::Medium,
+            ),
+        ]
     );
     assert!(next_cursor.is_none());
     Ok(())

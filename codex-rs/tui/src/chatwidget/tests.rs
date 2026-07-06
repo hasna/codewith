@@ -106,6 +106,7 @@ pub(super) use codex_app_server_protocol::ServerNotification;
 pub(super) use codex_app_server_protocol::SkillSummary;
 pub(super) use codex_app_server_protocol::ThreadClosedNotification;
 pub(super) use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
+pub(super) use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 pub(super) use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 pub(super) use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 pub(super) use codex_app_server_protocol::ToolRequestUserInputOption;
@@ -242,6 +243,7 @@ mod status_and_layout;
 mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
+mod webhook;
 mod worktree_display;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;

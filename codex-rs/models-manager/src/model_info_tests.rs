@@ -130,6 +130,20 @@ fn known_nvidia_glm_model_uses_local_metadata() {
 }
 
 #[test]
+fn known_nvidia_nemotron_ultra_model_uses_local_metadata() {
+    let model =
+        model_info_from_slug_for_provider("nvidia/nemotron-3-ultra-550b-a55b", Some("nvidia"));
+
+    assert_eq!(model.display_name, "NVIDIA Nemotron 3 Ultra");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
 fn known_anthropic_fable_model_uses_local_metadata() {
     let model = model_info_from_slug_for_provider("claude-fable-5", Some("anthropic"));
 
@@ -183,6 +197,7 @@ fn known_openrouter_deepseek_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
     assert!(!model.used_fallback_model_metadata);
 }
 
@@ -195,29 +210,111 @@ fn known_openrouter_glm_5_1_model_uses_local_metadata() {
     assert_eq!(model.max_context_window, Some(202_752));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, None);
-    assert!(model.supported_reasoning_levels.is_empty());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
 #[test]
-fn known_openrouter_reasoning_model_does_not_advertise_reasoning_effort() {
+fn known_openrouter_current_models_use_local_metadata() {
+    let cases = [
+        (
+            "qwen/qwen3.7-plus",
+            "Qwen3.7 Plus",
+            1_000_000,
+            vec![InputModality::Text, InputModality::Image],
+        ),
+        (
+            "x-ai/grok-4.20",
+            "Grok 4.20",
+            2_000_000,
+            vec![InputModality::Text, InputModality::Image],
+        ),
+        (
+            "xiaomi/mimo-v2.5-pro",
+            "MiMo V2.5 Pro",
+            1_048_576,
+            vec![InputModality::Text],
+        ),
+        (
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "NVIDIA Nemotron 3 Ultra",
+            1_000_000,
+            vec![InputModality::Text],
+        ),
+    ];
+
+    for (slug, display_name, context_window, input_modalities) in cases {
+        let model = model_info_from_slug_for_provider(slug, Some("openrouter"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(context_window));
+        assert_eq!(model.max_context_window, Some(context_window));
+        assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+        assert!(!model.supports_parallel_tool_calls);
+        assert_eq!(model.input_modalities, input_modalities);
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
+fn known_openrouter_glm_4_7_model_advertises_reasoning_effort() {
     let model = model_info_from_slug_for_provider("z-ai/glm-4.7", Some("openrouter"));
 
     assert_eq!(model.display_name, "Z.ai GLM 4.7");
     assert_eq!(model.context_window, Some(202_752));
-    assert_eq!(model.default_reasoning_level, None);
-    assert_eq!(model.supported_reasoning_levels, Vec::new());
-    assert!(!model.supports_reasoning_summaries);
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::None, ReasoningEffort::Medium]
+    );
+    assert!(model.supports_reasoning_summaries);
     assert!(!model.used_fallback_model_metadata);
 }
 
 #[test]
-fn known_xiaomi_ultraspeed_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("mimo-v2.5-pro-ultraspeed", Some("xiaomi"));
+fn known_openrouter_glm_5_2_model_advertises_high_reasoning_effort() {
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.2", Some("openrouter"));
 
-    assert_eq!(model.display_name, "MiMo V2.5 Pro UltraSpeed");
+    assert_eq!(model.display_name, "Z.ai GLM 5.2");
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::High));
+    assert_eq!(
+        model
+            .supported_reasoning_levels
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+    );
+    assert!(model.supports_reasoning_summaries);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_xiaomi_v25_pro_model_uses_local_metadata() {
+    let model = model_info_from_slug_for_provider("mimo-v2.5-pro", Some("xiaomi"));
+
+    assert_eq!(model.display_name, "MiMo V2.5 Pro");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
@@ -237,6 +334,27 @@ fn known_qwen_model_uses_local_metadata_with_search_support() {
     assert_eq!(model.max_context_window, Some(1_000_000));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
+    assert!(model.supports_search_tool);
+    assert!(!model.used_fallback_model_metadata);
+}
+
+#[test]
+fn known_qwen_37_model_uses_local_metadata_with_search_support() {
+    let model = model_info_from_slug_for_provider("qwen3.7-max", Some("qwen"));
+
+    assert_eq!(model.display_name, "Qwen3.7 Max");
+    assert_eq!(model.context_window, Some(1_000_000));
+    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
+    assert!(!model.supports_parallel_tool_calls);
+    assert_eq!(
+        model.input_modalities,
+        vec![InputModality::Text, InputModality::Image]
+    );
     assert!(model.supports_search_tool);
     assert!(!model.used_fallback_model_metadata);
 }
@@ -248,10 +366,30 @@ fn known_zai_model_uses_local_metadata_with_reasoning_and_search_support() {
     assert_eq!(model.display_name, "GLM-5.2");
     assert_eq!(model.context_window, Some(1_000_000));
     assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.input_modalities, vec![InputModality::Text]);
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
-    assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
-    assert!(!model.supported_reasoning_levels.is_empty());
+    assert_eq!(
+        model.default_reasoning_level,
+        Some(ReasoningEffort::Custom("max".to_string()))
+    );
+    assert_eq!(
+        model.supported_reasoning_levels,
+        vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::None,
+                description: "Reasoning disabled".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::High,
+                description: "High reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Custom("max".to_string()),
+                description: "Max reasoning".to_string(),
+            },
+        ]
+    );
     assert!(model.supports_reasoning_summaries);
     assert!(model.supports_search_tool);
     assert!(!model.used_fallback_model_metadata);

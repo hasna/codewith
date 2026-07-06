@@ -228,23 +228,23 @@ impl GhPullRequest {
     fn into_summary(self) -> PullRequestSummary {
         PullRequestSummary {
             number: self.number,
-            title: sanitize_remote_text(&self.title, 160),
-            url: sanitize_remote_text(&self.url, 2048),
-            state: sanitize_remote_text(&self.state, 80),
+            title: sanitize_remote_text(&self.title, /*max_chars*/ 160),
+            url: sanitize_remote_text(&self.url, /*max_chars*/ 2048),
+            state: sanitize_remote_text(&self.state, /*max_chars*/ 80),
             is_draft: self.is_draft,
             author: self
                 .author
-                .map(|author| sanitize_remote_text(&author.login, 80)),
-            head_ref: sanitize_remote_text(&self.head_ref_name, 120),
-            base_ref: sanitize_remote_text(&self.base_ref_name, 120),
+                .map(|author| sanitize_remote_text(&author.login, /*max_chars*/ 80)),
+            head_ref: sanitize_remote_text(&self.head_ref_name, /*max_chars*/ 120),
+            base_ref: sanitize_remote_text(&self.base_ref_name, /*max_chars*/ 120),
             review_decision: self
                 .review_decision
                 .as_ref()
-                .map(|status| sanitize_remote_text(status, 80)),
+                .map(|status| sanitize_remote_text(status, /*max_chars*/ 80)),
             merge_state: self
                 .merge_state_status
                 .as_ref()
-                .map(|status| sanitize_remote_text(status, 80)),
+                .map(|status| sanitize_remote_text(status, /*max_chars*/ 80)),
             checks: check_summary_from_rollup(self.status_check_rollup.as_ref()),
         }
     }
@@ -337,7 +337,7 @@ fn clean_failure_message(message: &str) -> String {
         "command failed without output".to_string()
     } else {
         let first_line = trimmed.lines().next().unwrap_or(trimmed);
-        let sanitized = sanitize_remote_text(first_line, 240);
+        let sanitized = sanitize_remote_text(first_line, /*max_chars*/ 240);
         if sanitized.is_empty() {
             "command failed without output".to_string()
         } else {
@@ -645,10 +645,10 @@ mod tests {
     #[test]
     fn sanitizes_remote_control_characters() {
         assert_eq!(
-            sanitize_remote_text("hello\u{001b}[31m\r\nwor\u{202e}ld", 80),
+            sanitize_remote_text("hello\u{001b}[31m\r\nwor\u{202e}ld", /*max_chars*/ 80),
             "hello [31m wor ld"
         );
-        assert_eq!(sanitize_remote_text("abcdef", 3), "abc...");
+        assert_eq!(sanitize_remote_text("abcdef", /*max_chars*/ 3), "abc...");
     }
 
     struct FakeRunner {

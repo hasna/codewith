@@ -199,6 +199,7 @@ use uuid::Uuid;
 mod active_session_actions;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_threads;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
@@ -217,6 +218,7 @@ mod pending_interactive_replay;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod queued_message_actions;
 mod replay_filter;
 mod resize_reflow;
 mod session_lifecycle;
@@ -234,7 +236,12 @@ mod thread_settings;
 mod thread_workflow_actions;
 mod tmux_handoff;
 mod ui_dynamic_tools;
+mod ui_management_tool_summaries;
 mod ui_management_tools;
+mod ui_mcp_tool;
+mod ui_mcp_tool_helpers;
+mod variant_actions;
+mod webhook_actions;
 mod worktree_actions;
 
 use self::agent_navigation::AgentNavigationDirection;
@@ -582,6 +589,8 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    pending_mcp_dynamic_tool_mutations:
+        HashMap<codex_app_server_protocol::RequestId, ui_mcp_tool::PendingMcpDynamicToolMutation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -687,6 +696,25 @@ fn session_start_error(
 
     let target_label = target_session.display_label();
     color_eyre::eyre::eyre!("Failed to {action} session from {target_label}: {err}")
+}
+
+/// Friendly message for a failed `/fork` on the current thread.
+///
+/// When `/fork` runs on a freshly started thread that has no rollout yet
+/// (e.g. right after `/new`, before any turn), the app-server rejects the
+/// request with a raw JSON-RPC error such as
+/// `thread/fork failed: no rollout found for thread id ... (code -32600)`.
+/// Detect that case and surface actionable guidance instead of the raw error.
+fn fork_error_message(err: &color_eyre::eyre::Report) -> String {
+    if err.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("no rollout found for thread id")
+            || message.contains("includeTurns is unavailable before first user message")
+    }) {
+        "Nothing to fork yet — send a message first, then try /fork again.".to_string()
+    } else {
+        format!("Failed to fork current session through the app server: {err}")
+    }
 }
 
 fn archived_session_guidance(err: &color_eyre::eyre::Report) -> Option<String> {
@@ -1068,6 +1096,7 @@ See the Codewith keymap documentation for supported actions and examples."
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_dynamic_tool_mutations: HashMap::new(),
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);

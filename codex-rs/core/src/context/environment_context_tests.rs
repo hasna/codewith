@@ -91,6 +91,38 @@ fn serialize_environment_context_with_network() {
     assert_eq!(context.render(), expected);
 }
 
+#[test]
+fn serialize_environment_context_with_machine() {
+    let mut context = EnvironmentContext::new(
+        vec![EnvironmentContextEnvironment {
+            id: "local".to_string(),
+            cwd: test_path_buf("/repo").abs(),
+            shell: fake_shell_name(),
+        }],
+        Some("2026-02-26".to_string()),
+        Some("America/Los_Angeles".to_string()),
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+    context.machine = MachineContext::from_id_and_name(
+        "machine-<&\"'>".to_string(),
+        Some("spark<&\"'>".to_string()),
+    );
+
+    let expected = format!(
+        r#"<environment_context>
+  <cwd>{}</cwd>
+  <shell>bash</shell>
+  <current_date>2026-02-26</current_date>
+  <timezone>America/Los_Angeles</timezone>
+  <machine><id>machine-&lt;&amp;&quot;&apos;&gt;</id><name>spark&lt;&amp;&quot;&apos;&gt;</name></machine>
+</environment_context>"#,
+        test_path_buf("/repo").display()
+    );
+
+    assert_eq!(context.render(), expected);
+}
+
 fn workspace_write_permission_profile_with_private_denials() -> PermissionProfile {
     PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![
@@ -173,6 +205,8 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
         workspace_roots: Some(vec![repo.clone(), other_repo.clone()]),
         current_date: None,
         timezone: None,
+        machine_id: Some("machine-123".to_string()),
+        machine_name: Some("spark01".to_string()),
         approval_policy: AskForApproval::Never,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         permission_profile: Some(workspace_write_permission_profile_with_private_denials()),
@@ -183,6 +217,7 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
         personality: None,
         collaboration_mode: None,
         session_prompt: None,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: None,
@@ -192,6 +227,10 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
 
     let context = EnvironmentContext::from_turn_context_item(&item, fake_shell_name()).render();
 
+    assert!(
+        context.contains("<machine><id>machine-123</id><name>spark01</name></machine>"),
+        "{context}"
+    );
     assert!(
         context.contains(&format!(
             "<root>{}</root><root>{}</root>",

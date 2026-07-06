@@ -1,8 +1,8 @@
-use crate::QueuedMailboxMessage;
-use crate::QueuedMailboxMoveDirection;
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::session::Codex;
+use crate::session::QueuedMailboxMessage;
+use crate::session::QueuedMailboxMoveDirection;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
@@ -72,6 +72,7 @@ pub struct ThreadConfigSnapshot {
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
     pub session_prompt: Option<String>,
+    pub worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
     pub selected_auth_profile: Option<String>,
     pub session_source: SessionSource,
     pub forked_from_thread_id: Option<ThreadId>,
@@ -182,6 +183,7 @@ pub struct CodexThreadSettingsOverrides {
     pub service_tier: Option<Option<String>>,
     pub session_prompt: Option<Option<String>>,
     pub collaboration_mode: Option<CollaborationMode>,
+    pub worktree_mode: Option<codex_protocol::protocol::SessionWorktreeMode>,
     pub personality: Option<Personality>,
 }
 
@@ -223,15 +225,28 @@ impl CodexThread {
         &self,
         communication: InterAgentCommunication,
     ) -> CodexResult<()> {
+        self.deliver_inter_agent_communication_with_id(
+            uuid::Uuid::now_v7().to_string(),
+            communication,
+        )
+        .await
+    }
+
+    /// Delivers local inter-agent communication with a caller-supplied queued-message id.
+    pub async fn deliver_inter_agent_communication_with_id(
+        &self,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
         if !self.is_running() {
             return Err(CodexErr::InternalAgentDied);
         }
         crate::session::handle_inter_agent_communication(
             &self.codex.session,
-            uuid::Uuid::now_v7().to_string(),
+            message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -253,7 +268,7 @@ impl CodexThread {
             message_id,
             communication,
         )
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -331,6 +346,11 @@ impl CodexThread {
     #[doc(hidden)]
     pub async fn ensure_rollout_materialized(&self) {
         self.codex.session.ensure_rollout_materialized().await;
+    }
+
+    #[doc(hidden)]
+    pub async fn try_ensure_rollout_materialized(&self) -> std::io::Result<()> {
+        self.codex.session.try_ensure_rollout_materialized().await
     }
 
     #[doc(hidden)]
@@ -484,6 +504,7 @@ impl CodexThread {
             service_tier,
             session_prompt,
             collaboration_mode,
+            worktree_mode,
             personality,
         } = overrides;
         let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
@@ -509,6 +530,7 @@ impl CodexThread {
             windows_sandbox_level,
             model_provider_id: model_provider,
             collaboration_mode: Some(collaboration_mode),
+            worktree_mode,
             reasoning_summary: summary,
             service_tier,
             session_prompt,

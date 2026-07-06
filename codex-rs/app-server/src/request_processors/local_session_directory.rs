@@ -9,6 +9,8 @@ use crate::error_code::internal_error;
 use codex_app_server_protocol::ActiveSessionPeer;
 #[cfg(test)]
 use codex_app_server_protocol::ActiveSessionPeerKind;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::GitInfo as ApiGitInfo;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -19,6 +21,8 @@ use codex_app_server_protocol::LocalSessionListResponse;
 use codex_app_server_protocol::LocalSessionPeer;
 use codex_app_server_protocol::LocalSessionRedaction;
 use codex_app_server_protocol::LocalSessionStatus;
+#[cfg(test)]
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadActiveFlag;
@@ -31,6 +35,7 @@ use codex_thread_store::ThreadSortKey as StoreThreadSortKey;
 #[cfg(test)]
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,6 +87,7 @@ impl ThreadRequestProcessor {
             (!statuses.is_empty()).then(|| statuses.into_iter().collect::<HashSet<_>>())
         });
         let live_overlay = self.local_session_live_overlay().await?;
+        let auth_profile_account_labels = self.auth_profile_account_labels();
         let pending_thread_unloads = self.pending_thread_unloads.lock().await.clone();
         let fallback_provider = self.config.model_provider_id.as_str();
         let mut cursor_obj = cursor;
@@ -118,6 +124,7 @@ impl ThreadRequestProcessor {
                     model,
                     agent_path,
                     &live_overlay,
+                    &auth_profile_account_labels,
                     &pending_thread_unloads,
                 );
                 if status_filter
@@ -148,6 +155,25 @@ impl ThreadRequestProcessor {
         }
 
         Ok(LocalSessionListResponse { data, next_cursor })
+    }
+
+    fn auth_profile_account_labels(&self) -> HashMap<String, String> {
+        match codex_login::list_auth_profiles(
+            self.config.codex_home.as_path(),
+            self.config.cli_auth_credentials_store_mode,
+        ) {
+            Ok(profiles) => profiles
+                .into_iter()
+                .filter_map(|profile| {
+                    let account_label = profile.email.or(profile.account_id)?;
+                    Some((profile.name, account_label))
+                })
+                .collect(),
+            Err(err) => {
+                tracing::debug!("failed to load auth profile labels for local sessions: {err}");
+                HashMap::new()
+            }
+        }
     }
 
     async fn local_session_live_overlay(
@@ -212,6 +238,7 @@ fn api_local_session(
     model: Option<String>,
     thread_agent_path: Option<String>,
     live_overlay: &BTreeMap<String, LocalSessionLivePeer>,
+    auth_profile_account_labels: &HashMap<String, String>,
     pending_thread_unloads: &HashSet<ThreadId>,
 ) -> LocalSession {
     let Thread {
@@ -222,6 +249,8 @@ fn api_local_session(
         parent_thread_id: _,
         ephemeral: _,
         model_provider,
+        auth_profile,
+        auth_profile_kind,
         created_at,
         updated_at,
         status: _,
@@ -238,6 +267,15 @@ fn api_local_session(
     } = thread;
     let live_peer = live_overlay.get(id.as_str());
     let active_peer = live_peer.and_then(|live_peer| live_peer.active_peer.as_ref());
+    let auth_profile = active_peer
+        .and_then(|peer| peer.auth_profile.clone())
+        .or(auth_profile);
+    let auth_profile_kind = active_peer
+        .map(|peer| peer.auth_profile_kind)
+        .unwrap_or(auth_profile_kind);
+    let account_label = auth_profile
+        .as_ref()
+        .and_then(|profile| auth_profile_account_labels.get(profile).cloned());
     let status = local_session_status(id.as_str(), live_peer, pending_thread_unloads);
     let active_flags = local_session_active_flags(live_peer);
     let (git_info, mut redactions) = local_session_git_info(git_info);
@@ -264,6 +302,9 @@ fn api_local_session(
         agent_path,
         model_provider,
         model,
+        auth_profile,
+        auth_profile_kind,
+        account_label,
         source,
         thread_source,
         created_at,
@@ -366,11 +407,13 @@ mod tests {
             display_name: None,
             agent_path: None,
             capabilities: Vec::new(),
+            auth_profile: Some("work".to_string()),
+            auth_profile_kind: AuthProfileKind::Named,
             last_seen_at: 123,
         };
 
         assert_eq!(
-            local_session_status(&id, None, &HashSet::new()),
+            local_session_status(&id, /*live_peer*/ None, &HashSet::new()),
             LocalSessionStatus::NotLoaded
         );
         assert_eq!(
@@ -405,7 +448,7 @@ mod tests {
         assert_eq!(
             local_session_status(
                 &id,
-                Some(&live_peer(ThreadStatus::Idle, None)),
+                Some(&live_peer(ThreadStatus::Idle, /*active_peer*/ None)),
                 &HashSet::new()
             ),
             LocalSessionStatus::LoadedWithoutActivePeer
@@ -413,8 +456,72 @@ mod tests {
 
         let pending_thread_unloads = HashSet::from([thread_id]);
         assert_eq!(
-            local_session_status(&id, None, &pending_thread_unloads),
+            local_session_status(&id, /*live_peer*/ None, &pending_thread_unloads),
             LocalSessionStatus::Closing
+        );
+    }
+
+    #[test]
+    fn api_local_session_overlays_live_auth_profile_kind_and_account_label() {
+        let thread_id = ThreadId::new();
+        let id = thread_id.to_string();
+        let cwd = AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+            .expect("temp dir is absolute");
+        let active_peer = ActiveSessionPeer {
+            peer_id: id.clone(),
+            kind: ActiveSessionPeerKind::CodewithSession,
+            thread_id: id.clone(),
+            session_id: "session-1".to_string(),
+            cwd: cwd.clone(),
+            display_name: None,
+            agent_path: None,
+            capabilities: Vec::new(),
+            auth_profile: Some("work".to_string()),
+            auth_profile_kind: AuthProfileKind::Named,
+            last_seen_at: 123,
+        };
+        let thread = Thread {
+            id: id.clone(),
+            session_id: id.clone(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: ThreadStatus::NotLoaded,
+            path: None,
+            cwd,
+            cli_version: "test".to_string(),
+            source: SessionSource::Cli,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
+            name: None,
+            turns: Vec::new(),
+        };
+        let live_overlay = BTreeMap::from([(id, live_peer(ThreadStatus::Idle, Some(active_peer)))]);
+        let auth_profile_account_labels =
+            HashMap::from([("work".to_string(), "work@example.com".to_string())]);
+
+        let local_session = api_local_session(
+            thread,
+            None,
+            None,
+            &live_overlay,
+            &auth_profile_account_labels,
+            &HashSet::new(),
+        );
+
+        assert_eq!(local_session.auth_profile.as_deref(), Some("work"));
+        assert_eq!(local_session.auth_profile_kind, AuthProfileKind::Named);
+        assert_eq!(
+            local_session.account_label.as_deref(),
+            Some("work@example.com")
         );
     }
 

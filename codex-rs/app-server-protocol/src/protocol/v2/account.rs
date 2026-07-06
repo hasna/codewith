@@ -143,14 +143,30 @@ pub struct CancelLoginAccountResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct AuthProfileListParams {}
+pub struct AuthProfileListParams {
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum AuthProfileSubscriptionProvider {
+    Chatgpt,
+    ClaudeAi,
+    Cursor,
+    Grok,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AuthProfileSummary {
     pub name: String,
-    pub subscription_provider: String,
+    pub subscription_provider: AuthProfileSubscriptionProvider,
     pub auth_mode: Option<AuthMode>,
     pub email: Option<String>,
     pub account_id: Option<String>,
@@ -163,6 +179,21 @@ pub struct AuthProfileSummary {
 #[ts(export_to = "v2/")]
 pub struct AuthProfileListResponse {
     pub data: Vec<AuthProfileSummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AuthProfileSaveCurrentParams {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AuthProfileSaveCurrentResponse {
+    pub profile: AuthProfileSummary,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

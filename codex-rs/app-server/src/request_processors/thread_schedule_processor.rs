@@ -129,18 +129,7 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         self.ensure_enabled()?;
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
-        let parent_schedule_id = params
-            .parent_schedule_id
-            .as_deref()
-            .map(str::trim)
-            .map(|value| {
-                if value.is_empty() {
-                    Err(invalid_request("parentScheduleId cannot be empty"))
-                } else {
-                    Ok(value.to_string())
-                }
-            })
-            .transpose()?;
+        let parent_schedule_id = normalize_parent_schedule_id(params.parent_schedule_id)?;
         let prompt_source = params
             .prompt_source
             .unwrap_or(ThreadSchedulePromptSource::Inline);
@@ -296,7 +285,10 @@ impl ThreadScheduleRequestProcessor {
                     return None;
                 }
             };
-        initial_history.get_auth_profile()
+        thread_schedule_runtime::schedule_resume_auth_profile(
+            /*schedule_auth_profile*/ None,
+            &initial_history,
+        )
     }
 
     async fn thread_schedule_list_inner(
@@ -591,25 +583,21 @@ impl ThreadScheduleRequestProcessor {
                 .await;
             return Ok(());
         };
-        let affected_schedule_ids = state_db
+        let deleted_schedule_ids = state_db
             .thread_schedules()
-            .list_thread_schedule_tree_ids(schedule_id.as_str())
-            .await
-            .map_err(|err| internal_error(format!("failed to list nested schedules: {err}")))?;
-        let deleted = state_db
-            .thread_schedules()
-            .delete_thread_schedule(schedule_id.as_str())
+            .delete_thread_schedule_tree(schedule_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to delete thread schedule: {err}")))?;
+        let deleted = !deleted_schedule_ids.is_empty();
 
         self.outgoing
             .send_response(request_id.clone(), ThreadScheduleDeleteResponse { deleted })
             .await;
         if deleted {
-            for affected_schedule_id in affected_schedule_ids {
+            for deleted_schedule_id in deleted_schedule_ids {
                 self.emit_thread_schedule_deleted_ordered(
                     thread_id,
-                    affected_schedule_id,
+                    deleted_schedule_id,
                     listener_command_tx.clone(),
                 )
                 .await;
@@ -630,14 +618,18 @@ impl ThreadScheduleRequestProcessor {
             .resolve_schedule_id_for_thread(&state_db, thread_id, params.schedule_id.as_str())
             .await?;
         let lease_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let local_active_fresh_after = self.schedule_runtime.local_active_fresh_after(now);
         let claim = state_db
             .thread_schedules()
-            .claim_thread_schedule_now(
-                schedule_id.as_str(),
-                Utc::now(),
-                lease_id.as_str(),
-                Duration::from_secs(RUN_NOW_LEASE_SECONDS),
-            )
+            .claim_thread_schedule_now_with_params(codex_state::ThreadScheduleNowClaimParams {
+                schedule_id: schedule_id.as_str(),
+                now,
+                lease_id: lease_id.as_str(),
+                lease_duration: Duration::from_secs(RUN_NOW_LEASE_SECONDS),
+                local_active_owner_id: Some(self.schedule_runtime.local_active_owner_id()),
+                local_active_fresh_after: Some(local_active_fresh_after),
+            })
             .await
             .map_err(|err| internal_error(format!("failed to claim thread schedule: {err}")))?
             .ok_or_else(|| {
@@ -692,11 +684,27 @@ impl ThreadScheduleRequestProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         let running_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let rollout_path = match running_thread.as_ref() {
-            Some(thread) => thread.rollout_path().ok_or_else(|| {
-                invalid_request(format!(
-                    "ephemeral thread does not support scheduled tasks: {thread_id}"
-                ))
-            })?,
+            Some(thread) => {
+                let rollout_path = thread.rollout_path().ok_or_else(|| {
+                    invalid_request(format!(
+                        "ephemeral thread does not support scheduled tasks: {thread_id}"
+                    ))
+                })?;
+                thread
+                    .try_ensure_rollout_materialized()
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to materialize thread rollout before scheduling: {err}"
+                        ))
+                    })?;
+                thread.flush_rollout().await.map_err(|err| {
+                    internal_error(format!(
+                        "failed to flush thread rollout before scheduling: {err}"
+                    ))
+                })?;
+                rollout_path
+            }
             None => codex_rollout::find_thread_path_by_id_str(
                 &self.config.codex_home,
                 &thread_id.to_string(),
@@ -718,18 +726,17 @@ impl ThreadScheduleRequestProcessor {
             /*new_thread_memory_mode*/ None,
         )
         .await;
-        if let Some(thread) = running_thread.as_ref()
-            && state_db
+        if let Some(thread) = running_thread.as_ref() {
+            let existing_metadata = state_db
                 .get_thread(thread_id)
                 .await
-                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?
-                .is_none()
-        {
+                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?;
             self.upsert_running_thread_metadata(
                 state_db,
                 thread_id,
                 thread,
                 rollout_path.as_path(),
+                existing_metadata,
             )
             .await?;
         }
@@ -742,19 +749,37 @@ impl ThreadScheduleRequestProcessor {
         thread_id: ThreadId,
         thread: &Arc<CodexThread>,
         rollout_path: &Path,
+        existing_metadata: Option<codex_state::ThreadMetadata>,
     ) -> Result<(), JSONRPCErrorError> {
-        let session_configured = thread.session_configured();
+        let config_snapshot = thread.config_snapshot().await;
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             rollout_path.to_path_buf(),
             Utc::now(),
             SessionSource::default(),
         );
-        builder.thread_source = session_configured.thread_source;
-        builder.model_provider = Some(session_configured.model_provider_id);
-        builder.cwd = session_configured.cwd.to_path_buf();
-        builder.approval_mode = session_configured.approval_policy;
-        let metadata = builder.build(self.config.model_provider_id.as_str());
+        builder.thread_source = config_snapshot.thread_source;
+        builder.model_provider = Some(config_snapshot.model_provider_id);
+        builder.cwd = config_snapshot.cwd.to_path_buf();
+        builder.approval_mode = config_snapshot.approval_policy;
+        let session_metadata = builder.build(self.config.model_provider_id.as_str());
+        let mut metadata = existing_metadata.unwrap_or_else(|| session_metadata.clone());
+        metadata.rollout_path = session_metadata.rollout_path;
+        metadata.thread_source = session_metadata.thread_source;
+        metadata.model_provider = session_metadata.model_provider;
+        metadata.cwd = session_metadata.cwd;
+        metadata.approval_mode = session_metadata.approval_mode;
+        match serde_json::to_string(&config_snapshot.permission_profile) {
+            Ok(permission_profile) => {
+                metadata.sandbox_policy = permission_profile;
+            }
+            Err(err) => {
+                warn!(
+                    thread_id = %thread_id,
+                    "failed to serialize running thread permission profile for schedule metadata: {err}"
+                );
+            }
+        }
         state_db
             .upsert_thread(&metadata)
             .await

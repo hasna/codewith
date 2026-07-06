@@ -167,7 +167,7 @@ impl ArgumentCommentLint {
             return;
         }
 
-        let parameter_names: Vec<_> = cx.tcx.fn_arg_idents(def_id).iter().copied().collect();
+        let parameter_names = cx.tcx.fn_arg_idents(def_id).to_vec();
         for (index, arg) in args.iter().enumerate() {
             if arg.span.from_expansion() {
                 continue;

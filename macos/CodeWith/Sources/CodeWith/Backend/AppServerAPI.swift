@@ -2,17 +2,23 @@ import Foundation
 
 /// Typed, high-level calls over the raw `AppServerClient` JSON-RPC transport.
 extension AppServerClient {
+    enum ThreadAuthProfileUpdate: Equatable {
+        case keep
+        case set(String)
+        case clearDefault
+    }
 
     // MARK: Threads (sessions)
 
     /// List sessions with cursor pagination. `cwd` filters to a project.
-    func listThreads(cursor: String? = nil, limit: Int = 30)
+    func listThreads(cursor: String? = nil, limit: Int = 30, archived: Bool = false)
         async throws -> (threads: [ThreadInfo], nextCursor: String?)
     {
         var params: [String: JSONValue] = [
             "limit": .number(Double(limit)),
             "sortKey": .string("updated_at"),
             "sortDirection": .string("desc"),
+            "archived": .bool(archived),
         ]
         if let cursor { params["cursor"] = .string(cursor) }
         let r = try await request("thread/list", .object(params), timeout: 30)
@@ -23,10 +29,18 @@ extension AppServerClient {
 
     /// Read a thread's full message history (parsed into chat messages).
     func readThreadMessages(id: String) async throws -> [ChatMessage] {
+        try await readThread(id: id).messages
+    }
+
+    func readThread(id: String) async throws -> ThreadReadResult {
         let r = try await request("thread/read", .object([
             "threadId": .string(id), "includeTurns": .bool(true),
         ]), timeout: 30)
-        return Self.parseThreadMessages(r["thread"] ?? .null)
+        let thread = r["thread"] ?? .null
+        return ThreadReadResult(
+            messages: Self.parseThreadMessages(thread),
+            settings: ThreadSessionSettings(from: thread) ?? ThreadSessionSettings(from: r)
+        )
     }
 
     func searchThreads(term: String, limit: Int = 40) async throws -> [ThreadInfo] {
@@ -53,8 +67,21 @@ extension AppServerClient {
 
     /// Resume a persisted thread so future `turn/start` requests can continue it.
     func resumeThreadMessages(id: String) async throws -> [ChatMessage] {
+        try await resumeThread(id: id).messages
+    }
+
+    func resumeThread(id: String) async throws -> ThreadReadResult {
         let r = try await request("thread/resume", .object(["threadId": .string(id)]), timeout: 30)
-        return Self.parseThreadMessages(r["thread"] ?? .null)
+        let thread = r["thread"] ?? .null
+        return ThreadReadResult(
+            messages: Self.parseThreadMessages(thread),
+            settings: ThreadSessionSettings(from: thread) ?? ThreadSessionSettings(from: r)
+        )
+    }
+
+    func unarchiveThread(id: String) async throws -> ThreadInfo {
+        let r = try await request("thread/unarchive", .object(["threadId": .string(id)]), timeout: 30)
+        return ThreadInfo(from: r["thread"] ?? .null)
     }
 
     static func parseThreadMessages(_ thread: JSONValue) -> [ChatMessage] {
@@ -108,11 +135,16 @@ extension AppServerClient {
     // MARK: Turns (send a message)
 
     /// Start a new thread, returning its id.
-    func startThread(cwd: String?) async throws -> String {
+    func startThread(cwd: String?, authProfile: String? = nil) async throws -> String {
+        let r = try await request("thread/start", Self.threadStartParams(cwd: cwd, authProfile: authProfile), timeout: 30)
+        return r["thread"]?["id"]?.string ?? r["threadId"]?.string ?? r["id"]?.string ?? ""
+    }
+
+    static func threadStartParams(cwd: String?, authProfile: String?) -> JSONValue {
         var params: [String: JSONValue] = [:]
         if let cwd { params["cwd"] = .string(cwd) }
-        let r = try await request("thread/start", .object(params), timeout: 30)
-        return r["thread"]?["id"]?.string ?? r["threadId"]?.string ?? r["id"]?.string ?? ""
+        if let authProfile, !authProfile.isEmpty { params["authProfile"] = .string(authProfile) }
+        return .object(params)
     }
 
     /// Send a user message to a thread. The server streams the reply via
@@ -504,6 +536,25 @@ extension AppServerClient {
         return goals
     }
 
+    func listThreadGoalStates(threadIds: [String]) async throws -> [ThreadGoalState] {
+        var states: [ThreadGoalState] = []
+        var firstError: Error?
+        var successCount = 0
+        for threadId in threadIds {
+            do {
+                let state = try await listThreadGoalState(threadId: threadId)
+                if state.goal != nil || !state.goalPlans.isEmpty {
+                    states.append(state)
+                }
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if successCount == 0, let firstError { throw firstError }
+        return states
+    }
+
     func clearThreadGoal(threadId: String) async -> Bool {
         let r = try? await request("thread/goal/clear", .object(["threadId": .string(threadId)]), timeout: 15)
         return r?["cleared"]?.bool ?? false
@@ -556,6 +607,79 @@ extension AppServerClient {
             "threadId": .string(threadId),
             "nodeId": .string(nodeId),
         ])
+    }
+
+    // MARK: Workflows
+
+    func listWorkflows(threadIds: [String]) async throws -> [WorkflowInfo] {
+        var workflows: [WorkflowInfo] = []
+        var firstError: Error?
+        var successCount = 0
+        for threadId in threadIds {
+            do {
+                workflows.append(contentsOf: try await listThreadWorkflows(threadId: threadId))
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+
+            do {
+                workflows.append(contentsOf: try await listThreadWorkflowRuns(threadId: threadId))
+                successCount += 1
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if successCount == 0, let firstError { throw firstError }
+        return workflows.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func listThreadWorkflows(threadId: String) async throws -> [WorkflowInfo] {
+        var items: [WorkflowInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/workflow/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("thread/workflow/list", .object(params), timeout: 15)
+            items.append(contentsOf: (r["data"]?.array ?? []).map {
+                WorkflowInfo(workflow: $0, fallbackThreadId: threadId)
+            })
+            cursor = r["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/workflow/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return items
+    }
+
+    private func listThreadWorkflowRuns(threadId: String) async throws -> [WorkflowInfo] {
+        var items: [WorkflowInfo] = []
+        var cursor: String?
+        var seenCursors = Set<String>()
+        var pageCount = 0
+        repeat {
+            if let cursor, !seenCursors.insert(cursor).inserted {
+                throw AppServerError.decode("thread/workflow/run/list repeated cursor \(cursor)")
+            }
+            var params: [String: JSONValue] = ["threadId": .string(threadId), "limit": .number(100)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let r = try await request("thread/workflow/run/list", .object(params), timeout: 15)
+            items.append(contentsOf: (r["data"]?.array ?? []).map {
+                WorkflowInfo(run: $0, fallbackThreadId: threadId)
+            })
+            cursor = r["nextCursor"]?.string
+            pageCount += 1
+            if pageCount >= 20, cursor != nil {
+                throw AppServerError.decode("thread/workflow/run/list exceeded pagination limit")
+            }
+        } while cursor != nil
+        return items
     }
 
     // MARK: Active sessions
@@ -724,13 +848,52 @@ extension AppServerClient {
     }
 
     func listAuthProfiles() async throws -> [AuthProfileInfo] {
-        let r = try await request("authProfile/list", .object([:]), timeout: 20)
-        return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
+        do {
+            let r = try await request("authProfile/list", .object([:]), timeout: 20)
+            return (r["data"]?.array ?? []).map(AuthProfileInfo.init(from:))
+        } catch {
+            guard Self.isUnsupportedAuthProfileRpc(error) else { throw error }
+            return try await ProfileRunner.loadProfiles()
+        }
+    }
+
+    func saveCurrentAuthProfile(_ name: String) async throws -> AuthProfileInfo {
+        let r = try await request("authProfile/saveCurrent", .object(["name": .string(name)]), timeout: 20)
+        return AuthProfileInfo(from: r["profile"] ?? r)
     }
 
     func switchAuthProfile(_ name: String) async throws -> AuthProfileInfo {
-        let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
-        return AuthProfileInfo(from: r["profile"] ?? r)
+        do {
+            let r = try await request("authProfile/switch", .object(["name": .string(name)]), timeout: 20)
+            return AuthProfileInfo(from: r["profile"] ?? r)
+        } catch {
+            guard Self.isUnsupportedAuthProfileRpc(error) else { throw error }
+            try await ProfileRunner.switchProfile(name)
+            let profiles = try await ProfileRunner.loadProfiles()
+            if let switched = profiles.first(where: { $0.name == name && $0.active }) {
+                return switched
+            }
+            throw AppServerError.decode("profile switch did not activate \(name)")
+        }
+    }
+
+    private static func isUnsupportedAuthProfileRpc(_ error: Swift.Error) -> Bool {
+        guard case AppServerError.rpc(let code, let message) = error else { return false }
+        return code == -32601 || message.localizedCaseInsensitiveContains("unsupported")
+            || message.localizedCaseInsensitiveContains("unknown method")
+            || message.localizedCaseInsensitiveContains("not found")
+    }
+
+    func listPermissionProfiles(cwd: String? = nil) async throws -> [String] {
+        var params: [String: JSONValue] = [:]
+        if let cwd, !cwd.isEmpty { params["cwd"] = .string(cwd) }
+        let r = try await request("permissionProfile/list", .object(params), timeout: 20)
+        return (r["data"]?.array ?? []).compactMap { $0["id"]?.string }
+    }
+
+    func readAccountUsage() async throws -> AccountUsageInfo {
+        let r = try await request("account/usage/read", timeout: 20)
+        return AccountUsageInfo(from: r)
     }
 
     /// Read the current model + provider from config.
@@ -747,6 +910,7 @@ extension AppServerClient {
         effort: String?,
         approval: String?,
         sandbox: String?,
+        defaultPermissions: String?,
         developerInstructions: String?,
         desktop: DesktopSettingsInfo
     ) {
@@ -761,6 +925,7 @@ extension AppServerClient {
                 cfg["model_reasoning_effort"]?.string ?? cfg["modelReasoningEffort"]?.string,
                 approval,
                 cfg["sandbox_mode"]?.string,
+                cfg["default_permissions"]?.string ?? cfg["defaultPermissions"]?.string,
                 cfg["developer_instructions"]?.string ?? cfg["developerInstructions"]?.string,
                 DesktopSettingsInfo(desktop: cfg["desktop"] ?? .null, config: cfg))
     }
@@ -808,6 +973,8 @@ extension AppServerClient {
         model: String? = nil,
         provider: String? = nil,
         effort: String? = nil,
+        permissions: String? = nil,
+        authProfile: ThreadAuthProfileUpdate = .keep,
         personality: String? = nil
     ) async throws {
         _ = try await request(
@@ -817,12 +984,14 @@ extension AppServerClient {
                 model: model,
                 provider: provider,
                 effort: effort,
+                permissions: permissions,
+                authProfile: authProfile,
                 personality: personality),
             timeout: 15)
     }
 
     func updateThreadPersonality(threadId: String, personality: String) async throws {
-        try await updateThreadSettings(threadId: threadId, personality: personality)
+        _ = try await updateThreadSettings(threadId: threadId, personality: personality)
     }
 
     func setThreadMemoryMode(threadId: String, enabled: Bool) async throws {
@@ -836,17 +1005,51 @@ extension AppServerClient {
         _ = try await request("memory/reset", .null, timeout: 30)
     }
 
+    func listMcpServers(threadId: String? = nil) async throws -> [McpServerStatusInfo] {
+        var params: [String: JSONValue] = [
+            "limit": .number(200),
+            "detail": .string("toolsAndAuthOnly"),
+        ]
+        if let threadId { params["threadId"] = .string(threadId) }
+        let r = try await request("mcpServerStatus/list", .object(params), timeout: 20)
+        return (r["data"]?.array ?? []).map(McpServerStatusInfo.init(from:))
+    }
+
+    func listHooks(cwds: [String] = []) async throws -> [HookEntryInfo] {
+        let params: JSONValue = .object([
+            "cwds": .array(cwds.map(JSONValue.string)),
+        ])
+        let r = try await request("hooks/list", params, timeout: 20)
+        return (r["data"]?.array ?? []).map(HookEntryInfo.init(from:))
+    }
+
+    func listWorktrees() async throws -> [WorktreeInfo] {
+        let r = try await request("worktree/list", .object(["limit": .number(200)]), timeout: 20)
+        return (r["data"]?.array ?? []).map(WorktreeInfo.init(from:))
+    }
+
     static func threadSettingsUpdateParams(
         threadId: String,
         model: String? = nil,
         provider: String? = nil,
         effort: String? = nil,
+        permissions: String? = nil,
+        authProfile: ThreadAuthProfileUpdate = .keep,
         personality: String? = nil
     ) -> JSONValue {
         var params: [String: JSONValue] = ["threadId": .string(threadId)]
         if let model { params["model"] = .string(model) }
         if let provider { params["modelProvider"] = .string(provider) }
         if let effort { params["effort"] = .string(effort) }
+        if let permissions { params["permissions"] = .string(permissions) }
+        switch authProfile {
+        case .keep:
+            break
+        case .set(let name):
+            params["authProfile"] = .string(name)
+        case .clearDefault:
+            params["authProfile"] = .null
+        }
         if let personality { params["personality"] = .string(personality) }
         return .object(params)
     }

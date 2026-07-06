@@ -20,6 +20,14 @@ use codex_state::BackgroundAgentRunCreateParams;
 use codex_state::BackgroundAgentRunStatus;
 use codex_state::BackgroundAgentStatusSnapshotParams;
 use codex_state::StateRuntime;
+use codex_state::busy_retry::retry_on_busy;
+
+const COMPACT_FIELD_PREVIEW_CHARS: usize = 160;
+const COMPACT_PAYLOAD_PREVIEW_CHARS: usize = 240;
+const DEFAULT_AGENT_LIST_LIMIT: usize = 20;
+const DEFAULT_AGENT_LIST_JSON_LIMIT: usize = 50;
+const DEFAULT_AGENT_EVENTS_LIMIT: usize = 20;
+const DEFAULT_AGENT_EVENTS_JSON_LIMIT: usize = 100;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentStartRuntimeContext {
@@ -85,7 +93,7 @@ pub(crate) enum AgentSubcommand {
     Delete(AgentIdCommand),
 
     /// Print durable background-agent admission and status diagnostics.
-    Diagnostics,
+    Diagnostics(AgentDiagnosticsCommand),
 }
 
 #[derive(Debug, Args)]
@@ -101,19 +109,35 @@ pub(crate) struct AgentStartCommand {
     /// Working directory for the run. Defaults to the current directory.
     #[arg(long = "cwd")]
     cwd: Option<PathBuf>,
+
+    /// Output the full background-agent record as JSON.
+    #[arg(long = "json")]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentListCommand {
     /// Maximum number of runs to return.
-    #[arg(long = "limit", default_value_t = 50)]
-    limit: usize,
+    #[arg(long = "limit")]
+    limit: Option<usize>,
+
+    /// Output full background-agent records as JSON.
+    #[arg(long = "json")]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct AgentIdCommand {
     /// Background-agent run id.
     agent_id: String,
+
+    /// Output the full background-agent record as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
 }
 
 #[derive(Debug, Args)]
@@ -126,8 +150,34 @@ pub(crate) struct AgentLogsCommand {
     after_seq: Option<i64>,
 
     /// Maximum number of events to return.
-    #[arg(long = "limit", default_value_t = 100)]
-    limit: usize,
+    #[arg(long = "limit")]
+    limit: Option<usize>,
+
+    /// Output full background-agent event payloads as JSON.
+    #[arg(long = "json")]
+    json: bool,
+
+    /// Include compact payload previews in human output.
+    #[arg(long = "verbose")]
+    verbose: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentDiagnosticsCommand {
+    /// Output full diagnostics as JSON.
+    #[arg(long = "json")]
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AgentPrintMode {
+    Json,
+    Start,
+    List,
+    Read { verbose: bool },
+    Events { verbose: bool },
+    Mutation { action: &'static str },
+    Diagnostics,
 }
 
 pub(crate) async fn run_agent_command(
@@ -136,22 +186,44 @@ pub(crate) async fn run_agent_command(
     auth_profile: Option<&str>,
 ) -> anyhow::Result<()> {
     let state_db = state_runtime().await?;
-    let output = match cli.subcommand {
+    let (output, print_mode) = match cli.subcommand {
         AgentSubcommand::Start(cmd) => {
-            start_agent(
+            let json = cmd.json;
+            let output = start_agent(
                 state_db.as_ref(),
                 cmd,
                 runtime_context.as_ref(),
                 auth_profile,
             )
-            .await?
+            .await?;
+            (
+                output,
+                if json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Start
+                },
+            )
         }
         AgentSubcommand::List(cmd) => {
+            let limit = cmd.limit.unwrap_or(if cmd.json {
+                DEFAULT_AGENT_LIST_JSON_LIMIT
+            } else {
+                DEFAULT_AGENT_LIST_LIMIT
+            });
             let runs = state_db
-                .list_background_agent_runs(Some(cmd.limit))
+                .list_background_agent_runs(Some(limit))
                 .await
                 .context("failed to list background agents")?;
-            json!({ "data": runs.into_iter().map(run_json).collect::<Vec<_>>() })
+            let output = json!({ "data": runs.into_iter().map(run_json).collect::<Vec<_>>() });
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::List
+                },
+            )
         }
         AgentSubcommand::Read(cmd) => {
             let agent = state_db
@@ -167,10 +239,13 @@ pub(crate) async fn run_agent_command(
                 .await
                 .context("failed to read background agent execution snapshot")?;
             let pending_interactions = state_db
-                .list_background_agent_pending_interactions(cmd.agent_id.as_str(), None)
+                .list_background_agent_pending_interactions(
+                    cmd.agent_id.as_str(),
+                    /*status*/ None,
+                )
                 .await
                 .context("failed to list background agent pending interactions")?;
-            json!({
+            let output = json!({
                 "agent": agent.map(run_json),
                 "statusSnapshot": status_snapshot.map(|snapshot| json!({
                     "seq": snapshot.seq,
@@ -202,19 +277,46 @@ pub(crate) async fn run_agent_command(
                         "timeoutAt": interaction.timeout_at.map(|value| value.timestamp()),
                     }))
                 .collect::<Vec<_>>(),
-            })
+            });
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Read {
+                        verbose: cmd.verbose,
+                    }
+                },
+            )
         }
-        AgentSubcommand::Attach(cmd) => attach_agent(state_db.as_ref(), cmd).await?,
+        AgentSubcommand::Attach(cmd) => {
+            let json = cmd.json;
+            let verbose = cmd.verbose;
+            let output = attach_agent(state_db.as_ref(), cmd).await?;
+            (
+                output,
+                if json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Events { verbose }
+                },
+            )
+        }
         AgentSubcommand::Logs(cmd) => {
+            let limit = cmd.limit.unwrap_or(if cmd.json {
+                DEFAULT_AGENT_EVENTS_JSON_LIMIT
+            } else {
+                DEFAULT_AGENT_EVENTS_LIMIT
+            });
             let events = state_db
                 .list_background_agent_events_after(
                     cmd.agent_id.as_str(),
                     cmd.after_seq,
-                    Some(cmd.limit),
+                    Some(limit),
                 )
                 .await
                 .context("failed to list background agent events")?;
-            json!({
+            let output = json!({
                 "data": events
                     .into_iter()
                     .map(|event| json!({
@@ -225,11 +327,29 @@ pub(crate) async fn run_agent_command(
                         "createdAt": event.created_at.timestamp(),
                     }))
                     .collect::<Vec<_>>()
-            })
+            });
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Events {
+                        verbose: cmd.verbose,
+                    }
+                },
+            )
         }
         AgentSubcommand::Stop(cmd) => {
             let run = stop_agent(state_db.as_ref(), cmd.agent_id.as_str()).await?;
-            json!({ "agent": run.map(run_json) })
+            let output = json!({ "agent": run.map(run_json) });
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Mutation { action: "stop" }
+                },
+            )
         }
         AgentSubcommand::Delete(cmd) => {
             let existing_run = state_db
@@ -267,11 +387,29 @@ pub(crate) async fn run_agent_command(
                 .get_background_agent_run(cmd.agent_id.as_str())
                 .await
                 .context("failed to read background agent after delete")?;
-            json!({ "deleted": deleted, "agent": run.map(run_json) })
+            let output = json!({ "deleted": deleted, "agent": run.map(run_json) });
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Mutation { action: "delete" }
+                },
+            )
         }
-        AgentSubcommand::Diagnostics => diagnostics_json(state_db.as_ref()).await?,
+        AgentSubcommand::Diagnostics(cmd) => {
+            let output = diagnostics_json(state_db.as_ref()).await?;
+            (
+                output,
+                if cmd.json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Diagnostics
+                },
+            )
+        }
     };
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    print_agent_output(&output, print_mode)?;
     Ok(())
 }
 
@@ -287,6 +425,7 @@ pub(crate) async fn run_background_agent_start(
                 prompt: vec![prompt],
                 idempotency_key: None,
                 cwd,
+                json: false,
             }),
         },
         runtime_context,
@@ -298,7 +437,9 @@ pub(crate) async fn run_background_agent_start(
 pub(crate) async fn run_background_agent_attach(
     agent_id: String,
     after_seq: Option<i64>,
-    limit: usize,
+    limit: Option<usize>,
+    json: bool,
+    verbose: bool,
     auth_profile: Option<&str>,
 ) -> anyhow::Result<()> {
     run_agent_command(
@@ -307,9 +448,11 @@ pub(crate) async fn run_background_agent_attach(
                 agent_id,
                 after_seq,
                 limit,
+                json,
+                verbose,
             }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -318,7 +461,9 @@ pub(crate) async fn run_background_agent_attach(
 pub(crate) async fn run_background_agent_logs(
     agent_id: String,
     after_seq: Option<i64>,
-    limit: usize,
+    limit: Option<usize>,
+    json: bool,
+    verbose: bool,
     auth_profile: Option<&str>,
 ) -> anyhow::Result<()> {
     run_agent_command(
@@ -327,9 +472,11 @@ pub(crate) async fn run_background_agent_logs(
                 agent_id,
                 after_seq,
                 limit,
+                json,
+                verbose,
             }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -337,13 +484,19 @@ pub(crate) async fn run_background_agent_logs(
 
 pub(crate) async fn run_background_agent_stop(
     agent_id: String,
+    json: bool,
+    verbose: bool,
     auth_profile: Option<&str>,
 ) -> anyhow::Result<()> {
     run_agent_command(
         AgentCli {
-            subcommand: AgentSubcommand::Stop(AgentIdCommand { agent_id }),
+            subcommand: AgentSubcommand::Stop(AgentIdCommand {
+                agent_id,
+                json,
+                verbose,
+            }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -351,13 +504,19 @@ pub(crate) async fn run_background_agent_stop(
 
 pub(crate) async fn run_background_agent_delete(
     agent_id: String,
+    json: bool,
+    verbose: bool,
     auth_profile: Option<&str>,
 ) -> anyhow::Result<()> {
     run_agent_command(
         AgentCli {
-            subcommand: AgentSubcommand::Delete(AgentIdCommand { agent_id }),
+            subcommand: AgentSubcommand::Delete(AgentIdCommand {
+                agent_id,
+                json,
+                verbose,
+            }),
         },
-        None,
+        /*runtime_context*/ None,
         auth_profile,
     )
     .await
@@ -375,7 +534,362 @@ pub(crate) async fn run_background_agent_daemon_stop() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn print_agent_output(output: &Value, mode: AgentPrintMode) -> anyhow::Result<()> {
+    match mode {
+        AgentPrintMode::Json => print_json(output),
+        AgentPrintMode::Start => {
+            print_agent_start(output);
+            Ok(())
+        }
+        AgentPrintMode::List => {
+            print_agent_list(output);
+            Ok(())
+        }
+        AgentPrintMode::Read { verbose } => {
+            print_agent_read(output, verbose);
+            Ok(())
+        }
+        AgentPrintMode::Events { verbose } => {
+            print_agent_events(output, verbose);
+            Ok(())
+        }
+        AgentPrintMode::Mutation { action } => {
+            print_agent_mutation(output, action);
+            Ok(())
+        }
+        AgentPrintMode::Diagnostics => {
+            print_agent_diagnostics(output);
+            Ok(())
+        }
+    }
+}
+
+fn print_json(output: &Value) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(output)?);
+    Ok(())
+}
+
+fn print_agent_start(output: &Value) {
+    let Some(agent) = output.get("agent") else {
+        println!("No background agent was returned.");
+        return;
+    };
+    let id = value_str(agent, "agentId").unwrap_or("<unknown>");
+    let status = value_str(agent, "status").unwrap_or("unknown");
+    let created = output
+        .get("created")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if created {
+        println!("Started background agent {id} ({status}).");
+    } else {
+        println!("Found existing background agent {id} ({status}).");
+    }
+    if let Some(reason) = value_str(agent, "statusReason") {
+        println!(
+            "Reason: {}",
+            compact_text_preview(reason, COMPACT_FIELD_PREVIEW_CHARS)
+        );
+    }
+    println!(
+        "Use `codewith agent read {id}` for status, `codewith agent logs {id}` for events, or `codewith agent read {id} --json` for the full record."
+    );
+}
+
+fn print_agent_list(output: &Value) {
+    let rows = output
+        .get("data")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if rows.is_empty() {
+        println!("No background agents found.");
+        println!("Use `codewith agent start <prompt>` to enqueue one.");
+        return;
+    }
+
+    println!(
+        "{:<48}  {:<14}  {:<8}  {:<10}  {:<12}  SUMMARY",
+        "AGENT_ID", "STATUS", "DESIRED", "SOURCE", "UPDATED_AT"
+    );
+    for agent in rows {
+        let id = value_str(agent, "agentId").unwrap_or("<unknown>");
+        let status = value_str(agent, "status").unwrap_or("unknown");
+        let desired = value_str(agent, "desiredState").unwrap_or("unknown");
+        let source = value_str(agent, "source").unwrap_or("unknown");
+        let updated_at = value_i64(agent, "updatedAt")
+            .map(|timestamp| timestamp.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let summary = value_str(agent, "statusReason")
+            .map(|reason| compact_text_preview(reason, COMPACT_FIELD_PREVIEW_CHARS))
+            .unwrap_or_default();
+        println!("{id:<48}  {status:<14}  {desired:<8}  {source:<10}  {updated_at:<12}  {summary}");
+    }
+    println!(
+        "Shown {} agent(s). Use `codewith agent read <id>` for details, `codewith agent logs <id>` for events, `--limit N` to page, or `--json` for full records.",
+        rows.len()
+    );
+}
+
+fn print_agent_read(output: &Value, verbose: bool) {
+    let Some(agent) = output.get("agent").filter(|value| !value.is_null()) else {
+        println!("Background agent not found.");
+        return;
+    };
+    let id = value_str(agent, "agentId").unwrap_or("<unknown>");
+    println!("Background agent {id}");
+    println!(
+        "  status: {}",
+        value_str(agent, "status").unwrap_or("unknown")
+    );
+    println!(
+        "  desired: {}",
+        value_str(agent, "desiredState").unwrap_or("unknown")
+    );
+    if let Some(reason) = value_str(agent, "statusReason") {
+        println!(
+            "  reason: {}",
+            compact_text_preview(reason, COMPACT_FIELD_PREVIEW_CHARS)
+        );
+    }
+    if let Some(thread_id) = value_str(agent, "threadId") {
+        println!("  thread: {thread_id}");
+    }
+    println!(
+        "  events: last_seq={} last_snapshot_seq={}",
+        value_i64(agent, "lastEventSeq").unwrap_or_default(),
+        value_i64(agent, "lastSnapshotSeq").unwrap_or_default()
+    );
+
+    if let Some(snapshot) = output
+        .get("statusSnapshot")
+        .filter(|value| !value.is_null())
+    {
+        println!(
+            "  snapshot: status={} pending={} last_event_seq={}",
+            value_str(snapshot, "status").unwrap_or("unknown"),
+            value_i64(snapshot, "pendingInteractionCount").unwrap_or_default(),
+            value_i64(snapshot, "lastEventSeq").unwrap_or_default()
+        );
+        if let Some(summary) = value_str(snapshot, "summary") {
+            println!(
+                "  summary: {}",
+                compact_text_preview(summary, COMPACT_FIELD_PREVIEW_CHARS)
+            );
+        }
+        if verbose && let Some(payload) = snapshot.get("payload") {
+            println!(
+                "  status_payload: {}",
+                compact_json_preview(payload, COMPACT_PAYLOAD_PREVIEW_CHARS)
+            );
+        }
+    }
+
+    if let Some(snapshot) = output
+        .get("executionSnapshot")
+        .filter(|value| !value.is_null())
+    {
+        println!(
+            "  execution_snapshot: kind={} seq={}",
+            value_str(snapshot, "snapshotKind").unwrap_or("unknown"),
+            value_i64(snapshot, "seq").unwrap_or_default()
+        );
+        if verbose && let Some(payload) = snapshot.get("payload") {
+            println!(
+                "  execution_payload: {}",
+                compact_json_preview(payload, COMPACT_PAYLOAD_PREVIEW_CHARS)
+            );
+        }
+    }
+
+    let pending = output
+        .get("pendingInteractions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    println!("  pending_interactions: {}", pending.len());
+    if verbose {
+        for interaction in pending {
+            println!(
+                "    {} {} {}",
+                value_str(interaction, "interactionId").unwrap_or("<unknown>"),
+                value_str(interaction, "kind").unwrap_or("unknown"),
+                value_str(interaction, "status").unwrap_or("unknown")
+            );
+            if let Some(payload) = interaction.get("requestPayload") {
+                println!(
+                    "      request: {}",
+                    compact_json_preview(payload, COMPACT_PAYLOAD_PREVIEW_CHARS)
+                );
+            }
+        }
+    }
+    println!(
+        "Use `codewith agent read {id} --verbose` for payload previews or `--json` for the full record."
+    );
+}
+
+fn print_agent_events(output: &Value, verbose: bool) {
+    if let Some(agent) = output.get("agent").filter(|value| !value.is_null()) {
+        let id = value_str(agent, "agentId").unwrap_or("<unknown>");
+        println!(
+            "Background agent {id}: {}",
+            value_str(agent, "status").unwrap_or("unknown")
+        );
+    }
+
+    let events = output
+        .get("events")
+        .or_else(|| output.get("data"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if events.is_empty() {
+        println!("No background-agent events found.");
+    } else {
+        println!(
+            "{:<8}  {:<28}  {:<12}  SUMMARY",
+            "SEQ", "EVENT", "CREATED_AT"
+        );
+        for event in events {
+            let seq = value_i64(event, "seq").unwrap_or_default();
+            let event_type = value_str(event, "eventType").unwrap_or("unknown");
+            let created_at = value_i64(event, "createdAt")
+                .map(|timestamp| timestamp.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let summary = if verbose {
+                event
+                    .get("payload")
+                    .map(|payload| compact_json_preview(payload, COMPACT_PAYLOAD_PREVIEW_CHARS))
+                    .unwrap_or_default()
+            } else {
+                payload_event_summary(event.get("payload"))
+            };
+            println!("{seq:<8}  {event_type:<28}  {created_at:<12}  {summary}");
+        }
+    }
+
+    let pending = output
+        .get("pendingInteractions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if !pending.is_empty() {
+        println!("Pending interactions: {}", pending.len());
+    }
+    println!(
+        "Use `--verbose` for payload previews, `--json` for full payloads, `--after-seq N` to continue, or `--limit N` to page."
+    );
+}
+
+fn print_agent_mutation(output: &Value, action: &'static str) {
+    let Some(agent) = output.get("agent").filter(|value| !value.is_null()) else {
+        println!("No background agent matched the {action} request.");
+        return;
+    };
+    let id = value_str(agent, "agentId").unwrap_or("<unknown>");
+    let status = value_str(agent, "status").unwrap_or("unknown");
+    println!("Requested {action} for background agent {id} ({status}).");
+    if let Some(reason) = value_str(agent, "statusReason") {
+        println!(
+            "Reason: {}",
+            compact_text_preview(reason, COMPACT_FIELD_PREVIEW_CHARS)
+        );
+    }
+    println!("Use `codewith agent read {id}` for status or `--json` for the full record.");
+}
+
+fn print_agent_diagnostics(output: &Value) {
+    println!("Background-agent diagnostics");
+    println!(
+        "  active: {} / {}",
+        value_i64(output, "activeRunCount").unwrap_or_default(),
+        value_i64(output, "maxActiveRunsPerUser").unwrap_or_default()
+    );
+    println!(
+        "  available_slots: {}",
+        value_i64(output, "availableActiveRunSlots").unwrap_or_default()
+    );
+    println!(
+        "  pending_interactions: {}",
+        value_i64(output, "pendingInteractionCount").unwrap_or_default()
+    );
+    println!(
+        "  admission_allowed: {}",
+        output
+            .get("admissionAllowed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    );
+    if let Some(counts) = output.get("runsByStatus").and_then(Value::as_array) {
+        let summary = counts
+            .iter()
+            .filter_map(|entry| {
+                let status = value_str(entry, "status")?;
+                let count = value_i64(entry, "count")?;
+                Some(format!("{status}={count}"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !summary.is_empty() {
+            println!("  runs_by_status: {summary}");
+        }
+    }
+    if let Some(daemon) = output.get("daemon") {
+        println!(
+            "  daemon: {}",
+            compact_json_preview(daemon, COMPACT_PAYLOAD_PREVIEW_CHARS)
+        );
+    }
+    println!("Use `codewith agent diagnostics --json` for the full diagnostic object.");
+}
+
+fn payload_event_summary(payload: Option<&Value>) -> String {
+    let Some(payload) = payload else {
+        return String::new();
+    };
+    for key in ["summary", "phase", "status", "reason", "message"] {
+        if let Some(value) = value_str(payload, key) {
+            return compact_text_preview(value, COMPACT_FIELD_PREVIEW_CHARS);
+        }
+    }
+    "(payload hidden; use --verbose)".to_string()
+}
+
+fn compact_json_preview(value: &Value, max_chars: usize) -> String {
+    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
+    compact_text_preview(&rendered, max_chars)
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_end(&normalized, max_chars)
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn value_i64(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(Value::as_i64)
+}
+
 async fn attach_agent(state_db: &StateRuntime, cmd: AgentLogsCommand) -> anyhow::Result<Value> {
+    let limit = cmd.limit.unwrap_or(if cmd.json {
+        DEFAULT_AGENT_EVENTS_JSON_LIMIT
+    } else {
+        DEFAULT_AGENT_EVENTS_LIMIT
+    });
     state_db
         .expire_background_agent_pending_interactions()
         .await
@@ -412,11 +926,11 @@ async fn attach_agent(state_db: &StateRuntime, cmd: AgentLogsCommand) -> anyhow:
         .await
         .context("failed to read background agent execution snapshot")?;
     let events = state_db
-        .list_background_agent_events_after(cmd.agent_id.as_str(), cmd.after_seq, Some(cmd.limit))
+        .list_background_agent_events_after(cmd.agent_id.as_str(), cmd.after_seq, Some(limit))
         .await
         .context("failed to list background agent events")?;
     let pending_interactions = state_db
-        .list_background_agent_pending_interactions(cmd.agent_id.as_str(), None)
+        .list_background_agent_pending_interactions(cmd.agent_id.as_str(), /*status*/ None)
         .await
         .context("failed to list background agent pending interactions")?;
     Ok(json!({
@@ -476,10 +990,11 @@ async fn start_agent(
         anyhow::bail!("agent prompt must not be empty");
     }
     if let Some(idempotency_key) = cmd.idempotency_key.as_deref()
-        && let Some(run) = state_db
-            .get_background_agent_run_by_idempotency_key(idempotency_key)
-            .await
-            .context("failed to load background agent idempotency key")?
+        && let Some(run) = retry_on_busy("load background agent idempotency key", || {
+            state_db.get_background_agent_run_by_idempotency_key(idempotency_key)
+        })
+        .await
+        .context("failed to load background agent idempotency key")?
     {
         let daemon = background_agent_daemon()?;
         let daemon_output = daemon.start().await?;
@@ -498,83 +1013,94 @@ async fn start_agent(
         .or(auth_profile)
         .map(str::to_string);
     let prompt_snapshot_ref = format!("inline:{agent_id}:prompt");
-    let run = state_db
-        .create_background_agent_run(&BackgroundAgentRunCreateParams {
-            id: agent_id.clone(),
-            idempotency_key: cmd.idempotency_key,
-            request_id: None,
-            source: "cli".to_string(),
-            prompt_snapshot_ref: prompt_snapshot_ref.clone(),
-            input_snapshot_ref: None,
-            thread_id: None,
-            thread_store_kind: "background-agent".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
-            parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: auth_profile_ref.clone(),
-            status_reason: Some("queued by codewith agent start".to_string()),
-            config_fingerprint: None,
-            version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
-        })
-        .await
-        .context("failed to create background agent")?;
-    let event = state_db
-        .append_background_agent_event(
+    // The state DB is shared across many concurrent processes; every write
+    // below retries transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT contention
+    // with backoff instead of failing the whole `agent start` invocation.
+    let create_params = BackgroundAgentRunCreateParams {
+        id: agent_id.clone(),
+        idempotency_key: cmd.idempotency_key,
+        request_id: None,
+        source: "cli".to_string(),
+        prompt_snapshot_ref: prompt_snapshot_ref.clone(),
+        input_snapshot_ref: None,
+        thread_id: None,
+        thread_store_kind: "background-agent".to_string(),
+        thread_store_id: None,
+        rollout_path: None,
+        parent_thread_id: None,
+        parent_agent_run_id: None,
+        spawn_linkage_json: None,
+        auth_profile_ref: auth_profile_ref.clone(),
+        status_reason: Some("queued by codewith agent start".to_string()),
+        config_fingerprint: None,
+        version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
+    };
+    let run = retry_on_busy("create background agent run", || {
+        state_db.create_background_agent_run(&create_params)
+    })
+    .await
+    .context("failed to create background agent")?;
+    let start_event_payload = json!({
+        "cwd": cwd.display().to_string(),
+        "prompt": prompt,
+        "promptSnapshotRef": prompt_snapshot_ref,
+    });
+    let event = retry_on_busy("append background agent start event", || {
+        state_db.append_background_agent_event(
             agent_id.as_str(),
             "agent.started",
-            &json!({
-                "cwd": cwd.display().to_string(),
-                "prompt": prompt,
-                "promptSnapshotRef": prompt_snapshot_ref,
-            }),
+            &start_event_payload,
         )
-        .await
-        .context("failed to append background agent start event")?;
-    state_db
-        .create_background_agent_execution_snapshot(&BackgroundAgentExecutionSnapshotParams {
-            run_id: agent_id.clone(),
-            snapshot_kind: "initial_execution_context".to_string(),
-            payload_json: json!({
-                "snapshotSource": "codewith agent start",
-                "cwd": cwd.display().to_string(),
-                "workspaceRoots": runtime_context.map(|context| {
-                    context
-                        .workspace_roots
-                        .iter()
-                        .map(|root| root.display().to_string())
-                        .collect::<Vec<_>>()
-                }),
-                "authProfileRef": auth_profile_ref,
-                "approvalPolicy": runtime_context
-                    .and_then(|context| context.approval_policy.as_ref()),
-                "permissionProfile": runtime_context
-                    .and_then(|context| context.permission_profile.as_ref()),
-                "model": runtime_context.and_then(|context| context.model.as_deref()),
-                "provider": runtime_context.and_then(|context| context.provider.as_deref()),
-                "serviceTier": runtime_context
-                    .and_then(|context| context.service_tier.as_deref()),
-                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+    })
+    .await
+    .context("failed to append background agent start event")?;
+    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.clone(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "snapshotSource": "codewith agent start",
+            "cwd": cwd.display().to_string(),
+            "workspaceRoots": runtime_context.map(|context| {
+                context
+                    .workspace_roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
             }),
-            recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-            config_fingerprint: None,
-        })
-        .await
-        .context("failed to create background agent execution snapshot")?;
-    state_db
-        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
-            run_id: agent_id,
-            seq: event.seq,
-            status: BackgroundAgentRunStatus::Queued,
-            desired_state: BackgroundAgentDesiredState::Running,
-            summary: Some("Queued".to_string()),
-            pending_interaction_count: 0,
-            last_event_seq: event.seq,
-            payload_json: json!({"phase": "queued"}),
-        })
-        .await
-        .context("failed to create background agent status snapshot")?;
+            "authProfileRef": auth_profile_ref,
+            "approvalPolicy": runtime_context
+                .and_then(|context| context.approval_policy.as_ref()),
+            "permissionProfile": runtime_context
+                .and_then(|context| context.permission_profile.as_ref()),
+            "model": runtime_context.and_then(|context| context.model.as_deref()),
+            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+            "serviceTier": runtime_context
+                .and_then(|context| context.service_tier.as_deref()),
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: None,
+    };
+    retry_on_busy("create background agent execution snapshot", || {
+        state_db.create_background_agent_execution_snapshot(&snapshot_params)
+    })
+    .await
+    .context("failed to create background agent execution snapshot")?;
+    let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
+        run_id: agent_id,
+        seq: event.seq,
+        status: BackgroundAgentRunStatus::Queued,
+        desired_state: BackgroundAgentDesiredState::Running,
+        summary: Some("Queued".to_string()),
+        pending_interaction_count: 0,
+        last_event_seq: event.seq,
+        payload_json: json!({"phase": "queued"}),
+    };
+    retry_on_busy("create background agent status snapshot", || {
+        state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
+    })
+    .await
+    .context("failed to create background agent status snapshot")?;
     let daemon = background_agent_daemon()?;
     let daemon_output = daemon.start().await?;
     Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
@@ -632,7 +1158,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
         .await
         .context("failed to count background agent runs")?;
     let pending_interaction_count = state_db
-        .count_background_agent_pending_interactions(None)
+        .count_background_agent_pending_interactions(/*status*/ None)
         .await
         .context("failed to count background agent pending interactions")?;
     let max_active_runs_per_user = 8_i64;
@@ -758,4 +1284,45 @@ fn new_agent_id() -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     format!("cli-{nanos}-{}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn payload_summary_prefers_short_human_fields() {
+        let payload = json!({
+            "summary": "Finished indexing",
+            "message": "This longer message should not be used",
+        });
+
+        assert_eq!(payload_event_summary(Some(&payload)), "Finished indexing");
+    }
+
+    #[test]
+    fn payload_summary_hides_unallowlisted_payload_fields() {
+        let payload = json!({
+            "prompt": "implement a private feature",
+            "cwd": "/private/workspace",
+        });
+
+        assert_eq!(
+            payload_event_summary(Some(&payload)),
+            "(payload hidden; use --verbose)"
+        );
+    }
+
+    #[test]
+    fn compact_json_preview_truncates_large_payloads() {
+        let payload = json!({
+            "message": "x".repeat(400),
+        });
+
+        let preview = compact_json_preview(&payload, 80);
+
+        assert!(preview.ends_with("..."));
+        assert!(preview.len() <= 83);
+    }
 }

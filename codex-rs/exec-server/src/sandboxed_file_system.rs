@@ -15,6 +15,7 @@ use crate::FileSystemResult;
 use crate::FileSystemSandboxContext;
 use crate::ReadDirectoryEntry;
 use crate::RemoveOptions;
+use crate::SYMLINKED_FILE_ERROR;
 use crate::fs_helper::FsHelperPayload;
 use crate::fs_helper::FsHelperRequest;
 use crate::fs_sandbox::FileSystemSandboxRunner;
@@ -108,6 +109,31 @@ impl ExecutorFileSystem for SandboxedFileSystem {
                 format!("fs/readFile returned invalid base64 dataBase64: {err}"),
             )
         })
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        // Emulation with the same limitation as `RemoteFileSystem`: the
+        // helper's fs/getMetadata reports `is_symlink` from
+        // `symlink_metadata`, but there is no O_NOFOLLOW-equivalent guarantee
+        // between the metadata check and the read.
+        let metadata = self.get_metadata(path, sandbox).await?;
+        if metadata.is_symlink {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                SYMLINKED_FILE_ERROR,
+            ));
+        }
+        if !metadata.is_file {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        self.read_file(path, sandbox).await
     }
 
     async fn write_file(

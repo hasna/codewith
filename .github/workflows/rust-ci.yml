@@ -75,7 +75,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
           tool: just
       - name: cargo fmt
@@ -97,7 +97,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
           tool: cargo-shear@1.11.2
       - name: cargo shear
@@ -165,7 +165,7 @@ jobs:
         include:
           - name: Linux
             runner: ubuntu-24.04
-            timeout_minutes: 90
+            timeout_minutes: 180
             runs_on: ubuntu-24.04
           # macOS Bazel argument-comment-lint is disabled in keyless Codewith
           # CI because the hermetic Apple CLTools SDK archive currently returns

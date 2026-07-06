@@ -9,6 +9,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -32,6 +33,8 @@ fn resume_history(
         workspace_roots: None,
         current_date: None,
         timezone: None,
+        machine_id: None,
+        machine_name: None,
         approval_policy: config.permissions.approval_policy.value(),
         sandbox_policy: config.legacy_sandbox_policy(),
         permission_profile: None,
@@ -42,6 +45,7 @@ fn resume_history(
         personality: None,
         collaboration_mode: None,
         session_prompt: None,
+        worktree_mode: SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: None,

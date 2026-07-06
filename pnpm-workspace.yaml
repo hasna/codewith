@@ -7,7 +7,9 @@ ignoredBuiltDependencies:
   - esbuild
 
 minimumReleaseAge: 10080
-minimumReleaseAgeExclude: []
+minimumReleaseAgeExclude:
+  - '@hasna/*'
+  - '@hasnaxyz/*'
 
 blockExoticSubdeps: true
 strictDepBuilds: true

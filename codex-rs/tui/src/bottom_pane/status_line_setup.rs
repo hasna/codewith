@@ -148,6 +148,9 @@ pub(crate) enum StatusLineItem {
     /// Current thread title (if set by user).
     ThreadTitle,
 
+    /// Current goal title (if a goal is active or recently stopped).
+    GoalTitle,
+
     /// Latest checklist task progress from `update_plan` (if available).
     TaskProgress,
 }
@@ -202,6 +205,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => {
                 "Current thread title, or thread identifier when unnamed"
             }
+            StatusLineItem::GoalTitle => "Current goal title (omitted until a goal exists)",
             StatusLineItem::TaskProgress => {
                 "Latest task progress from update_plan (omitted until available)"
             }
@@ -236,6 +240,7 @@ impl StatusLineItem {
             StatusLineItem::FastMode => StatusSurfacePreviewItem::FastMode,
             StatusLineItem::RawOutput => StatusSurfacePreviewItem::RawOutput,
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
+            StatusLineItem::GoalTitle => StatusSurfacePreviewItem::GoalTitle,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
         }
     }

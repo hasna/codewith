@@ -12,6 +12,14 @@ fn resume_parses_prompt_after_global_flags() {
         "--json",
         "--model",
         "gpt-5.2-codex",
+        "--auth-profile",
+        "account005",
+        "--sandbox",
+        "read-only",
+        "-C",
+        "/tmp/resume-cwd",
+        "--add-dir",
+        "/tmp/resume-add-dir",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--ephemeral",
@@ -23,6 +31,17 @@ fn resume_parses_prompt_after_global_flags() {
     assert!(cli.ephemeral);
     assert!(cli.ignore_user_config);
     assert!(cli.ignore_rules);
+    assert_eq!(cli.shared.model.as_deref(), Some("gpt-5.2-codex"));
+    assert_eq!(cli.shared.auth_profile.as_deref(), Some("account005"));
+    assert!(matches!(
+        cli.shared.sandbox_mode,
+        Some(codex_utils_cli::SandboxModeCliArg::ReadOnly)
+    ));
+    assert_eq!(cli.shared.cwd, Some(PathBuf::from("/tmp/resume-cwd")));
+    assert_eq!(
+        cli.shared.add_dir,
+        vec![PathBuf::from("/tmp/resume-add-dir")]
+    );
     let Some(Command::Resume(args)) = cli.command else {
         panic!("expected resume command");
     };

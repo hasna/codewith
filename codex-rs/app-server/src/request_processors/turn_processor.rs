@@ -27,11 +27,16 @@ fn map_additional_context(
         .unwrap_or_default()
         .into_iter()
         .map(|(key, entry)| {
+            let AdditionalContextEntry {
+                value,
+                kind,
+                source: _,
+            } = entry;
             (
                 key,
                 CoreAdditionalContextEntry {
-                    value: entry.value,
-                    kind: match entry.kind {
+                    value,
+                    kind: match kind {
                         AdditionalContextKind::Untrusted => CoreAdditionalContextKind::Untrusted,
                         AdditionalContextKind::Application => {
                             CoreAdditionalContextKind::Application
@@ -41,6 +46,18 @@ fn map_additional_context(
             )
         })
         .collect()
+}
+
+fn existing_dir_is_inside(path: &Path, root: &Path) -> std::io::Result<bool> {
+    let path = std::fs::canonicalize(path)?;
+    let root = std::fs::canonicalize(root)?;
+    if !path.is_dir() || !root.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path and root must both be directories",
+        ));
+    }
+    Ok(path.starts_with(root))
 }
 
 struct ThreadSettingsBuildParams {
@@ -60,6 +77,7 @@ struct ThreadSettingsBuildParams {
     collaboration_mode: Option<CollaborationMode>,
     personality: Option<Personality>,
     session_prompt: Option<Option<String>>,
+    worktree_mode: Option<SessionWorktreeMode>,
 }
 
 impl TurnRequestProcessor {
@@ -435,8 +453,17 @@ impl TurnRequestProcessor {
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
                     session_prompt: None,
+                    worktree_mode: None,
                 },
             )
+            .await?;
+        let config_snapshot = thread.config_snapshot().await;
+        let effective_cwd = thread_settings
+            .cwd
+            .as_ref()
+            .map(AbsolutePathBuf::to_path_buf)
+            .unwrap_or_else(|| config_snapshot.cwd.to_path_buf());
+        self.ensure_pr_mode_worktree_ready(thread_id, &config_snapshot, effective_cwd.as_path())
             .await?;
 
         // Start the turn by submitting the user input. Return its submission id as turn_id.
@@ -462,7 +489,6 @@ impl TurnRequestProcessor {
             })?;
 
         if turn_has_input {
-            let config_snapshot = thread.config_snapshot().await;
             codex_memories_write::start_memories_startup_task(
                 Arc::clone(&self.thread_manager),
                 Arc::clone(&self.auth_manager),
@@ -512,6 +538,7 @@ impl TurnRequestProcessor {
             collaboration_mode,
             personality,
             session_prompt,
+            worktree_mode,
         } = params;
 
         if sandbox_policy.is_some() && permissions.is_some() {
@@ -563,7 +590,8 @@ impl TurnRequestProcessor {
             || summary.is_some()
             || collaboration_mode.is_some()
             || personality.is_some()
-            || session_prompt.is_some();
+            || session_prompt.is_some()
+            || worktree_mode.is_some();
 
         let runtime_workspace_roots =
             runtime_workspace_roots_request.map(resolve_runtime_workspace_roots);
@@ -641,6 +669,7 @@ impl TurnRequestProcessor {
                     collaboration_mode: collaboration_mode.clone(),
                     personality,
                     session_prompt: session_prompt.clone(),
+                    worktree_mode,
                 })
                 .await
                 .map_err(|err| {
@@ -667,6 +696,7 @@ impl TurnRequestProcessor {
             collaboration_mode,
             personality,
             session_prompt,
+            worktree_mode,
         })
     }
 
@@ -697,6 +727,7 @@ impl TurnRequestProcessor {
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
                     session_prompt: params.session_prompt,
+                    worktree_mode: params.worktree_mode,
                 },
             )
             .await?;
@@ -712,6 +743,55 @@ impl TurnRequestProcessor {
         }
 
         Ok(ThreadSettingsUpdateResponse {})
+    }
+
+    async fn ensure_pr_mode_worktree_ready(
+        &self,
+        thread_id: ThreadId,
+        config_snapshot: &ThreadConfigSnapshot,
+        effective_cwd: &Path,
+    ) -> Result<(), JSONRPCErrorError> {
+        if config_snapshot.worktree_mode != SessionWorktreeMode::PullRequest {
+            return Ok(());
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return Err(invalid_request(
+                "pull-request worktree mode requires managed worktree state",
+            ));
+        };
+        let worktree = state_db
+            .managed_worktrees()
+            .active_thread_managed_worktree(thread_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to read active worktree: {err}")))?;
+        let Some(worktree) = worktree else {
+            return Err(invalid_request(
+                "pull-request mode requires an attached active managed worktree before starting a turn",
+            ));
+        };
+        if worktree.mode != codex_state::ManagedWorktreeMode::IsolatedWorktree {
+            return Err(invalid_request(format!(
+                "pull-request mode requires an isolated managed worktree, but worktree {} is {:?}",
+                worktree.worktree_id, worktree.mode
+            )));
+        }
+        let cwd_inside_worktree =
+            existing_dir_is_inside(effective_cwd, worktree.worktree_path.as_path()).map_err(
+                |err| {
+                    invalid_request(format!(
+                        "pull-request mode requires cwd and attached managed worktree paths to be existing directories: {err}"
+                    ))
+                },
+            )?;
+        if !cwd_inside_worktree {
+            return Err(invalid_request(format!(
+                "pull-request mode requires cwd {} to be inside attached managed worktree {}",
+                effective_cwd.display(),
+                worktree.worktree_path.display()
+            )));
+        }
+
+        Ok(())
     }
 
     async fn thread_inject_items_response_inner(
@@ -1322,4 +1402,81 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::existing_dir_is_inside;
+    use pretty_assertions::assert_eq;
+    use std::fs;
+
+    #[test]
+    fn existing_dir_is_inside_accepts_existing_child_directory() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let child = worktree.join("src");
+        fs::create_dir_all(&child)?;
+
+        assert!(existing_dir_is_inside(&child, &worktree)?);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_existing_sibling_directory() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let sibling = tmp.path().join("sibling");
+        fs::create_dir_all(&worktree)?;
+        fs::create_dir_all(&sibling)?;
+
+        assert!(!existing_dir_is_inside(&sibling, &worktree)?);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_lexical_escape_when_target_is_missing() -> std::io::Result<()>
+    {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(worktree.join("nested"))?;
+        let lexical_escape = worktree
+            .join("nested")
+            .join("..")
+            .join("..")
+            .join("outside");
+
+        let err = existing_dir_is_inside(&lexical_escape, &worktree)
+            .expect_err("missing lexical escape should not fall back to starts_with");
+        assert_eq!(std::io::ErrorKind::NotFound, err.kind());
+        Ok(())
+    }
+
+    #[test]
+    fn existing_dir_is_inside_rejects_file_inside_worktree() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        fs::create_dir_all(&worktree)?;
+        let file = worktree.join("README.md");
+        fs::write(&file, "not a directory")?;
+
+        let err = existing_dir_is_inside(&file, &worktree)
+            .expect_err("cwd must be an existing directory");
+        assert_eq!(std::io::ErrorKind::InvalidInput, err.kind());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_dir_is_inside_rejects_symlink_escape() -> std::io::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let worktree = tmp.path().join("worktree");
+        let outside = tmp.path().join("outside");
+        let link = worktree.join("linked-outside");
+        fs::create_dir_all(&worktree)?;
+        fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, &link)?;
+
+        assert!(!existing_dir_is_inside(&link, &worktree)?);
+        Ok(())
+    }
 }

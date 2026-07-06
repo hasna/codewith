@@ -80,19 +80,25 @@ impl MessageSummaryItem {
 pub struct FinalMessageSeparator {
     elapsed_seconds: Option<u64>,
     runtime_metrics: Option<RuntimeMetricsSummary>,
-    summary_items: Vec<MessageSummaryItem>,
+    summary_items: Option<Vec<MessageSummaryItem>>,
 }
 impl FinalMessageSeparator {
     /// Creates a separator; completed turns should pass protocol turn duration when available.
+    ///
+    /// Uses the historical default label order (WebSocket send, Streams,
+    /// events received interleaved), which item-based ordering cannot
+    /// reproduce because the WebSocket item renders its send and received
+    /// labels adjacently. Explicitly configured summary items go through
+    /// [`Self::new_with_items`].
     pub(crate) fn new(
         elapsed_seconds: Option<u64>,
         runtime_metrics: Option<RuntimeMetricsSummary>,
     ) -> Self {
-        Self::new_with_items(
+        Self {
             elapsed_seconds,
             runtime_metrics,
-            DEFAULT_MESSAGE_SUMMARY_ITEMS.iter().copied(),
-        )
+            summary_items: None,
+        }
     }
 
     pub(crate) fn new_with_items(
@@ -103,17 +109,22 @@ impl FinalMessageSeparator {
         Self {
             elapsed_seconds,
             runtime_metrics,
-            summary_items: summary_items.into_iter().collect(),
+            summary_items: Some(summary_items.into_iter().collect()),
+        }
+    }
+
+    fn label_parts(&self) -> Vec<String> {
+        match self.summary_items.as_deref() {
+            Some(summary_items) => {
+                message_summary_labels(self.elapsed_seconds, self.runtime_metrics, summary_items)
+            }
+            None => default_message_summary_labels(self.elapsed_seconds, self.runtime_metrics),
         }
     }
 }
 impl HistoryCell for FinalMessageSeparator {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let label_parts = message_summary_labels(
-            self.elapsed_seconds,
-            self.runtime_metrics,
-            &self.summary_items,
-        );
+        let label_parts = self.label_parts();
 
         if label_parts.is_empty() {
             return vec![Line::from_iter(["─".repeat(width as usize).dim()])];
@@ -131,11 +142,7 @@ impl HistoryCell for FinalMessageSeparator {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let label_parts = message_summary_labels(
-            self.elapsed_seconds,
-            self.runtime_metrics,
-            &self.summary_items,
-        );
+        let label_parts = self.label_parts();
         if label_parts.is_empty() {
             Vec::new()
         } else {
@@ -145,20 +152,30 @@ impl HistoryCell for FinalMessageSeparator {
 }
 
 pub(crate) fn runtime_metrics_label(summary: RuntimeMetricsSummary) -> Option<String> {
-    let labels = message_summary_labels(
-        /*elapsed_seconds*/ None,
-        Some(summary),
-        &[
-            MessageSummaryItem::LocalTools,
-            MessageSummaryItem::Inference,
-            MessageSummaryItem::Streams,
-            MessageSummaryItem::WebSocket,
-            MessageSummaryItem::ResponsesApi,
-            MessageSummaryItem::Ttft,
-            MessageSummaryItem::Tbt,
-        ],
-    );
+    let labels = default_message_summary_labels(/*elapsed_seconds*/ None, Some(summary));
     (!labels.is_empty()).then(|| labels.join(" • "))
+}
+
+fn default_message_summary_labels(
+    elapsed_seconds: Option<u64>,
+    runtime_metrics: Option<RuntimeMetricsSummary>,
+) -> Vec<String> {
+    let mut parts = Vec::new();
+    push_worked_for_label(&mut parts, elapsed_seconds);
+
+    let Some(summary) = runtime_metrics.as_ref() else {
+        return parts;
+    };
+
+    push_local_tools_label(&mut parts, summary);
+    push_inference_label(&mut parts, summary);
+    push_websocket_send_label(&mut parts, summary);
+    push_streams_label(&mut parts, summary);
+    push_websocket_received_label(&mut parts, summary);
+    push_responses_api_labels(&mut parts, summary);
+    push_ttft_label(&mut parts, summary);
+    push_tbt_label(&mut parts, summary);
+    parts
 }
 
 pub(crate) fn message_summary_labels(
@@ -171,121 +188,155 @@ pub(crate) fn message_summary_labels(
     for item in summary_items {
         match item {
             MessageSummaryItem::WorkedFor => {
-                if let Some(elapsed_seconds) = elapsed_seconds
-                    .filter(|seconds| *seconds > 60)
-                    .map(crate::status_indicator_widget::fmt_elapsed_compact)
-                {
-                    parts.push(format!("Worked for {elapsed_seconds}"));
-                }
+                push_worked_for_label(&mut parts, elapsed_seconds);
             }
             MessageSummaryItem::LocalTools => {
-                if let Some(summary) = runtime_metrics
-                    && summary.tool_calls.count > 0
-                {
-                    let duration = format_duration_ms(summary.tool_calls.duration_ms);
-                    let calls = pluralize(summary.tool_calls.count, "call", "calls");
-                    parts.push(format!(
-                        "Local tools: {} {calls} ({duration})",
-                        summary.tool_calls.count
-                    ));
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_local_tools_label(&mut parts, summary);
                 }
             }
             MessageSummaryItem::Inference => {
-                if let Some(summary) = runtime_metrics
-                    && summary.api_calls.count > 0
-                {
-                    let duration = format_duration_ms(summary.api_calls.duration_ms);
-                    let calls = pluralize(summary.api_calls.count, "call", "calls");
-                    parts.push(format!(
-                        "Inference: {} {calls} ({duration})",
-                        summary.api_calls.count
-                    ));
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_inference_label(&mut parts, summary);
                 }
             }
             MessageSummaryItem::Streams => {
-                if let Some(summary) = runtime_metrics
-                    && summary.streaming_events.count > 0
-                {
-                    let duration = format_duration_ms(summary.streaming_events.duration_ms);
-                    let stream_label =
-                        pluralize(summary.streaming_events.count, "Stream", "Streams");
-                    let events = pluralize(summary.streaming_events.count, "event", "events");
-                    parts.push(format!(
-                        "{stream_label}: {} {events} ({duration})",
-                        summary.streaming_events.count
-                    ));
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_streams_label(&mut parts, summary);
                 }
             }
             MessageSummaryItem::WebSocket => {
-                if let Some(summary) = runtime_metrics {
-                    if summary.websocket_calls.count > 0 {
-                        let duration = format_duration_ms(summary.websocket_calls.duration_ms);
-                        parts.push(format!(
-                            "WebSocket: {} events send ({duration})",
-                            summary.websocket_calls.count
-                        ));
-                    }
-                    if summary.websocket_events.count > 0 {
-                        let duration = format_duration_ms(summary.websocket_events.duration_ms);
-                        parts.push(format!(
-                            "{} events received ({duration})",
-                            summary.websocket_events.count
-                        ));
-                    }
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_websocket_send_label(&mut parts, summary);
+                    push_websocket_received_label(&mut parts, summary);
                 }
             }
             MessageSummaryItem::ResponsesApi => {
-                if let Some(summary) = runtime_metrics {
-                    if summary.responses_api_overhead_ms > 0 {
-                        let duration = format_duration_ms(summary.responses_api_overhead_ms);
-                        parts.push(format!("Responses API overhead: {duration}"));
-                    }
-                    if summary.responses_api_inference_time_ms > 0 {
-                        let duration = format_duration_ms(summary.responses_api_inference_time_ms);
-                        parts.push(format!("Responses API inference: {duration}"));
-                    }
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_responses_api_labels(&mut parts, summary);
                 }
             }
             MessageSummaryItem::Ttft => {
-                if let Some(summary) = runtime_metrics
-                    && (summary.responses_api_engine_iapi_ttft_ms > 0
-                        || summary.responses_api_engine_service_ttft_ms > 0)
-                {
-                    let mut ttft_parts = Vec::new();
-                    if summary.responses_api_engine_iapi_ttft_ms > 0 {
-                        let duration =
-                            format_duration_ms(summary.responses_api_engine_iapi_ttft_ms);
-                        ttft_parts.push(format!("{duration} (iapi)"));
-                    }
-                    if summary.responses_api_engine_service_ttft_ms > 0 {
-                        let duration =
-                            format_duration_ms(summary.responses_api_engine_service_ttft_ms);
-                        ttft_parts.push(format!("{duration} (service)"));
-                    }
-                    parts.push(format!("TTFT: {}", ttft_parts.join(" ")));
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_ttft_label(&mut parts, summary);
                 }
             }
             MessageSummaryItem::Tbt => {
-                if let Some(summary) = runtime_metrics
-                    && (summary.responses_api_engine_iapi_tbt_ms > 0
-                        || summary.responses_api_engine_service_tbt_ms > 0)
-                {
-                    let mut tbt_parts = Vec::new();
-                    if summary.responses_api_engine_iapi_tbt_ms > 0 {
-                        let duration = format_duration_ms(summary.responses_api_engine_iapi_tbt_ms);
-                        tbt_parts.push(format!("{duration} (iapi)"));
-                    }
-                    if summary.responses_api_engine_service_tbt_ms > 0 {
-                        let duration =
-                            format_duration_ms(summary.responses_api_engine_service_tbt_ms);
-                        tbt_parts.push(format!("{duration} (service)"));
-                    }
-                    parts.push(format!("TBT: {}", tbt_parts.join(" ")));
+                if let Some(summary) = runtime_metrics.as_ref() {
+                    push_tbt_label(&mut parts, summary);
                 }
             }
         }
     }
     parts
+}
+
+fn push_worked_for_label(parts: &mut Vec<String>, elapsed_seconds: Option<u64>) {
+    if let Some(elapsed_seconds) = elapsed_seconds
+        .filter(|seconds| *seconds > 60)
+        .map(crate::status_indicator_widget::fmt_elapsed_compact)
+    {
+        parts.push(format!("Worked for {elapsed_seconds}"));
+    }
+}
+
+fn push_local_tools_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.tool_calls.count > 0 {
+        let duration = format_duration_ms(summary.tool_calls.duration_ms);
+        let calls = pluralize(summary.tool_calls.count, "call", "calls");
+        parts.push(format!(
+            "Local tools: {} {calls} ({duration})",
+            summary.tool_calls.count
+        ));
+    }
+}
+
+fn push_inference_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.api_calls.count > 0 {
+        let duration = format_duration_ms(summary.api_calls.duration_ms);
+        let calls = pluralize(summary.api_calls.count, "call", "calls");
+        parts.push(format!(
+            "Inference: {} {calls} ({duration})",
+            summary.api_calls.count
+        ));
+    }
+}
+
+fn push_streams_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.streaming_events.count > 0 {
+        let duration = format_duration_ms(summary.streaming_events.duration_ms);
+        let stream_label = pluralize(summary.streaming_events.count, "Stream", "Streams");
+        let events = pluralize(summary.streaming_events.count, "event", "events");
+        parts.push(format!(
+            "{stream_label}: {} {events} ({duration})",
+            summary.streaming_events.count
+        ));
+    }
+}
+
+fn push_websocket_send_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.websocket_calls.count > 0 {
+        let duration = format_duration_ms(summary.websocket_calls.duration_ms);
+        parts.push(format!(
+            "WebSocket: {} events send ({duration})",
+            summary.websocket_calls.count
+        ));
+    }
+}
+
+fn push_websocket_received_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.websocket_events.count > 0 {
+        let duration = format_duration_ms(summary.websocket_events.duration_ms);
+        parts.push(format!(
+            "{} events received ({duration})",
+            summary.websocket_events.count
+        ));
+    }
+}
+
+fn push_responses_api_labels(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.responses_api_overhead_ms > 0 {
+        let duration = format_duration_ms(summary.responses_api_overhead_ms);
+        parts.push(format!("Responses API overhead: {duration}"));
+    }
+    if summary.responses_api_inference_time_ms > 0 {
+        let duration = format_duration_ms(summary.responses_api_inference_time_ms);
+        parts.push(format!("Responses API inference: {duration}"));
+    }
+}
+
+fn push_ttft_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.responses_api_engine_iapi_ttft_ms > 0
+        || summary.responses_api_engine_service_ttft_ms > 0
+    {
+        let mut ttft_parts = Vec::new();
+        if summary.responses_api_engine_iapi_ttft_ms > 0 {
+            let duration = format_duration_ms(summary.responses_api_engine_iapi_ttft_ms);
+            ttft_parts.push(format!("{duration} (iapi)"));
+        }
+        if summary.responses_api_engine_service_ttft_ms > 0 {
+            let duration = format_duration_ms(summary.responses_api_engine_service_ttft_ms);
+            ttft_parts.push(format!("{duration} (service)"));
+        }
+        parts.push(format!("TTFT: {}", ttft_parts.join(" ")));
+    }
+}
+
+fn push_tbt_label(parts: &mut Vec<String>, summary: &RuntimeMetricsSummary) {
+    if summary.responses_api_engine_iapi_tbt_ms > 0
+        || summary.responses_api_engine_service_tbt_ms > 0
+    {
+        let mut tbt_parts = Vec::new();
+        if summary.responses_api_engine_iapi_tbt_ms > 0 {
+            let duration = format_duration_ms(summary.responses_api_engine_iapi_tbt_ms);
+            tbt_parts.push(format!("{duration} (iapi)"));
+        }
+        if summary.responses_api_engine_service_tbt_ms > 0 {
+            let duration = format_duration_ms(summary.responses_api_engine_service_tbt_ms);
+            tbt_parts.push(format!("{duration} (service)"));
+        }
+        parts.push(format!("TBT: {}", tbt_parts.join(" ")));
+    }
 }
 
 fn format_duration_ms(duration_ms: u64) -> String {

@@ -7,16 +7,19 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::io;
+use tokio::io::AsyncReadExt;
 
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerRuntimePaths;
 use crate::ExecutorFileSystem;
+use crate::FILE_CHANGED_DURING_OPEN_ERROR;
 use crate::FileMetadata;
 use crate::FileSystemResult;
 use crate::FileSystemSandboxContext;
 use crate::ReadDirectoryEntry;
 use crate::RemoveOptions;
+use crate::SYMLINKED_FILE_ERROR;
 use crate::sandboxed_file_system::SandboxedFileSystem;
 
 const MAX_READ_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -107,6 +110,17 @@ impl ExecutorFileSystem for LocalFileSystem {
     ) -> FileSystemResult<Vec<u8>> {
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.read_file(path, sandbox).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        let (file_system, sandbox) = self.file_system_for(sandbox)?;
+        file_system
+            .read_file_without_following_symlinks(path, sandbox)
+            .await
     }
 
     async fn write_file(
@@ -201,6 +215,17 @@ impl ExecutorFileSystem for UnsandboxedFileSystem {
     ) -> FileSystemResult<Vec<u8>> {
         reject_platform_sandbox_context(sandbox)?;
         self.file_system.read_file(path, /*sandbox*/ None).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        reject_platform_sandbox_context(sandbox)?;
+        self.file_system
+            .read_file_without_following_symlinks(path, /*sandbox*/ None)
+            .await
     }
 
     async fn write_file(
@@ -315,6 +340,43 @@ impl ExecutorFileSystem for DirectFileSystem {
             ));
         }
         tokio::fs::read(path.as_path()).await
+    }
+
+    async fn read_file_without_following_symlinks(
+        &self,
+        path: &AbsolutePathBuf,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<Vec<u8>> {
+        reject_sandbox_context(sandbox)?;
+        let path = path.as_path();
+        let initial_path_metadata = tokio::fs::symlink_metadata(path).await?;
+        reject_non_regular_or_symlink(&initial_path_metadata)?;
+
+        let mut file = tokio::fs::File::open(path).await?;
+        let file_metadata = file.metadata().await?;
+        let current_path_metadata = tokio::fs::symlink_metadata(path).await?;
+        reject_non_regular_or_symlink(&current_path_metadata)?;
+
+        if !file_metadata.is_file() {
+            return Err(not_regular_file_error());
+        }
+        verify_same_file_during_open(
+            path,
+            &file,
+            &initial_path_metadata,
+            &file_metadata,
+            &current_path_metadata,
+        )?;
+        if file_metadata.len() > MAX_READ_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
+            ));
+        }
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).await?;
+        Ok(data)
     }
 
     async fn write_file(
@@ -468,6 +530,147 @@ fn reject_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Res
         ));
     }
     Ok(())
+}
+
+fn reject_non_regular_or_symlink(metadata: &std::fs::Metadata) -> io::Result<()> {
+    if metadata.file_type().is_symlink() {
+        return Err(symlinked_file_error());
+    }
+    if !metadata.is_file() {
+        return Err(not_regular_file_error());
+    }
+    Ok(())
+}
+
+fn symlinked_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, SYMLINKED_FILE_ERROR)
+}
+
+fn not_regular_file_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "not a regular file")
+}
+
+fn file_changed_during_open_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, FILE_CHANGED_DURING_OPEN_ERROR)
+}
+
+/// Guard against a TOCTOU swap of `path` while it is being opened: confirm that
+/// the file we actually opened is the same on-disk object that `symlink_metadata`
+/// observed. On success returns `Ok(())`; otherwise a "file changed during open"
+/// error.
+#[cfg(unix)]
+fn verify_same_file_during_open(
+    _path: &Path,
+    _file: &tokio::fs::File,
+    initial_path_metadata: &std::fs::Metadata,
+    file_metadata: &std::fs::Metadata,
+    current_path_metadata: &std::fs::Metadata,
+) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    fn same(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+
+    if same(initial_path_metadata, file_metadata) && same(file_metadata, current_path_metadata) {
+        Ok(())
+    } else {
+        Err(file_changed_during_open_error())
+    }
+}
+
+/// Windows equivalent of the Unix same-file guard.
+///
+/// `std::fs::Metadata` does not expose the volume serial number or file index on
+/// stable Rust (that lives behind the nightly-only `windows_by_handle` feature),
+/// so identity is queried directly from open handles via
+/// `GetFileInformationByHandle`. The path metadata was already verified to be a
+/// regular file, so we re-open the path (without following the final reparse
+/// point) and confirm its identity matches the file we actually opened.
+#[cfg(windows)]
+fn verify_same_file_during_open(
+    path: &Path,
+    file: &tokio::fs::File,
+    _initial_path_metadata: &std::fs::Metadata,
+    _file_metadata: &std::fs::Metadata,
+    _current_path_metadata: &std::fs::Metadata,
+) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    let opened_identity = windows_file_identity(file.as_raw_handle())?;
+    let path_identity = windows_path_identity(path)?;
+
+    if opened_identity == path_identity {
+        Ok(())
+    } else {
+        Err(file_changed_during_open_error())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn verify_same_file_during_open(
+    _path: &Path,
+    _file: &tokio::fs::File,
+    _initial_path_metadata: &std::fs::Metadata,
+    _file_metadata: &std::fs::Metadata,
+    _current_path_metadata: &std::fs::Metadata,
+) -> io::Result<()> {
+    // Fail closed on platforms where we cannot establish file identity.
+    Err(file_changed_during_open_error())
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WindowsFileIdentity {
+    volume_serial_number: u32,
+    file_index: u64,
+}
+
+/// Query the volume serial number and file index for an open handle via
+/// `GetFileInformationByHandle`, the stable replacement for the nightly-only
+/// `Metadata::volume_serial_number`/`file_index` accessors.
+#[cfg(windows)]
+fn windows_file_identity(
+    handle: std::os::windows::io::RawHandle,
+) -> io::Result<WindowsFileIdentity> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+
+    // SAFETY: `handle` is a live file handle borrowed from an open `File`, and
+    // `info` is owned, correctly aligned, writable storage for the call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(handle as HANDLE, &mut info) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(WindowsFileIdentity {
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+/// Open `path` for attribute queries only, without following the final reparse
+/// point, and read its identity. Mirrors the `symlink_metadata` semantics used
+/// to capture the path snapshots.
+#[cfg(windows)]
+fn windows_path_identity(path: &Path) -> io::Result<WindowsFileIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+
+    windows_file_identity(file.as_raw_handle())
 }
 
 fn reject_platform_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Result<()> {

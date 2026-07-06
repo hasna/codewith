@@ -5,6 +5,29 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
+fn codewith_policy_blocks_app_server_update_rpc_methods() {
+    let update_methods: Vec<&str> = CLIENT_METHODS
+        .iter()
+        .copied()
+        .filter(|method| method.starts_with("update/"))
+        .collect();
+    assert!(
+        update_methods.is_empty(),
+        "Codewith policy forbids app-server update RPC methods; remove or gate these before importing upstream update APIs: {update_methods:?}"
+    );
+
+    let experimental_update_methods: Vec<&str> = EXPERIMENTAL_CLIENT_METHODS
+        .iter()
+        .copied()
+        .filter(|method| method.starts_with("update/"))
+        .collect();
+    assert!(
+        experimental_update_methods.is_empty(),
+        "Codewith policy forbids app-server update RPC methods even behind experimentalApi: {experimental_update_methods:?}"
+    );
+}
+
+#[test]
 fn client_response_payload_returns_jsonrpc_parts_and_client_response() -> Result<()> {
     let (request_id, result, payload) =
         ClientResponsePayload::ThreadArchive(v2::ThreadArchiveResponse {})

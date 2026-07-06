@@ -3,6 +3,11 @@ use crate::request_processors::thread_schedule_api::api_thread_schedule_from_sta
 use crate::request_processors::thread_schedule_api::api_thread_schedule_run_from_state;
 use anyhow::Context as _;
 use chrono_tz::Tz;
+use codex_goal_extension::GoalObjectiveUpdate;
+use codex_goal_extension::GoalService;
+use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTitleUpdate;
+use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use croner::Cron;
 use std::fmt::Write as _;
@@ -16,6 +21,7 @@ const DEFAULT_DYNAMIC_INTERVAL_MINUTES: i64 = 1;
 const DEFAULT_SCHEDULE_EXPIRATION_DAYS: i64 = 7;
 const MAX_SCHEDULE_RUN_ERROR_CHARS: usize = 1_000;
 const SCHEDULE_IDLE_RETRY_DELAY_SECONDS: i64 = 30;
+const SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub(crate) struct ThreadScheduleRuntime {
@@ -31,6 +37,7 @@ pub(crate) struct ThreadScheduleRuntime {
     skills_watcher: Arc<SkillsWatcher>,
     state_db: Option<StateDbHandle>,
     local_active_owner_id: String,
+    goal_service: Arc<GoalService>,
     cancel_token: CancellationToken,
     tasks: TaskTracker,
 }
@@ -50,6 +57,7 @@ impl ThreadScheduleRuntime {
         skills_watcher: Arc<SkillsWatcher>,
         state_db: Option<StateDbHandle>,
         local_active_owner_id: String,
+        goal_service: Arc<GoalService>,
     ) -> Self {
         Self {
             auth_manager,
@@ -64,6 +72,7 @@ impl ThreadScheduleRuntime {
             skills_watcher,
             state_db,
             local_active_owner_id,
+            goal_service,
             cancel_token: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }
@@ -81,6 +90,14 @@ impl ThreadScheduleRuntime {
 
     pub(crate) fn shutdown(&self) {
         self.cancel_token.cancel();
+    }
+
+    pub(crate) fn local_active_owner_id(&self) -> &str {
+        self.local_active_owner_id.as_str()
+    }
+
+    pub(crate) fn local_active_fresh_after(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        schedule_local_active_fresh_after(now)
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
@@ -131,11 +148,18 @@ impl ThreadScheduleRuntime {
         {
             warn!("failed to expire thread schedules: {err}");
         }
+        let local_active_fresh_after = schedule_local_active_fresh_after(now);
         for _ in 0..MAX_SCHEDULE_CLAIMS_PER_TICK {
             let lease_id = Uuid::new_v4().to_string();
             let claim = match state_db
                 .thread_schedules()
-                .claim_due_thread_schedule(now, lease_id.as_str(), SCHEDULE_LEASE_DURATION)
+                .claim_due_thread_schedule_with_params(codex_state::ThreadScheduleDueClaimParams {
+                    now,
+                    lease_id: lease_id.as_str(),
+                    lease_duration: SCHEDULE_LEASE_DURATION,
+                    local_active_owner_id: Some(self.local_active_owner_id.as_str()),
+                    local_active_fresh_after: Some(local_active_fresh_after),
+                })
                 .await
             {
                 Ok(Some(claim)) => claim,
@@ -191,6 +215,7 @@ impl ThreadScheduleRuntime {
         let prompt = self
             .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
             .await?;
+        let scheduled_goal_objective = scheduled_goal_objective(&prompt).map(str::to_string);
         let claim_auth_profile = self
             .claim_auth_profile(&state_db, thread_id, &claim.schedule)
             .await;
@@ -214,11 +239,37 @@ impl ThreadScheduleRuntime {
             .await?;
         self.ensure_schedule_listener(thread_id, thread.clone())
             .await?;
-        let thread_settings = codex_core::CodexThreadSettingsOverrides {
-            auth_profile: claim_auth_profile,
-            ..codex_core::CodexThreadSettingsOverrides::default()
-        };
         let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let listener_command_tx = {
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let turn_prompt = if let Some(objective) = scheduled_goal_objective.as_deref() {
+            self.prepare_scheduled_goal(
+                thread_id,
+                &state_db,
+                objective,
+                listener_command_tx.clone(),
+            )
+            .await?;
+            scheduled_goal_thread_prompt(
+                objective,
+                claim.run.run_id.as_str(),
+                claim.run.scheduled_for,
+                &claim.schedule,
+            )
+        } else {
+            scheduled_thread_prompt(
+                &prompt,
+                &claim.schedule,
+                claim.run.run_id.as_str(),
+                claim.run.scheduled_for,
+            )
+        };
+        let thread_settings = scheduled_thread_settings_from_snapshot(
+            thread.config_snapshot().await,
+            claim_auth_profile,
+        );
         let turn_id = Uuid::now_v7().to_string();
 
         let run = match state_db
@@ -256,12 +307,7 @@ impl ThreadScheduleRuntime {
             .try_start_user_input_turn_if_idle(
                 turn_id.clone(),
                 vec![CoreInputItem::Text {
-                    text: scheduled_thread_prompt(
-                        &prompt,
-                        &claim.schedule,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                    ),
+                    text: turn_prompt,
                     text_elements: Vec::new(),
                 }],
                 Default::default(),
@@ -284,6 +330,52 @@ impl ThreadScheduleRuntime {
             claim.run.lease_id.clone(),
         );
         self.emit_schedule_run_updated(thread_id, run).await;
+        Ok(())
+    }
+
+    async fn prepare_scheduled_goal(
+        &self,
+        thread_id: ThreadId,
+        state_db: &StateDbHandle,
+        objective: &str,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) -> anyhow::Result<()> {
+        if !self.config.features.enabled(Feature::Goals) {
+            anyhow::bail!("goals feature is disabled");
+        }
+
+        let outcome = self
+            .goal_service
+            .set_thread_goal(
+                state_db,
+                GoalSetRequest {
+                    thread_id,
+                    objective: GoalObjectiveUpdate::Set(objective),
+                    title: GoalTitleUpdate::Keep,
+                    status: Some(codex_protocol::protocol::ThreadGoalStatus::Active),
+                    token_budget: GoalTokenBudgetUpdate::Keep,
+                    auto_execute: thread_goal_processor::goal_auto_execute_from_config(
+                        &self.config,
+                    ),
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to set scheduled goal: {err}"))?;
+        let goal = ThreadGoal::from(outcome.goal.clone());
+        let goal_id = goal.goal_id.clone();
+        self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
+            .await;
+        if let Some(plan_update) = outcome.plan_update.clone() {
+            let plan = thread_goal_processor::api_thread_goal_plan_from_state(plan_update.snapshot);
+            self.emit_thread_goal_plan_updated_ordered(thread_id, plan, listener_command_tx)
+                .await;
+        }
+
+        self.goal_service
+            .suppress_next_idle_continuation(thread_id, goal_id.as_str());
+        outcome.apply_runtime_effects(&self.goal_service).await;
+        self.goal_service
+            .suppress_next_idle_continuation(thread_id, goal_id.as_str());
         Ok(())
     }
 
@@ -499,6 +591,64 @@ impl ThreadScheduleRuntime {
         }
     }
 
+    async fn emit_thread_goal_updated_ordered(
+        &self,
+        thread_id: ThreadId,
+        goal: ThreadGoal,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        if let Some(listener_command_tx) = listener_command_tx {
+            let command = ThreadListenerCommand::EmitThreadGoalUpdated {
+                turn_id: None,
+                goal: goal.clone(),
+            };
+            if listener_command_tx.send(command).is_ok() {
+                return;
+            }
+            warn!(
+                "failed to enqueue scheduled goal update for {thread_id}: listener command channel is closed"
+            );
+        }
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadGoalUpdated(
+                ThreadGoalUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    goal,
+                },
+            ))
+            .await;
+    }
+
+    async fn emit_thread_goal_plan_updated_ordered(
+        &self,
+        thread_id: ThreadId,
+        plan: ThreadGoalPlan,
+        listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+    ) {
+        if let Some(listener_command_tx) = listener_command_tx {
+            let command = ThreadListenerCommand::EmitThreadGoalPlanUpdated {
+                turn_id: None,
+                plan: plan.clone(),
+            };
+            if listener_command_tx.send(command).is_ok() {
+                return;
+            }
+            warn!(
+                "failed to enqueue scheduled goal plan update for {thread_id}: listener command channel is closed"
+            );
+        }
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadGoalPlanUpdated(
+                ThreadGoalPlanUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    plan,
+                },
+            ))
+            .await;
+    }
+
     async fn defer_claimed_run_for_usage_profile_wait(
         &self,
         state_db: StateDbHandle,
@@ -613,6 +763,56 @@ Scheduled prompt:
         schedule.nesting_depth,
         codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
     )
+}
+
+fn scheduled_goal_objective(prompt: &str) -> Option<&str> {
+    let trimmed = prompt.trim_start();
+    let rest = trimmed.strip_prefix("/goal")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim())
+}
+
+fn scheduled_goal_thread_prompt(
+    objective: &str,
+    run_id: &str,
+    scheduled_for: Option<DateTime<Utc>>,
+    schedule: &codex_state::ThreadSchedule,
+) -> String {
+    let scheduled_for = scheduled_for
+        .map(|scheduled_for| scheduled_for.to_rfc3339())
+        .unwrap_or_else(|| "immediate".to_string());
+    let nesting_guidance = scheduled_loop_nesting_guidance(schedule);
+    format!(
+        "\
+You are running one new scheduled Codewith goal objective.
+
+Run id: {run_id}
+Scheduled for: {scheduled_for}
+{nesting_guidance}
+
+The active thread goal has already been persisted for this scheduled run. Work on only the goal objective below for this run. Produce exactly one visible final response for this scheduled run, even if there are no changes, no action is needed, or the run is blocked. Do not create new goals, schedules, monitors, timers, or follow-up runs unless this objective explicitly asks for a native child loop; Codewith manages scheduling. If the objective mentions a cadence like \"every minute\", treat that as schedule context, not as an instruction to implement the cadence yourself.
+
+Goal objective:
+{objective}"
+    )
+}
+
+fn scheduled_loop_nesting_guidance(schedule: &codex_state::ThreadSchedule) -> String {
+    let depth = schedule.nesting_depth;
+    let schedule_id = schedule.schedule_id.as_str();
+    if depth >= codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH {
+        format!(
+            "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. This is the maximum nesting level; do not create nested child loops from this run.",
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    } else {
+        format!(
+            "\nLoop schedule id: {schedule_id}\nLoop nesting: level {depth}/{}. Create a child loop only if this scheduled prompt explicitly asks for one; pass {schedule_id} as parent_schedule_id and use a slower child cadence.",
+            codex_state::MAX_THREAD_SCHEDULE_NESTING_DEPTH
+        )
+    }
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
@@ -885,6 +1085,16 @@ fn schedule_broker_retry_at_datetime(
     (retry_at > now).then_some(retry_at)
 }
 
+fn schedule_local_active_fresh_after(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - ChronoDuration::seconds(duration_seconds_i64(
+        SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER,
+    ))
+}
+
+fn duration_seconds_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
 async fn finish_scheduled_run_state(
     state_db: &StateDbHandle,
     schedule_id: &str,
@@ -1056,24 +1266,145 @@ async fn apply_persisted_schedule_resume_metadata(
             return;
         }
     };
-    typesafe_overrides.model = persisted_metadata.model;
-    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider);
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
+    typesafe_overrides.model = persisted_metadata.model.clone();
+    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
         );
     }
 
-    // Restore the thread's approval policy so an unattended scheduled run is
-    // gated by the same human-in-the-loop control the thread was created with,
-    // not the app-server's launch-time default (which may be more permissive).
-    // Combined with the unattended auto-deny guard, this stops a scheduled run
-    // from silently escalating beyond the thread's configured authority.
-    if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
-    {
-        typesafe_overrides.approval_policy = Some(approval_policy);
+    let latest_cwd_from_items = |items: &[RolloutItem]| {
+        items.iter().rev().find_map(|item| match item {
+            RolloutItem::TurnContext(turn_context) if !turn_context.cwd.as_os_str().is_empty() => {
+                Some(turn_context.cwd.clone())
+            }
+            RolloutItem::SessionMeta(meta_line) if !meta_line.meta.cwd.as_os_str().is_empty() => {
+                Some(meta_line.meta.cwd.clone())
+            }
+            RolloutItem::ResponseItem(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::SessionMeta(_) => None,
+        })
+    };
+    let fallback_cwd = match initial_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => latest_cwd_from_items(&resumed.history),
+        InitialHistory::Forked(items) => latest_cwd_from_items(items),
+    };
+    let persisted_settings = persisted_schedule_thread_settings_from_metadata(
+        &persisted_metadata,
+        fallback_cwd.as_deref(),
+    );
+
+    // Restore the thread's command permissions so an unattended scheduled run
+    // is gated by the same human-in-the-loop and sandbox controls the thread
+    // was last run with, not the app-server's launch-time defaults.
+    if typesafe_overrides.approval_policy.is_none() {
+        typesafe_overrides.approval_policy = persisted_settings.approval_policy;
     }
+    if typesafe_overrides.permission_profile.is_none() {
+        typesafe_overrides.permission_profile = persisted_settings.permission_profile;
+    }
+}
+
+fn scheduled_thread_settings_from_snapshot(
+    snapshot: ThreadConfigSnapshot,
+    auth_profile: Option<Option<String>>,
+) -> codex_core::CodexThreadSettingsOverrides {
+    codex_core::CodexThreadSettingsOverrides {
+        cwd: Some(snapshot.cwd),
+        workspace_roots: Some(snapshot.workspace_roots),
+        profile_workspace_roots: Some(snapshot.profile_workspace_roots),
+        approval_policy: Some(snapshot.approval_policy),
+        approvals_reviewer: Some(snapshot.approvals_reviewer),
+        permission_profile: Some(snapshot.permission_profile),
+        active_permission_profile: snapshot.active_permission_profile,
+        auth_profile,
+        ..codex_core::CodexThreadSettingsOverrides::default()
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PersistedScheduleThreadSettings {
+    approval_policy: Option<codex_protocol::protocol::AskForApproval>,
+    permission_profile: Option<codex_protocol::models::PermissionProfile>,
+}
+
+fn persisted_schedule_thread_settings_from_metadata(
+    metadata: &codex_state::ThreadMetadata,
+    fallback_cwd: Option<&Path>,
+) -> PersistedScheduleThreadSettings {
+    let permission_cwd = fallback_cwd.unwrap_or_else(|| {
+        if metadata.cwd.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            metadata.cwd.as_path()
+        }
+    });
+    PersistedScheduleThreadSettings {
+        approval_policy: parse_persisted_approval_mode(&metadata.approval_mode),
+        permission_profile: parse_persisted_permission_profile(
+            &metadata.sandbox_policy,
+            permission_cwd,
+        ),
+    }
+}
+
+fn parse_persisted_permission_profile(
+    stored: &str,
+    cwd: &Path,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(permission_profile) =
+        serde_json::from_str::<codex_protocol::models::PermissionProfile>(trimmed)
+    {
+        return Some(permission_profile);
+    }
+    if let Ok(sandbox_policy) =
+        serde_json::from_str::<codex_protocol::protocol::SandboxPolicy>(trimmed)
+    {
+        return Some(
+            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd,
+            ),
+        );
+    }
+    let owned_bare;
+    let bare = match serde_json::from_str::<String>(trimmed) {
+        Ok(value) => {
+            owned_bare = value;
+            owned_bare.as_str()
+        }
+        Err(_) => trimmed,
+    };
+    let sandbox_policy = match bare {
+        "danger-full-access" => Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess),
+        "external-sandbox" => Some(codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
+            network_access: codex_protocol::protocol::NetworkAccess::Restricted,
+        }),
+        "read-only" => Some(codex_protocol::protocol::SandboxPolicy::new_read_only_policy()),
+        "workspace-write" => Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }),
+        _ => None,
+    }?;
+    Some(
+        codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+            &sandbox_policy,
+            cwd,
+        ),
+    )
 }
 
 pub(super) fn schedule_resume_auth_profile(
@@ -1416,6 +1747,7 @@ fn looks_like_jwt(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::SandboxPolicy;
@@ -1429,6 +1761,34 @@ mod tests {
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp")
+    }
+
+    fn prompt_test_schedule(nesting_depth: i64) -> codex_state::ThreadSchedule {
+        codex_state::ThreadSchedule {
+            thread_id: ThreadId::new(),
+            schedule_id: "schedule-parent".to_string(),
+            parent_schedule_id: (nesting_depth > 1).then(|| "schedule-root".to_string()),
+            nesting_depth,
+            auth_profile: None,
+            prompt: "check status".to_string(),
+            prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+            schedule: codex_state::ThreadScheduleSpec::Interval(
+                codex_state::ThreadScheduleInterval {
+                    amount: 5,
+                    unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                },
+            ),
+            timezone: "UTC".to_string(),
+            status: codex_state::ThreadScheduleStatus::Active,
+            next_run_at: Some(at(/*seconds*/ 1_700_000_000)),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_id: None,
+            lease_expires_at: None,
+            created_at: at(/*seconds*/ 1_700_000_000),
+            updated_at: at(/*seconds*/ 1_700_000_000),
+        }
     }
 
     fn resumed_history_with_auth_profile(
@@ -1473,6 +1833,8 @@ mod tests {
                     workspace_roots: None,
                     current_date: None,
                     timezone: None,
+                    machine_id: None,
+                    machine_name: None,
                     approval_policy: AskForApproval::OnRequest,
                     sandbox_policy: SandboxPolicy::DangerFullAccess,
                     permission_profile: None,
@@ -1483,6 +1845,7 @@ mod tests {
                     personality: None,
                     collaboration_mode: None,
                     session_prompt: None,
+                    worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
                     multi_agent_version: None,
                     auth_profile: turn_auth_profile.map(|profile| profile.map(str::to_string)),
                     realtime_active: None,
@@ -1496,29 +1859,29 @@ mod tests {
 
     #[test]
     fn schedule_failure_backoff_grows_and_caps() {
-        let completed = at(1_000_000);
-        let natural = at(1_000_060); // natural cadence: 60s after completion.
+        let completed = at(/*seconds*/ 1_000_000);
+        let natural = at(/*seconds*/ 1_000_060); // natural cadence: 60s after completion.
 
         // Early failures: 30s/60s backoff is still earlier than the natural
         // 60s cadence, so the natural next run wins.
         assert_eq!(
             natural,
-            schedule_failure_backoff_run_at(natural, completed, 1)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 1)
         );
         assert_eq!(
             natural,
-            schedule_failure_backoff_run_at(natural, completed, 2)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 2)
         );
 
         // A longer streak backs off past the natural cadence...
         assert_eq!(
             completed + chrono::Duration::seconds(240),
-            schedule_failure_backoff_run_at(natural, completed, 4)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 4)
         );
         // ...and caps at one hour regardless of how long the streak is.
         assert_eq!(
             completed + chrono::Duration::seconds(3600),
-            schedule_failure_backoff_run_at(natural, completed, 50)
+            schedule_failure_backoff_run_at(natural, completed, /*consecutive_failures*/ 50)
         );
     }
 
@@ -1546,8 +1909,140 @@ mod tests {
         assert_eq!(None, parse_persisted_approval_mode("not-a-real-mode"));
     }
 
+    #[test]
+    fn parse_persisted_permission_profile_accepts_current_metadata_format() {
+        let profile = PermissionProfile::Disabled;
+        let stored = serde_json::to_string(&profile).expect("serialize permission profile");
+
+        assert_eq!(
+            Some(profile),
+            parse_persisted_permission_profile(&stored, Path::new("/workspace"))
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_sandbox_policy_metadata() {
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let cwd = Path::new("/workspace");
+        let stored = serde_json::to_string(&sandbox_policy).expect("serialize sandbox policy");
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd
+            )),
+            parse_persisted_permission_profile(&stored, cwd)
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_bare_sandbox_policy_metadata() {
+        let cwd = Path::new("/workspace");
+        let workspace_write = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+
+        for (stored, expected) in [
+            ("danger-full-access", SandboxPolicy::DangerFullAccess),
+            ("read-only", SandboxPolicy::new_read_only_policy()),
+            ("workspace-write", workspace_write),
+        ] {
+            assert_eq!(
+                Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                    &expected, cwd
+                )),
+                parse_persisted_permission_profile(stored, cwd)
+            );
+        }
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &SandboxPolicy::new_read_only_policy(),
+                cwd
+            )),
+            parse_persisted_permission_profile("\"read-only\"", cwd)
+        );
+    }
+
+    #[test]
+    fn scheduled_thread_settings_preserve_live_permission_snapshot() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let cwd = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("workspace"))
+            .expect("absolute cwd");
+        let workspace_root = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("root"))
+            .expect("absolute workspace root");
+        let profile_root = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("profile"))
+            .expect("absolute profile root");
+        let permission_profile = PermissionProfile::Disabled;
+        let active_permission_profile = Some(codex_protocol::models::ActivePermissionProfile::new(
+            codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+        ));
+
+        let settings = scheduled_thread_settings_from_snapshot(
+            ThreadConfigSnapshot {
+                model: "gpt-5".to_string(),
+                model_provider_id: "openai".to_string(),
+                service_tier: None,
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
+                permission_profile: permission_profile.clone(),
+                active_permission_profile: active_permission_profile.clone(),
+                auth_profile: Some("work".to_string()),
+                session_prompt: None,
+                cwd: cwd.clone(),
+                workspace_roots: vec![workspace_root.clone()],
+                profile_workspace_roots: vec![profile_root.clone()],
+                ephemeral: false,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                personality: None,
+                collaboration_mode: codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: "gpt-5".to_string(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                },
+                selected_auth_profile: Some("work".to_string()),
+                session_source: SessionSource::Cli,
+                worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
+                forked_from_thread_id: None,
+                parent_thread_id: None,
+                thread_source: None,
+            },
+            Some(Some("schedule-work".to_string())),
+        );
+
+        assert_eq!(Some(cwd), settings.cwd);
+        assert_eq!(Some(vec![workspace_root]), settings.workspace_roots);
+        assert_eq!(Some(vec![profile_root]), settings.profile_workspace_roots);
+        assert_eq!(Some(AskForApproval::Never), settings.approval_policy);
+        assert_eq!(
+            Some(codex_protocol::config_types::ApprovalsReviewer::User),
+            settings.approvals_reviewer
+        );
+        assert_eq!(Some(permission_profile), settings.permission_profile);
+        assert_eq!(
+            active_permission_profile,
+            settings.active_permission_profile
+        );
+        assert_eq!(
+            Some(Some("schedule-work".to_string())),
+            settings.auth_profile
+        );
+    }
+
     #[tokio::test]
-    async fn scheduled_resume_metadata_restores_auth_profile_from_history() {
+    async fn scheduled_resume_metadata_restores_auth_profile_and_permissions_from_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let state_db = codex_state::StateRuntime::init(
             temp_dir.path().to_path_buf(),
@@ -1559,7 +2054,7 @@ mod tests {
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             temp_dir.path().join("thread.jsonl"),
-            at(1_700_000_000),
+            at(/*seconds*/ 1_700_000_000),
             SessionSource::Cli,
         );
         builder.cwd = temp_dir.path().join("workspace");
@@ -1567,6 +2062,8 @@ mod tests {
         builder.approval_mode = codex_protocol::protocol::AskForApproval::Never;
         let mut metadata = builder.build("fallback-provider");
         metadata.model = Some("gpt-5.5".to_string());
+        metadata.sandbox_policy =
+            serde_json::to_string(&PermissionProfile::Disabled).expect("serialize permissions");
         state_db
             .upsert_thread(&metadata)
             .await
@@ -1578,7 +2075,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1597,6 +2094,103 @@ mod tests {
         assert_eq!(
             Some(codex_protocol::protocol::AskForApproval::Never),
             typesafe_overrides.approval_policy
+        );
+        assert_eq!(
+            Some(PermissionProfile::Disabled),
+            typesafe_overrides.permission_profile
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_resume_metadata_restores_legacy_sandbox_policy_with_latest_history_cwd() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = PathBuf::from("/old-workspace");
+        builder.model_provider = Some("openai".to_string());
+        let mut metadata = builder.build("fallback-provider");
+        metadata.sandbox_policy = "workspace-write".to_string();
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread metadata should persist");
+
+        let latest_cwd = PathBuf::from("/latest-workspace");
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![
+                RolloutItem::SessionMeta(SessionMetaLine {
+                    meta: SessionMeta {
+                        id: thread_id,
+                        cwd: PathBuf::from("/session-workspace"),
+                        ..SessionMeta::default()
+                    },
+                    git: None,
+                }),
+                RolloutItem::TurnContext(TurnContextItem {
+                    thread_id: Some(thread_id),
+                    machine_id: None,
+                    machine_name: None,
+                    turn_id: Some("turn-latest".to_string()),
+                    cwd: latest_cwd.clone(),
+                    workspace_roots: None,
+                    current_date: None,
+                    timezone: None,
+                    approval_policy: AskForApproval::OnRequest,
+                    sandbox_policy: SandboxPolicy::DangerFullAccess,
+                    permission_profile: None,
+                    network: None,
+                    file_system_sandbox_policy: None,
+                    model: "gpt-5.5".to_string(),
+                    model_provider_id: None,
+                    personality: None,
+                    collaboration_mode: None,
+                    session_prompt: None,
+                    multi_agent_version: None,
+                    worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
+                    auth_profile: None,
+                    realtime_active: None,
+                    effort: None,
+                    summary: codex_protocol::config_types::ReasoningSummary::Auto,
+                }),
+            ],
+            rollout_path: None,
+        });
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+        apply_persisted_schedule_resume_metadata(
+            &state_db,
+            thread_id,
+            /*schedule_auth_profile*/ None,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                latest_cwd.as_path()
+            )),
+            typesafe_overrides.permission_profile
         );
     }
 
@@ -1620,7 +2214,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -1681,7 +2275,7 @@ mod tests {
         apply_persisted_schedule_resume_metadata(
             &state_db,
             thread_id,
-            None,
+            /*schedule_auth_profile*/ None,
             &history,
             &mut request_overrides,
             &mut typesafe_overrides,
@@ -2392,13 +2986,13 @@ mod tests {
             "ask me a funny question every minute",
             &schedule,
             "run-123",
-            Some(at(1_700_000_000)),
+            Some(at(/*seconds*/ 1_700_000_000)),
         );
 
         assert!(prompt.contains("one new scheduled Codewith prompt"));
         assert!(prompt.contains("Loop schedule id: schedule-123"));
         assert!(prompt.contains("Parent loop schedule id: none"));
-        assert!(prompt.contains("Loop nesting depth: 1/3"));
+        assert!(prompt.contains("Loop nesting depth: 1/5"));
         assert!(prompt.contains("Run id: run-123"));
         assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
         assert!(prompt.contains("This is a distinct run"));
@@ -2410,6 +3004,48 @@ mod tests {
         assert!(prompt.contains("child cadence must be slower than the parent cadence"));
         assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
         assert!(prompt.ends_with("ask me a funny question every minute"));
+    }
+
+    #[test]
+    fn scheduled_goal_objective_accepts_explicit_goal_command() {
+        assert_eq!(
+            Some("improve benchmark coverage"),
+            scheduled_goal_objective("  /goal improve benchmark coverage")
+        );
+        assert_eq!(
+            Some("ship the release notes"),
+            scheduled_goal_objective("/goal\n\nship the release notes")
+        );
+    }
+
+    #[test]
+    fn scheduled_goal_objective_requires_goal_command_boundary() {
+        assert_eq!(None, scheduled_goal_objective("please run /goal later"));
+        assert_eq!(None, scheduled_goal_objective("/goalkeeper report"));
+        assert_eq!(Some(""), scheduled_goal_objective("/goal"));
+    }
+
+    #[test]
+    fn scheduled_goal_thread_prompt_tells_model_not_to_spawn_followups() {
+        let prompt = scheduled_goal_thread_prompt(
+            "finish release readiness checks every hour",
+            "run-123",
+            Some(at(/*seconds*/ 1_700_000_000)),
+            &prompt_test_schedule(/*nesting_depth*/ 5),
+        );
+
+        assert!(prompt.contains("one new scheduled Codewith goal objective"));
+        assert!(prompt.contains("Run id: run-123"));
+        assert!(prompt.contains("Scheduled for: 2023-11-14T22:13:20+00:00"));
+        assert!(prompt.contains("Loop schedule id: schedule-parent"));
+        assert!(prompt.contains("Loop nesting: level 5/5"));
+        assert!(prompt.contains("do not create nested child loops"));
+        assert!(prompt.contains("active thread goal has already been persisted"));
+        assert!(prompt.contains("Produce exactly one visible final response"));
+        assert!(prompt.contains("unless this objective explicitly asks for a native child loop"));
+        assert!(prompt.contains("not as an instruction to implement the cadence yourself"));
+        assert!(prompt.ends_with("finish release readiness checks every hour"));
+        assert!(!prompt.contains("/goal finish release readiness checks"));
     }
 
     #[test]

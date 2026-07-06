@@ -308,6 +308,35 @@ async fn goal_plan_detail_ready_node_activates_selected_goal() {
 }
 
 #[tokio::test]
+async fn goal_plan_detail_ready_node_assigned_elsewhere_has_no_activation_action() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let thread_id_string = thread_id.to_string();
+    let delegate_thread_id_string = ThreadId::new().to_string();
+
+    chat.show_goal_plan_detail(
+        thread_id,
+        test_plan(
+            &thread_id_string,
+            ThreadGoalPlanStatus::Active,
+            ThreadGoalPlanAutoExecute::ReadyOnly,
+            vec![test_plan_node(
+                "implement",
+                "Implement durable delegated goal execution",
+                ThreadGoalPlanNodeStatus::Pending,
+                Vec::new(),
+                &delegate_thread_id_string,
+            )],
+        ),
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert!(rx.try_recv().is_err());
+    assert!(!chat.no_modal_or_popup_active());
+}
+
+#[tokio::test]
 async fn goal_edit_prompt_submits_preserved_status_and_budget() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
@@ -465,6 +494,7 @@ fn test_goal(
         goal_id: "goal-1".to_string(),
         objective: "Keep improving the bare goal command until it feels calm and useful."
             .to_string(),
+        title: None,
         status,
         token_budget,
         tokens_used: 12_500,
@@ -556,10 +586,12 @@ fn test_plan_node(
         node_id: format!("node_{key}"),
         plan_id: "plan_goal_rollout".to_string(),
         thread_id: thread_id.to_string(),
+        assigned_thread_id: thread_id.to_string(),
         key: key.to_string(),
         sequence: 0,
         priority: 0,
         objective: objective.to_string(),
+        title: None,
         status,
         ready: status == ThreadGoalPlanNodeStatus::Pending && depends_on.is_empty(),
         token_budget: None,

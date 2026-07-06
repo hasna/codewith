@@ -7,6 +7,10 @@
     "url": "git+https://github.com/hasna/codewith.git",
     "directory": "sdk/typescript"
   },
+  "bugs": {
+    "url": "https://github.com/hasna/codewith/issues"
+  },
+  "homepage": "https://github.com/hasna/codewith#readme",
   "keywords": [
     "hasna",
     "codewith",
@@ -49,7 +53,7 @@
     "prepare": "pnpm run build"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.24.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^20.19.18",
     "eslint": "^9.36.0",

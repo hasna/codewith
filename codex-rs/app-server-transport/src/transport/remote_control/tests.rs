@@ -76,7 +76,7 @@ fn remote_control_auth_manager() -> Arc<AuthManager> {
 fn remote_control_auth_manager_with_home(codex_home: &TempDir) -> Arc<AuthManager> {
     auth_manager_from_auth_with_home(
         CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-        codex_home.path().to_path_buf(),
+        codex_home.path(),
     )
 }
 
@@ -464,6 +464,8 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
                 "params": {
                     "summary": "test",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })
@@ -1055,6 +1057,8 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
                 "params": {
                     "summary": "stale",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })
@@ -1341,6 +1345,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                 "params": {
                     "summary": "backend",
                     "details": null,
+                    "path": null,
+                    "range": null,
                 }
             }
         })

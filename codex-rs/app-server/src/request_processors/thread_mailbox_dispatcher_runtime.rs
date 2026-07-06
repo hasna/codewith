@@ -12,9 +12,14 @@ use crate::active_session_registry::ActivePeerLookupError;
 use crate::active_session_registry::LastSeenAt;
 use crate::request_processors::thread_lifecycle::ListenerTaskContext;
 
+use super::thread_mailbox_context::mailbox_context_descriptor_component;
+use super::thread_mailbox_context::mailbox_payload_context_text;
+
 const MAILBOX_DISPATCH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
+const MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS: usize = 10;
+const MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(5);
 const MAILBOX_LOCAL_ACTIVE_SESSION_RETENTION: Duration = Duration::from_secs(300);
 const MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK: usize = 16;
@@ -200,68 +205,28 @@ impl ThreadMailboxDispatcherRuntime {
         let message_id = claim.message.message_id.clone();
         let lease_id = claim.attempt.lease_id.clone();
         let result = self.deliver_claim(&claim).await;
-        match result {
+        let durable_transition_ok = match result {
             MailboxDispatchResult::Delivered { receipt } => {
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .ack_message(codex_state::MailboxAckParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        receipt_payload_json: Some(receipt),
-                        now: Utc::now(),
-                    })
-                    .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to ack delivered mailbox message: {err}"
-                    );
-                }
+                self.ack_dispatch_claim(state_db, &claim, receipt).await
             }
             MailboxDispatchResult::Retry { error, retry_at } => {
                 let retry_at = retry_at.unwrap_or_else(|| {
                     Utc::now() + ChronoDuration::seconds(MAILBOX_DISPATCH_RETRY_DELAY_SECONDS)
                 });
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .fail_message(codex_state::MailboxFailParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        error,
-                        disposition: codex_state::MailboxFailDisposition::Retry {
-                            next_attempt_at: retry_at,
-                        },
-                        now: Utc::now(),
-                    })
+                self.fail_dispatch_claim_for_retry(state_db, &claim, error, retry_at)
                     .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to requeue mailbox message after dispatch miss: {err}"
-                    );
-                }
             }
             MailboxDispatchResult::Terminal { error } => {
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .fail_message(codex_state::MailboxFailParams {
-                        message_id: claim.message.message_id.clone(),
-                        attempt_id: claim.attempt.attempt_id.clone(),
-                        lease_id: claim.attempt.lease_id.clone(),
-                        error,
-                        disposition: codex_state::MailboxFailDisposition::Terminal,
-                        now: Utc::now(),
-                    })
+                self.fail_dispatch_claim_terminal(state_db, &claim, error)
                     .await
-                {
-                    warn!(
-                        message_id = %claim.message.message_id,
-                        "failed to mark mailbox message terminal after dispatch miss: {err}"
-                    );
-                }
             }
+        };
+        if !durable_transition_ok {
+            warn!(
+                message_id = %message_id,
+                "leaving mailbox target dispatch lease to expire because durable transition did not complete"
+            );
+            return;
         }
         match self
             .refresh_local_active_sessions(state_db, Utc::now())
@@ -292,6 +257,133 @@ impl ThreadMailboxDispatcherRuntime {
         }
     }
 
+    async fn ack_dispatch_claim(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        receipt: serde_json::Value,
+    ) -> bool {
+        let mut last_error = None;
+        for attempt in 1..=MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+            match state_db
+                .mailbox_messages()
+                .ack_message(codex_state::MailboxAckParams {
+                    message_id: claim.message.message_id.clone(),
+                    attempt_id: claim.attempt.attempt_id.clone(),
+                    lease_id: claim.attempt.lease_id.clone(),
+                    receipt_payload_json: Some(receipt.clone()),
+                    now: Utc::now(),
+                })
+                .await
+            {
+                Ok(Some(_)) => return true,
+                Ok(None) => {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "failed to ack delivered mailbox message: lease no longer matches"
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    if attempt < MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+                        tokio::time::sleep(MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        warn!(
+            message_id = %claim.message.message_id,
+            attempts = MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS,
+            "failed to ack delivered mailbox message after retries: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        );
+        false
+    }
+
+    async fn fail_dispatch_claim_for_retry(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+        retry_at: DateTime<Utc>,
+    ) -> bool {
+        self.fail_dispatch_claim(
+            state_db,
+            claim,
+            error,
+            |next_attempt_at| codex_state::MailboxFailDisposition::Retry { next_attempt_at },
+            Some(retry_at),
+            "failed to requeue mailbox message after dispatch miss",
+        )
+        .await
+    }
+
+    async fn fail_dispatch_claim_terminal(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+    ) -> bool {
+        self.fail_dispatch_claim(
+            state_db,
+            claim,
+            error,
+            |_| codex_state::MailboxFailDisposition::Terminal,
+            None,
+            "failed to mark mailbox message terminal after dispatch miss",
+        )
+        .await
+    }
+
+    async fn fail_dispatch_claim(
+        &self,
+        state_db: &StateDbHandle,
+        claim: &codex_state::MailboxClaim,
+        error: String,
+        disposition: impl Fn(DateTime<Utc>) -> codex_state::MailboxFailDisposition,
+        retry_at: Option<DateTime<Utc>>,
+        context: &'static str,
+    ) -> bool {
+        let mut last_error = None;
+        for attempt in 1..=MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+            match state_db
+                .mailbox_messages()
+                .fail_message(codex_state::MailboxFailParams {
+                    message_id: claim.message.message_id.clone(),
+                    attempt_id: claim.attempt.attempt_id.clone(),
+                    lease_id: claim.attempt.lease_id.clone(),
+                    error: error.clone(),
+                    disposition: disposition(retry_at.unwrap_or_else(Utc::now)),
+                    now: Utc::now(),
+                })
+                .await
+            {
+                Ok(Some(_)) => return true,
+                Ok(None) => {
+                    warn!(
+                        message_id = %claim.message.message_id,
+                        "{context}: lease no longer matches"
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    if attempt < MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS {
+                        tokio::time::sleep(MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        warn!(
+            message_id = %claim.message.message_id,
+            attempts = MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS,
+            "{context} after retries: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        );
+        false
+    }
+
     async fn deliver_claim(&self, claim: &codex_state::MailboxClaim) -> MailboxDispatchResult {
         let policy = mailbox_local_delivery_policy(&claim.message);
         let freshness = dispatcher_freshness_now();
@@ -309,7 +401,9 @@ impl ThreadMailboxDispatcherRuntime {
         {
             Ok(peer) => (registry, peer),
             Err(err) => match policy {
-                MailboxLocalDeliveryPolicy::LiveOnly => return mailbox_target_not_loaded(err),
+                MailboxLocalDeliveryPolicy::LiveOnly | MailboxLocalDeliveryPolicy::QueueOnly => {
+                    return mailbox_target_not_loaded(err);
+                }
                 MailboxLocalDeliveryPolicy::ResumeAndTrigger => {
                     if let Err(err) = self
                         .resume_mailbox_target(claim.message.target_thread_id)
@@ -595,6 +689,7 @@ impl MailboxResumeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MailboxLocalDeliveryPolicy {
     LiveOnly,
+    QueueOnly,
     ResumeAndTrigger,
 }
 
@@ -633,6 +728,7 @@ fn mailbox_delivery_mode(
     policy: MailboxLocalDeliveryPolicy,
 ) -> ActiveChannelDeliveryMode {
     match policy {
+        MailboxLocalDeliveryPolicy::QueueOnly => ActiveChannelDeliveryMode::QueueOnly,
         MailboxLocalDeliveryPolicy::ResumeAndTrigger => ActiveChannelDeliveryMode::TriggerTurn,
         MailboxLocalDeliveryPolicy::LiveOnly => match kind {
             codex_state::MailboxMessageKind::UserInstruction
@@ -645,19 +741,37 @@ fn mailbox_delivery_mode(
 fn mailbox_local_delivery_policy(
     message: &codex_state::MailboxMessage,
 ) -> MailboxLocalDeliveryPolicy {
-    let payload = &message.payload_json;
-    let mode = payload
-        .get("delivery")
-        .or_else(|| payload.get("deliveryMode"))
-        .or_else(|| payload.get("localDelivery"))
-        .or_else(|| payload.pointer("/dispatch/mode"))
-        .and_then(serde_json::Value::as_str);
-    match mode {
-        Some("resumeAndTrigger" | "resume_and_trigger") => {
-            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+    mailbox_local_delivery_policy_from_payload(&message.payload_json)
+}
+
+fn mailbox_local_delivery_policy_from_payload(
+    payload: &serde_json::Value,
+) -> MailboxLocalDeliveryPolicy {
+    // Mirror the SQL claim filter's OR-any-recognized acceptance (see the
+    // Dispatch-scope claim query in codex-state's mailbox runtime): take the
+    // first RECOGNIZED marker across the four locations instead of
+    // short-circuiting on the first present key. Otherwise a message the
+    // dispatcher claimed via a secondary marker (e.g. an unrecognized
+    // "delivery" value plus a resumeAndTrigger "dispatch.mode") would be
+    // misparsed as LiveOnly and burn its delivery attempts.
+    [
+        payload.get("delivery"),
+        payload.get("deliveryMode"),
+        payload.get("localDelivery"),
+        payload.pointer("/dispatch/mode"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(serde_json::Value::as_str)
+    .find_map(|mode| match mode {
+        "resumeAndTrigger" | "resume_and_trigger" => {
+            Some(MailboxLocalDeliveryPolicy::ResumeAndTrigger)
         }
-        _ => MailboxLocalDeliveryPolicy::LiveOnly,
-    }
+        "queueOnly" | "queue_only" => Some(MailboxLocalDeliveryPolicy::QueueOnly),
+        "liveOnly" | "live_only" => Some(MailboxLocalDeliveryPolicy::LiveOnly),
+        _ => None,
+    })
+    .unwrap_or(MailboxLocalDeliveryPolicy::LiveOnly)
 }
 
 fn mailbox_delivery_mode_name(mode: ActiveChannelDeliveryMode) -> &'static str {
@@ -684,7 +798,7 @@ fn mailbox_active_channel_envelope(
             "Durable mailbox message {} from {}:\n\n{}",
             message.message_id,
             mailbox_sender_descriptor(message),
-            mailbox_message_text(&message.payload_json)
+            mailbox_payload_context_text(&message.payload_json)
         ),
         delivery,
     )
@@ -702,22 +816,16 @@ fn durable_mailbox_sender_endpoint() -> ActiveChannelEndpoint {
 fn mailbox_sender_descriptor(message: &codex_state::MailboxMessage) -> String {
     match (&message.sender_thread_id, &message.sender_label) {
         (Some(sender_thread_id), Some(sender_label)) => {
+            let sender_label = mailbox_context_descriptor_component(sender_label);
             format!("unverified sender thread {sender_thread_id} with label {sender_label:?}")
         }
         (Some(sender_thread_id), None) => format!("unverified sender thread {sender_thread_id}"),
-        (None, Some(sender_label)) => format!("external sender {sender_label:?}"),
+        (None, Some(sender_label)) => {
+            let sender_label = mailbox_context_descriptor_component(sender_label);
+            format!("external sender {sender_label:?}")
+        }
         (None, None) => "external sender".to_string(),
     }
-}
-
-fn mailbox_message_text(payload: &serde_json::Value) -> String {
-    if let Some(text) = payload.as_str() {
-        return text.to_string();
-    }
-    if let Some(text) = payload.get("text").and_then(serde_json::Value::as_str) {
-        return text.to_string();
-    }
-    serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string())
 }
 
 fn truncate_mailbox_dispatch_error(error: String) -> String {
@@ -758,6 +866,7 @@ async fn apply_persisted_mailbox_resume_metadata(
             return;
         }
     };
+    let permission_cwd = persisted_permission_profile_cwd(&persisted_metadata, initial_history);
     typesafe_overrides.model = persisted_metadata.model;
     typesafe_overrides.model_provider = Some(persisted_metadata.model_provider);
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort {
@@ -766,10 +875,81 @@ async fn apply_persisted_mailbox_resume_metadata(
             serde_json::Value::String(reasoning_effort.to_string()),
         );
     }
+    if let Some(permission_profile) =
+        parse_persisted_permission_profile(&persisted_metadata.sandbox_policy, &permission_cwd)
+    {
+        typesafe_overrides.permission_profile = Some(permission_profile);
+    }
     if let Some(approval_policy) = parse_persisted_approval_mode(&persisted_metadata.approval_mode)
     {
         typesafe_overrides.approval_policy = Some(approval_policy);
     }
+}
+
+fn persisted_permission_profile_cwd(
+    metadata: &codex_state::ThreadMetadata,
+    initial_history: &InitialHistory,
+) -> PathBuf {
+    initial_history.session_cwd().unwrap_or_else(|| {
+        if metadata.cwd.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            metadata.cwd.clone()
+        }
+    })
+}
+
+fn parse_persisted_permission_profile(
+    stored: &str,
+    cwd: &Path,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    let trimmed = stored.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(permission_profile) =
+        serde_json::from_str::<codex_protocol::models::PermissionProfile>(trimmed)
+    {
+        return Some(permission_profile);
+    }
+    if let Ok(sandbox_policy) =
+        serde_json::from_str::<codex_protocol::protocol::SandboxPolicy>(trimmed)
+    {
+        return Some(
+            codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd,
+            ),
+        );
+    }
+    let owned_bare;
+    let bare = match serde_json::from_str::<String>(trimmed) {
+        Ok(value) => {
+            owned_bare = value;
+            owned_bare.as_str()
+        }
+        Err(_) => trimmed,
+    };
+    let sandbox_policy = match bare {
+        "danger-full-access" => Some(codex_protocol::protocol::SandboxPolicy::DangerFullAccess),
+        "external-sandbox" => Some(codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
+            network_access: codex_protocol::protocol::NetworkAccess::Restricted,
+        }),
+        "read-only" => Some(codex_protocol::protocol::SandboxPolicy::new_read_only_policy()),
+        "workspace-write" => Some(codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }),
+        _ => None,
+    }?;
+    Some(
+        codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+            &sandbox_policy,
+            cwd,
+        ),
+    )
 }
 
 fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protocol::AskForApproval> {
@@ -783,7 +963,10 @@ fn parse_persisted_approval_mode(stored: &str) -> Option<codex_protocol::protoco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
 
     #[test]
     fn usage_profile_wait_resume_error_preserves_retry_at_for_dispatch() {
@@ -804,5 +987,189 @@ mod tests {
             }
             _ => panic!("expected retry with retry_at"),
         }
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_current_metadata_format() {
+        let profile = PermissionProfile::Disabled;
+        let stored = serde_json::to_string(&profile).expect("serialize permission profile");
+
+        assert_eq!(
+            Some(profile),
+            parse_persisted_permission_profile(&stored, Path::new("/workspace"))
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_sandbox_policy_metadata() {
+        let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+        let cwd = Path::new("/workspace");
+        let stored = serde_json::to_string(&sandbox_policy).expect("serialize sandbox policy");
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &sandbox_policy,
+                cwd
+            )),
+            parse_persisted_permission_profile(&stored, cwd)
+        );
+    }
+
+    #[test]
+    fn parse_persisted_permission_profile_accepts_legacy_bare_sandbox_policy_metadata() {
+        let cwd = Path::new("/workspace");
+        let workspace_write = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        };
+
+        for (stored, expected) in [
+            ("danger-full-access", SandboxPolicy::DangerFullAccess),
+            ("read-only", SandboxPolicy::new_read_only_policy()),
+            ("workspace-write", workspace_write),
+        ] {
+            assert_eq!(
+                Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                    &expected, cwd
+                )),
+                parse_persisted_permission_profile(stored, cwd)
+            );
+        }
+
+        assert_eq!(
+            Some(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+                &SandboxPolicy::new_read_only_policy(),
+                cwd
+            )),
+            parse_persisted_permission_profile("\"read-only\"", cwd)
+        );
+    }
+
+    #[tokio::test]
+    async fn mailbox_resume_metadata_restores_persisted_permission_profile() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            DateTime::<Utc>::from_timestamp(1_700_000_000, /*nsecs*/ 0).expect("valid timestamp"),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        builder.model_provider = Some("openai".to_string());
+        builder.approval_mode = codex_protocol::protocol::AskForApproval::Never;
+        let mut metadata = builder.build("fallback-provider");
+        metadata.model = Some("gpt-5.5".to_string());
+        metadata.sandbox_policy =
+            serde_json::to_string(&PermissionProfile::read_only()).expect("serialize permissions");
+        state_db
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread metadata should persist");
+
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: vec![RolloutItem::SessionMeta(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    cwd: temp_dir.path().join("latest-workspace"),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            })],
+            rollout_path: None,
+        });
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides {
+            permission_profile: Some(PermissionProfile::Disabled),
+            ..ConfigOverrides::default()
+        };
+
+        apply_persisted_mailbox_resume_metadata(
+            &state_db,
+            thread_id,
+            &history,
+            &mut request_overrides,
+            &mut typesafe_overrides,
+        )
+        .await;
+
+        assert_eq!(
+            Some(PermissionProfile::read_only()),
+            typesafe_overrides.permission_profile
+        );
+        assert_eq!(Some("gpt-5.5".to_string()), typesafe_overrides.model);
+        assert_eq!(
+            Some("openai".to_string()),
+            typesafe_overrides.model_provider
+        );
+        assert_eq!(
+            Some(codex_protocol::protocol::AskForApproval::Never),
+            typesafe_overrides.approval_policy
+        );
+    }
+
+    #[test]
+    fn queue_only_policy_does_not_trigger_user_instruction_turn() {
+        let policy = mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+            "delivery": "queueOnly",
+        }));
+
+        assert_eq!(
+            mailbox_delivery_mode(codex_state::MailboxMessageKind::UserInstruction, policy),
+            ActiveChannelDeliveryMode::QueueOnly
+        );
+    }
+
+    #[test]
+    fn delivery_policy_uses_first_recognized_marker_across_locations() {
+        // An unrecognized primary key must not shadow a recognized secondary
+        // marker that the SQL claim filter honors.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "expedited",
+                "dispatch": { "mode": "resumeAndTrigger" },
+            })),
+            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+        );
+
+        // A non-string primary key is skipped, not treated as LiveOnly.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": { "mode": "resumeAndTrigger" },
+                "deliveryMode": "resume_and_trigger",
+            })),
+            MailboxLocalDeliveryPolicy::ResumeAndTrigger
+        );
+
+        // Key order still decides between conflicting recognized markers.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "liveOnly",
+                "deliveryMode": "resumeAndTrigger",
+            })),
+            MailboxLocalDeliveryPolicy::LiveOnly
+        );
+
+        // No recognized marker anywhere falls back to LiveOnly.
+        assert_eq!(
+            mailbox_local_delivery_policy_from_payload(&serde_json::json!({
+                "delivery": "expedited",
+            })),
+            MailboxLocalDeliveryPolicy::LiveOnly
+        );
     }
 }

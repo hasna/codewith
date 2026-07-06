@@ -6,11 +6,10 @@ expression: preview
 
   ## [Unreleased]
 
-  ### Added
+  ### Fixed
 
-  - Added /tmux --session <name> --window <name> handoff support so an active
-    Codewith TUI can move into a specific existing tmux session and window,
-    while
-    preserving the existing automatic session creation behavior when no target
-    is
-    supplied.
+  - Recovered loop-driven and long-running turns from context-window overflow
+    errors by compacting mid-turn and retrying once before surfacing the
+    failure.
+
+  ## [0.1.54] - 2026-07-02

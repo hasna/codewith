@@ -8,6 +8,7 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessage;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::AppServerTransport;
+use crate::transport::ConnectionOrigin;
 use anyhow::Result;
 use app_test_support::create_fake_rollout;
 use app_test_support::create_mock_responses_server_repeating_assistant;
@@ -25,7 +26,12 @@ use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::ThreadGoalGetParams;
+use codex_app_server_protocol::ThreadGoalGetResponse;
+use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleCreateParams;
 use codex_app_server_protocol::ThreadScheduleCreateResponse;
 use codex_app_server_protocol::ThreadScheduleDeleteParams;
@@ -49,6 +55,8 @@ use codex_app_server_protocol::ThreadScheduleStatus;
 use codex_app_server_protocol::ThreadScheduleUpdateParams;
 use codex_app_server_protocol::ThreadScheduleUpdateResponse;
 use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
@@ -71,6 +79,7 @@ use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
 use codex_protocol::ThreadId;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
@@ -80,6 +89,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::state_db::StateDbHandle;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -143,7 +153,7 @@ impl ScheduleHarness {
             state_db,
             processor,
             outgoing_rx,
-            session: Arc::new(ConnectionSessionState::new()),
+            session: Arc::new(ConnectionSessionState::new(ConnectionOrigin::WebSocket)),
             next_request_id: 1,
         };
 
@@ -380,6 +390,39 @@ impl ScheduleHarness {
         }
     }
 
+    async fn create_interval_thread_schedule(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        amount_minutes: i64,
+        parent_schedule_id: Option<String>,
+    ) -> ThreadSchedule {
+        let request_id = self.request_id();
+        let response: ThreadScheduleCreateResponse = self
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.to_string(),
+                    parent_schedule_id,
+                    prompt: prompt.to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: amount_minutes,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            response.schedule,
+            self.read_schedule_updated(thread_id).await.schedule
+        );
+        response.schedule
+    }
+
     async fn read_schedule_deleted(&mut self, thread_id: &str, schedule_id: &str) {
         loop {
             let notification = self.read_server_notification().await;
@@ -404,6 +447,39 @@ impl ScheduleHarness {
                 && notification.run.status == status
             {
                 return notification;
+            }
+        }
+    }
+
+    async fn read_goal_update_and_running_run(
+        &mut self,
+        thread_id: &str,
+        run_id: &str,
+    ) -> (
+        ThreadGoalUpdatedNotification,
+        ThreadScheduleRunUpdatedNotification,
+    ) {
+        let mut goal_update = None;
+        let mut run_update = None;
+        loop {
+            let notification = self.read_server_notification().await;
+            match notification {
+                ServerNotification::ThreadGoalUpdated(notification)
+                    if notification.thread_id == thread_id =>
+                {
+                    goal_update = Some(notification);
+                }
+                ServerNotification::ThreadScheduleRunUpdated(notification)
+                    if notification.run.run_id == run_id
+                        && notification.run.status == ThreadScheduleRunStatus::Running =>
+                {
+                    run_update = Some(notification);
+                }
+                _ => {}
+            }
+            if let (Some(goal_update), Some(run_update)) = (goal_update.clone(), run_update.clone())
+            {
+                return (goal_update, run_update);
             }
         }
     }
@@ -778,6 +854,101 @@ async fn build_test_processor(
 }
 
 #[test]
+fn thread_schedule_create_refreshes_running_thread_permission_metadata() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let thread_uuid = ThreadId::from_string(thread_id.as_str())
+            .expect("app-server thread id should be a core thread id");
+
+        let request_id = harness.request_id();
+        let initial_create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "materialize schedule metadata".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            initial_create_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let mut stale_metadata = harness
+            .state_db
+            .get_thread(thread_uuid)
+            .await?
+            .expect("materialized thread metadata should exist");
+        stale_metadata.sandbox_policy = "read-only".to_string();
+        harness.state_db.upsert_thread(&stale_metadata).await?;
+
+        let request_id = harness.request_id();
+        let _: ThreadSettingsUpdateResponse = harness
+            .request(ClientRequest::ThreadSettingsUpdate {
+                request_id,
+                params: ThreadSettingsUpdateParams {
+                    thread_id: thread_id.clone(),
+                    sandbox_policy: Some(
+                        codex_app_server_protocol::SandboxPolicy::DangerFullAccess,
+                    ),
+                    ..ThreadSettingsUpdateParams::default()
+                },
+            })
+            .await;
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "refresh live permission metadata".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 5,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert_eq!(
+            create_response.schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let refreshed_metadata = harness
+            .state_db
+            .get_thread(thread_uuid)
+            .await?
+            .expect("thread metadata should still exist");
+        assert_eq!(
+            PermissionProfile::Disabled,
+            serde_json::from_str::<PermissionProfile>(&refreshed_metadata.sandbox_policy)
+                .expect("schedule creation should store live permission profile")
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_requests_reject_when_feature_disabled() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new_with_cli_overrides(vec![(
@@ -1039,7 +1210,7 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
                 claim.run.run_id.as_str(),
                 "lease-fail",
                 Utc::now(),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await?;
@@ -1129,7 +1300,7 @@ fn thread_schedule_update_to_active_resets_failure_count() -> Result<()> {
                 claim.run.run_id.as_str(),
                 "lease-fail",
                 Utc::now(),
-                None,
+                /*next_run_at*/ None,
                 "model unavailable".to_string(),
             )
             .await?;
@@ -1585,10 +1756,10 @@ fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
             .await;
         assert!(delete_response.deleted);
         harness
-            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
             .await;
         harness
-            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .read_schedule_deleted(&thread_id, parent.schedule_id.as_str())
             .await;
 
         let request_id = harness.request_id();
@@ -1610,6 +1781,173 @@ fn thread_schedule_create_accepts_nested_loop_parent() -> Result<()> {
 }
 
 #[test]
+fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let level_2 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 2 loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let branch = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "branch level 2 loop",
+                3,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let level_3 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 3 loop",
+                3,
+                Some(level_2.schedule_id.clone()),
+            )
+            .await;
+        let level_4 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 4 loop",
+                4,
+                Some(level_3.schedule_id.clone()),
+            )
+            .await;
+        let level_5 = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "level 5 loop",
+                5,
+                Some(level_4.schedule_id.clone()),
+            )
+            .await;
+
+        assert_eq!(None, root.parent_schedule_id);
+        assert_eq!(1, root.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), level_2.parent_schedule_id);
+        assert_eq!(2, level_2.nesting_depth);
+        assert_eq!(Some(root.schedule_id.clone()), branch.parent_schedule_id);
+        assert_eq!(2, branch.nesting_depth);
+        assert_eq!(
+            Some(level_2.schedule_id.clone()),
+            level_3.parent_schedule_id
+        );
+        assert_eq!(3, level_3.nesting_depth);
+        assert_eq!(
+            Some(level_3.schedule_id.clone()),
+            level_4.parent_schedule_id
+        );
+        assert_eq!(4, level_4.nesting_depth);
+        assert_eq!(
+            Some(level_4.schedule_id.clone()),
+            level_5.parent_schedule_id
+        );
+        assert_eq!(5, level_5.nesting_depth);
+
+        let request_id = harness.request_id();
+        let error = harness
+            .request_error(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id,
+                    parent_schedule_id: Some(level_5.schedule_id),
+                    prompt: "level 6 loop".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 6,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_900_000_300),
+                    expires_at: Some(1_900_604_800),
+                },
+            })
+            .await;
+        assert!(
+            error.message.contains("maximum nesting depth is 5"),
+            "unexpected error: {error:?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let root = harness
+            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .await;
+        let child = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "child loop",
+                2,
+                Some(root.schedule_id.clone()),
+            )
+            .await;
+        let grandchild = harness
+            .create_interval_thread_schedule(
+                &thread_id,
+                "grandchild loop",
+                3,
+                Some(child.schedule_id.clone()),
+            )
+            .await;
+
+        let request_id = harness.request_id();
+        let delete_response: ThreadScheduleDeleteResponse = harness
+            .request(ClientRequest::ThreadScheduleDelete {
+                request_id,
+                params: ThreadScheduleDeleteParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: root.schedule_id.clone(),
+                },
+            })
+            .await;
+        assert!(delete_response.deleted);
+        harness
+            .read_schedule_deleted(&thread_id, grandchild.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, child.schedule_id.as_str())
+            .await;
+        harness
+            .read_schedule_deleted(&thread_id, root.schedule_id.as_str())
+            .await;
+
+        let request_id = harness.request_id();
+        let list_response: ThreadScheduleListResponse = harness
+            .request(ClientRequest::ThreadScheduleList {
+                request_id,
+                params: ThreadScheduleListParams {
+                    thread_id,
+                    cursor: None,
+                    limit: Some(10),
+                },
+            })
+            .await;
+        assert_eq!(Vec::<ThreadSchedule>::new(), list_response.data);
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -1622,29 +1960,6 @@ fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Res
             /*git_info*/ None,
         )?;
         let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
-        let rollout_file_path = rollout_path(
-            harness._codex_home.path(),
-            "2025-01-05T12-00-00",
-            &thread_id,
-        );
-        append_rollout_item_to_path(
-            &rollout_file_path,
-            &RolloutItem::SessionMeta(SessionMetaLine {
-                meta: SessionMeta {
-                    id: parsed_thread_id,
-                    timestamp: "2025-01-05T12:00:01Z".to_string(),
-                    cwd: harness.workspace.path().to_path_buf(),
-                    originator: "codex".to_string(),
-                    cli_version: "0.0.0".to_string(),
-                    source: SessionSource::Cli,
-                    model_provider: Some("mock_provider".to_string()),
-                    auth_profile: Some(None),
-                    ..SessionMeta::default()
-                },
-                git: None,
-            }),
-        )
-        .await?;
 
         let request_id = harness.request_id();
         let create_response: ThreadScheduleCreateResponse = harness
@@ -1681,7 +1996,8 @@ fn thread_schedule_create_for_unloaded_thread_records_root_auth_profile() -> Res
 }
 
 #[test]
-fn unloaded_thread_schedule_create_records_latest_root_turn_auth() -> Result<()> {
+fn thread_schedule_create_for_unloaded_thread_prefers_session_auth_profile_over_root_turn()
+-> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
         let filename_ts = "2025-01-05T12-05-00";
@@ -1733,6 +2049,9 @@ fn unloaded_thread_schedule_create_records_latest_root_turn_auth() -> Result<()>
                 collaboration_mode: None,
                 session_prompt: None,
                 multi_agent_version: None,
+                worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
+                machine_id: None,
+                machine_name: None,
                 auth_profile: Some(None),
                 realtime_active: None,
                 effort: None,
@@ -1768,120 +2087,7 @@ fn unloaded_thread_schedule_create_records_latest_root_turn_auth() -> Result<()>
             .await?
             .expect("created schedule should be persisted");
         assert_eq!(parsed_thread_id, stored.thread_id);
-        assert_eq!(Some(None), stored.auth_profile);
-
-        harness.shutdown().await;
-        Ok(())
-    })
-}
-
-#[test]
-fn unloaded_thread_schedule_create_records_latest_root_session_auth() -> Result<()> {
-    run_schedule_harness_test(async {
-        let mut harness = ScheduleHarness::new().await?;
-        let filename_ts = "2025-01-05T12-10-00";
-        let thread_id = create_fake_rollout(
-            harness._codex_home.path(),
-            filename_ts,
-            "2025-01-05T12:10:00Z",
-            "root profile switch thread",
-            Some("mock_provider"),
-            /*git_info*/ None,
-        )?;
-        let parsed_thread_id = ThreadId::from_string(thread_id.as_str())?;
-        let rollout_file_path = rollout_path(harness._codex_home.path(), filename_ts, &thread_id);
-        append_rollout_item_to_path(
-            &rollout_file_path,
-            &RolloutItem::SessionMeta(SessionMetaLine {
-                meta: SessionMeta {
-                    id: parsed_thread_id,
-                    timestamp: "2025-01-05T12:10:01Z".to_string(),
-                    cwd: harness.workspace.path().to_path_buf(),
-                    originator: "codex".to_string(),
-                    cli_version: "0.0.0".to_string(),
-                    source: SessionSource::Cli,
-                    model_provider: Some("mock_provider".to_string()),
-                    auth_profile: Some(Some("account002".to_string())),
-                    ..SessionMeta::default()
-                },
-                git: None,
-            }),
-        )
-        .await?;
-        append_rollout_item_to_path(
-            &rollout_file_path,
-            &RolloutItem::SessionMeta(SessionMetaLine {
-                meta: SessionMeta {
-                    id: parsed_thread_id,
-                    timestamp: "2025-01-05T12:10:02Z".to_string(),
-                    cwd: harness.workspace.path().to_path_buf(),
-                    originator: "codex".to_string(),
-                    cli_version: "0.0.0".to_string(),
-                    source: SessionSource::Cli,
-                    model_provider: Some("mock_provider".to_string()),
-                    auth_profile: Some(None),
-                    ..SessionMeta::default()
-                },
-                git: None,
-            }),
-        )
-        .await?;
-        append_rollout_item_to_path(
-            &rollout_file_path,
-            &RolloutItem::TurnContext(TurnContextItem {
-                thread_id: Some(parsed_thread_id),
-                turn_id: Some("turn-root".to_string()),
-                cwd: harness.workspace.path().to_path_buf(),
-                workspace_roots: None,
-                current_date: None,
-                timezone: None,
-                approval_policy: AskForApproval::Never,
-                sandbox_policy: SandboxPolicy::DangerFullAccess,
-                permission_profile: None,
-                network: None,
-                file_system_sandbox_policy: None,
-                model: "gpt-5.5".to_string(),
-                model_provider_id: Some("mock_provider".to_string()),
-                personality: None,
-                collaboration_mode: None,
-                session_prompt: None,
-                multi_agent_version: None,
-                auth_profile: Some(None),
-                realtime_active: None,
-                effort: None,
-                summary: codex_protocol::config_types::ReasoningSummary::Auto,
-            }),
-        )
-        .await?;
-
-        let request_id = harness.request_id();
-        let create_response: ThreadScheduleCreateResponse = harness
-            .request(ClientRequest::ThreadScheduleCreate {
-                request_id,
-                params: ThreadScheduleCreateParams {
-                    thread_id: thread_id.clone(),
-                    parent_schedule_id: None,
-                    prompt: "check the deploy".to_string(),
-                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
-                    schedule: ThreadScheduleSpec::Interval {
-                        amount: 5,
-                        unit: ThreadScheduleIntervalUnit::Minutes,
-                    },
-                    timezone: Some("UTC".to_string()),
-                    next_run_at: Some(1_900_000_300),
-                    expires_at: Some(1_900_604_800),
-                },
-            })
-            .await;
-
-        let stored = harness
-            .state_db
-            .thread_schedules()
-            .get_thread_schedule(create_response.schedule.schedule_id.as_str())
-            .await?
-            .expect("created schedule should be persisted");
-        assert_eq!(parsed_thread_id, stored.thread_id);
-        assert_eq!(Some(None), stored.auth_profile);
+        assert_eq!(Some(Some("account002".to_string())), stored.auth_profile);
 
         harness.shutdown().await;
         Ok(())
@@ -2061,6 +2267,63 @@ fn thread_schedule_run_now_executes_and_completes_the_scheduled_turn() -> Result
 }
 
 #[test]
+fn schedule_create_materializes_fresh_thread_rollout_before_first_user_turn() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let _: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "future loop should be resumable".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp() + 3_600),
+                    expires_at: Some(Utc::now().timestamp() + 86_400),
+                },
+            })
+            .await;
+
+        let rollout_path = codex_rollout::find_thread_path_by_id_str(
+            harness._codex_home.path(),
+            &thread_id,
+            Option::<&codex_state::StateRuntime>::None,
+        )
+        .await?
+        .expect("fresh scheduled thread should have a materialized rollout");
+        assert!(
+            rollout_path.exists(),
+            "materialized rollout path should exist: {}",
+            rollout_path.display()
+        );
+        let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        assert_eq!(
+            Some(harness.workspace.path().to_path_buf()),
+            history.session_cwd()
+        );
+        assert!(
+            history.scan_rollout_items(|item| matches!(
+                item,
+                RolloutItem::SessionMeta(meta) if meta.meta.id.to_string() == thread_id
+            )),
+            "materialized rollout should contain session metadata for {thread_id}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
 fn due_thread_schedule_executes_visible_interactive_turn() -> Result<()> {
     run_schedule_harness_test(async {
         let mut harness = ScheduleHarness::new().await?;
@@ -2121,6 +2384,111 @@ fn due_thread_schedule_executes_visible_interactive_turn() -> Result<()> {
                 .contains("You are running one new scheduled Codewith prompt")
                 && body.contains("check due loop visibility")),
             "due scheduled prompt should be sent as a normal visible turn: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn due_interval_schedule_executes_multiple_visible_interactive_turns() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "check repeated loop visibility".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Minutes,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(Utc::now().timestamp()),
+                    expires_at: Some(Utc::now().timestamp() + 86_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+
+        let (first_running, _, _, _, first_completed_turn) = harness
+            .read_scheduled_run_lifecycle_for_schedule(&thread_id, &schedule.schedule_id)
+            .await;
+        let first_turn_id = first_running
+            .run
+            .turn_id
+            .clone()
+            .expect("first due scheduled run should expose a turn id");
+        assert_eq!(first_turn_id, first_completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, first_completed_turn.turn.status);
+
+        let request_id = harness.request_id();
+        let updated: ThreadScheduleUpdateResponse = harness
+            .request(ClientRequest::ThreadScheduleUpdate {
+                request_id,
+                params: ThreadScheduleUpdateParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                    prompt: None,
+                    schedule: None,
+                    timezone: None,
+                    status: None,
+                    next_run_at: Some(Some(Utc::now().timestamp())),
+                    expires_at: None,
+                },
+            })
+            .await;
+        assert_eq!(ThreadScheduleStatus::Active, updated.schedule.status);
+        harness.read_schedule_updated(&thread_id).await;
+
+        let (second_running, _, _, _, second_completed_turn) = harness
+            .read_scheduled_run_lifecycle_for_schedule(&thread_id, &schedule.schedule_id)
+            .await;
+        let second_turn_id = second_running
+            .run
+            .turn_id
+            .clone()
+            .expect("second due scheduled run should expose a turn id");
+        assert_ne!(
+            first_turn_id, second_turn_id,
+            "each recurring loop firing must create a fresh visible turn"
+        );
+        assert_eq!(second_turn_id, second_completed_turn.turn.id);
+        assert_eq!(TurnStatus::Completed, second_completed_turn.turn.status);
+
+        let turns = harness.list_turns(&thread_id).await;
+        let scheduled_turns = turns
+            .data
+            .iter()
+            .filter(|turn| {
+                turn_contains_user_text(turn, "check repeated loop visibility")
+                    && turn_contains_agent_text(turn, "Scheduled done")
+            })
+            .count();
+        assert_eq!(
+            2, scheduled_turns,
+            "each due interval run should be visible in persisted turn history: {turns:#?}"
+        );
+
+        let response_request_bodies = harness.response_request_bodies().await;
+        let scheduled_requests = response_request_bodies
+            .iter()
+            .filter(|body| {
+                body.contains("You are running one new scheduled Codewith prompt")
+                    && body.contains("check repeated loop visibility")
+            })
+            .count();
+        assert_eq!(
+            2, scheduled_requests,
+            "each repeated due run should be submitted to the model as a normal visible turn: {response_request_bodies:#?}"
         );
 
         harness.shutdown().await;
@@ -2199,6 +2567,207 @@ fn completed_unsubscribed_scheduled_run_is_recoverable_from_turn_history() -> Re
         assert!(
             turn_contains_agent_text(turn, "Scheduled done"),
             "scheduled assistant output should be recoverable from persisted turn: {turn:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_run_now_executes_goal_command_as_scheduled_goal_turn() -> Result<()> {
+    run_schedule_harness_test(async {
+        let mut harness = ScheduleHarness::new().await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+        let objective = "refresh release notes and report blockers";
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: format!("/goal {objective}"),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Hours,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_800_000_000),
+                    expires_at: Some(1_800_086_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        assert_eq!(ThreadScheduleRunStatus::Leased, run_now.run.status);
+
+        let (goal_update, running) = harness
+            .read_goal_update_and_running_run(&thread_id, &run_now.run.run_id)
+            .await;
+        assert_eq!(objective, goal_update.goal.objective);
+        assert_eq!(ThreadGoalStatus::Active, goal_update.goal.status);
+        assert!(running.run.turn_id.is_some());
+
+        let (_updated_schedule, completed) = harness
+            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+        assert_eq!(None, completed.run.error);
+
+        let request_id = harness.request_id();
+        let goal_get: ThreadGoalGetResponse = harness
+            .request(ClientRequest::ThreadGoalGet {
+                request_id,
+                params: ThreadGoalGetParams {
+                    thread_id: thread_id.clone(),
+                },
+            })
+            .await;
+        let goal = goal_get
+            .goal
+            .expect("scheduled goal should be persisted on the thread");
+        assert_eq!(objective, goal.objective);
+        assert_eq!(ThreadGoalStatus::Active, goal.status);
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let response_request_bodies = harness.response_request_bodies().await;
+        assert_eq!(
+            1,
+            response_request_bodies.len(),
+            "scheduled goal should not start an extra idle continuation turn: {response_request_bodies:#?}"
+        );
+        assert!(
+            response_request_bodies.iter().any(|body| body
+                .contains("You are running one new scheduled Codewith goal objective")
+                && body.contains(run_now.run.run_id.as_str())
+                && body.contains("The active thread goal has already been persisted")
+                && body.contains("Do not create new goals, schedules, monitors, timers")
+                && body.contains(objective)),
+            "scheduled goal prompt should be wrapped as a schedule-owned goal turn: {response_request_bodies:#?}"
+        );
+        assert!(
+            !response_request_bodies
+                .iter()
+                .any(|body| body.contains(&format!("/goal {objective}"))
+                    || body.contains("Scheduled prompt:\n/goal")),
+            "scheduled goal prompt should not be sent as a raw slash command: {response_request_bodies:#?}"
+        );
+
+        harness.shutdown().await;
+        Ok(())
+    })
+}
+
+#[test]
+fn thread_schedule_run_now_recovers_context_window_errors() -> Result<()> {
+    run_schedule_harness_test(async {
+        let server = MockServer::start().await;
+        let request_log = responses::mount_sse_sequence(
+            &server,
+            vec![
+                responses::sse_failed(
+                    "resp_context_window",
+                    "context_length_exceeded",
+                    "Your input exceeds the context window of this model.",
+                ),
+                responses::sse(vec![
+                    responses::ev_assistant_message(
+                        "msg_compact",
+                        "SCHEDULE_CONTEXT_RECOVERY_SUMMARY",
+                    ),
+                    responses::ev_completed("resp_compact"),
+                ]),
+                responses::sse(vec![
+                    responses::ev_assistant_message("msg_retry", "Scheduled recovered"),
+                    responses::ev_completed("resp_retry"),
+                ]),
+            ],
+        )
+        .await;
+        let mut harness = ScheduleHarness::new_with_mock_server(server, Vec::new()).await?;
+        let thread = harness.start_materialized_thread().await;
+        let thread_id = thread.thread.id.clone();
+
+        let request_id = harness.request_id();
+        let create_response: ThreadScheduleCreateResponse = harness
+            .request(ClientRequest::ThreadScheduleCreate {
+                request_id,
+                params: ThreadScheduleCreateParams {
+                    thread_id: thread_id.clone(),
+                    parent_schedule_id: None,
+                    prompt: "check whether context recovery works".to_string(),
+                    prompt_source: Some(ThreadSchedulePromptSource::Inline),
+                    schedule: ThreadScheduleSpec::Interval {
+                        amount: 1,
+                        unit: ThreadScheduleIntervalUnit::Hours,
+                    },
+                    timezone: Some("UTC".to_string()),
+                    next_run_at: Some(1_800_000_000),
+                    expires_at: Some(1_800_086_400),
+                },
+            })
+            .await;
+        let schedule = create_response.schedule;
+        assert_eq!(
+            schedule,
+            harness.read_schedule_updated(&thread_id).await.schedule
+        );
+
+        let request_id = harness.request_id();
+        let run_now: ThreadScheduleRunNowResponse = harness
+            .request(ClientRequest::ThreadScheduleRunNow {
+                request_id,
+                params: ThreadScheduleRunNowParams {
+                    thread_id: thread_id.clone(),
+                    schedule_id: schedule.schedule_id.clone(),
+                },
+            })
+            .await;
+        harness
+            .read_schedule_run_updated(&run_now.run.run_id, ThreadScheduleRunStatus::Running)
+            .await;
+
+        let (updated_schedule, completed) = harness
+            .read_completed_run_and_schedule_update(&thread_id, &run_now.run.run_id)
+            .await;
+        assert_eq!(None, completed.run.error);
+        assert!(completed.run.completed_at.is_some());
+        assert_eq!(0, updated_schedule.schedule.failure_count);
+
+        let requests = request_log.requests();
+        assert_eq!(
+            3,
+            requests.len(),
+            "expected failed sampling, local compact sampling, and retry sampling"
+        );
+        assert!(
+            requests[1].body_contains_text("check whether context recovery works"),
+            "local compaction should include the scheduled prompt context"
+        );
+        assert!(
+            requests[2].body_contains_text("SCHEDULE_CONTEXT_RECOVERY_SUMMARY"),
+            "retry should include the recovered context summary"
+        );
+        assert!(
+            requests[2].body_contains_text("check whether context recovery works"),
+            "retry should keep the scheduled prompt visible"
         );
 
         harness.shutdown().await;

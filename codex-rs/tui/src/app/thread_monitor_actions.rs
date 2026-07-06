@@ -32,7 +32,12 @@ impl App {
         monitor_id: String,
     ) {
         let result = app_server
-            .thread_monitor_read(thread_id, monitor_id.clone())
+            .thread_monitor_read(
+                thread_id,
+                monitor_id.clone(),
+                /*cursor*/ None,
+                /*limit*/ None,
+            )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -68,7 +73,12 @@ impl App {
             return;
         };
         let result = app_server
-            .thread_monitor_read(thread_id, monitor_id.clone())
+            .thread_monitor_read(
+                thread_id,
+                monitor_id.clone(),
+                /*cursor*/ None,
+                /*limit*/ None,
+            )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -208,7 +218,12 @@ impl App {
     ) -> Option<String> {
         if let Some(monitor_id) = monitor_id.filter(|value| !value.trim().is_empty()) {
             let result = app_server
-                .thread_monitor_read(thread_id, monitor_id.clone())
+                .thread_monitor_read(
+                    thread_id,
+                    monitor_id.clone(),
+                    /*cursor*/ None,
+                    /*limit*/ None,
+                )
                 .await;
             if self.current_displayed_thread_id() != Some(thread_id) {
                 return None;

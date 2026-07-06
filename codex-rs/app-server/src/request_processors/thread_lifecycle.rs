@@ -1,6 +1,6 @@
 use super::*;
 use crate::request_processors::thread_goal_processor::api_thread_goal_from_state;
-use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state;
+use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state_for_thread;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -730,6 +730,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         auth_profile,
         cwd,
         workspace_roots,
+        profile_workspace_roots,
         reasoning_effort,
         ..
     } = pending.config_snapshot;
@@ -747,6 +748,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         service_tier,
         cwd,
         runtime_workspace_roots: workspace_roots,
+        profile_workspace_roots,
         instruction_sources,
         approval_policy: approval_policy.into(),
         approvals_reviewer: approvals_reviewer.into(),
@@ -842,7 +844,7 @@ pub(super) async fn send_thread_goal_snapshot_notification(
                         ThreadGoalPlanUpdatedNotification {
                             thread_id: thread_id.to_string(),
                             turn_id: None,
-                            plan: api_thread_goal_plan_from_state(snapshot),
+                            plan: api_thread_goal_plan_from_state_for_thread(snapshot, thread_id),
                         },
                     ))
                     .await;

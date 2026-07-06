@@ -107,7 +107,6 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
-    pending_scheduled_run_submissions: usize,
     scheduled_runs_by_turn_id: HashMap<String, ScheduledThreadScheduleRun>,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
@@ -173,11 +172,6 @@ impl ThreadState {
             .insert(turn_id, scheduled_run);
     }
 
-    #[cfg(test)]
-    pub(crate) fn begin_scheduled_run_submission(&mut self) {
-        self.pending_scheduled_run_submissions += 1;
-    }
-
     pub(crate) fn take_scheduled_run(
         &mut self,
         turn_id: &str,
@@ -187,10 +181,6 @@ impl ThreadState {
 
     pub(crate) fn has_scheduled_run(&self, turn_id: &str) -> bool {
         self.scheduled_runs_by_turn_id.contains_key(turn_id)
-    }
-
-    pub(crate) fn has_scheduled_run_or_pending_submission(&self, turn_id: &str) -> bool {
-        self.has_scheduled_run(turn_id) || self.pending_scheduled_run_submissions > 0
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
@@ -297,6 +287,7 @@ mod tests {
             },
             personality: None,
             session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         }
     }
 }

@@ -3,20 +3,20 @@ source: tui/src/bottom_pane/message_summary_setup.rs
 assertion_line: 210
 expression: "render_lines(&view, 84)"
 ---
-                                                                                    
-  Configure Message Summary                                                         
-  Select which items to display after final assistant messages.                     
-                                                                                    
-  Type to search                                                                    
-  >                                                                                 
-› [x] Worked for     Assistant turn duration after one minute                       
-  [x] TTFT           Time to first token                                            
-  [ ] Local tools    Local tool call count and duration                             
-  [ ] Inference      Inference request count and duration                           
-  [ ] Streams        Streaming event count and duration                             
-  [ ] WebSocket      WebSocket send and receive timing                              
-  [ ] Responses API  Responses API overhead and inference timing                    
-  [ ] TBT            Time between tokens                                            
-                                                                                    
-  Worked for 2m 05s • TTFT: 410ms (iapi) 460ms (service)                            
+
+  Configure Message Summary
+  Select which items to display after final assistant messages.
+
+  Type to search
+  >
+› [x] Worked for     Assistant turn duration after one minute
+  [x] TTFT           Time to first token
+  [ ] Local tools    Local tool call count and duration
+  [ ] Inference      Inference request count and duration
+  [ ] Streams        Streaming event count and duration
+  [ ] WebSocket      WebSocket send and receive timing
+  [ ] Responses API  Responses API overhead and inference timing
+  [ ] TBT            Time between tokens
+
+  Worked for 2m 05s • TTFT: 410ms (iapi) 460ms (service)
   Press space to toggle; ←/→ to move; enter to confirm and close; esc to close

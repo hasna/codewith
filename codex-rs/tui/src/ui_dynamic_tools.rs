@@ -3,6 +3,7 @@ use serde_json::json;
 
 pub(crate) const UI_TOOLS_NAMESPACE: &str = "codewith_ui";
 pub(crate) const STATUSLINE_TOOL: &str = "configure_statusline";
+pub(crate) const STATUSLINE_MESSAGE_TOOL: &str = "update_statusline";
 pub(crate) const TERMINAL_TITLE_TOOL: &str = "configure_terminal_title";
 pub(crate) const CONFIG_TOOL: &str = "configure_config";
 pub(crate) const TMUX_TOOL: &str = "tmux";
@@ -22,6 +23,27 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
             name: STATUSLINE_TOOL.to_string(),
             description: "Inspect or update the Codewith TUI statusline. Use action=list_options before action=set to get valid item IDs without loading them into context upfront.".to_string(),
             input_schema: status_surface_schema("Ordered statusline item IDs for action=set."),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
+            name: STATUSLINE_MESSAGE_TOOL.to_string(),
+            description: "Set or clear bounded display-only text for the current statusline status item. This does not change config, prompts, permissions, or session title; use rename_session for the session/thread title.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "One of: set, clear."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Required for action=set. User-readable status text, at most 120 characters after whitespace normalization. Do not pass raw untrusted external text."
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
             defer_loading: true,
         },
         DynamicToolSpec {
@@ -120,13 +142,79 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: MCP_TOOL.to_string(),
-            description: "Inspect configured MCP servers and open the MCP manager. MCP mutations such as add, enable/disable, and reload require the interactive /mcp UI and are not executed by this AI-facing tool.".to_string(),
+            description: "Inspect MCP servers, reload loaded MCP connections, or request a safe persistent MCP config change. Persistent changes are approval-gated: the TUI shows the exact server name, transport, command/URL, env/header names, tool approval mode, and config scope before anything is saved.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "One of: open, list."
+                        "description": "One of: open, list, reload, add_stdio, add_streamable_http, set_server_enabled, set_tool_enabled. add/set actions require user approval before writing config."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "MCP server name for add_stdio, add_streamable_http, or set_server_enabled."
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Executable/path for action=add_stdio. Pass arguments separately in args; do not provide a shell command string."
+                    },
+                    "args": {
+                        "type": "array",
+                        "description": "Argv arguments for action=add_stdio.",
+                        "items": { "type": "string" }
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory for action=add_stdio."
+                    },
+                    "env_vars": {
+                        "type": "array",
+                        "description": "Environment variable names to pass through for action=add_stdio. Secret values are not accepted inline.",
+                        "items": { "type": "string" }
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "HTTP or HTTPS URL for action=add_streamable_http. Do not include credentials or secret query parameters."
+                    },
+                    "bearer_token_env_var": {
+                        "type": "string",
+                        "description": "Environment variable name containing the bearer token for action=add_streamable_http."
+                    },
+                    "http_headers": {
+                        "type": "object",
+                        "description": "Non-secret inline HTTP headers for action=add_streamable_http.",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "env_http_headers": {
+                        "type": "object",
+                        "description": "HTTP headers whose values come from environment variables, e.g. Authorization: MCP_TOKEN.",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "enabled_tools": {
+                        "type": "array",
+                        "description": "Optional tool allow-list for new servers.",
+                        "items": { "type": "string" }
+                    },
+                    "disabled_tools": {
+                        "type": "array",
+                        "description": "Optional tool deny-list for new servers.",
+                        "items": { "type": "string" }
+                    },
+                    "default_tools_approval_mode": {
+                        "type": "string",
+                        "description": "Optional default tool approval mode for new servers: auto, prompt, or approve."
+                    },
+                    "server": {
+                        "type": "string",
+                        "description": "MCP server name for action=set_tool_enabled."
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "MCP tool name for action=set_tool_enabled."
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Desired enabled state for set_server_enabled or set_tool_enabled."
                     }
                 },
                 "required": ["action"],
@@ -137,7 +225,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: BACKGROUND_AGENTS_TOOL.to_string(),
-            description: "Open or inspect durable background agents owned by the current thread. Starting, attaching, detaching, stopping, deleting, or reading global diagnostics requires the interactive /agent UI.".to_string(),
+            description: "Open or inspect durable background agents owned by the current thread. List, read, and logs output is compact by default; use verbose=true only when raw records are needed. Starting, attaching, detaching, stopping, deleting, or reading global diagnostics requires the interactive /agent UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -148,6 +236,18 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "agent_id": {
                         "type": "string",
                         "description": "Required for action=read or action=logs. The agent must belong to the current thread."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw agent records, snapshots, or event payloads instead of compact summaries."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=logs call."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact rows/events to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],
@@ -196,7 +296,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: SCHEDULES_TOOL.to_string(),
-            description: "Open or inspect one-time schedules and recurring /loop schedules for the current session. Creating, pausing, resuming, deleting, and running schedules require the interactive /schedule or /loop UI.".to_string(),
+            description: "Open or inspect one-time schedules and recurring /loop schedules for the current session. List output is compact by default; use verbose=true only when raw schedule records are needed. Creating, pausing, resuming, deleting, and running schedules require the interactive /schedule or /loop UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -207,6 +307,14 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "kind": {
                         "type": "string",
                         "description": "For action=open/list: one of once, loop, all. Defaults to all for list and once for open."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw schedule records instead of compact summaries."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact schedule rows to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],
@@ -217,7 +325,7 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
         DynamicToolSpec {
             namespace: Some(UI_TOOLS_NAMESPACE.to_string()),
             name: MONITORS_TOOL.to_string(),
-            description: "Open, list, or read monitors for the current session. Stopping, restarting, or deleting a monitor requires the interactive /monitor UI.".to_string(),
+            description: "Open, list, or read monitors for the current session. List and read output is compact by default; use verbose=true only when raw monitor records or full event text are needed. Stopping, restarting, or deleting a monitor requires the interactive /monitor UI.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -228,6 +336,18 @@ pub(crate) fn dynamic_tool_specs() -> Vec<DynamicToolSpec> {
                     "monitor_id": {
                         "type": "string",
                         "description": "Required for action=read."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Return raw monitor records and full event text instead of compact summaries."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Opaque cursor returned by a previous action=read call."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of compact monitor/event rows to return. Defaults to 20."
                     }
                 },
                 "required": ["action"],
@@ -285,6 +405,7 @@ pub(crate) fn is_owned_ui_tool(namespace: Option<&str>, tool: &str) -> bool {
         && matches!(
             tool,
             STATUSLINE_TOOL
+                | STATUSLINE_MESSAGE_TOOL
                 | TERMINAL_TITLE_TOOL
                 | CONFIG_TOOL
                 | TMUX_TOOL
@@ -329,7 +450,7 @@ mod tests {
     #[test]
     fn ui_dynamic_tools_are_deferred_without_option_enums() {
         let specs = dynamic_tool_specs();
-        assert_eq!(specs.len(), 12);
+        assert_eq!(specs.len(), 13);
         assert!(specs.iter().all(|tool| tool.defer_loading));
         assert!(
             specs
@@ -370,8 +491,31 @@ mod tests {
             serde_json::json!(true)
         );
 
+        let statusline_message = specs
+            .iter()
+            .find(|tool| tool.name == STATUSLINE_MESSAGE_TOOL)
+            .expect("statusline message tool spec");
+        assert!(statusline_message.description.contains("display-only"));
+        assert!(
+            statusline_message.input_schema["properties"]["message"]["description"]
+                .as_str()
+                .expect("message description")
+                .contains("120 characters")
+        );
+        let mcp = specs
+            .iter()
+            .find(|tool| tool.name == MCP_TOOL)
+            .expect("mcp tool spec");
+        assert!(mcp.description.contains("approval-gated"));
+        let mcp_action_description = mcp.input_schema["properties"]["action"]["description"]
+            .as_str()
+            .expect("action description");
+        assert!(mcp_action_description.contains("add_stdio"));
+        assert!(mcp_action_description.contains("set_tool_enabled"));
+
         for tool in [
             BACKGROUND_TERMINALS_TOOL,
+            STATUSLINE_MESSAGE_TOOL,
             MCP_TOOL,
             BACKGROUND_AGENTS_TOOL,
             ACTIVE_SESSIONS_TOOL,

@@ -6,7 +6,9 @@ struct AppsView: View {
     var apps: [AppItemInfo] = []
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 3)
-    private let tints: [UInt32] = [0x3B82F6, 0x34C759, 0xAF52DE, 0xFF9500, 0xFF3B30, 0x5856D6, 0xFF2D55, 0x00C7BE, 0xFFCC00]
+    private let tints: [Color] = [
+        Theme.accent, Theme.textSecondary, Theme.warning, Theme.success, Theme.danger,
+    ]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +28,7 @@ struct AppsView: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(Array(apps.enumerated()), id: \.element.id) { i, app in
-                            card(app, tint: Color(hex: tints[i % tints.count]))
+                            card(app, tint: tints[i % tints.count])
                         }
                     }
                     .padding(.horizontal, 24)
@@ -90,13 +92,13 @@ struct AppsView: View {
             if installed {
                 Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold))
             }
-            Text(installed ? "Installed" : "Install").font(.system(size: 11, weight: .medium))
+            Text(installed ? "Installed" : "Available").font(.system(size: 11, weight: .medium))
         }
-        .foregroundStyle(installed ? Theme.textSecondary : .white)
+        .foregroundStyle(installed ? Theme.textSecondary : Theme.textPrimary)
         .padding(.horizontal, 12).frame(height: 24)
         .background(
-            Capsule().fill(installed ? Theme.fieldFill : Theme.accent)
-                .overlay(installed ? Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1) : nil)
+            Capsule().fill(Theme.fieldFill)
+                .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
     }
 }

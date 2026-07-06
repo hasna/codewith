@@ -2753,6 +2753,8 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         workspace_roots: None,
         current_date: turn_context.current_date.clone(),
         timezone: turn_context.timezone.clone(),
+        machine_id: None,
+        machine_name: None,
         approval_policy: turn_context.approval_policy.value(),
         sandbox_policy: turn_context.sandbox_policy(),
         permission_profile: None,
@@ -2763,6 +2765,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         personality: turn_context.personality,
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         session_prompt: None,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         multi_agent_version: None,
         auth_profile: None,
         realtime_active: Some(turn_context.realtime_active),
@@ -3411,6 +3414,7 @@ async fn set_rate_limits_retains_previous_credits() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -3520,6 +3524,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -4066,8 +4071,8 @@ async fn session_settings_model_provider_update_changes_turn_provider() {
     let snapshot = updated.thread_config_snapshot();
     assert_eq!(updated.provider, openrouter_provider);
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
-    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
+    assert_eq!(updated.collaboration_mode.model(), "z-ai/glm-5.2");
     assert_eq!(per_turn_config.model_provider_id, OPENROUTER_PROVIDER_ID);
     assert_eq!(per_turn_config.model_provider, openrouter_provider);
 }
@@ -4101,8 +4106,8 @@ async fn session_settings_model_provider_update_replaces_stale_provider_model() 
 
     let snapshot = updated.thread_config_snapshot();
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
-    assert_eq!(updated.collaboration_mode.model(), "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
+    assert_eq!(updated.collaboration_mode.model(), "z-ai/glm-5.2");
     assert_eq!(updated.collaboration_mode.reasoning_effort(), None);
 }
 
@@ -4114,11 +4119,11 @@ async fn session_settings_provider_only_update_uses_fallback_default_for_all_kno
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
         ("minimax", "MiniMax-M3"),
-        ("nvidia", "openai/gpt-oss-120b"),
-        ("openrouter", "openai/gpt-oss-120b"),
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("openrouter", "z-ai/glm-5.2"),
         ("qwen", "qwen3.5-flash"),
         ("xai", "grok-4.3"),
-        ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+        ("xiaomi", "mimo-v2.5-pro"),
         ("zai", "glm-5.2"),
     ];
 
@@ -4157,10 +4162,10 @@ async fn thread_settings_provider_only_update_uses_provider_default_model() -> a
     let state = session.state.lock().await;
     let snapshot = state.session_configuration.thread_config_snapshot();
     assert_eq!(snapshot.model_provider_id, OPENROUTER_PROVIDER_ID);
-    assert_eq!(snapshot.model, "openai/gpt-oss-120b");
+    assert_eq!(snapshot.model, "z-ai/glm-5.2");
     assert_eq!(
         state.session_configuration.collaboration_mode.model(),
-        "openai/gpt-oss-120b"
+        "z-ai/glm-5.2"
     );
     assert_eq!(
         state
@@ -4429,6 +4434,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
     SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -5350,6 +5356,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -5468,6 +5475,7 @@ async fn make_session_and_context_with_events()
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -5630,6 +5638,7 @@ async fn make_session_and_context_with_events()
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -5715,6 +5724,7 @@ async fn make_session_with_config_and_rx(
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -5821,6 +5831,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -7560,6 +7571,7 @@ where
     let session_configuration = SessionConfiguration {
         provider: config.model_provider.clone(),
         collaboration_mode,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
         model_reasoning_summary: config.model_reasoning_summary,
         developer_instructions: config.developer_instructions.clone(),
         session_prompt: None,
@@ -7722,6 +7734,7 @@ where
         Some(Arc::clone(&auth_manager)),
         &session_telemetry,
         session_configuration.provider.clone(),
+        /*machine_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         &session_configuration,
         config.multi_agent_version_from_features(),
         services.user_shell.as_ref(),
@@ -7980,6 +7993,48 @@ async fn build_settings_update_items_emits_environment_item_for_time_changes() {
         .expect("environment update item should be emitted");
     assert!(environment_update.contains("<current_date>2026-02-27</current_date>"));
     assert!(environment_update.contains("<timezone>Europe/Berlin</timezone>"));
+}
+
+#[tokio::test]
+async fn build_settings_update_items_emits_environment_item_for_machine_changes() {
+    let (session, previous_context) = make_session_and_context().await;
+    let previous_context = Arc::new(previous_context);
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.machine_id = "current-machine".to_string();
+    current_context.machine_name = Some("spark02".to_string());
+
+    let mut reference_context_item = previous_context.to_turn_context_item();
+    reference_context_item.machine_id = Some("previous-machine".to_string());
+    reference_context_item.machine_name = Some("spark01".to_string());
+    let update_items = session
+        .build_settings_update_items(Some(&reference_context_item), &current_context)
+        .await;
+
+    let environment_update = user_input_texts(&update_items)
+        .into_iter()
+        .find(|text| text.contains("<environment_context>"))
+        .expect("environment update item should be emitted");
+    assert!(
+        environment_update
+            .contains("<machine><id>current-machine</id><name>spark02</name></machine>")
+    );
+
+    let updated_reference_context_item = current_context.to_turn_context_item();
+    let repeated_update_items = session
+        .build_settings_update_items(Some(&updated_reference_context_item), &current_context)
+        .await;
+    let repeated_user_texts = user_input_texts(&repeated_update_items);
+    assert!(
+        !repeated_user_texts
+            .iter()
+            .any(|text| text.contains("<environment_context>")),
+        "did not expect machine context to be re-emitted after baseline update, got {repeated_user_texts:?}"
+    );
 }
 
 #[tokio::test]
@@ -8781,6 +8836,19 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
 
     let item = turn_context.to_turn_context_item();
 
+    assert_eq!(
+        item.machine_id,
+        Some("11111111-1111-4111-8111-111111111111".to_string())
+    );
+    assert_eq!(
+        item.machine_name,
+        codex_config::host_name().map(|host_name| {
+            host_name
+                .split_once('.')
+                .map_or(host_name.as_str(), |(short_name, _)| short_name)
+                .to_string()
+        })
+    );
     assert_eq!(item.file_system_sandbox_policy, None);
     assert_eq!(
         item.permission_profile,
@@ -9602,7 +9670,8 @@ async fn task_finish_starts_pending_trigger_turn_mailbox_work() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     release_tx
         .send(())
@@ -9641,7 +9710,8 @@ async fn pending_trigger_turn_mailbox_work_takes_over_empty_active_turn() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(session.maybe_start_turn_for_pending_work().await);
     timeout(StdDuration::from_secs(2), async {
@@ -9687,7 +9757,8 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     session.emit_thread_idle_lifecycle_if_idle().await;
 
@@ -9695,7 +9766,7 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
 }
 
 #[tokio::test]
-async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() {
+async fn try_start_turn_if_idle_bounds_headless_prompt_without_mutating_history() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let call_id = "goal-headless-output";
     let long_output = "goal continuation historical stdout\n".repeat(2_500);
@@ -9711,22 +9782,39 @@ async fn try_start_turn_if_idle_bounds_headless_history_for_goal_continuation() 
     sess.try_start_turn_if_idle(vec![user_message("continue active goal")])
         .await
         .expect("idle goal continuation should start");
-    let prompt = sess
-        .clone_history()
+    let (turn_context, _cancellation_token) = sess
+        .active_turn_context_and_cancellation_token()
+        .await
+        .expect("goal continuation turn should be active");
+    assert!(
+        turn_context.bound_headless_tool_outputs_for_prompt,
+        "autonomous idle turns must bound tool outputs in their prompts"
+    );
+
+    // The sampling prompt for the autonomous turn is bounded...
+    let prompt = super::turn::sampling_prompt_history(&sess, &turn_context)
         .await
         .for_prompt(&tc.model_info.input_modalities);
     let output = function_call_output_text(&prompt, call_id);
     assert_ne!(long_output, output);
     assert!(
         output.contains("tokens truncated"),
-        "expected historical output to be truncated: {output}"
+        "expected historical output to be truncated in the prompt: {output}"
+    );
+
+    // ...while the session's stored history keeps the full tool output for
+    // later interactive turns and compaction.
+    let stored = sess.clone_history().await;
+    assert_eq!(
+        long_output,
+        function_call_output_text(stored.raw_items(), call_id)
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]
-async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled_turn() {
+async fn try_start_user_input_turn_if_idle_bounds_headless_prompt_without_mutating_history() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let call_id = "scheduled-headless-output";
     let long_output = "scheduled run historical web output\n".repeat(2_500);
@@ -9750,15 +9838,33 @@ async fn try_start_user_input_turn_if_idle_bounds_headless_history_for_scheduled
     )
     .await
     .expect("idle scheduled turn should start");
-    let prompt = sess
-        .clone_history()
+    let (turn_context, _cancellation_token) = sess
+        .active_turn_context_and_cancellation_token()
+        .await
+        .expect("scheduled turn should be active");
+    assert!(
+        turn_context.bound_headless_tool_outputs_for_prompt,
+        "scheduled turns must bound tool outputs in their prompts"
+    );
+
+    // The sampling prompt for the scheduled turn is bounded...
+    let prompt = super::turn::sampling_prompt_history(&sess, &turn_context)
         .await
         .for_prompt(&tc.model_info.input_modalities);
     let output = function_call_output_text(&prompt, call_id);
     assert_ne!(long_output, output);
     assert!(
         output.contains("tokens truncated"),
-        "expected historical output to be truncated: {output}"
+        "expected historical output to be truncated in the prompt: {output}"
+    );
+
+    // ...while a live interactive session keeps its full history: a
+    // scheduled run claimed by the live session owner must not permanently
+    // truncate stored tool outputs.
+    let stored = sess.clone_history().await;
+    assert_eq!(
+        long_output,
+        function_call_output_text(stored.raw_items(), call_id)
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
@@ -9925,7 +10031,8 @@ async fn try_start_turn_if_idle_rejects_pending_trigger_turn_without_injecting()
             "pending trigger".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let item = user_message("synthetic idle input");
     let err = sess
@@ -10192,7 +10299,8 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(
         !sess.input_queue.has_pending_input(&sess.active_turn).await,
@@ -10208,7 +10316,7 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
+            crate::context::MailboxContextFragment::new(communication).into_response_input_item()
         ))],
     );
 }
@@ -10237,7 +10345,8 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
             "late trigger update".to_string(),
             /*trigger_turn*/ true,
         ))
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     assert!(
         !sess.input_queue.has_pending_input(&sess.active_turn).await,
@@ -10274,7 +10383,8 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10298,7 +10408,10 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::ResponseItem(ResponseItem::from(
+                crate::context::MailboxContextFragment::new(communication)
+                    .into_response_input_item()
+            )),
         ],
     );
 }
@@ -10327,7 +10440,8 @@ async fn steered_input_keeps_trigger_turn_mailbox_delivery_queued() {
             /*trigger_turn*/ true,
         ),
     )
-    .await;
+    .await
+    .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10357,6 +10471,68 @@ async fn steered_input_keeps_trigger_turn_mailbox_delivery_queued() {
 }
 
 #[tokio::test]
+async fn rejected_trigger_mailbox_send_keeps_current_turn_delivery_open() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    // Fill the mailbox to capacity with non-trigger mail while the turn
+    // still accepts current-turn delivery.
+    for index in 0..crate::context::MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+        sess.input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::new(
+                AgentPath::try_from("/root/worker").expect("worker path should parse"),
+                AgentPath::root(),
+                Vec::new(),
+                format!("queued update {index}"),
+                /*trigger_turn*/ false,
+            ))
+            .await
+            .expect("mailbox queue has room");
+    }
+
+    inter_agent_communication(
+        &sess,
+        "mailbox-full".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "rejected trigger update".to_string(),
+            /*trigger_turn*/ true,
+        ),
+    )
+    .await
+    .expect_err("full mailbox must reject the trigger send");
+
+    // The rejected send must not leave the active turn's delivery deferred:
+    // the already-queued mail should still drain into the current turn.
+    let turn_state = {
+        let active = sess.active_turn.lock().await;
+        active
+            .as_ref()
+            .map(|active_turn| Arc::clone(&active_turn.turn_state))
+            .expect("task should hold an active turn")
+    };
+    assert!(
+        turn_state
+            .lock()
+            .await
+            .accepts_mailbox_delivery_for_current_turn(),
+        "rejected trigger send must not defer current-turn mailbox delivery"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let communication = InterAgentCommunication::new(
@@ -10381,7 +10557,8 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -10409,7 +10586,10 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
                 }],
                 client_id: None
             },
-            TurnInput::ResponseItem(ResponseItem::from(communication.to_response_input_item())),
+            TurnInput::ResponseItem(ResponseItem::from(
+                crate::context::MailboxContextFragment::new(communication)
+                    .into_response_input_item()
+            )),
         ],
     );
 }
@@ -10439,7 +10619,8 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         .await;
     sess.input_queue
         .enqueue_mailbox_communication(communication.clone())
-        .await;
+        .await
+        .expect("mailbox queue has room");
 
     let item = ResponseItem::FunctionCall {
         id: None,
@@ -10465,7 +10646,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![TurnInput::ResponseItem(ResponseItem::from(
-            communication.to_response_input_item()
+            crate::context::MailboxContextFragment::new(communication).into_response_input_item()
         ))],
     );
 }

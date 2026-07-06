@@ -178,7 +178,7 @@ fn loaded_overview() -> PullRequestOverview {
     PullRequestOverview {
         cwd: PathBuf::from("/tmp/project"),
         current: ready(vec![test_pull_request(
-            42,
+            /*number*/ 42,
             "Add native pull request overview",
             "open-pr-overview",
             checks(
@@ -187,7 +187,7 @@ fn loaded_overview() -> PullRequestOverview {
         )]),
         open: ready(vec![
             test_pull_request(
-                42,
+                /*number*/ 42,
                 "Add native pull request overview",
                 "open-pr-overview",
                 checks(
