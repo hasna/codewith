@@ -2453,6 +2453,17 @@
       ],
       "type": "string"
     },
+    "PrivacyFilterConfigToml": {
+      "additionalProperties": false,
+      "description": "Optional local Privacy Filter secret-redaction layer.\n\nOpt-in and off by default. This slice only exposes the toggle plus a local\nreadiness check; the on-device classifier install and composer redaction are\ntracked as follow-up work.",
+      "properties": {
+        "enabled": {
+          "description": "Master gate for the Privacy Filter. Defaults to `false` (disabled).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ProfileTui": {
       "additionalProperties": false,
       "description": "TUI settings supported inside a named profile.",
@@ -5569,6 +5580,15 @@
       "default": {},
       "description": "User-level plugin config entries keyed by plugin name.",
       "type": "object"
+    },
+    "privacy_filter": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PrivacyFilterConfigToml"
+        }
+      ],
+      "default": null,
+      "description": "Optional local Privacy Filter secret-redaction layer (opt-in)."
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",

@@ -227,6 +227,18 @@ pub struct WorktreesConfigToml {
     pub sub_sessions: Option<WorktreeSessionConfigToml>,
 }
 
+/// Optional local Privacy Filter secret-redaction layer.
+///
+/// Opt-in and off by default. This slice only exposes the toggle plus a local
+/// readiness check; the on-device classifier install and composer redaction are
+/// tracked as follow-up work.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PrivacyFilterConfigToml {
+    /// Master gate for the Privacy Filter. Defaults to `false` (disabled).
+    pub enabled: Option<bool>,
+}
+
 /// Base config deserialized from ~/.codewith/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -271,6 +283,10 @@ pub struct ConfigToml {
     /// Managed worktree defaults and session-class gates.
     #[serde(default)]
     pub worktrees: Option<WorktreesConfigToml>,
+
+    /// Optional local Privacy Filter secret-redaction layer (opt-in).
+    #[serde(default)]
+    pub privacy_filter: Option<PrivacyFilterConfigToml>,
 
     #[serde(default)]
     pub shell_environment_policy: ShellEnvironmentPolicyToml,
@@ -1170,6 +1186,29 @@ mod tests {
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
     const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    #[test]
+    fn privacy_filter_defaults_to_absent() {
+        let config: ConfigToml = toml::from_str("").expect("empty config should deserialize");
+        assert_eq!(config.privacy_filter, None);
+    }
+
+    #[test]
+    fn privacy_filter_parses_enabled_toggle() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[privacy_filter]
+enabled = true
+"#,
+        )
+        .expect("privacy_filter section should deserialize");
+        assert_eq!(
+            config.privacy_filter,
+            Some(PrivacyFilterConfigToml {
+                enabled: Some(true)
+            })
+        );
+    }
 
     #[test]
     fn forced_chatgpt_workspace_id_accepts_single_string() {

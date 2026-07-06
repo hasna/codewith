@@ -449,6 +449,7 @@ mod windows_sandbox_prompts;
 use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
+mod privacy_filter;
 mod status_controls;
 mod status_panel;
 mod status_surfaces;
