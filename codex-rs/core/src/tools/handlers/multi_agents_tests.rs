@@ -347,6 +347,12 @@ async fn spawn_agent_fork_context_ignores_agent_type_override() {
         .config_snapshot()
         .await;
     assert_eq!(snapshot.model, parent_model);
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
+        snapshot.session_source
+    else {
+        panic!("spawned agent should have thread-spawn session source");
+    };
+    assert_eq!(agent_role, None);
 }
 
 #[tokio::test]
@@ -448,6 +454,12 @@ async fn multi_agent_v2_spawn_fork_turns_all_ignores_agent_type_override() {
         .await;
     // Full-history fork inherits the parent; the role override must not have been applied.
     assert_eq!(snapshot.model, parent_model);
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) =
+        snapshot.session_source
+    else {
+        panic!("spawned agent should have thread-spawn session source");
+    };
+    assert_eq!(agent_role, None);
 }
 
 #[tokio::test]
