@@ -972,6 +972,13 @@ impl App {
                 self.chat_widget
                     .show_thread_workflow_actions(thread_id, workflow);
             }
+            AppEvent::OpenThreadWorkflowDeleteConfirm {
+                thread_id,
+                workflow,
+            } => {
+                self.chat_widget
+                    .show_thread_workflow_delete_confirm(thread_id, workflow);
+            }
             AppEvent::OpenThreadWorkflowRunActions { thread_id, run } => {
                 self.chat_widget
                     .show_thread_workflow_run_actions(thread_id, run);

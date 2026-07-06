@@ -182,6 +182,8 @@ use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadWorkflowDeleteParams;
+use codex_app_server_protocol::ThreadWorkflowDeleteResponse;
 use codex_app_server_protocol::ThreadWorkflowGetParams;
 use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListParams;
@@ -1356,6 +1358,24 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/workflow/get failed in TUI")
+    }
+
+    pub(crate) async fn thread_workflow_delete(
+        &mut self,
+        thread_id: ThreadId,
+        workflow_record_id: String,
+    ) -> Result<ThreadWorkflowDeleteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadWorkflowDelete {
+                request_id,
+                params: ThreadWorkflowDeleteParams {
+                    thread_id: thread_id.to_string(),
+                    workflow_record_id,
+                },
+            })
+            .await
+            .wrap_err("thread/workflow/delete failed in TUI")
     }
 
     pub(crate) async fn thread_workflow_run_list(

@@ -419,6 +419,12 @@ pub(crate) enum AppEvent {
         workflow: ThreadWorkflow,
     },
 
+    /// Confirm deletion of a saved workflow spec before dispatching the delete.
+    OpenThreadWorkflowDeleteConfirm {
+        thread_id: ThreadId,
+        workflow: ThreadWorkflow,
+    },
+
     /// Open actions for a workflow run.
     OpenThreadWorkflowRunActions {
         thread_id: ThreadId,
@@ -1756,6 +1762,7 @@ pub(crate) enum AppEvent {
 pub(crate) enum ThreadWorkflowAction {
     List,
     Show { workflow_record_id: String },
+    Delete { workflow_record_id: String },
     RunList,
     RunShow { run_id: String },
     RunStart { workflow_record_id: String },

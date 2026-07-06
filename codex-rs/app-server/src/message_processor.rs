@@ -1390,6 +1390,11 @@ impl MessageProcessor {
                     .thread_workflow_list(params)
                     .await
             }
+            ClientRequest::ThreadWorkflowDelete { params, .. } => {
+                self.thread_workflow_processor
+                    .thread_workflow_delete(params)
+                    .await
+            }
             ClientRequest::ThreadWorkflowRunList { params, .. } => {
                 self.thread_workflow_processor
                     .thread_workflow_run_list(params)

@@ -60,6 +60,14 @@ impl ChatWidget {
         self.show_selection_view(thread_workflow_actions_params(thread_id, workflow));
     }
 
+    pub(crate) fn show_thread_workflow_delete_confirm(
+        &mut self,
+        thread_id: ThreadId,
+        workflow: ThreadWorkflow,
+    ) {
+        self.show_selection_view(thread_workflow_delete_confirm_params(thread_id, workflow));
+    }
+
     pub(crate) fn show_thread_workflow_run_actions(
         &mut self,
         thread_id: ThreadId,
@@ -325,6 +333,7 @@ fn thread_workflow_actions_params(
 ) -> SelectionViewParams {
     let inspect_workflow_id = workflow.workflow_record_id.clone();
     let run_workflow_id = workflow.workflow_record_id.clone();
+    let delete_workflow = workflow.clone();
     let mut items = vec![
         workflow_action_item(
             "Inspect spec",
@@ -350,10 +359,15 @@ fn thread_workflow_actions_params(
                 },
             },
         ),
-        disabled_workflow_item(
+        workflow_action_item(
             "Delete",
-            "Workflow delete is not available in the current API",
-            "Missing workflow delete RPC",
+            "Remove this saved workflow spec (asks for confirmation)",
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
+            move || AppEvent::OpenThreadWorkflowDeleteConfirm {
+                thread_id,
+                workflow: delete_workflow.clone(),
+            },
         ),
         disabled_workflow_item(
             "Review approvals",
@@ -375,6 +389,50 @@ fn thread_workflow_actions_params(
     SelectionViewParams {
         title: Some(public_workflow_display_name(&workflow.display_name)),
         subtitle: Some(workflow_selected_detail(&workflow)),
+        footer_hint: Some(standard_popup_hint_line()),
+        items,
+        col_width_mode: ColumnWidthMode::Fixed,
+        ..Default::default()
+    }
+}
+
+fn thread_workflow_delete_confirm_params(
+    thread_id: ThreadId,
+    workflow: ThreadWorkflow,
+) -> SelectionViewParams {
+    let confirm_workflow_id = workflow.workflow_record_id.clone();
+    let cancel_workflow = workflow.clone();
+    let items = vec![
+        workflow_action_item(
+            "Yes, delete workflow",
+            "Permanently remove this spec and its finished runs",
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
+            move || AppEvent::ManageThreadWorkflow {
+                thread_id,
+                action: ThreadWorkflowAction::Delete {
+                    workflow_record_id: confirm_workflow_id.clone(),
+                },
+            },
+        ),
+        workflow_action_item(
+            "Cancel",
+            "Keep this workflow spec",
+            /*is_disabled*/ false,
+            /*disabled_reason*/ None,
+            move || AppEvent::OpenThreadWorkflowActions {
+                thread_id,
+                workflow: cancel_workflow.clone(),
+            },
+        ),
+    ];
+
+    SelectionViewParams {
+        title: Some(format!(
+            "Delete {}?",
+            public_workflow_display_name(&workflow.display_name)
+        )),
+        subtitle: Some("This cannot be undone".to_string()),
         footer_hint: Some(standard_popup_hint_line()),
         items,
         col_width_mode: ColumnWidthMode::Fixed,

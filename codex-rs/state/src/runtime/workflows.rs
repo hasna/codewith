@@ -40,6 +40,17 @@ pub struct WorkflowSpecListPage {
     pub next_cursor: Option<String>,
 }
 
+/// Result of attempting to delete a saved workflow spec for a thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowSpecDeleteOutcome {
+    /// The spec (and any terminal runs cascading from it) was removed.
+    Deleted,
+    /// No spec matched the thread + workflow record id.
+    NotFound,
+    /// The spec still has a non-terminal run and was left untouched.
+    BlockedByActiveRun,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunListPage {
     pub data: Vec<crate::WorkflowRunSnapshot>,
@@ -234,6 +245,43 @@ SELECT
             .await?;
 
         row.map(|row| workflow_spec_from_row(&row)).transpose()
+    }
+
+    /// Delete a saved workflow spec scoped to `thread_id`.
+    ///
+    /// Deletion is refused when the spec still owns a non-terminal run so an
+    /// in-flight execution is never yanked out from under the runtime. Terminal
+    /// runs (and their steps/verifiers/events) are cleaned up via the schema's
+    /// `ON DELETE CASCADE`, which requires foreign-key enforcement to be enabled
+    /// on the connection performing the delete (it is off by default in SQLite).
+    pub async fn delete_thread_workflow_spec(
+        &self,
+        thread_id: ThreadId,
+        workflow_record_id: &str,
+    ) -> anyhow::Result<WorkflowSpecDeleteOutcome> {
+        let thread_id = thread_id.to_string();
+        let mut conn = self.pool.acquire().await?;
+        // Foreign-key enforcement is per-connection and cannot be toggled inside
+        // a transaction, so enable it before opening one.
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await?;
+
+        let result = delete_thread_workflow_spec_with_cascade(
+            &mut conn,
+            thread_id.as_str(),
+            workflow_record_id,
+        )
+        .await;
+
+        // Restore the connection default before it returns to the pool so this
+        // one-off enablement never leaks foreign-key enforcement onto unrelated
+        // callers that reuse the same pooled connection.
+        let _ = sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await;
+
+        result
     }
 
     pub async fn list_thread_workflow_specs_page(
@@ -613,6 +661,67 @@ pub(super) struct WorkflowRunEventAppend {
     pub(super) visibility: &'static str,
     pub(super) payload: Value,
     pub(super) now_ms: i64,
+}
+
+/// Runs the guarded spec delete inside a transaction on `conn`, which must
+/// already have foreign-key enforcement enabled so `ON DELETE CASCADE` reaches
+/// the spec's terminal runs.
+async fn delete_thread_workflow_spec_with_cascade(
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    thread_id: &str,
+    workflow_record_id: &str,
+) -> anyhow::Result<WorkflowSpecDeleteOutcome> {
+    let mut tx = sqlx::Connection::begin(&mut **conn).await?;
+
+    let spec_exists = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM workflow_specs
+WHERE source_thread_id = ? AND workflow_record_id = ?
+        "#,
+    )
+    .bind(thread_id)
+    .bind(workflow_record_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if spec_exists == 0 {
+        tx.rollback().await?;
+        return Ok(WorkflowSpecDeleteOutcome::NotFound);
+    }
+
+    let active_run_count = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT COUNT(*)
+FROM workflow_runs
+WHERE workflow_record_id = ?
+    AND status NOT IN ('completed', 'complete', 'failed', 'cancelled')
+        "#,
+    )
+    .bind(workflow_record_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active_run_count > 0 {
+        tx.rollback().await?;
+        return Ok(WorkflowSpecDeleteOutcome::BlockedByActiveRun);
+    }
+
+    let result = sqlx::query(
+        r#"
+DELETE FROM workflow_specs
+WHERE source_thread_id = ? AND workflow_record_id = ?
+        "#,
+    )
+    .bind(thread_id)
+    .bind(workflow_record_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(if result.rows_affected() > 0 {
+        WorkflowSpecDeleteOutcome::Deleted
+    } else {
+        WorkflowSpecDeleteOutcome::NotFound
+    })
 }
 
 fn resolve_run_source_thread_id(
@@ -1474,6 +1583,137 @@ mod tests {
                 .list_thread_monitors(thread_id)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workflow_spec_removes_spec_and_reports_missing() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 1);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let saved = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save");
+
+        let outcome = runtime
+            .workflows()
+            .delete_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("delete should succeed");
+        assert_eq!(WorkflowSpecDeleteOutcome::Deleted, outcome);
+
+        let loaded = runtime
+            .workflows()
+            .get_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("thread workflow spec lookup should succeed");
+        assert_eq!(None, loaded);
+
+        // Deleting again (or an unknown record) reports NotFound rather than erroring.
+        let repeat = runtime
+            .workflows()
+            .delete_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("delete should succeed");
+        assert_eq!(WorkflowSpecDeleteOutcome::NotFound, repeat);
+
+        let unknown = runtime
+            .workflows()
+            .delete_thread_workflow_spec(thread_id, "workflow_does_not_exist")
+            .await
+            .expect("delete should succeed");
+        assert_eq!(WorkflowSpecDeleteOutcome::NotFound, unknown);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workflow_spec_is_thread_scoped() {
+        let runtime = test_runtime().await;
+        let owner_thread_id = test_thread_id(/*id*/ 1);
+        let other_thread_id = test_thread_id(/*id*/ 2);
+        upsert_test_thread(&runtime, owner_thread_id).await;
+        upsert_test_thread(&runtime, other_thread_id).await;
+
+        let saved = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(owner_thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save");
+
+        // A different thread cannot delete another thread's spec.
+        let outcome = runtime
+            .workflows()
+            .delete_thread_workflow_spec(other_thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("delete should succeed");
+        assert_eq!(WorkflowSpecDeleteOutcome::NotFound, outcome);
+        assert!(
+            runtime
+                .workflows()
+                .get_thread_workflow_spec(owner_thread_id, saved.workflow_record_id.as_str())
+                .await
+                .expect("lookup should succeed")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_thread_workflow_spec_blocked_by_active_run() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 1);
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let saved = runtime
+            .workflows()
+            .save_workflow_spec_yaml(WorkflowSpecCreateParams {
+                source_thread_id: Some(thread_id),
+                source_yaml: DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.to_string(),
+            })
+            .await
+            .expect("workflow spec should save");
+
+        let snapshot = runtime
+            .workflows()
+            .create_workflow_run(WorkflowRunCreateParams {
+                workflow_record_id: saved.workflow_record_id.clone(),
+                source_thread_id: Some(thread_id),
+                idempotency_key: Some("delete-guard".to_string()),
+            })
+            .await
+            .expect("workflow run should be created");
+        assert_eq!(crate::WorkflowRunStatus::Pending, snapshot.run.status);
+
+        let outcome = runtime
+            .workflows()
+            .delete_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+            .await
+            .expect("delete should succeed");
+        assert_eq!(WorkflowSpecDeleteOutcome::BlockedByActiveRun, outcome);
+
+        // The spec (and its run) are left intact.
+        assert!(
+            runtime
+                .workflows()
+                .get_thread_workflow_spec(thread_id, saved.workflow_record_id.as_str())
+                .await
+                .expect("lookup should succeed")
+                .is_some()
+        );
+        assert!(
+            runtime
+                .workflows()
+                .get_workflow_run_snapshot(snapshot.run.run_id.as_str())
+                .await
+                .expect("run lookup should succeed")
+                .is_some()
         );
     }
 

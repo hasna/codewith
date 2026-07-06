@@ -201,6 +201,86 @@ async fn workflow_manager_row_opens_actions() {
 }
 
 #[tokio::test]
+async fn workflow_manager_delete_action_requests_confirmation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.show_thread_workflow_actions(
+        thread_id,
+        test_workflow("workflow-alpha", ThreadWorkflowStatus::Draft),
+    );
+
+    // Menu order: Inspect spec, Run, Delete, ... -> move down twice to reach Delete.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected delete confirmation event");
+    let AppEvent::OpenThreadWorkflowDeleteConfirm {
+        thread_id: actual_thread_id,
+        workflow,
+    } = event
+    else {
+        panic!("expected OpenThreadWorkflowDeleteConfirm, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(workflow.workflow_record_id, "workflow-alpha");
+}
+
+#[tokio::test]
+async fn workflow_manager_delete_confirmation_dispatches_delete() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.show_thread_workflow_delete_confirm(
+        thread_id,
+        test_workflow("workflow-alpha", ThreadWorkflowStatus::Draft),
+    );
+
+    // "Yes, delete workflow" is the first (default-selected) item.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected manage workflow event");
+    let AppEvent::ManageThreadWorkflow {
+        thread_id: actual_thread_id,
+        action,
+    } = event
+    else {
+        panic!("expected ManageThreadWorkflow, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(
+        action,
+        crate::app_event::ThreadWorkflowAction::Delete {
+            workflow_record_id: "workflow-alpha".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn workflow_manager_delete_confirmation_cancel_returns_to_actions() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.show_thread_workflow_delete_confirm(
+        thread_id,
+        test_workflow("workflow-alpha", ThreadWorkflowStatus::Draft),
+    );
+
+    // Move to the "Cancel" item and select it.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected reopen actions event");
+    let AppEvent::OpenThreadWorkflowActions {
+        thread_id: actual_thread_id,
+        workflow,
+    } = event
+    else {
+        panic!("expected OpenThreadWorkflowActions, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_eq!(workflow.workflow_record_id, "workflow-alpha");
+}
+
+#[tokio::test]
 async fn workflow_manager_draft_prompt_is_blocked_while_task_runs() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
