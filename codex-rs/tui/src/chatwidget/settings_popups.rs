@@ -127,12 +127,11 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_config_popup(&mut self) {
-        let mut items: Vec<SelectionItem> =
-            crate::common_config_options::common_config_sections()
-                .iter()
-                .copied()
-                .map(|section| config_section_item(&self.config, section))
-                .collect();
+        let mut items: Vec<SelectionItem> = crate::common_config_options::common_config_sections()
+            .iter()
+            .copied()
+            .map(|section| config_section_item(&self.config, section))
+            .collect();
         items.push(self.agent_max_threads_menu_item());
 
         let mut header = ColumnRenderable::new();
@@ -179,8 +178,7 @@ impl ChatWidget {
             name: "Agent subagent threads".to_string(),
             description: Some(description),
             is_disabled: multi_agent_v2,
-            disabled_reason: multi_agent_v2
-                .then(|| "Managed by multi_agent_v2.".to_string()),
+            disabled_reason: multi_agent_v2.then(|| "Managed by multi_agent_v2.".to_string()),
             actions,
             dismiss_on_select: true,
             ..Default::default()
@@ -198,8 +196,8 @@ impl ChatWidget {
             return;
         }
 
-        // Mirrors codex_core::config::DEFAULT_AGENT_MAX_THREADS (Some(6)); when unset that default
-        // is the effective cap, so it is pre-selected here.
+        // Mirrors the runtime default cap. When unset, that default is the effective cap, so it is
+        // preselected here.
         const DEFAULT_AGENT_MAX_THREADS: usize = 6;
         const PRESETS: [usize; 7] = [1, 2, 3, 4, 6, 8, 12];
         let current = self.config.agent_max_threads;
