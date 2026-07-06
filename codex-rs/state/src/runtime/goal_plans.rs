@@ -863,8 +863,9 @@ INSERT INTO thread_goal_plans (
     let mut node_ids_by_key = HashMap::new();
     for (sequence, node) in params.nodes.iter().enumerate() {
         let node_id = Uuid::new_v4().to_string();
-        let title =
-            normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?;
+        let objective = redact_state_string(node.objective.as_str());
+        let title = node.title.as_deref().map(redact_state_string);
+        let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
         node_ids_by_key.insert(node.key.clone(), node_id.clone());
         sqlx::query(
             r#"
@@ -896,7 +897,7 @@ INSERT INTO thread_goal_plans (
         .bind(&node.key)
         .bind(i64::try_from(sequence)?)
         .bind(node.priority)
-        .bind(&node.objective)
+        .bind(objective)
         .bind(title)
         .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
         .bind(node.token_budget)
@@ -1002,6 +1003,9 @@ async fn append_thread_goal_plan_nodes_in_tx(
 
     for (index, node) in params.nodes.iter().enumerate() {
         let node_id = Uuid::new_v4().to_string();
+        let objective = redact_state_string(node.objective.as_str());
+        let title = node.title.as_deref().map(redact_state_string);
+        let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
         node_ids_by_key.insert(node.key.clone(), node_id.clone());
         sqlx::query(
             r#"
@@ -1033,8 +1037,8 @@ INSERT INTO thread_goal_plan_nodes (
         .bind(&node.key)
         .bind(next_sequence + i64::try_from(index)?)
         .bind(node.priority)
-        .bind(&node.objective)
-        .bind(normalize_thread_goal_title(node.title.as_deref()).map_err(anyhow::Error::msg)?)
+        .bind(objective)
+        .bind(title)
         .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
         .bind(node.token_budget)
         .bind(now_ms)
@@ -1138,8 +1142,8 @@ INSERT INTO thread_goal_plan_nodes (
     .bind(params.thread_id.to_string())
     .bind(params.thread_id.to_string())
     .bind("current")
-    .bind(&goal.objective)
-    .bind(&goal.title)
+    .bind(redact_state_string(goal.objective.as_str()))
+    .bind(goal.title.as_deref().map(redact_state_string))
     .bind(crate::ThreadGoalPlanNodeStatus::from(goal.status).as_str())
     .bind(goal.token_budget)
     .bind(goal.tokens_used)
@@ -1186,7 +1190,9 @@ INSERT INTO thread_goal_plans (
     .await?;
 
     let node_id = Uuid::new_v4().to_string();
-    let title = normalize_thread_goal_title(params.title.as_deref()).map_err(anyhow::Error::msg)?;
+    let objective = redact_state_string(params.objective.as_str());
+    let title = params.title.as_deref().map(redact_state_string);
+    let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
     sqlx::query(
         r#"
 INSERT INTO thread_goal_plan_nodes (
@@ -1211,7 +1217,7 @@ INSERT INTO thread_goal_plan_nodes (
     .bind(params.thread_id.to_string())
     .bind(params.thread_id.to_string())
     .bind("goal_1")
-    .bind(&params.objective)
+    .bind(objective)
     .bind(title)
     .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
     .bind(params.token_budget)
@@ -1260,7 +1266,9 @@ async fn append_goal_plan_node_in_tx(
         .unwrap_or(-1)
         + 1;
     let node_id = Uuid::new_v4().to_string();
-    let title = normalize_thread_goal_title(params.title.as_deref()).map_err(anyhow::Error::msg)?;
+    let objective = redact_state_string(params.objective.as_str());
+    let title = params.title.as_deref().map(redact_state_string);
+    let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
     sqlx::query(
         r#"
 INSERT INTO thread_goal_plan_nodes (
@@ -1286,7 +1294,7 @@ INSERT INTO thread_goal_plan_nodes (
     .bind(params.thread_id.to_string())
     .bind(&node_key)
     .bind(sequence)
-    .bind(&params.objective)
+    .bind(objective)
     .bind(title)
     .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
     .bind(params.token_budget)
@@ -1516,8 +1524,8 @@ RETURNING
     )
     .bind(thread_id.to_string())
     .bind(&projected_goal_id)
-    .bind(&node.objective)
-    .bind(&node.title)
+    .bind(redact_state_string(node.objective.as_str()))
+    .bind(node.title.as_deref().map(redact_state_string))
     .bind(status.as_str())
     .bind(effective_token_budget)
     .bind(now_ms)

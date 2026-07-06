@@ -67,7 +67,7 @@ LIMIT ? OFFSET ?
         let base_repo_path = path_to_db_string(&params.base_repo_path);
         let worktree_path = path_to_db_string(&params.worktree_path);
         let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
-        let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
         if params.mode == BackgroundAgentWorkspaceMode::SharedRepository {
             let active_shared_repo_lease: Option<(String,)> = sqlx::query_as(
@@ -329,7 +329,7 @@ WHERE run.id = ?
         status_snapshot_json: &serde_json::Value,
     ) -> anyhow::Result<bool> {
         let now = Utc::now().timestamp();
-        let status_snapshot_json = serde_json::to_string(status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
@@ -430,7 +430,7 @@ RETURNING
         } else {
             ManagedWorktreeLifecycleStatus::Released
         };
-        let status_snapshot_json = serde_json::to_string(&lease.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&lease.status_snapshot_json)?;
 
         sqlx::query(
             r#"
@@ -506,7 +506,7 @@ ON CONFLICT(run_id) DO UPDATE SET
             .bind(lease.worktree_path.as_str())
             .bind(if lease.dirty { 1 } else { 0 })
             .bind(lease.cleanup_after.map(|timestamp| timestamp.timestamp()))
-            .bind(serde_json::to_string(&payload_json)?)
+            .bind(redact_state_json_string(&payload_json)?)
             .bind(now)
             .execute(&mut *tx)
             .await?;

@@ -3730,6 +3730,7 @@ dependencies = [
  "codex-git-utils",
  "codex-prompts",
  "codex-protocol",
+ "codex-secrets",
  "codex-workflows",
  "dirs",
  "log",
@@ -3745,6 +3746,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zstd 0.13.3",
 ]
 
 [[package]]
