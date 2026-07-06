@@ -2,6 +2,7 @@ mod config_rules;
 mod declarations;
 mod engine;
 pub(crate) mod events;
+mod fleet_comms;
 mod legacy_notify;
 mod output_spill;
 mod registry;
@@ -15,6 +16,14 @@ pub use declarations::PluginHookDeclaration;
 pub use declarations::plugin_hook_declarations;
 pub use engine::HookListEntry;
 pub use events::common::SubagentHookContext;
+pub use fleet_comms::FLEET_COMMS_SESSION_START_COMMAND;
+pub use fleet_comms::FLEET_COMMS_SESSION_START_STATUS_MESSAGE;
+pub use fleet_comms::FLEET_COMMS_SESSION_START_TIMEOUT_SEC;
+pub use fleet_comms::FLEET_COMMS_SESSION_START_TRUSTED_HASH;
+pub use fleet_comms::fleet_comms_config_toml_snippet;
+pub use fleet_comms::fleet_comms_session_start_matcher_group;
+pub use fleet_comms::fleet_comms_session_start_state_key;
+pub use fleet_comms::fleet_comms_session_start_trusted_hash;
 /// Hook event names as they appear in hooks JSON and config files.
 pub const HOOK_EVENT_NAMES: [&str; 10] = [
     "PreToolUse",
