@@ -1,6 +1,7 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -102,6 +103,11 @@ pub(crate) struct ThreadState {
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
+    /// Parked responders for external-agent permission requests awaiting a
+    /// client decision, keyed by a replay-stable request key. The value channel
+    /// carries the client's chosen option back to the waiting host task.
+    pending_external_agent_permissions:
+        HashMap<String, oneshot::Sender<ThreadExternalAgentPermissionOption>>,
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
     last_thread_settings: Option<ThreadSettings>,
@@ -194,6 +200,34 @@ impl ThreadState {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
             self.current_turn_history.reset();
         }
+    }
+
+    /// Park a responder for an external-agent permission request. Returns
+    /// `false` (dropping `responder`) when a request with the same key is
+    /// already pending, so replayed or duplicate requests never clobber the
+    /// original waiter.
+    pub(crate) fn register_external_agent_permission(
+        &mut self,
+        key: String,
+        responder: oneshot::Sender<ThreadExternalAgentPermissionOption>,
+    ) -> bool {
+        match self.pending_external_agent_permissions.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(responder);
+                true
+            }
+        }
+    }
+
+    /// Remove and return the parked responder for `key`, if any. Taking is
+    /// idempotent: a second call for the same key returns `None`, so a replayed
+    /// or late client response is a harmless no-op.
+    pub(crate) fn take_external_agent_permission(
+        &mut self,
+        key: &str,
+    ) -> Option<oneshot::Sender<ThreadExternalAgentPermissionOption>> {
+        self.pending_external_agent_permissions.remove(key)
     }
 
     pub(crate) fn note_thread_settings(&mut self, thread_settings: ThreadSettings) -> bool {

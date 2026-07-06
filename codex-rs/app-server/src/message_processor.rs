@@ -1666,6 +1666,11 @@ impl MessageProcessor {
                     .thread_external_agent_cancel(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadExternalAgentPermissionRespond { params, .. } => {
+                self.thread_processor
+                    .thread_external_agent_permission_respond(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {
                 self.thread_processor
                     .thread_approve_guardian_denied_action(&request_id, params)
