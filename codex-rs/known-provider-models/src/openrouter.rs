@@ -60,6 +60,12 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "OpenRouter hosted NVIDIA Nemotron 3 Ultra model. Requires OPENROUTER_API_KEY for turns.",
         /*is_default*/ false,
     ),
+    KnownProviderFallbackModel::new(
+        "poolside/laguna-xs-2.1",
+        "Poolside Laguna XS 2.1",
+        "OpenRouter hosted Poolside Laguna XS 2.1 model. Requires OPENROUTER_API_KEY for turns.",
+        /*is_default*/ false,
+    ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
@@ -218,6 +224,18 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*context_window*/ 1_048_576,
             /*supports_tools*/ true,
             /*supports_parallel_tool_calls*/ false,
+            /*supports_reasoning*/ true,
+        )),
+        "poolside/laguna-xs-2.1" => Some(model(
+            "Poolside Laguna XS 2.1",
+            /*context_window*/ 262_144,
+            /*supports_tools*/ true,
+            /*supports_reasoning*/ true,
+        )),
+        "poolside/laguna-xs-2.1:free" => Some(model(
+            "Poolside Laguna XS 2.1 (Free)",
+            /*context_window*/ 262_144,
+            /*supports_tools*/ true,
             /*supports_reasoning*/ true,
         )),
         _ => None,

@@ -294,7 +294,7 @@ mod tests {
         let models =
             fallback_supported_models_for_provider("openrouter", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 9);
+        assert_eq!(models.len(), 10);
         assert_eq!(models[0].model, "z-ai/glm-5.2");
         assert_eq!(models[0].display_name, "Z.ai GLM 5.2");
         assert!(models[0].is_default);
@@ -313,6 +313,9 @@ mod tests {
         assert_eq!(models[6].model, "x-ai/grok-4.20");
         assert_eq!(models[7].model, "xiaomi/mimo-v2.5-pro");
         assert_eq!(models[8].model, "nvidia/nemotron-3-ultra-550b-a55b");
+        assert_eq!(models[9].model, "poolside/laguna-xs-2.1");
+        assert_eq!(models[9].display_name, "Poolside Laguna XS 2.1");
+        assert!(!models[9].is_default);
     }
 
     #[test]

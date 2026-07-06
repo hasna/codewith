@@ -646,6 +646,55 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_poolside_laguna_metadata_matches_models_api() {
+        // Source: OpenRouter models API lists poolside/laguna-xs-2.1 with a
+        // 262144 context window, tool + reasoning support, and text-only input.
+        // No parallel_tool_calls in supported_parameters, so it must not be
+        // overclaimed.
+        let expected = Some(
+            KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                "Poolside Laguna XS 2.1",
+                /*context_window*/ 262_144,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ false,
+                /*supports_reasoning*/ true,
+                /*supports_search_tool*/ false,
+                TEXT_INPUT_MODALITIES,
+            ),
+        );
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("openrouter"), "poolside/laguna-xs-2.1"),
+            expected
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                Some("openrouter"),
+                None,
+                None,
+                "poolside/laguna-xs-2.1",
+            ),
+            expected
+        );
+
+        // Adding a non-default entry must not disturb the curated default.
+        let models = fallback_models_for_provider("openrouter");
+        assert_eq!(models[0].id, "z-ai/glm-5.2");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "poolside/laguna-xs-2.1" && !model.is_default)
+        );
+
+        // The source advertises reasoning but no OpenAI-style effort presets.
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("openrouter"), "poolside/laguna-xs-2.1"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
     fn openrouter_fallback_models_keep_default_and_include_glm52() {
         let models = fallback_models_for_provider("openrouter");
 
