@@ -434,6 +434,13 @@ else
     --remote_executor=
     --experimental_remote_downloader=
   )
+  if [[ "${ci_config}" == "ci-linux" ]]; then
+    # Keyless Linux: opt into the `ci-keyless` config (see .bazelrc), which
+    # re-enables a bounded, workflow-persisted local disk cache so action
+    # outputs survive across runs instead of cold-building every time. Other
+    # platforms keep their existing keyless build shape unchanged.
+    bazel_run_args+=(--config=ci-keyless)
+  fi
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")
   fi
