@@ -75,7 +75,7 @@ def dependency_sections(manifest: dict) -> list[tuple[str, dict]]:
         for section_name in ("dependencies", "dev-dependencies", "build-dependencies"):
             dependencies = target.get(section_name)
             if isinstance(dependencies, dict):
-                sections.append((f'target.{target_name}.{section_name}', dependencies))
+                sections.append((f"target.{target_name}.{section_name}", dependencies))
 
     return sections
 
@@ -185,7 +185,9 @@ def source_failures() -> list[str]:
         code = strip_comments_and_strings(path.read_text())
         for line_number, line in enumerate(code.splitlines(), start=1):
             if any(pattern.search(line) for pattern in FORBIDDEN_SOURCE_PATTERNS):
-                failures.append(f"{relative_path(path)}:{line_number} imports `codex_core`")
+                failures.append(
+                    f"{relative_path(path)}:{line_number} imports `codex_core`"
+                )
     return failures
 
 
