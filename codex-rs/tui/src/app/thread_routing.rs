@@ -1052,16 +1052,45 @@ impl App {
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
-        self.upsert_agent_picker_thread(
-            thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
-            /*is_closed*/ false,
-        );
-        self.agent_navigation
-            .set_thread_name(thread_id, notification.thread.name.clone());
-        self.sync_active_agent_label();
+        if self.thread_started_belongs_to_agent_picker(thread_id, &notification.thread) {
+            self.upsert_agent_picker_thread(
+                thread_id,
+                notification.thread.agent_nickname.clone(),
+                notification.thread.agent_role.clone(),
+                /*is_closed*/ false,
+            );
+            self.agent_navigation
+                .set_thread_name(thread_id, notification.thread.name.clone());
+            self.sync_active_agent_label();
+        }
         Some(session)
+    }
+
+    /// Returns whether a `ThreadStarted` thread should be surfaced in this session's agent picker.
+    ///
+    /// Only the primary thread and genuine subagents spawned beneath it belong in the picker. A
+    /// global scheduled prompt resumes its owning top-level thread and the app server broadcasts
+    /// that thread's `ThreadStarted` to every connected client; such a thread has no `ThreadSpawn`
+    /// lineage (its `source` is not `SubAgent`, and `parent_thread_id` is unset), so unrelated
+    /// sessions must not register it as a subagent. Its thread channel/session buffering is still
+    /// established by the caller, so schedule runtime and the owning session are unaffected.
+    ///
+    /// Deep subagents are accepted when their spawn parent chains to the primary through an
+    /// already-registered navigation entry, matching the resume-time walk in
+    /// `find_loaded_subagent_threads_for_primary`.
+    fn thread_started_belongs_to_agent_picker(
+        &self,
+        thread_id: ThreadId,
+        thread: &codex_app_server_protocol::Thread,
+    ) -> bool {
+        if self.primary_thread_id == Some(thread_id) {
+            return true;
+        }
+        let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) else {
+            return false;
+        };
+        self.primary_thread_id == Some(parent_thread_id)
+            || self.agent_navigation.get(&parent_thread_id).is_some()
     }
 
     pub(super) async fn enqueue_thread_request(

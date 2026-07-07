@@ -93,7 +93,12 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
     loaded_threads
 }
 
-fn thread_spawn_parent_thread_id(
+/// Returns the spawn parent thread id when `source` is a genuine `SubAgent(ThreadSpawn { .. })`
+/// edge, or `None` for any other origin (CLI, VSCode, scheduled top-level threads, etc.).
+///
+/// Shared by the resume-time spawn-tree walk and the realtime `ThreadStarted` picker guard so
+/// both agree on what counts as subagent lineage.
+pub(crate) fn thread_spawn_parent_thread_id(
     source: &codex_app_server_protocol::SessionSource,
 ) -> Option<ThreadId> {
     let value = serde_json::to_value(source).ok()?;

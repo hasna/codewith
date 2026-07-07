@@ -2872,6 +2872,18 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
     Ok(())
 }
 
+/// Builds a genuine `SubAgent(ThreadSpawn { .. })` source chaining to `parent_thread_id`, the
+/// lineage the realtime agent-picker guard requires before registering a `ThreadStarted` thread.
+fn subagent_thread_spawn_source(parent_thread_id: ThreadId) -> SessionSource {
+    SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    })
+}
+
 #[tokio::test]
 async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
     let mut app = make_test_app().await;
@@ -2931,7 +2943,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 path: Some(rollout_path.clone()),
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
+                source: subagent_thread_spawn_source(main_thread_id),
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -3048,6 +3060,133 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     let session = store.session.clone().expect("inferred session");
 
     assert_eq!(session.model, primary_session.model);
+
+    Ok(())
+}
+
+/// Builds a `ThreadStarted` notification with an explicit `source`, used to distinguish scheduled
+/// top-level threads from genuine subagents when exercising the realtime agent-picker guard.
+fn thread_started_with_source(
+    thread_id: ThreadId,
+    source: SessionSource,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+) -> ServerNotification {
+    ServerNotification::ThreadStarted(ThreadStartedNotification {
+        thread: Thread {
+            id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: "openai".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/agent").abs(),
+            cli_version: "0.0.0".to_string(),
+            source,
+            thread_source: None,
+            agent_nickname,
+            agent_role,
+            git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
+            name: None,
+            turns: Vec::new(),
+        },
+    })
+}
+
+/// A global scheduled prompt resumes its own top-level thread and the app server broadcasts that
+/// thread's `ThreadStarted` to every connected client. An unrelated TUI session must still buffer
+/// the thread channel (so schedule runtime and the owning session are unaffected) but must not
+/// expose the scheduled thread as a subagent in its agent picker, while genuine subagents spawned
+/// beneath the primary — including deeper ones that chain through a registered entry — are kept.
+#[tokio::test]
+async fn scheduled_top_level_thread_started_is_isolated_from_agent_picker() -> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000501").expect("valid thread");
+    let scheduled_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000502").expect("valid thread");
+    let subagent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000503").expect("valid thread");
+    let deep_subagent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000504").expect("valid thread");
+
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session.clone());
+    app.thread_event_channels.insert(
+        main_thread_id,
+        ThreadEventChannel::new_with_session(
+            /*capacity*/ 4,
+            primary_session.clone(),
+            Vec::new(),
+        ),
+    );
+
+    app.enqueue_thread_notification(
+        scheduled_thread_id,
+        thread_started_with_source(
+            scheduled_thread_id,
+            SessionSource::Cli,
+            Some("Nightly".to_string()),
+            Some("scheduler".to_string()),
+        ),
+    )
+    .await?;
+
+    assert!(
+        app.thread_event_channels.contains_key(&scheduled_thread_id),
+        "scheduled thread must still get a buffered channel so schedule runtime is unaffected"
+    );
+    assert_eq!(
+        app.agent_navigation.get(&scheduled_thread_id),
+        None,
+        "a scheduled top-level thread must not be surfaced as a subagent in an unrelated session"
+    );
+
+    app.enqueue_thread_notification(
+        subagent_thread_id,
+        thread_started_with_source(
+            subagent_thread_id,
+            subagent_thread_spawn_source(main_thread_id),
+            Some("Scout".to_string()),
+            Some("explorer".to_string()),
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.agent_navigation.get(&subagent_thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Scout".to_string()),
+            agent_role: Some("explorer".to_string()),
+            thread_name: None,
+            is_closed: false,
+        }),
+        "a genuine subagent spawned beneath the primary must still be registered"
+    );
+
+    app.enqueue_thread_notification(
+        deep_subagent_thread_id,
+        thread_started_with_source(
+            deep_subagent_thread_id,
+            subagent_thread_spawn_source(subagent_thread_id),
+            Some("Atlas".to_string()),
+            Some("worker".to_string()),
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation.get(&deep_subagent_thread_id).is_some(),
+        "a deeper subagent chaining to the primary via a registered entry must be registered"
+    );
 
     Ok(())
 }
