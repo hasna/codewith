@@ -316,6 +316,142 @@ async fn resolved_buffered_approval_does_not_become_actionable_after_drain() -> 
 }
 
 #[tokio::test]
+async fn enqueue_primary_thread_session_drops_unrelated_pre_primary_notifications() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let unrelated_thread_id = ThreadId::new();
+
+    // Pre-primary startup window: no primary thread is set yet, so events are
+    // buffered as pending primary events.
+    assert!(app.primary_thread_id.is_none());
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        unrelated_thread_id,
+        "turn-x",
+        "item-x",
+        "unrelated",
+    ))
+    .await?;
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        primary_thread_id,
+        "turn-1",
+        "item-1",
+        "primary",
+    ))
+    .await?;
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    // The unrelated thread must not leak a channel out of the primary buffer flush.
+    assert!(
+        !app.thread_event_channels.contains_key(&unrelated_thread_id),
+        "unrelated thread should not receive a channel from the primary flush"
+    );
+
+    let rx = app
+        .active_thread_rx
+        .as_mut()
+        .expect("primary thread receiver should be active");
+
+    let event = time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .expect("timed out waiting for buffered primary notification")
+        .expect("channel closed unexpectedly");
+    assert!(
+        matches!(
+            &event,
+            ThreadBufferedEvent::Notification(ServerNotification::AgentMessageDelta(delta))
+                if delta.thread_id == primary_thread_id.to_string() && delta.delta == "primary"
+        ),
+        "expected the primary thread's buffered notification to replay first, got {event:?}"
+    );
+
+    // The unrelated-thread notification must have been dropped, not replayed onto
+    // the primary thread's stream.
+    let extra = time::timeout(Duration::from_millis(50), rx.recv()).await;
+    assert!(
+        extra.is_err(),
+        "unrelated pre-primary notification should be dropped, not replayed onto the primary"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_routes_known_thread_pre_primary_notifications() -> Result<()>
+{
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let known_thread_id = ThreadId::new();
+
+    // A previously loaded/scheduled thread is already tracked before the primary
+    // thread finishes starting.
+    app.thread_event_channels.insert(
+        known_thread_id,
+        ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY),
+    );
+    // Mark the known thread active so routed events are delivered on its channel
+    // receiver rather than parked in its store buffer.
+    app.set_thread_active(known_thread_id, /*active*/ true)
+        .await;
+
+    assert!(app.primary_thread_id.is_none());
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        known_thread_id,
+        "turn-k",
+        "item-k",
+        "known",
+    ))
+    .await?;
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    // The buffered event for the already-tracked thread is delivered on that
+    // thread's own channel, not on the primary thread's stream.
+    let mut known_rx = app
+        .thread_event_channels
+        .get_mut(&known_thread_id)
+        .expect("known thread channel should still exist")
+        .receiver
+        .take()
+        .expect("known thread receiver should be available");
+    let known_event = time::timeout(Duration::from_millis(50), known_rx.recv())
+        .await
+        .expect("timed out waiting for known-thread notification")
+        .expect("known thread channel closed unexpectedly");
+    assert!(
+        matches!(
+            &known_event,
+            ThreadBufferedEvent::Notification(ServerNotification::AgentMessageDelta(delta))
+                if delta.thread_id == known_thread_id.to_string() && delta.delta == "known"
+        ),
+        "expected known-thread notification to route to its own channel, got {known_event:?}"
+    );
+
+    // Nothing from the known thread should have leaked onto the primary stream.
+    let rx = app
+        .active_thread_rx
+        .as_mut()
+        .expect("primary thread receiver should be active");
+    let leaked = time::timeout(Duration::from_millis(50), rx.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "known-thread notification must not be replayed onto the primary stream"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_submit() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();

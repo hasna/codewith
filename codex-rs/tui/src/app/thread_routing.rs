@@ -5,6 +5,8 @@
 //! when the visible thread changes.
 
 use super::*;
+use crate::app::app_server_event_targets::server_notification_thread_target;
+use crate::app::app_server_event_targets::server_request_thread_id;
 use crate::app::app_server_requests::AppServerRequestResolution;
 use crate::session_resume::read_session_model;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
@@ -1194,11 +1196,37 @@ impl App {
         for pending_event in pending {
             match pending_event {
                 ThreadBufferedEvent::Notification(notification) => {
-                    self.enqueue_thread_notification(thread_id, notification)
-                        .await?;
+                    let event_thread_id =
+                        server_notification_thread_target(&notification).thread_id();
+                    match self.resolve_pending_primary_flush_target(event_thread_id, thread_id) {
+                        Some(target_thread_id) => {
+                            self.enqueue_thread_notification(target_thread_id, notification)
+                                .await?;
+                        }
+                        None => {
+                            tracing::debug!(
+                                ?event_thread_id,
+                                %thread_id,
+                                "dropping buffered notification for unrelated untracked thread while starting primary thread"
+                            );
+                        }
+                    }
                 }
                 ThreadBufferedEvent::Request(request) => {
-                    self.enqueue_thread_request(thread_id, request).await?;
+                    let event_thread_id = server_request_thread_id(&request);
+                    match self.resolve_pending_primary_flush_target(event_thread_id, thread_id) {
+                        Some(target_thread_id) => {
+                            self.enqueue_thread_request(target_thread_id, request)
+                                .await?;
+                        }
+                        None => {
+                            tracing::debug!(
+                                ?event_thread_id,
+                                %thread_id,
+                                "dropping buffered request for unrelated untracked thread while starting primary thread"
+                            );
+                        }
+                    }
                 }
                 ThreadBufferedEvent::HistoryEntryResponse(event) => {
                     self.enqueue_thread_history_entry_response(thread_id, event)
@@ -1213,6 +1241,42 @@ impl App {
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
         Ok(())
+    }
+
+    /// Whether `thread_id` is already tracked by the TUI (has an event channel
+    /// or is a registered side thread). Used during the startup pre-primary
+    /// window to distinguish known loaded/scheduled threads from the primary
+    /// thread that is still starting.
+    pub(super) fn is_tracked_thread(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels.contains_key(&thread_id)
+            || self.side_threads.contains_key(&thread_id)
+    }
+
+    /// Resolve which thread a buffered pre-primary event should flush onto once
+    /// the primary thread (`primary_thread_id`) has started.
+    ///
+    /// - Events that target the started primary thread flush onto the primary.
+    /// - Events for another already-tracked thread flush onto that thread's own
+    ///   channel so they are not misrouted onto the primary's stream.
+    /// - Events for an unrelated, untracked thread return `None` and are dropped
+    ///   by the caller; they never belonged to the primary being started.
+    /// - Events with no resolvable thread target flush onto the primary, matching
+    ///   the historical behavior (such events are not buffered here in practice).
+    fn resolve_pending_primary_flush_target(
+        &self,
+        event_thread_id: Option<ThreadId>,
+        primary_thread_id: ThreadId,
+    ) -> Option<ThreadId> {
+        match event_thread_id {
+            None => Some(primary_thread_id),
+            Some(event_thread_id) if event_thread_id == primary_thread_id => {
+                Some(primary_thread_id)
+            }
+            Some(event_thread_id) if self.is_tracked_thread(event_thread_id) => {
+                Some(event_thread_id)
+            }
+            Some(_) => None,
+        }
     }
 
     pub(super) async fn enqueue_primary_thread_notification(
