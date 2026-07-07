@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
-const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;

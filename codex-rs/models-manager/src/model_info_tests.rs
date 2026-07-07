@@ -3,7 +3,7 @@ use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
-const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 
 fn assert_effort_estimate_guidance(text: &str, label: &str) {
     for expected in [
@@ -109,7 +109,7 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
     assert_eq!(model.display_name, "DeepSeek V4 Flash");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
-    assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
     assert!(!model.used_fallback_model_metadata);
 }
@@ -524,7 +524,7 @@ fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
     model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
     let config = ModelsManagerConfig {
         model_provider_id: Some("openai".to_string()),
-        model_context_window: Some(500_000),
+        model_context_window: Some(GPT_5_5_CONTEXT_WINDOW + 1),
         ..Default::default()
     };
 
