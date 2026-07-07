@@ -606,15 +606,15 @@ mod tests {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 9);
         upsert_test_thread(&runtime, thread_id).await;
-        let secret = synthetic_secret();
+        let sample_value = synthetic_secret();
 
         let created = runtime
             .thread_monitors()
             .create_thread_monitor(ThreadMonitorCreateParams {
                 thread_id,
-                name: format!("CI {secret}"),
-                prompt: format!("watch {secret}"),
-                command: format!("printf '%s' {secret}"),
+                name: format!("CI {sample_value}"),
+                prompt: format!("watch {sample_value}"),
+                command: format!("printf '%s' {sample_value}"),
                 cwd: None,
                 routing: crate::ThreadMonitorRouting::Stream,
                 output_file: None,
@@ -627,8 +627,8 @@ mod tests {
                 .prompt
                 .contains(crate::local_state_redaction_marker())
         );
-        assert!(!created.prompt.contains(secret.as_str()));
-        assert!(!created.command.contains(secret.as_str()));
+        assert!(!created.prompt.contains(sample_value.as_str()));
+        assert!(!created.command.contains(sample_value.as_str()));
 
         let event = runtime
             .thread_monitors()
@@ -636,12 +636,12 @@ mod tests {
                 thread_id,
                 monitor_id: created.monitor_id.clone(),
                 stream: crate::ThreadMonitorEventStream::Stderr,
-                text: format!("failed with {secret}"),
+                text: format!("failed with {sample_value}"),
             })
             .await
             .expect("event should be created");
         assert!(event.text.contains(crate::local_state_redaction_marker()));
-        assert!(!event.text.contains(secret.as_str()));
+        assert!(!event.text.contains(sample_value.as_str()));
 
         let reloaded = runtime
             .thread_monitors()
@@ -654,7 +654,7 @@ mod tests {
             !reloaded
                 .last_error
                 .unwrap_or_default()
-                .contains(secret.as_str())
+                .contains(sample_value.as_str())
         );
     }
 }

@@ -565,10 +565,10 @@ mod tests {
 
     #[test]
     fn redacts_strings_and_nested_json_values() {
-        let token = synthetic_openai_key();
+        let sample_value = synthetic_openai_key();
         let mut value = serde_json::json!({
             "outer": {
-                "token": token,
+                "token": sample_value,
                 "safe": "thread-00000000-0000-0000-0000-000000000001"
             }
         });
@@ -588,10 +588,10 @@ mod tests {
         fs::create_dir_all(codex_home.join(SESSIONS_DIR)).expect("create sessions dir");
         fs::create_dir_all(codex_home.join(SHELL_SNAPSHOTS_DIR)).expect("create snapshots dir");
         let session_path = codex_home.join(SESSIONS_DIR).join("session.jsonl");
-        let file_token = synthetic_openai_key();
+        let file_value = synthetic_openai_key();
         fs::write(
             session_path.as_path(),
-            format!(r#"{{"message":"{file_token}"}}"#),
+            format!(r#"{{"message":"{file_value}"}}"#),
         )
         .expect("write session");
 
@@ -606,9 +606,9 @@ mod tests {
             .execute(&mut connection)
             .await
             .expect("create table");
-        let db_token = synthetic_github_key();
+        let db_value = synthetic_github_key();
         sqlx::query("INSERT INTO sample (body) VALUES (?)")
-            .bind(db_token.as_str())
+            .bind(db_value.as_str())
             .execute(&mut connection)
             .await
             .expect("insert sample");
@@ -625,8 +625,8 @@ mod tests {
         assert_eq!(scan.redacted_files, 0);
         assert_eq!(scan.redacted_sqlite_cells, 0);
         let serialized = serde_json::to_string(&scan).expect("serialize scan");
-        assert!(!serialized.contains(file_token.as_str()));
-        assert!(!serialized.contains(db_token.as_str()));
+        assert!(!serialized.contains(file_value.as_str()));
+        assert!(!serialized.contains(db_value.as_str()));
 
         let repaired = run_local_state_secrets_doctor(LocalStateSecretsDoctorOptions {
             codex_home: codex_home.clone(),
@@ -640,7 +640,7 @@ mod tests {
 
         let repaired_file = fs::read_to_string(session_path).expect("read repaired session");
         assert!(repaired_file.contains(local_state_redaction_marker()));
-        assert!(!repaired_file.contains(file_token.as_str()));
+        assert!(!repaired_file.contains(file_value.as_str()));
 
         let mut connection = SqliteConnectOptions::new()
             .filename(db_path.as_path())
