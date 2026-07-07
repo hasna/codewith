@@ -199,15 +199,17 @@ Example with notification opt-out:
 - `process/kill` — experimental; terminate a running `process/spawn` session by `processHandle`; returns `{}`.
 - `process/outputDelta` — experimental; notification emitted for base64-encoded stdout/stderr chunks from a streaming `process/spawn` session.
 - `process/exited` — experimental; notification emitted when a `process/spawn` session exits.
-- `fs/readFile` — read an absolute file path and return `{ dataBase64 }`.
-- `fs/writeFile` — write an absolute file path from base64-encoded `{ dataBase64 }`; returns `{}`.
-- `fs/createDirectory` — create an absolute directory path; `recursive` defaults to `true`.
-- `fs/getMetadata` — return metadata for an absolute path: `isDirectory`, `isFile`, `isSymlink`, `createdAtMs`, and `modifiedAtMs`.
-- `fs/readDirectory` — list direct child entries for an absolute directory path; each entry contains `fileName`, `isDirectory`, and `isFile`, and `fileName` is just the child name, not a path.
-- `fs/remove` — remove an absolute file or directory tree; `recursive` and `force` default to `true`.
-- `fs/copy` — copy between absolute paths; directory copies require `recursive: true`.
-- `fs/watch` — subscribe this connection to filesystem change notifications for an absolute file or directory path and caller-provided `watchId`; returns the canonicalized `path`.
-- `fs/unwatch` — stop sending notifications for a prior `fs/watch`; returns `{}`.
+The `fs/*` methods take absolute host paths, but the app-server does not trust the client's choice of path. Every `fs/*` request is authorized server-side against the session's workspace scope — the active working directory plus the configured workspace roots — before any filesystem access occurs. A path is rejected with `path is outside the authorized workspace roots` when its fully canonicalized location (with all symlinks resolved) falls outside every authorized root; this holds for reads, writes, directory creation, metadata, directory listing, copy (both source and destination), remove, and watch, and it cannot be bypassed by client-side UI validation, absolute-path traversal, or a symlink inside a root that resolves outside it. Write/mkdir/copy-destination targets that do not exist yet are authorized by resolving their deepest existing ancestor, so a symlinked ancestor cannot escape the scope either. When no workspace root is established the scope is default-deny.
+
+- `fs/readFile` — read an absolute file path inside the workspace scope and return `{ dataBase64 }`.
+- `fs/writeFile` — write an absolute file path inside the workspace scope from base64-encoded `{ dataBase64 }`; returns `{}`.
+- `fs/createDirectory` — create an absolute directory path inside the workspace scope; `recursive` defaults to `true`.
+- `fs/getMetadata` — return metadata for an absolute path inside the workspace scope: `isDirectory`, `isFile`, `isSymlink`, `createdAtMs`, and `modifiedAtMs`.
+- `fs/readDirectory` — list direct child entries for an absolute directory path inside the workspace scope; each entry contains `fileName`, `isDirectory`, and `isFile`, and `fileName` is just the child name, not a path.
+- `fs/remove` — remove an absolute file or directory path inside the workspace scope. Destructive behavior is opt-in: `recursive` and `force` both default to `false`, so removing a non-empty directory requires `recursive: true` and removing a missing path requires `force: true`. Combined with the scope check, a client cannot recursively delete outside an authorized root.
+- `fs/copy` — copy between absolute paths that are both inside the workspace scope; directory copies require `recursive: true`.
+- `fs/watch` — subscribe this connection to filesystem change notifications for an absolute file or directory path inside the workspace scope and caller-provided `watchId`; returns the canonicalized `path`. Emitted `changedPaths` are always descendants of the authorized watch path.
+- `fs/unwatch` — stop sending notifications for a prior `fs/watch`; returns `{}`. `fs/unwatch` is connection-scoped and takes no path.
 - `fs/changed` — notification emitted when watched paths change, including the `watchId` and `changedPaths`.
 - `model/list` — list available models (set `includeHidden: true` to include entries with `hidden: true`; set `modelProvider` to a configured provider id to browse that provider without changing the active thread; set `modelGateway` to scope through a gateway such as `hasna` or `openrouter`; set `upstreamProvider` to filter aggregator slugs such as OpenRouter models), with route metadata, reasoning effort options, `additionalSpeedTiers`, `serviceTiers`, optional `defaultServiceTier`, optional legacy `upgrade` model ids, optional `upgradeInfo` metadata (`model`, `upgradeCopy`, `modelLink`, `migrationMarkdown`), and optional `availabilityNux` metadata.
 - `modelGateway/list` — list model gateways. `hasna` is the default direct gateway over configured providers; `openrouter` is the built-in aggregator gateway for OpenRouter-backed model routes.

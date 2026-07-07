@@ -6,10 +6,10 @@
       "type": "string"
     }
   },
-  "description": "Remove a file or directory tree from the host filesystem.",
+  "description": "Remove a file or directory tree from the host filesystem.\n\nThe target must resolve inside the session's authorized workspace scope; the server rejects paths (including symlink escapes) outside every workspace root.",
   "properties": {
     "force": {
-      "description": "Whether missing paths should be ignored. Defaults to `true`.",
+      "description": "Whether missing paths should be ignored. Defaults to `false`; ignoring missing targets must be requested explicitly.",
       "type": [
         "boolean",
         "null"
@@ -21,10 +21,10 @@
           "$ref": "#/definitions/AbsolutePathBuf"
         }
       ],
-      "description": "Absolute path to remove."
+      "description": "Absolute path to remove. Must be inside an authorized workspace root."
     },
     "recursive": {
-      "description": "Whether directory removal should recurse. Defaults to `true`.",
+      "description": "Whether directory removal should recurse. Defaults to `false`; recursive tree deletion must be requested explicitly.",
       "type": [
         "boolean",
         "null"

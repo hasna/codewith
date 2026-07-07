@@ -1,5 +1,6 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::fs_scope::FsScope;
 use crate::fs_watch::FsWatchManager;
 use crate::outgoing_message::ConnectionId;
 use base64::Engine;
@@ -36,16 +37,19 @@ use std::sync::Arc;
 pub(crate) struct FsRequestProcessor {
     environment_manager: Arc<EnvironmentManager>,
     fs_watch_manager: FsWatchManager,
+    scope: FsScope,
 }
 
 impl FsRequestProcessor {
     pub(crate) fn new(
         environment_manager: Arc<EnvironmentManager>,
         fs_watch_manager: FsWatchManager,
+        scope: FsScope,
     ) -> Self {
         Self {
             environment_manager,
             fs_watch_manager,
+            scope,
         }
     }
 
@@ -64,6 +68,7 @@ impl FsRequestProcessor {
         &self,
         params: FsReadFileParams,
     ) -> Result<FsReadFileResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.path)?;
         let bytes = self
             .file_system()?
             .read_file(&params.path, /*sandbox*/ None)
@@ -78,6 +83,7 @@ impl FsRequestProcessor {
         &self,
         params: FsWriteFileParams,
     ) -> Result<FsWriteFileResponse, JSONRPCErrorError> {
+        self.scope.authorize_target(&params.path)?;
         let bytes = STANDARD.decode(params.data_base64).map_err(|err| {
             invalid_request(format!(
                 "fs/writeFile requires valid base64 dataBase64: {err}"
@@ -94,6 +100,7 @@ impl FsRequestProcessor {
         &self,
         params: FsCreateDirectoryParams,
     ) -> Result<FsCreateDirectoryResponse, JSONRPCErrorError> {
+        self.scope.authorize_target(&params.path)?;
         self.file_system()?
             .create_directory(
                 &params.path,
@@ -111,6 +118,7 @@ impl FsRequestProcessor {
         &self,
         params: FsGetMetadataParams,
     ) -> Result<FsGetMetadataResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.path)?;
         let metadata = self
             .file_system()?
             .get_metadata(&params.path, /*sandbox*/ None)
@@ -129,6 +137,7 @@ impl FsRequestProcessor {
         &self,
         params: FsReadDirectoryParams,
     ) -> Result<FsReadDirectoryResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.path)?;
         let entries = self
             .file_system()?
             .read_directory(&params.path, /*sandbox*/ None)
@@ -150,12 +159,17 @@ impl FsRequestProcessor {
         &self,
         params: FsRemoveParams,
     ) -> Result<FsRemoveResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.path)?;
+        // Destructive defaults are opt-in: recursive tree deletion and ignoring
+        // missing targets both require the client to request them explicitly.
+        // Combined with the scope check above, a client cannot recursively
+        // delete outside an authorized root.
         self.file_system()?
             .remove(
                 &params.path,
                 RemoveOptions {
-                    recursive: params.recursive.unwrap_or(true),
-                    force: params.force.unwrap_or(true),
+                    recursive: params.recursive.unwrap_or(false),
+                    force: params.force.unwrap_or(false),
                 },
                 /*sandbox*/ None,
             )
@@ -168,6 +182,8 @@ impl FsRequestProcessor {
         &self,
         params: FsCopyParams,
     ) -> Result<FsCopyResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.source_path)?;
+        self.scope.authorize_target(&params.destination_path)?;
         self.file_system()?
             .copy(
                 &params.source_path,
@@ -187,6 +203,7 @@ impl FsRequestProcessor {
         connection_id: ConnectionId,
         params: FsWatchParams,
     ) -> Result<FsWatchResponse, JSONRPCErrorError> {
+        self.scope.authorize_existing(&params.path)?;
         self.file_system()?;
         self.fs_watch_manager.watch(connection_id, params).await
     }

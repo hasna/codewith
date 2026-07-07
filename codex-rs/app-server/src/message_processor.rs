@@ -584,6 +584,7 @@ impl MessageProcessor {
         let fs_processor = FsRequestProcessor::new(
             Arc::clone(&environment_manager_for_requests),
             FsWatchManager::new(outgoing.clone()),
+            crate::fs_scope::FsScope::from_config(config.as_ref()),
         );
         let windows_sandbox_processor = WindowsSandboxRequestProcessor::new(
             outgoing.clone(),
