@@ -4,6 +4,7 @@
 //! channels, submits thread-scoped operations through the app server, and replays buffered events
 //! when the visible thread changes.
 
+use super::loaded_threads::thread_spawn_parent_thread_id;
 use super::*;
 use crate::app::app_server_requests::AppServerRequestResolution;
 use crate::session_resume::read_session_model;
@@ -990,12 +991,12 @@ impl App {
         Ok(())
     }
 
-    /// Locally remembers receiver threads referenced by a collab notification.
+    /// Validates receiver thread ids referenced by a collab notification.
     ///
     /// This intentionally avoids app-server reads on the active-thread rendering path. During large
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
-    /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
-    /// names and roles later; until then, rendering falls back to the thread id.
+    /// TUI event loop. Receiver-only notifications are not proof that a thread is a spawned
+    /// descendant of the current primary thread, so they must not create `/agent` picker rows.
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
@@ -1009,22 +1010,13 @@ impl App {
                 continue;
             }
 
-            let Ok(thread_id) = ThreadId::from_string(receiver_thread_id) else {
+            if ThreadId::from_string(receiver_thread_id).is_err() {
                 tracing::warn!(
                     thread_id = receiver_thread_id,
-                    "ignoring collab receiver with invalid thread id during local caching"
+                    "ignoring collab receiver with invalid thread id during picker lineage validation"
                 );
                 continue;
-            };
-
-            if self.agent_navigation.get(&thread_id).is_some() {
-                continue;
             }
-
-            self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                /*is_closed*/ false,
-            );
         }
     }
 
@@ -1052,15 +1044,28 @@ impl App {
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
-        self.upsert_agent_picker_thread(
-            thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
-            /*is_closed*/ false,
-        );
-        self.agent_navigation
-            .set_thread_name(thread_id, notification.thread.name.clone());
-        self.sync_active_agent_label();
+        let should_register_picker_thread = if self.primary_thread_id == Some(thread_id) {
+            true
+        } else if let (Some(primary_thread_id), Some(parent_thread_id)) = (
+            self.primary_thread_id,
+            thread_spawn_parent_thread_id(&notification.thread.source),
+        ) {
+            parent_thread_id == primary_thread_id
+                || self.agent_navigation.get(&parent_thread_id).is_some()
+        } else {
+            false
+        };
+        if should_register_picker_thread {
+            self.upsert_agent_picker_thread(
+                thread_id,
+                notification.thread.agent_nickname.clone(),
+                notification.thread.agent_role.clone(),
+                /*is_closed*/ false,
+            );
+            self.agent_navigation
+                .set_thread_name(thread_id, notification.thread.name.clone());
+            self.sync_active_agent_label();
+        }
         Some(session)
     }
 

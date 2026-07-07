@@ -100,6 +100,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -1150,7 +1151,7 @@ async fn token_usage_update_refreshes_status_line_with_runtime_context_window() 
 }
 
 #[tokio::test]
-async fn collab_receiver_notification_caches_thread_without_app_server_read() {
+async fn collab_receiver_notification_does_not_create_picker_row_without_verified_lineage() {
     let mut app = make_test_app().await;
     let receiver_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
@@ -1174,15 +1175,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
         }),
     ));
 
-    assert_eq!(
-        app.agent_navigation.get(&receiver_thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
-            thread_name: None,
-            is_closed: false,
-        })
-    );
+    assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
+    assert!(!app.thread_event_channels.contains_key(&receiver_thread_id));
 }
 
 #[tokio::test]
@@ -1220,7 +1214,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 }
 
 #[tokio::test]
-async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
+async fn open_agent_picker_does_not_promote_unverified_replay_channels() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
@@ -1234,16 +1228,8 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
     assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
-    assert_eq!(
-        app.agent_navigation.get(&thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
-            thread_name: None,
-            is_closed: true,
-        })
-    );
-    assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
+    assert_eq!(app.agent_navigation.get(&thread_id), None);
+    assert!(app.agent_navigation.ordered_thread_ids().is_empty());
     Ok(())
 }
 
@@ -1336,7 +1322,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
 }
 
 #[test]
-fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
+fn open_agent_picker_marks_primary_loaded_thread_open() -> Result<()> {
     const WORKER_THREADS: usize = 1;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1357,6 +1343,8 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
             .start_thread(app.chat_widget.config_ref())
             .await?;
         let thread_id = started.session.thread_id;
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
@@ -2219,6 +2207,12 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
     let thread_id = ThreadId::new();
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
     app.chat_widget
@@ -2873,7 +2867,8 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
+async fn inactive_thread_started_notification_with_unknown_source_initializes_replay_session_without_picker_row()
+-> Result<()> {
     let mut app = make_test_app().await;
     let temp_dir = tempdir()?;
     let main_thread_id =
@@ -2966,6 +2961,43 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         vec![test_path_buf("/tmp/agent").abs(), shared_root]
     );
     assert_eq!(session.rollout_path, Some(rollout_path));
+    assert_eq!(app.agent_navigation.get(&agent_thread_id), None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_registers_direct_thread_spawn_child() -> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000222").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        agent_thread_id,
+        thread_started_notification(
+            agent_thread_id,
+            thread_spawn_source(main_thread_id, /*depth*/ 1, "Robie", "explorer"),
+            Some("Robie"),
+            Some("explorer"),
+            Some("agent thread"),
+        ),
+    )
+    .await?;
+
     assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
         Some(&AgentPickerThreadEntry {
@@ -2975,6 +3007,101 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             is_closed: false,
         })
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_registers_verified_thread_spawn_grandchild()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000311").expect("valid thread");
+    let child_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000322").expect("valid thread");
+    let grandchild_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000333").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        grandchild_thread_id,
+        thread_started_notification(
+            grandchild_thread_id,
+            thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "researcher"),
+            Some("Atlas"),
+            Some("researcher"),
+            Some("nested agent"),
+        ),
+    )
+    .await?;
+
+    assert_eq!(
+        app.agent_navigation.get(&grandchild_thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Atlas".to_string()),
+            agent_role: Some("researcher".to_string()),
+            thread_name: Some("nested agent".to_string()),
+            is_closed: false,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_excludes_unrelated_thread_spawn_child() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000411").expect("valid thread");
+    let unrelated_parent_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000422").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000433").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        agent_thread_id,
+        thread_started_notification(
+            agent_thread_id,
+            thread_spawn_source(unrelated_parent_id, /*depth*/ 1, "Other", "explorer"),
+            Some("Other"),
+            Some("explorer"),
+            Some("unrelated agent"),
+        ),
+    )
+    .await?;
+
+    assert_eq!(app.agent_navigation.get(&agent_thread_id), None);
+    assert!(app.thread_event_channels.contains_key(&agent_thread_id));
 
     Ok(())
 }
@@ -4016,6 +4143,16 @@ async fn active_non_primary_shutdown_target_still_switches_for_other_pending_exi
     Ok(())
 }
 
+#[tokio::test]
+async fn mark_agent_picker_thread_closed_ignores_untracked_threads() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+
+    app.mark_agent_picker_thread_closed(thread_id);
+
+    assert_eq!(app.agent_navigation.get(&thread_id), None);
+}
+
 async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
     let mut app = make_test_app().await;
     app.config.cwd = test_path_buf("/tmp/project").abs();
@@ -4737,6 +4874,56 @@ fn rate_limit_snapshot_for_window(
         plan_type: None,
         rate_limit_reached_type: None,
     }
+}
+
+fn thread_spawn_source(
+    parent_thread_id: ThreadId,
+    depth: i32,
+    agent_nickname: &str,
+    agent_role: &str,
+) -> SessionSource {
+    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth,
+        agent_path: None,
+        agent_nickname: Some(agent_nickname.to_string()),
+        agent_role: Some(agent_role.to_string()),
+    })
+}
+
+fn thread_started_notification(
+    thread_id: ThreadId,
+    source: SessionSource,
+    agent_nickname: Option<&str>,
+    agent_role: Option<&str>,
+    name: Option<&str>,
+) -> ServerNotification {
+    ServerNotification::ThreadStarted(ThreadStartedNotification {
+        thread: Thread {
+            id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "agent thread".to_string(),
+            ephemeral: false,
+            model_provider: "agent-provider".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/agent").abs(),
+            cli_version: "0.0.0".to_string(),
+            source,
+            thread_source: None,
+            agent_nickname: agent_nickname.map(str::to_string),
+            agent_role: agent_role.map(str::to_string),
+            git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
+            name: name.map(str::to_string),
+            turns: Vec::new(),
+        },
+    })
 }
 
 fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {
