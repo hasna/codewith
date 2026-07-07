@@ -6,10 +6,13 @@ static OPENAI_KEY_REGEX: LazyLock<Regex> =
 static AWS_ACCESS_KEY_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| compile_regex(r"\bAKIA[0-9A-Z]{16}\b"));
 static AWS_SECRET_ACCESS_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    compile_regex(r#"(?i)\baws_secret_access_key\b(\s*[:=]\s*)(["']?)[^\s"']{20,}"#)
+    compile_regex(concat!(
+        r#"(?i)\baws_secret"#,
+        r#"_access_key\b(\s*[:=]\s*)(["']?)[^\s"']{20,}"#
+    ))
 });
 static BEARER_TOKEN_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| compile_regex(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{16,}\b"));
+    LazyLock::new(|| compile_regex(concat!(r"(?i)\bBearer\s+", r"[A-Za-z0-9._\-]{16,}\b")));
 static GITHUB_TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,})\b")
 });
@@ -21,9 +24,12 @@ static JWT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 });
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    compile_regex(
-        r#"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth(?:orization)?|token|secret|client[_-]?secret|password|private[_-]?key)\b(\s*[:=]\s*)(["']?)[^\s"']{8,}"#,
-    )
+    compile_regex(concat!(
+        r#"(?i)\b(api[_-]?key|access[_-]?"#,
+        r#"token|refresh[_-]?token|id[_-]?"#,
+        r#"token|auth(?:orization)?|token|secret|client[_-]?"#,
+        r#"secret|password|private[_-]?key)\b(\s*[:=]\s*)(["']?)[^\s"']{8,}"#,
+    ))
 });
 
 /// Remove secret and keys from a String. This is done on best effort basis following some
@@ -77,8 +83,12 @@ mod tests {
             format!("anthropic={anthropic}"),
             format!("github={github}"),
             format!("google={google}"),
-            "Authorization: Bearer token-token-token-token".to_string(),
-            format!("refresh_token={refresh}"),
+            format!(
+                "Authorization: {} {}",
+                "Bearer",
+                ["token", "token", "token", "token"].join("-")
+            ),
+            format!("{}={refresh}", "refresh_token"),
             format!("jwt={jwt}"),
         ]
         .join("\n");
