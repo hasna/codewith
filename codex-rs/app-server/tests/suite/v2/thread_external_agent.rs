@@ -27,6 +27,8 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const UNRELATED_PROVIDER_AUTH_ENV: &str = "OPENAI_API_KEY";
+const UNRELATED_PROVIDER_AUTH_VALUE: &str = "redacted-test-value";
 
 #[tokio::test]
 async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> Result<()> {
@@ -315,7 +317,7 @@ async fn thread_external_agent_claude_starts_with_bedrock_profile_env_and_saniti
             ("AWS_REGION", "us-east-1"),
             ("ANTHROPIC_MODEL", "claude-sonnet-5"),
             ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-5"),
-            ("OPENAI_API_KEY", "must-not-leak"),
+            (UNRELATED_PROVIDER_AUTH_ENV, UNRELATED_PROVIDER_AUTH_VALUE),
         ],
     )?;
     write_mock_provider_models_cache(codex_home.as_path())?;
@@ -398,7 +400,7 @@ async fn thread_external_agent_claude_starts_with_bedrock_profile_env_and_saniti
         "expected default model override in fake Claude env: {output}"
     );
     assert!(
-        output.contains("OPENAI_API_KEY=absent"),
+        output.contains(&format!("{UNRELATED_PROVIDER_AUTH_ENV}=absent")),
         "unrelated provider auth leaked into fake Claude env: {output}"
     );
 
@@ -429,7 +431,7 @@ async fn thread_external_agent_claude_starts_with_settings_provider_env_and_sani
     std::fs::create_dir(&claude_config_dir)?;
     std::fs::write(
         claude_config_dir.join("settings.json"),
-        r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":true,"AWS_PROFILE":"dev","AWS_REGION":"us-east-1","ANTHROPIC_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-5","OPENAI_API_KEY":"must-not-leak"}}"#,
+        claude_bedrock_settings_json("dev", "us-east-1"),
     )?;
 
     let bin_dir = tmp.path().join("bin");
@@ -517,7 +519,7 @@ async fn thread_external_agent_claude_starts_with_settings_provider_env_and_sani
         "expected default model override in fake Claude env: {output}"
     );
     assert!(
-        output.contains("OPENAI_API_KEY=absent"),
+        output.contains(&format!("{UNRELATED_PROVIDER_AUTH_ENV}=absent")),
         "unrelated provider auth leaked into fake Claude env: {output}"
     );
 
@@ -721,6 +723,38 @@ fn append_shell_env_policy(codex_home: &Path, vars: &[(&str, &str)]) -> Result<(
 
 fn toml_string(value: &str) -> String {
     format!("{value:?}")
+}
+
+fn claude_bedrock_settings_json(aws_profile: &str, aws_region: &str) -> String {
+    let mut env = serde_json::Map::new();
+    env.insert(
+        "CLAUDE_CODE_USE_BEDROCK".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    env.insert(
+        "AWS_PROFILE".to_string(),
+        serde_json::Value::String(aws_profile.to_string()),
+    );
+    env.insert(
+        "AWS_REGION".to_string(),
+        serde_json::Value::String(aws_region.to_string()),
+    );
+    env.insert(
+        "ANTHROPIC_MODEL".to_string(),
+        serde_json::Value::String("claude-sonnet-5".to_string()),
+    );
+    env.insert(
+        "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
+        serde_json::Value::String("claude-sonnet-5".to_string()),
+    );
+    env.insert(
+        UNRELATED_PROVIDER_AUTH_ENV.to_string(),
+        serde_json::Value::String(UNRELATED_PROVIDER_AUTH_VALUE.to_string()),
+    );
+
+    let mut settings = serde_json::Map::new();
+    settings.insert("env".to_string(), serde_json::Value::Object(env));
+    serde_json::Value::Object(settings).to_string()
 }
 
 #[cfg(unix)]

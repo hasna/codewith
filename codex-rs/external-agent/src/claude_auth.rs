@@ -584,11 +584,46 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    const UNRELATED_PROVIDER_AUTH_ENV: &str = "OPENAI_API_KEY";
+    const UNRELATED_PROVIDER_AUTH_VALUE: &str = "redacted-test-value";
+
     fn env_from(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
             .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
             .collect()
+    }
+
+    fn bedrock_settings_json_with_unrelated_provider_auth(
+        aws_profile: &str,
+        aws_region: &str,
+    ) -> String {
+        let mut env = serde_json::Map::new();
+        env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), JsonValue::Bool(true));
+        env.insert(
+            "AWS_PROFILE".to_string(),
+            JsonValue::String(aws_profile.to_string()),
+        );
+        env.insert(
+            "AWS_REGION".to_string(),
+            JsonValue::String(aws_region.to_string()),
+        );
+        env.insert(
+            "ANTHROPIC_MODEL".to_string(),
+            JsonValue::String("claude-sonnet-5".to_string()),
+        );
+        env.insert(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
+            JsonValue::String("claude-sonnet-5".to_string()),
+        );
+        env.insert(
+            UNRELATED_PROVIDER_AUTH_ENV.to_string(),
+            JsonValue::String(UNRELATED_PROVIDER_AUTH_VALUE.to_string()),
+        );
+
+        let mut settings = serde_json::Map::new();
+        settings.insert("env".to_string(), JsonValue::Object(env));
+        JsonValue::Object(settings).to_string()
     }
 
     #[test]
@@ -784,7 +819,7 @@ mod tests {
             ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/gcp.json"),
             ("CLAUDE_CODE_USE_FOUNDRY", "1"),
             ("ANTHROPIC_FOUNDRY_RESOURCE", "resource"),
-            ("OPENAI_API_KEY", "test-value"),
+            (UNRELATED_PROVIDER_AUTH_ENV, UNRELATED_PROVIDER_AUTH_VALUE),
         ]);
         let mut env = BTreeMap::new();
 
@@ -811,7 +846,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new().expect("tempdir");
         std::fs::write(
             temp_dir.path().join("settings.json"),
-            r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":true,"AWS_PROFILE":"settings-dev","AWS_REGION":"us-west-2","ANTHROPIC_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-sonnet-5","OPENAI_API_KEY":"must-not-leak"}}"#,
+            bedrock_settings_json_with_unrelated_provider_auth("settings-dev", "us-west-2"),
         )
         .expect("write settings");
         let config_dir = temp_dir.path().to_string_lossy().into_owned();
