@@ -1255,7 +1255,7 @@ mod tests {
                         "owned_by": "deepseek-ai"
                     },
                     {
-                        "id": "z-ai/glm-5.1",
+                        "id": "z-ai/glm-5.2",
                         "object": "model",
                         "created": 735790403,
                         "owned_by": "z-ai"
@@ -1280,7 +1280,7 @@ mod tests {
                 "qwen/qwen3-coder-480b-a35b-instruct",
                 "openai/gpt-oss-120b",
                 "deepseek-ai/deepseek-v4-flash",
-                "z-ai/glm-5.1"
+                "z-ai/glm-5.2"
             ]
         );
         let gpt_oss = &models[2];
@@ -1294,10 +1294,10 @@ mod tests {
         assert_eq!(deepseek.display_name, "DeepSeek V4 Flash");
         assert_eq!(deepseek.context_window, Some(1_048_576));
         assert_eq!(deepseek.max_context_window, Some(1_048_576));
-        assert_eq!(deepseek.experimental_supported_tools, Vec::<String>::new());
+        assert_eq!(deepseek.experimental_supported_tools, vec!["tools"]);
         assert!(!deepseek.supports_parallel_tool_calls);
         let glm = &models[4];
-        assert_eq!(glm.display_name, "Z.ai GLM 5.1");
+        assert_eq!(glm.display_name, "Z.ai GLM 5.2");
         assert_eq!(glm.context_window, Some(131_072));
         assert_eq!(glm.max_context_window, Some(131_072));
         assert_eq!(glm.experimental_supported_tools, vec!["tools"]);
