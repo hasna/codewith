@@ -65,10 +65,15 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleRun;
+use codex_app_server_protocol::ThreadScheduleRunStatus;
+use codex_app_server_protocol::ThreadScheduleRunUpdatedNotification;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_app_server_protocol::ThreadScheduleStatus;
+use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -3218,6 +3223,121 @@ async fn agent_picker_selection_items_include_new_agent_snapshot() {
 }
 
 #[tokio::test]
+async fn scheduled_top_level_thread_does_not_leak_into_agent_navigation() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let primary = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let scheduled = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let primary_thread_id = primary.session.thread_id;
+    let scheduled_thread_id = scheduled.session.thread_id;
+    let scheduled_thread_id_text = scheduled_thread_id.to_string();
+
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.primary_session_configured = Some(primary.session.clone());
+    app.thread_event_channels.insert(
+        primary_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            primary.session,
+            primary.turns,
+        ),
+    );
+    app.agent_navigation.upsert(
+        primary_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        scheduled_thread_id,
+        schedule_updated_notification(scheduled_thread_id, "schedule-1"),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        scheduled_thread_id,
+        schedule_run_updated_notification(scheduled_thread_id, "schedule-1", "run-1"),
+    )
+    .await?;
+
+    assert!(app.thread_event_channels.contains_key(&scheduled_thread_id));
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let (items, _) = app.agent_picker_selection_items(/*can_create_agent*/ true);
+
+    assert_eq!(
+        app.agent_navigation.ordered_thread_ids(),
+        vec![primary_thread_id]
+    );
+    assert_eq!(app.agent_navigation.get(&scheduled_thread_id), None);
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.description.as_deref() == Some(scheduled_thread_id_text.as_str())),
+        "unrelated scheduled thread must not be visible in /agent"
+    );
+    assert_eq!(
+        Box::pin(
+            app.adjacent_thread_id_with_backfill(&mut app_server, AgentNavigationDirection::Next,)
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        Box::pin(
+            app.adjacent_thread_id_with_backfill(
+                &mut app_server,
+                AgentNavigationDirection::Previous,
+            )
+        )
+        .await,
+        None
+    );
+
+    let mut snapshot = {
+        let channel = app
+            .thread_event_channels
+            .get(&scheduled_thread_id)
+            .expect("scheduled thread event channel");
+        let store = channel.store.lock().await;
+        store.snapshot()
+    };
+    assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+
+    app.refresh_snapshot_turns_from_thread_read(
+        &mut app_server,
+        scheduled_thread_id,
+        &mut snapshot,
+    )
+    .await;
+    assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+
+    app.apply_refreshed_snapshot_thread(scheduled_thread_id, scheduled, &mut snapshot)
+        .await;
+
+    assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+    let refreshed_events = {
+        let channel = app
+            .thread_event_channels
+            .get(&scheduled_thread_id)
+            .expect("scheduled thread event channel");
+        let store = channel.store.lock().await;
+        store.snapshot().events
+    };
+    assert_buffered_schedule_notifications(&refreshed_events, scheduled_thread_id);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_new_agent_row_emits_create_event() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -4996,6 +5116,80 @@ fn turn_completed_notification(
             ..test_turn(turn_id, status, Vec::new())
         },
     })
+}
+
+fn schedule_updated_notification(thread_id: ThreadId, schedule_id: &str) -> ServerNotification {
+    ServerNotification::ThreadScheduleUpdated(ThreadScheduleUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        schedule: ThreadSchedule {
+            thread_id: thread_id.to_string(),
+            schedule_id: schedule_id.to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
+            prompt: "check CI".to_string(),
+            prompt_source: ThreadSchedulePromptSource::Inline,
+            schedule: ThreadScheduleSpec::Interval {
+                amount: 3,
+                unit: ThreadScheduleIntervalUnit::Minutes,
+            },
+            timezone: "UTC".to_string(),
+            status: ThreadScheduleStatus::Active,
+            next_run_at: Some(1),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_expires_at: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    })
+}
+
+fn schedule_run_updated_notification(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    run_id: &str,
+) -> ServerNotification {
+    ServerNotification::ThreadScheduleRunUpdated(ThreadScheduleRunUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        run: ThreadScheduleRun {
+            thread_id: thread_id.to_string(),
+            schedule_id: schedule_id.to_string(),
+            run_id: run_id.to_string(),
+            status: ThreadScheduleRunStatus::Running,
+            lease_id: "lease-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            error: None,
+            scheduled_for_at: Some(1),
+            started_at: 1,
+            completed_at: None,
+        },
+    })
+}
+
+fn assert_buffered_schedule_notifications(events: &[ThreadBufferedEvent], thread_id: ThreadId) {
+    let thread_id_text = thread_id.to_string();
+    let kinds = events
+        .iter()
+        .map(|event| match event {
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleUpdated(
+                notification,
+            )) => {
+                assert_eq!(notification.thread_id, thread_id_text);
+                assert_eq!(notification.schedule.thread_id, thread_id_text);
+                "schedule"
+            }
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleRunUpdated(
+                notification,
+            )) => {
+                assert_eq!(notification.thread_id, thread_id_text);
+                assert_eq!(notification.run.thread_id, thread_id_text);
+                "run"
+            }
+            other => panic!("expected schedule notification, saw {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, vec!["schedule", "run"]);
 }
 
 fn thread_closed_notification(thread_id: ThreadId) -> ServerNotification {

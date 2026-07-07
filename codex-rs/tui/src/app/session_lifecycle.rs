@@ -115,6 +115,15 @@ impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let mut thread_ids = self.agent_navigation.tracked_thread_ids();
         for thread_id in self.thread_event_channels.keys().copied() {
+            // Schedule and monitor notifications can create replay channels for unrelated
+            // top-level threads. Do not let those channels promote themselves into `/agent`;
+            // non-primary rows need prior agent-navigation lineage.
+            if self.primary_thread_id.is_some()
+                && self.primary_thread_id != Some(thread_id)
+                && self.agent_navigation.get(&thread_id).is_none()
+            {
+                continue;
+            }
             if !thread_ids.contains(&thread_id) {
                 thread_ids.push(thread_id);
             }
