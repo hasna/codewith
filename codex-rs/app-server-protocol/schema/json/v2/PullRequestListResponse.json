@@ -1,0 +1,155 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "PullRequest": {
+      "properties": {
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "headRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "isDraft": {
+          "type": "boolean"
+        },
+        "number": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewDecision": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PullRequestReviewDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/PullRequestState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "createdAt",
+        "id",
+        "isDraft",
+        "number",
+        "state",
+        "title",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "PullRequestQueryState": {
+      "description": "In-band outcome of a pull-request query.\n\nPull-request data is sourced asynchronously and may be unavailable (for example when no GitHub remote is configured or the backing processor has not been implemented yet). Rather than surfacing these outcomes as JSON-RPC errors, every pull-request response carries a [`PullRequestQueryState`] so clients can render empty/loading/degraded states in-band.",
+      "oneOf": [
+        {
+          "description": "The response data reflects the current, fully-loaded state.",
+          "enum": [
+            "ready"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The response data is a partial snapshot while a refresh is in flight.",
+          "enum": [
+            "loading"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Pull-request data could not be produced; see the accompanying message.",
+          "enum": [
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "PullRequestReviewDecision": {
+      "enum": [
+        "approved",
+        "changesRequested",
+        "reviewRequired"
+      ],
+      "type": "string"
+    },
+    "PullRequestState": {
+      "enum": [
+        "open",
+        "closed",
+        "merged",
+        "draft"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/definitions/PullRequest"
+      },
+      "type": "array"
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "queryState": {
+      "$ref": "#/definitions/PullRequestQueryState"
+    }
+  },
+  "required": [
+    "data",
+    "queryState"
+  ],
+  "title": "PullRequestListResponse",
+  "type": "object"
+}

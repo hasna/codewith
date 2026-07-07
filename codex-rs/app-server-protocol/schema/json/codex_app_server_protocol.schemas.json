@@ -1339,6 +1339,78 @@
             },
             "method": {
               "enum": [
+                "pullRequest/overview"
+              ],
+              "title": "PullRequest/overviewRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/PullRequestOverviewParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "PullRequest/overviewRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "pullRequest/list"
+              ],
+              "title": "PullRequest/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/PullRequestListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "PullRequest/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "pullRequest/read"
+              ],
+              "title": "PullRequest/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/PullRequestReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "PullRequest/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/metadata/update"
               ],
               "title": "Thread/metadata/updateRequestMethod",
@@ -16717,6 +16789,326 @@
           "rows"
         ],
         "type": "object"
+      },
+      "PullRequest": {
+        "properties": {
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baseRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "headRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "isDraft": {
+            "type": "boolean"
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reviewDecision": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PullRequestReviewDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/definitions/v2/PullRequestState"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "createdAt",
+          "id",
+          "isDraft",
+          "number",
+          "state",
+          "title",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "PullRequestListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "baseRepoPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PullRequestState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "PullRequestListParams",
+        "type": "object"
+      },
+      "PullRequestListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/PullRequest"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queryState": {
+            "$ref": "#/definitions/v2/PullRequestQueryState"
+          }
+        },
+        "required": [
+          "data",
+          "queryState"
+        ],
+        "title": "PullRequestListResponse",
+        "type": "object"
+      },
+      "PullRequestOverview": {
+        "description": "Aggregate view of the pull requests relevant to the current repository.",
+        "properties": {
+          "authoredByViewer": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "awaitingViewerReview": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "recentlyUpdated": {
+            "items": {
+              "$ref": "#/definitions/v2/PullRequest"
+            },
+            "type": "array"
+          },
+          "totalDraft": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "totalOpen": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "authoredByViewer",
+          "awaitingViewerReview",
+          "recentlyUpdated",
+          "totalDraft",
+          "totalOpen"
+        ],
+        "type": "object"
+      },
+      "PullRequestOverviewParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "baseRepoPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "PullRequestOverviewParams",
+        "type": "object"
+      },
+      "PullRequestOverviewResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "overview": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PullRequestOverview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queryState": {
+            "$ref": "#/definitions/v2/PullRequestQueryState"
+          }
+        },
+        "required": [
+          "queryState"
+        ],
+        "title": "PullRequestOverviewResponse",
+        "type": "object"
+      },
+      "PullRequestQueryState": {
+        "description": "In-band outcome of a pull-request query.\n\nPull-request data is sourced asynchronously and may be unavailable (for example when no GitHub remote is configured or the backing processor has not been implemented yet). Rather than surfacing these outcomes as JSON-RPC errors, every pull-request response carries a [`PullRequestQueryState`] so clients can render empty/loading/degraded states in-band.",
+        "oneOf": [
+          {
+            "description": "The response data reflects the current, fully-loaded state.",
+            "enum": [
+              "ready"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The response data is a partial snapshot while a refresh is in flight.",
+            "enum": [
+              "loading"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Pull-request data could not be produced; see the accompanying message.",
+            "enum": [
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PullRequestReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "baseRepoPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number"
+        ],
+        "title": "PullRequestReadParams",
+        "type": "object"
+      },
+      "PullRequestReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pullRequest": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PullRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queryState": {
+            "$ref": "#/definitions/v2/PullRequestQueryState"
+          }
+        },
+        "required": [
+          "queryState"
+        ],
+        "title": "PullRequestReadResponse",
+        "type": "object"
+      },
+      "PullRequestReviewDecision": {
+        "enum": [
+          "approved",
+          "changesRequested",
+          "reviewRequired"
+        ],
+        "type": "string"
+      },
+      "PullRequestState": {
+        "enum": [
+          "open",
+          "closed",
+          "merged",
+          "draft"
+        ],
+        "type": "string"
       },
       "RateLimitReachedType": {
         "enum": [

@@ -994,6 +994,21 @@ client_request_definitions! {
         serialization: global("worktree"),
         response: v2::WorktreeMergeCandidateDismissResponse,
     },
+    PullRequestOverview => "pullRequest/overview" {
+        params: v2::PullRequestOverviewParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestOverviewResponse,
+    },
+    PullRequestList => "pullRequest/list" {
+        params: v2::PullRequestListParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestListResponse,
+    },
+    PullRequestRead => "pullRequest/read" {
+        params: v2::PullRequestReadParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestReadResponse,
+    },
     #[experimental("machineRegistry/list")]
     MachineRegistryList => "machineRegistry/list" {
         params: v2::MachineRegistryListParams,

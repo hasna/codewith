@@ -2941,6 +2941,79 @@
       ],
       "type": "object"
     },
+    "PullRequestListParams": {
+      "properties": {
+        "baseRepoPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PullRequestState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PullRequestOverviewParams": {
+      "properties": {
+        "baseRepoPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "PullRequestReadParams": {
+      "properties": {
+        "baseRepoPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "number": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "number"
+      ],
+      "type": "object"
+    },
+    "PullRequestState": {
+      "enum": [
+        "open",
+        "closed",
+        "merged",
+        "draft"
+      ],
+      "type": "string"
+    },
     "RealtimeOutputModality": {
       "enum": [
         "text",
@@ -7777,6 +7850,78 @@
         "params"
       ],
       "title": "Worktree/mergeCandidate/dismissRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "pullRequest/overview"
+          ],
+          "title": "PullRequest/overviewRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/PullRequestOverviewParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "PullRequest/overviewRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "pullRequest/list"
+          ],
+          "title": "PullRequest/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/PullRequestListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "PullRequest/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "pullRequest/read"
+          ],
+          "title": "PullRequest/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/PullRequestReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "PullRequest/readRequest",
       "type": "object"
     },
     {
