@@ -1234,18 +1234,6 @@ pub struct CommandExecutionOutputDeltaNotification {
     pub item_id: String,
     pub delta: String,
 }
-/// Deprecated legacy notification for `apply_patch` textual output.
-///
-/// The server no longer emits this notification.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct FileChangeOutputDeltaNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub item_id: String,
-    pub delta: String,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

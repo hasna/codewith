@@ -1161,30 +1161,6 @@
     "ExternalAgentConfigImportCompletedNotification": {
       "type": "object"
     },
-    "FileChangeOutputDeltaNotification": {
-      "description": "Deprecated legacy notification for `apply_patch` textual output.\n\nThe server no longer emits this notification.",
-      "properties": {
-        "delta": {
-          "type": "string"
-        },
-        "itemId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "turnId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "delta",
-        "itemId",
-        "threadId",
-        "turnId"
-      ],
-      "type": "object"
-    },
     "FileChangePatchUpdatedNotification": {
       "properties": {
         "changes": {
@@ -7285,27 +7261,6 @@
         "params"
       ],
       "title": "Item/commandExecution/terminalInteractionNotification",
-      "type": "object"
-    },
-    {
-      "description": "Deprecated legacy apply_patch output stream notification.",
-      "properties": {
-        "method": {
-          "enum": [
-            "item/fileChange/outputDelta"
-          ],
-          "title": "Item/fileChange/outputDeltaNotificationMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/definitions/FileChangeOutputDeltaNotification"
-        }
-      },
-      "required": [
-        "method",
-        "params"
-      ],
-      "title": "Item/fileChange/outputDeltaNotification",
       "type": "object"
     },
     {

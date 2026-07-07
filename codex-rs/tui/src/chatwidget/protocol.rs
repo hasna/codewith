@@ -113,9 +113,6 @@ impl ChatWidget {
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
             }
-            ServerNotification::FileChangeOutputDelta(notification) => {
-                self.on_patch_apply_output_delta(notification.item_id, notification.delta);
-            }
             ServerNotification::TurnDiffUpdated(notification) => {
                 self.on_turn_diff(notification.diff)
             }
