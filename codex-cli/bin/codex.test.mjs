@@ -157,6 +157,57 @@ test("codewith shim lets CODEWITH_HOME override CODEX_HOME", () => {
   assert.equal(existsSync(path.join(codewithHome, "auth.json")), false);
 });
 
+test("codewith shim tolerates read-only existing CODEWITH_HOME chmod", () => {
+  const root = stageShim();
+  const home = path.join(root, "home");
+  const codewithHome = path.join(root, "readonly-codewith-home");
+  const preloadPath = path.join(root, "mock-chmod-erofs.mjs");
+  mkdirSync(home);
+  mkdirSync(codewithHome);
+  if (process.platform !== "win32") {
+    chmodSync(codewithHome, 0o700);
+  }
+  writeFileSync(
+    preloadPath,
+    [
+      "import fs from 'node:fs';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      "const realChmodSync = fs.chmodSync;",
+      `const blockedPath = ${JSON.stringify(codewithHome)};`,
+      "fs.chmodSync = (path, mode) => {",
+      "  if (path === blockedPath) {",
+      "    const err = new Error(`EROFS: read-only file system, chmod '${path}'`);",
+      "    err.code = 'EROFS';",
+      "    err.path = path;",
+      "    err.syscall = 'chmod';",
+      "    throw err;",
+      "  }",
+      "  return realChmodSync(path, mode);",
+      "};",
+      "syncBuiltinESMExports();",
+      "",
+    ].join("\n"),
+  );
+
+  const output = execFileSync(process.execPath, [path.join(root, "bin", "codex.js"), "login", "status"], {
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      CODEX_HOME: "",
+      CODEWITH_HOME: codewithHome,
+      NODE_OPTIONS: `--import=${preloadPath}`,
+    },
+    encoding: "utf8",
+  });
+
+  assert.deepEqual(JSON.parse(output), {
+    CODEX_HOME: codewithHome,
+    CODEWITH_HOME: codewithHome,
+    argv: ["login", "status"],
+  });
+});
+
 test("codewith shim supports legacy codex native binary packages", () => {
   const root = stageShim("codex");
   const home = path.join(root, "home");
