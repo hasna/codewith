@@ -37,7 +37,10 @@ struct ChangelogRelease {
 }
 
 fn changelog_browser_params() -> SelectionViewParams {
-    let releases = changelog_releases();
+    changelog_browser_params_for(changelog_releases())
+}
+
+fn changelog_browser_params_for(releases: Vec<ChangelogRelease>) -> SelectionViewParams {
     let mut header = ColumnRenderable::new();
     header.push(Line::from("Codewith Changelog".bold()));
     header.push(Line::from(
@@ -90,7 +93,14 @@ fn changelog_browser_params() -> SelectionViewParams {
 }
 
 fn changelog_release_params(version: &str) -> SelectionViewParams {
-    let release = changelog_releases()
+    changelog_release_params_for(version, changelog_releases())
+}
+
+fn changelog_release_params_for(
+    version: &str,
+    releases: Vec<ChangelogRelease>,
+) -> SelectionViewParams {
+    let release = releases
         .into_iter()
         .find(|release| release.version == version);
     let mut header = ColumnRenderable::new();
@@ -161,8 +171,12 @@ fn changelog_release_params(version: &str) -> SelectionViewParams {
 }
 
 fn changelog_releases() -> Vec<ChangelogRelease> {
+    changelog_releases_from_source(CHANGELOG_SOURCE)
+}
+
+fn changelog_releases_from_source(source: &str) -> Vec<ChangelogRelease> {
     let mut releases = Vec::<ChangelogRelease>::new();
-    for line in release_notes_source().split_inclusive('\n') {
+    for line in release_notes_source(source).split_inclusive('\n') {
         if let Some((version, date)) = parse_release_heading(line) {
             releases.push(ChangelogRelease {
                 version,
@@ -184,11 +198,11 @@ fn changelog_releases() -> Vec<ChangelogRelease> {
     releases
 }
 
-fn release_notes_source() -> &'static str {
-    CHANGELOG_SOURCE
+fn release_notes_source(source: &str) -> &str {
+    source
         .find(RELEASE_SECTION_START)
-        .map(|idx| &CHANGELOG_SOURCE[idx..])
-        .unwrap_or(CHANGELOG_SOURCE)
+        .map(|idx| &source[idx..])
+        .unwrap_or(source)
         .trim()
 }
 
@@ -230,6 +244,73 @@ mod tests {
     use ratatui::layout::Rect;
     use tokio::sync::mpsc::unbounded_channel;
 
+    const TEST_CHANGELOG_SOURCE: &str = r#"
+# Changelog
+
+Known evidence gaps:
+
+- Known evidence gaps should not be listed as release bullets.
+
+## [Unreleased]
+
+## [0.1.55] - 2026-07-02
+
+### Fixed
+
+- Release pipeline: libcap-2.75 musl download now falls back across verified
+  mirrors (kernel.org -> OSUOSL -> Debian) with mandatory checksum; macOS builds
+  use CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 and the aarch64 primary runs on
+  macos-15-xlarge, ending the 3-hour timeouts that killed 0.1.52-0.1.54.
+- Goals state: databases stamped by published 0.1.48 are repaired before
+  migration, preventing a permanent VersionMismatch(5) that disabled the sqlite
+  state layer (threads, schedules, mailbox, goals) after upgrade.
+- OpenRouter GLM-5.2 metadata restored (parallel tool calls, High/XHigh
+  reasoning presets, gpt-oss-120b as default fallback).
+- Usage-profile broker: scheduled dispatches now defer while all sibling
+  profiles are cooling down instead of feeding the failure circuit breaker.
+- Remote and sandboxed filesystems support symlink-safe reads, so project
+  instructions (CODEWITH.md/AGENTS.md) load in remote sessions.
+- Mailbox: queued-input API restored; delivery defer rolls back on enqueue
+  rejection; delivery-policy parsing matches the SQL claim filter; queued
+  context delivery is bounded.
+
+## [0.1.54] - 2026-07-02
+
+- Placeholder 0.1.54 release note.
+
+## [0.1.53] - 2026-07-01
+
+- Placeholder 0.1.53 release note.
+
+## [0.1.52] - 2026-07-01
+
+- Placeholder 0.1.52 release note.
+
+## [0.1.51] - 2026-06-26
+
+- Placeholder 0.1.51 release note.
+
+## [0.1.50] - 2026-06-26
+
+- Placeholder 0.1.50 release note.
+
+## [0.1.49] - 2026-06-26
+
+- Placeholder 0.1.49 release note.
+
+## [0.1.0] - 2026-05-21
+
+- Initial fork release.
+
+## Maintenance Process
+
+- Determine published npm versions.
+"#;
+
+    fn fixture_releases() -> Vec<ChangelogRelease> {
+        changelog_releases_from_source(TEST_CHANGELOG_SOURCE)
+    }
+
     #[test]
     fn changelog_releases_use_release_sections_without_repository_notes() {
         let releases = changelog_releases();
@@ -253,10 +334,10 @@ mod tests {
 
     #[test]
     fn changelog_release_parser_collects_real_bullets() {
-        let releases = changelog_releases();
+        let releases = fixture_releases();
         let latest_release = releases
             .iter()
-            .find(|release| release.version.starts_with("0.1."))
+            .find(|release| release.version == "0.1.55")
             .expect("versioned release");
 
         assert!(!latest_release.bullets.is_empty());
@@ -271,7 +352,7 @@ mod tests {
 
     #[test]
     fn changelog_release_parser_stops_before_maintenance_process() {
-        let releases = changelog_releases();
+        let releases = fixture_releases();
         let initial_release = releases
             .iter()
             .find(|release| release.version == "0.1.0")
@@ -287,7 +368,7 @@ mod tests {
 
     #[test]
     fn changelog_browser_versions_snapshot() {
-        let view = selection_view(changelog_browser_params());
+        let view = selection_view(changelog_browser_params_for(fixture_releases()));
 
         insta::assert_snapshot!(
             "changelog_browser_versions",
@@ -297,12 +378,7 @@ mod tests {
 
     #[test]
     fn changelog_browser_release_snapshot() {
-        let latest_version = changelog_releases()
-            .into_iter()
-            .find(|release| release.version.starts_with("0.1."))
-            .expect("versioned release")
-            .version;
-        let view = selection_view(changelog_release_params(&latest_version));
+        let view = selection_view(changelog_release_params_for("0.1.55", fixture_releases()));
 
         insta::assert_snapshot!(
             "changelog_browser_release_bullets",
