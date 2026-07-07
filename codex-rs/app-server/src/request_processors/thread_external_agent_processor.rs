@@ -74,6 +74,43 @@ impl ThreadRequestProcessor {
         Ok(None)
     }
 
+    pub(crate) async fn thread_external_agent_permission_respond(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadExternalAgentPermissionRespondParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let response = self
+            .thread_external_agent_permission_respond_inner(params)
+            .await?;
+        self.outgoing.send_response(request_id, response).await;
+        Ok(None)
+    }
+
+    async fn thread_external_agent_permission_respond_inner(
+        &self,
+        params: ThreadExternalAgentPermissionRespondParams,
+    ) -> Result<ThreadExternalAgentPermissionRespondResponse, JSONRPCErrorError> {
+        let ThreadExternalAgentPermissionRespondParams {
+            thread_id,
+            run_id,
+            request_id,
+            decision,
+        } = params;
+        // Resolve the thread so unknown ids surface as an error, matching the
+        // other external-agent RPCs, while unknown *request* ids stay a benign
+        // `accepted: false`.
+        let (thread_id, _) = self.load_thread(&thread_id).await?;
+        let key = external_agent_permission_key(&run_id, &request_id);
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let accepted = {
+            let mut state = thread_state.lock().await;
+            state.respond_external_agent_permission(&key, decision)
+        };
+        // Unknown, already-resolved, replayed, or abandoned (waiter dropped)
+        // request ids all resolve to `accepted: false` without erroring.
+        Ok(ThreadExternalAgentPermissionRespondResponse { accepted })
+    }
+
     async fn thread_external_agent_start_inner(
         &self,
         params: ThreadExternalAgentStartParams,
@@ -355,6 +392,29 @@ fn external_agent_run_key(thread_id: &str, run_id: &str) -> String {
     format!("{thread_id}:{run_id}")
 }
 
+/// Replay-stable key for a parked permission responder. Scoping by run keeps
+/// runtime-chosen request ids from colliding across concurrent runs on one thread.
+fn external_agent_permission_key(run_id: &str, request_id: &str) -> String {
+    format!("{run_id}:{request_id}")
+}
+
+fn permission_decision_from_option(
+    option: ThreadExternalAgentPermissionOption,
+) -> ExternalAgentPermissionDecision {
+    match option {
+        ThreadExternalAgentPermissionOption::AllowOnce => {
+            ExternalAgentPermissionDecision::AllowOnce
+        }
+        ThreadExternalAgentPermissionOption::RejectOnce => {
+            ExternalAgentPermissionDecision::RejectOnce
+        }
+    }
+}
+
+/// Bound on how long the server parks a permission request before denying by
+/// default, ensuring a run can never block forever waiting on a client.
+const EXTERNAL_AGENT_PERMISSION_TIMEOUT: Duration = Duration::from_secs(300);
+
 fn external_agent_use_legacy_landlock(permission_profile: &PermissionProfile, cwd: &Path) -> bool {
     if !cfg!(target_os = "linux") {
         return false;
@@ -584,6 +644,7 @@ struct AppServerExternalAgentHost {
     run_id: String,
     terminal_sent: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
+    permission_timeout: Duration,
 }
 
 impl AppServerExternalAgentHost {
@@ -601,7 +662,122 @@ impl AppServerExternalAgentHost {
             run_id,
             terminal_sent: Arc::new(AtomicBool::new(false)),
             cancellation_token,
+            permission_timeout: EXTERNAL_AGENT_PERMISSION_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    fn with_permission_timeout(mut self, permission_timeout: Duration) -> Self {
+        self.permission_timeout = permission_timeout;
+        self
+    }
+
+    /// Emit the audit notification for a resolved permission request.
+    async fn emit_permission_resolved(
+        &self,
+        request_id: String,
+        decision: ThreadExternalAgentPermissionOption,
+        resolution: ThreadExternalAgentPermissionResolution,
+    ) {
+        self.emit(ThreadExternalAgentEvent::PermissionResolved {
+            request_id,
+            decision,
+            resolution,
+        })
+        .await;
+    }
+
+    /// Park a responder for `request` and wait for a client decision, bounded by
+    /// [`Self::permission_timeout`] and run cancellation. Always denies by
+    /// default (`RejectOnce`) when no explicit allow is received, and emits a
+    /// [`ThreadExternalAgentEvent::PermissionResolved`] audit notification.
+    async fn await_permission_decision(
+        &self,
+        request: ExternalAgentPermissionRequest,
+    ) -> ExternalAgentPermissionDecision {
+        let ExternalAgentPermissionRequest {
+            id: request_id,
+            action,
+            options,
+        } = request;
+        let key = external_agent_permission_key(&self.run_id, &request_id);
+        let api_options = options
+            .into_iter()
+            .map(api_permission_option)
+            .collect::<Vec<_>>();
+
+        // Deny immediately if the run is already cancelled; do not park a waiter.
+        if self.cancellation_token.is_cancelled() {
+            self.emit_permission_resolved(
+                request_id,
+                ThreadExternalAgentPermissionOption::RejectOnce,
+                ThreadExternalAgentPermissionResolution::Superseded,
+            )
+            .await;
+            return ExternalAgentPermissionDecision::RejectOnce;
+        }
+
+        let (tx, rx) = oneshot::channel();
+        let thread_state = self.thread_state_manager.thread_state(self.thread_id).await;
+        let registered = {
+            let mut state = thread_state.lock().await;
+            state.register_external_agent_permission(key.clone(), api_options.clone(), tx)
+        };
+        if !registered {
+            // A request with this id is already pending; deny this duplicate
+            // without disturbing the original waiter (replay-safe).
+            self.emit_permission_resolved(
+                request_id,
+                ThreadExternalAgentPermissionOption::RejectOnce,
+                ThreadExternalAgentPermissionResolution::Superseded,
+            )
+            .await;
+            return ExternalAgentPermissionDecision::RejectOnce;
+        }
+
+        // External-agent runtimes may emit a permission request before calling
+        // into the host. App-server suppresses that early notification and emits
+        // here, after the responder is registered, so a fast client cannot race
+        // the parked request.
+        self.emit(ThreadExternalAgentEvent::PermissionRequested {
+            request: ThreadExternalAgentPermissionRequest {
+                id: request_id.clone(),
+                action: action_json(&action),
+                options: api_options,
+            },
+        })
+        .await;
+
+        // Never hold the state mutex across this await.
+        let (decision, resolution) = tokio::select! {
+            biased;
+            () = self.cancellation_token.cancelled() => (
+                ThreadExternalAgentPermissionOption::RejectOnce,
+                ThreadExternalAgentPermissionResolution::Superseded,
+            ),
+            result = tokio::time::timeout(self.permission_timeout, rx) => match result {
+                Ok(Ok(option)) => (option, ThreadExternalAgentPermissionResolution::Client),
+                Ok(Err(_)) => (
+                    ThreadExternalAgentPermissionOption::RejectOnce,
+                    ThreadExternalAgentPermissionResolution::DefaultDenied,
+                ),
+                Err(_) => (
+                    ThreadExternalAgentPermissionOption::RejectOnce,
+                    ThreadExternalAgentPermissionResolution::TimedOut,
+                ),
+            },
+        };
+
+        // Drop any responder still parked (timeout/cancellation path) so it
+        // cannot leak and a replayed response can never match it.
+        {
+            let mut state = thread_state.lock().await;
+            let _ = state.take_external_agent_permission(&key);
+        }
+
+        self.emit_permission_resolved(request_id, decision, resolution)
+            .await;
+        permission_decision_from_option(decision)
     }
 
     async fn emit(&self, event: ThreadExternalAgentEvent) {
@@ -641,15 +817,18 @@ impl AppServerExternalAgentHost {
 
 impl ExternalAgentHost for AppServerExternalAgentHost {
     async fn emit(&self, event: ExternalAgentEvent) -> Result<(), ExternalAgentError> {
+        if matches!(event, ExternalAgentEvent::PermissionRequested { .. }) {
+            return Ok(());
+        }
         self.emit(api_external_agent_event(event)).await;
         Ok(())
     }
 
     async fn request_permission(
         &self,
-        _request: ExternalAgentPermissionRequest,
+        request: ExternalAgentPermissionRequest,
     ) -> Result<ExternalAgentPermissionDecision, ExternalAgentError> {
-        Ok(ExternalAgentPermissionDecision::RejectOnce)
+        Ok(self.await_permission_decision(request).await)
     }
 
     async fn perform_action(
@@ -823,6 +1002,268 @@ mod tests {
             }
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    async fn subscribed_host(
+        thread_id: ThreadId,
+        run_id: &str,
+        permission_timeout: Duration,
+    ) -> (AppServerExternalAgentHost, mpsc::Receiver<OutgoingEnvelope>) {
+        let (tx, rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(ConnectionId(1), ConnectionCapabilities::default())
+            .await;
+        assert!(
+            thread_state_manager
+                .try_add_connection_to_thread(thread_id, ConnectionId(1))
+                .await
+        );
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            thread_state_manager,
+            thread_id,
+            run_id.to_string(),
+            CancellationToken::new(),
+        )
+        .with_permission_timeout(permission_timeout);
+        (host, rx)
+    }
+
+    async fn recv_external_agent_event(
+        rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+    ) -> ThreadExternalAgentEvent {
+        let envelope = rx.recv().await.expect("external-agent notification");
+        let OutgoingEnvelope::ToConnection { message, .. } = envelope else {
+            panic!("expected targeted envelope, got {envelope:?}");
+        };
+        let OutgoingMessage::AppServerNotification(ServerNotification::ThreadExternalAgentEvent(
+            notification,
+        )) = message
+        else {
+            panic!("expected external-agent notification, got {message:?}");
+        };
+        notification.event
+    }
+
+    fn permission_request(id: &str) -> ExternalAgentPermissionRequest {
+        ExternalAgentPermissionRequest {
+            id: id.to_string(),
+            action: ExternalAgentActionRequest::ReadFile {
+                path: PathBuf::from("/tmp/example"),
+            },
+            options: vec![
+                ExternalAgentPermissionOption::AllowOnce,
+                ExternalAgentPermissionOption::RejectOnce,
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn external_agent_permission_allow_once_round_trip_emits_resolved() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000401")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-1", Duration::from_secs(30)).await;
+        let key = external_agent_permission_key("run-1", "perm-1");
+        let thread_state = host.thread_state_manager.thread_state(thread_id).await;
+
+        let await_host = host.clone();
+        let handle = tokio::spawn(async move {
+            await_host
+                .request_permission(permission_request("perm-1"))
+                .await
+        });
+
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionRequested {
+                request: ThreadExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: action_json(&ExternalAgentActionRequest::ReadFile {
+                        path: PathBuf::from("/tmp/example"),
+                    }),
+                    options: vec![
+                        ThreadExternalAgentPermissionOption::AllowOnce,
+                        ThreadExternalAgentPermissionOption::RejectOnce,
+                    ],
+                },
+            }
+        );
+        assert!(thread_state.lock().await.respond_external_agent_permission(
+            &key,
+            ThreadExternalAgentPermissionOption::AllowOnce
+        ));
+
+        let decision = handle.await.expect("join").expect("permission decision");
+        assert_eq!(decision, ExternalAgentPermissionDecision::AllowOnce);
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id: "perm-1".to_string(),
+                decision: ThreadExternalAgentPermissionOption::AllowOnce,
+                resolution: ThreadExternalAgentPermissionResolution::Client,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn external_agent_permission_times_out_and_default_denies() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000402")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-1", Duration::from_millis(20)).await;
+
+        let decision = host.request_permission(permission_request("perm-1")).await;
+        assert_eq!(
+            decision.expect("permission decision"),
+            ExternalAgentPermissionDecision::RejectOnce
+        );
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionRequested {
+                request: ThreadExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: action_json(&ExternalAgentActionRequest::ReadFile {
+                        path: PathBuf::from("/tmp/example"),
+                    }),
+                    options: vec![
+                        ThreadExternalAgentPermissionOption::AllowOnce,
+                        ThreadExternalAgentPermissionOption::RejectOnce,
+                    ],
+                },
+            }
+        );
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id: "perm-1".to_string(),
+                decision: ThreadExternalAgentPermissionOption::RejectOnce,
+                resolution: ThreadExternalAgentPermissionResolution::TimedOut,
+            }
+        );
+
+        // The timed-out responder must not leak; a late respond finds nothing.
+        let thread_state = host.thread_state_manager.thread_state(thread_id).await;
+        let key = external_agent_permission_key("run-1", "perm-1");
+        assert!(
+            thread_state
+                .lock()
+                .await
+                .take_external_agent_permission(&key)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn external_agent_permission_cancellation_default_denies() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000403")
+            .expect("thread id should parse");
+        let (mut host, mut rx) = subscribed_host(thread_id, "run-1", Duration::from_secs(30)).await;
+        let token = CancellationToken::new();
+        host.cancellation_token = token.clone();
+        token.cancel();
+
+        let decision = host.request_permission(permission_request("perm-1")).await;
+        assert_eq!(
+            decision.expect("permission decision"),
+            ExternalAgentPermissionDecision::RejectOnce
+        );
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id: "perm-1".to_string(),
+                decision: ThreadExternalAgentPermissionOption::RejectOnce,
+                resolution: ThreadExternalAgentPermissionResolution::Superseded,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn external_agent_permission_take_is_idempotent_and_replay_safe() {
+        let mut state = crate::thread_state::ThreadState::default();
+        let key = external_agent_permission_key("run-1", "perm-1");
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        assert!(state.register_external_agent_permission(
+            key.clone(),
+            vec![
+                ThreadExternalAgentPermissionOption::AllowOnce,
+                ThreadExternalAgentPermissionOption::RejectOnce,
+            ],
+            tx
+        ));
+
+        // A duplicate registration for the same key is rejected (original kept).
+        let (dup_tx, _dup_rx) = tokio::sync::oneshot::channel();
+        assert!(!state.register_external_agent_permission(
+            key.clone(),
+            vec![ThreadExternalAgentPermissionOption::RejectOnce],
+            dup_tx
+        ));
+
+        // First take returns the responder; a replayed take is a no-op.
+        assert!(state.take_external_agent_permission(&key).is_some());
+        assert!(state.take_external_agent_permission(&key).is_none());
+        // An unknown request id is also a no-op.
+        assert!(
+            state
+                .take_external_agent_permission(&external_agent_permission_key("run-1", "other"))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn external_agent_permission_invalid_decision_default_denies() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000404")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-1", Duration::from_secs(30)).await;
+        let key = external_agent_permission_key("run-1", "perm-1");
+        let thread_state = host.thread_state_manager.thread_state(thread_id).await;
+
+        let await_host = host.clone();
+        let handle = tokio::spawn(async move {
+            await_host
+                .request_permission(ExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: ExternalAgentActionRequest::ReadFile {
+                        path: PathBuf::from("/tmp/example"),
+                    },
+                    options: vec![ExternalAgentPermissionOption::RejectOnce],
+                })
+                .await
+        });
+
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionRequested {
+                request: ThreadExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: action_json(&ExternalAgentActionRequest::ReadFile {
+                        path: PathBuf::from("/tmp/example"),
+                    }),
+                    options: vec![ThreadExternalAgentPermissionOption::RejectOnce],
+                },
+            }
+        );
+        assert!(
+            !thread_state.lock().await.respond_external_agent_permission(
+                &key,
+                ThreadExternalAgentPermissionOption::AllowOnce
+            )
+        );
+
+        let decision = handle.await.expect("join").expect("permission decision");
+        assert_eq!(decision, ExternalAgentPermissionDecision::RejectOnce);
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id: "perm-1".to_string(),
+                decision: ThreadExternalAgentPermissionOption::RejectOnce,
+                resolution: ThreadExternalAgentPermissionResolution::DefaultDenied,
+            }
+        );
     }
 
     #[tokio::test]

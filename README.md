@@ -22,8 +22,10 @@ npm install -g @hasna/codewith
 
 Then run `codewith` to get started. Codewith stores its local state in `~/.codewith` by default.
 
+For building from source and all install options, see [Installing & building](./docs/install.md).
+
 <details>
-<summary>You can also download a platform binary from the latest Codewith GitHub Release.</summary>
+<summary>Download a prebuilt binary instead</summary>
 
 Each GitHub Release contains many executables, but in practice, you likely want one of these:
 

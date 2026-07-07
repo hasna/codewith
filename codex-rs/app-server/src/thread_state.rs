@@ -1,6 +1,7 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -28,6 +29,11 @@ use tokio::sync::watch;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
+
+pub(crate) struct ExternalAgentPermissionRegistration {
+    pub(crate) responder: oneshot::Sender<ThreadExternalAgentPermissionOption>,
+    pub(crate) allowed_options: Vec<ThreadExternalAgentPermissionOption>,
+}
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
@@ -102,6 +108,9 @@ pub(crate) struct ThreadState {
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
+    /// Parked responders for external-agent permission requests awaiting a
+    /// client decision, keyed by a replay-stable request key.
+    pending_external_agent_permissions: HashMap<String, ExternalAgentPermissionRegistration>,
     pub(crate) experimental_raw_events: bool,
     pub(crate) listener_generation: u64,
     last_thread_settings: Option<ThreadSettings>,
@@ -194,6 +203,55 @@ impl ThreadState {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
             self.current_turn_history.reset();
         }
+    }
+
+    /// Park a responder for an external-agent permission request. Returns
+    /// `false` (dropping `responder`) when a request with the same key is
+    /// already pending, so replayed or duplicate requests never clobber the
+    /// original waiter.
+    pub(crate) fn register_external_agent_permission(
+        &mut self,
+        key: String,
+        allowed_options: Vec<ThreadExternalAgentPermissionOption>,
+        responder: oneshot::Sender<ThreadExternalAgentPermissionOption>,
+    ) -> bool {
+        match self.pending_external_agent_permissions.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(ExternalAgentPermissionRegistration {
+                    responder,
+                    allowed_options,
+                });
+                true
+            }
+        }
+    }
+
+    /// Send a client decision to a pending external-agent permission request.
+    /// Returns `false` for unknown, replayed, abandoned, or invalid decisions.
+    /// Invalid decisions are removed so the waiting run defaults to deny.
+    pub(crate) fn respond_external_agent_permission(
+        &mut self,
+        key: &str,
+        decision: ThreadExternalAgentPermissionOption,
+    ) -> bool {
+        let Some(pending) = self.pending_external_agent_permissions.remove(key) else {
+            return false;
+        };
+        if !pending.allowed_options.contains(&decision) {
+            return false;
+        }
+        pending.responder.send(decision).is_ok()
+    }
+
+    /// Remove and return the parked responder for `key`, if any. Taking is
+    /// idempotent: a second call for the same key returns `None`, so a replayed
+    /// or late client response is a harmless no-op.
+    pub(crate) fn take_external_agent_permission(
+        &mut self,
+        key: &str,
+    ) -> Option<ExternalAgentPermissionRegistration> {
+        self.pending_external_agent_permissions.remove(key)
     }
 
     pub(crate) fn note_thread_settings(&mut self, thread_settings: ThreadSettings) -> bool {

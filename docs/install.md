@@ -8,11 +8,25 @@
 | Git (optional, recommended) | 2.23+ for built-in PR helpers                                   |
 | RAM                         | 4-GB minimum (8-GB recommended)                                 |
 
-### DotSlash
+### Install the published package
 
-The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for Codewith. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
+Most users should install the published `@hasna/codewith` package:
+
+```bash
+bun install -g @hasna/codewith
+```
+
+Codewith can also be installed through npm:
+
+```bash
+npm install -g @hasna/codewith
+```
+
+Then run `codewith` to get started. Codewith stores its local state in `~/.codewith` by default.
 
 ### Build from source
+
+If you want to hack on Codewith itself, clone the repository and build with Rust:
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
@@ -46,6 +60,23 @@ just test
 # Avoid `--all-features` for routine local runs because it increases build
 # time and `target/` disk usage by compiling additional feature combinations.
 ```
+
+### Download a prebuilt binary from GitHub Releases
+
+If you do not want a package-manager install and do not need to build from source, you can download a platform binary from the [latest Codewith GitHub Release](https://github.com/hasna/codewith/releases/latest).
+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codewith-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codewith-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codewith-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codewith-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codewith-x86_64-unknown-linux-musl`), so you likely want to rename it to `codewith` after extracting it.
+
+The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for Codewith. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.
 
 ## Tracing / verbose logging
 

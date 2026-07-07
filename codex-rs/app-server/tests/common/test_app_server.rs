@@ -100,6 +100,7 @@ use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadExternalAgentCancelParams;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
@@ -605,6 +606,16 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/externalAgent/cancel", params)
+            .await
+    }
+
+    /// Send a `thread/externalAgent/permission/respond` JSON-RPC request.
+    pub async fn send_thread_external_agent_permission_respond_request(
+        &mut self,
+        params: ThreadExternalAgentPermissionRespondParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/externalAgent/permission/respond", params)
             .await
     }
 
