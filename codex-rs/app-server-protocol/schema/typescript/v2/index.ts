@@ -434,6 +434,7 @@ export type { ThreadExternalAgentEventNotification } from "./ThreadExternalAgent
 export type { ThreadExternalAgentMode } from "./ThreadExternalAgentMode";
 export type { ThreadExternalAgentPermissionOption } from "./ThreadExternalAgentPermissionOption";
 export type { ThreadExternalAgentPermissionRequest } from "./ThreadExternalAgentPermissionRequest";
+export type { ThreadExternalAgentPermissionResolution } from "./ThreadExternalAgentPermissionResolution";
 export type { ThreadExternalAgentStartStatus } from "./ThreadExternalAgentStartStatus";
 export type { ThreadForkParams } from "./ThreadForkParams";
 export type { ThreadForkResponse } from "./ThreadForkResponse";

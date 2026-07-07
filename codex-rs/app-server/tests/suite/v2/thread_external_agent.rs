@@ -11,6 +11,9 @@ use codex_app_server_protocol::ThreadExternalAgentCancelResponse;
 use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadExternalAgentEventNotification;
 use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondResponse;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadExternalAgentStartResponse;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
@@ -280,6 +283,83 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         !claude_response.message.contains("auth profile"),
         "Claude runtime should not be gated on a generic Claude.ai auth profile: {}",
         claude_response.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_external_agent_permission_respond_unknown_request_is_not_accepted() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+
+    let mut mcp = McpProcess::new(codex_home.as_path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    // No permission request is pending, so answering an unknown request id is a
+    // benign no-op that reports `accepted: false` rather than erroring.
+    let respond_id = mcp
+        .send_thread_external_agent_permission_respond_request(
+            ThreadExternalAgentPermissionRespondParams {
+                thread_id: thread.id.clone(),
+                run_id: "ext_missing".to_string(),
+                request_id: "perm-missing".to_string(),
+                decision: ThreadExternalAgentPermissionOption::AllowOnce,
+            },
+        )
+        .await?;
+    let respond_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(respond_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<ThreadExternalAgentPermissionRespondResponse>(respond_resp)?,
+        ThreadExternalAgentPermissionRespondResponse { accepted: false }
+    );
+
+    // Replaying the same response stays a no-op.
+    let replay_id = mcp
+        .send_thread_external_agent_permission_respond_request(
+            ThreadExternalAgentPermissionRespondParams {
+                thread_id: thread.id,
+                run_id: "ext_missing".to_string(),
+                request_id: "perm-missing".to_string(),
+                decision: ThreadExternalAgentPermissionOption::AllowOnce,
+            },
+        )
+        .await?;
+    let replay_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(replay_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<ThreadExternalAgentPermissionRespondResponse>(replay_resp)?,
+        ThreadExternalAgentPermissionRespondResponse { accepted: false }
     );
 
     Ok(())

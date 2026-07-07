@@ -303,6 +303,16 @@ impl ChatWidget {
                 "External agent requested permission.".to_string(),
                 Some(format!("Run: {run_id}. Request: {}", request.id)),
             ),
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id,
+                decision,
+                resolution,
+            } => self.add_info_message(
+                "External agent permission resolved.".to_string(),
+                Some(format!(
+                    "Run: {run_id}. Request: {request_id}. Decision: {decision:?} ({resolution:?})"
+                )),
+            ),
             ThreadExternalAgentEvent::ProposedAction { proposal } => self.add_info_message(
                 "External agent proposed an action.".to_string(),
                 Some(format!("Run: {run_id}. Proposal: {proposal}")),

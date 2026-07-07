@@ -17335,6 +17335,35 @@
           "type": "object"
         },
         {
+          "description": "Audit notification emitted once a previously-surfaced permission request reaches a terminal decision, whether answered by the client, denied by default on timeout, or otherwise resolved by the server.",
+          "properties": {
+            "decision": {
+              "$ref": "#/definitions/ThreadExternalAgentPermissionOption"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "resolution": {
+              "$ref": "#/definitions/ThreadExternalAgentPermissionResolution"
+            },
+            "type": {
+              "enum": [
+                "permissionResolved"
+              ],
+              "title": "PermissionResolvedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision",
+            "requestId",
+            "resolution",
+            "type"
+          ],
+          "title": "PermissionResolvedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
           "properties": {
             "proposal": true,
             "type": {
@@ -17492,6 +17521,39 @@
         "options"
       ],
       "type": "object"
+    },
+    "ThreadExternalAgentPermissionResolution": {
+      "description": "How a surfaced external-agent permission request was ultimately resolved.\n\nIncluded in [`ThreadExternalAgentEvent::PermissionResolved`] so clients can keep an audit trail that distinguishes an explicit client decision from a server-applied default-deny.",
+      "oneOf": [
+        {
+          "description": "The client answered the request via `thread/externalAgent/permission/respond`.",
+          "enum": [
+            "client"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No response arrived before the server-side timeout elapsed; denied by default.",
+          "enum": [
+            "timedOut"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The request could not be parked for a response (e.g. the run is gone) and was denied by default.",
+          "enum": [
+            "defaultDenied"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The run was cancelled, or a newer request replaced this one, before a decision was made; denied by default.",
+          "enum": [
+            "superseded"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "ThreadExternalAgentStartStatus": {
       "enum": [

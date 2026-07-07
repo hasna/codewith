@@ -9,6 +9,7 @@ use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
@@ -46,6 +47,14 @@ pub(crate) enum AppCommand {
         runtime_id: String,
         task: String,
         mode: ThreadExternalAgentMode,
+    },
+    // Constructed by the external-agent approval UI (a follow-up task); the
+    // dispatch and app-server send path land here.
+    #[allow(dead_code)]
+    RespondExternalAgentPermission {
+        run_id: String,
+        request_id: String,
+        decision: ThreadExternalAgentPermissionOption,
     },
     UserTurn {
         items: Vec<UserInput>,
@@ -177,6 +186,19 @@ impl AppCommand {
             runtime_id,
             task,
             mode,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn respond_external_agent_permission(
+        run_id: String,
+        request_id: String,
+        decision: ThreadExternalAgentPermissionOption,
+    ) -> Self {
+        Self::RespondExternalAgentPermission {
+            run_id,
+            request_id,
+            decision,
         }
     }
 
