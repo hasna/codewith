@@ -47,6 +47,13 @@ use codex_protocol::protocol::HookEventName;
 /// leads with plain text before the embedded blockers JSON.
 pub const FLEET_COMMS_SESSION_START_COMMAND: &str = "command -v conversations >/dev/null 2>&1 || exit 0; { echo 'fleet-comms session-start check (read-only) - unread blockers JSON:'; conversations blockers -j --limit 20 2>/dev/null || true; echo 'fleet-comms announcements digest (unread, 7d):'; conversations digest announcements --unread --since 7d --limit 20 --max-bytes 6000 2>/dev/null || true; echo 'fleet-comms note: act per HACP - an unread blocker or [FREEZE] above means stop and resolve before risky work.'; } | head -c 8000; exit 0";
 
+/// Canonical Windows command for the fleet-comms `SessionStart` hook.
+///
+/// The command is executed by the default Windows hook shell (`cmd.exe /C`),
+/// so it launches PowerShell explicitly. It mirrors the POSIX command's
+/// read-only, fail-open, bounded behavior without requiring Unix shell tools.
+pub const FLEET_COMMS_SESSION_START_COMMAND_WINDOWS: &str = r#"powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'SilentlyContinue'; if (-not (Get-Command conversations -ErrorAction SilentlyContinue)) { exit 0 }; $out = @('fleet-comms session-start check (read-only) - unread blockers JSON:', (conversations blockers -j --limit 20 2>$null), 'fleet-comms announcements digest (unread, 7d):', (conversations digest announcements --unread --since 7d --limit 20 --max-bytes 6000 2>$null), 'fleet-comms note: act per HACP - an unread blocker or [FREEZE] above means stop and resolve before risky work.') -join [Environment]::NewLine; if ($out.Length -gt 8000) { $out = $out.Substring(0, 8000) }; [Console]::Out.Write($out); exit 0""#;
+
 /// Timeout for the fleet-comms hook. Session start should stay snappy; a
 /// wedged conversations backend gets cut off well before the 600s default.
 pub const FLEET_COMMS_SESSION_START_TIMEOUT_SEC: u64 = 30;
@@ -54,16 +61,24 @@ pub const FLEET_COMMS_SESSION_START_TIMEOUT_SEC: u64 = 30;
 /// Status message surfaced in the UI while the hook runs.
 pub const FLEET_COMMS_SESSION_START_STATUS_MESSAGE: &str = "Checking fleet comms";
 
-/// Pinned trust hash of the canonical fleet-comms hook identity.
+/// Pinned trust hash of the canonical POSIX fleet-comms hook identity.
 ///
 /// This is the exact value fleet config management writes into
-/// `[hooks.state."<config.toml path>:session_start:<group>:0"] trusted_hash`.
+/// `[hooks.state."<config.toml path>:session_start:<group>:0"] trusted_hash`
+/// on POSIX machines.
 /// If the test guarding this constant fails, the normalized hook identity
 /// computation changed: bump this constant **and** roll new state entries to
 /// every machine in the same change, or deployed fleet hooks silently stop
 /// running.
 pub const FLEET_COMMS_SESSION_START_TRUSTED_HASH: &str =
     "sha256:92211d25ce588a90835f79ba7605f0884a3e7948e858f51d55893f5801b2fab7";
+
+/// Pinned trust hash of the canonical Windows fleet-comms hook identity.
+///
+/// Hook discovery hashes the platform-selected command, so the Windows
+/// PowerShell override has a distinct trust hash from the POSIX shell command.
+pub const FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS: &str =
+    "sha256:333b586587bedf55f7a741ec41e96de7e5f05153e85a64516c41cdfe8f5ee2fd";
 
 /// The canonical fleet-comms `SessionStart` matcher group exactly as config
 /// parsing produces it from the deployed snippet.
@@ -76,7 +91,7 @@ pub fn fleet_comms_session_start_matcher_group() -> MatcherGroup {
         matcher: None,
         hooks: vec![HookHandlerConfig::Command {
             command: FLEET_COMMS_SESSION_START_COMMAND.to_string(),
-            command_windows: None,
+            command_windows: Some(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.to_string()),
             timeout_sec: Some(FLEET_COMMS_SESSION_START_TIMEOUT_SEC),
             r#async: false,
             status_message: Some(FLEET_COMMS_SESSION_START_STATUS_MESSAGE.to_string()),
@@ -87,20 +102,32 @@ pub fn fleet_comms_session_start_matcher_group() -> MatcherGroup {
 /// Computes the trust hash of the canonical hook through the same
 /// normalization path hook discovery uses.
 pub fn fleet_comms_session_start_trusted_hash() -> String {
+    fleet_comms_session_start_trusted_hash_for_command(if cfg!(windows) {
+        FLEET_COMMS_SESSION_START_COMMAND_WINDOWS
+    } else {
+        FLEET_COMMS_SESSION_START_COMMAND
+    })
+}
+
+fn fleet_comms_session_start_trusted_hash_for_command(command: &str) -> String {
     let group = fleet_comms_session_start_matcher_group();
-    let normalized_handler = HookHandlerConfig::Command {
-        command: FLEET_COMMS_SESSION_START_COMMAND.to_string(),
-        command_windows: None,
-        timeout_sec: Some(FLEET_COMMS_SESSION_START_TIMEOUT_SEC.max(1)),
-        r#async: false,
-        status_message: Some(FLEET_COMMS_SESSION_START_STATUS_MESSAGE.to_string()),
-    };
+    let normalized_handler = normalized_handler_for_command(command);
     crate::engine::discovery::command_hook_hash(
         HookEventName::SessionStart,
         /*matcher*/ None,
         &group,
         normalized_handler,
     )
+}
+
+fn normalized_handler_for_command(command: &str) -> HookHandlerConfig {
+    HookHandlerConfig::Command {
+        command: command.to_string(),
+        command_windows: None,
+        timeout_sec: Some(FLEET_COMMS_SESSION_START_TIMEOUT_SEC.max(1)),
+        r#async: false,
+        status_message: Some(FLEET_COMMS_SESSION_START_STATUS_MESSAGE.to_string()),
+    }
 }
 
 /// Persisted hook-state key for the canonical hook when it is the
@@ -126,19 +153,42 @@ pub fn fleet_comms_session_start_state_key(config_toml_path: &Path, group_index:
 /// [`fleet_comms_session_start_state_key`]).
 pub fn fleet_comms_config_toml_snippet(config_toml_path: &Path) -> String {
     let state_key = fleet_comms_session_start_state_key(config_toml_path, /*group_index*/ 0);
+    let command = toml_basic_string(FLEET_COMMS_SESSION_START_COMMAND);
+    let command_windows = toml_basic_string(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS);
+    let status_message = toml_basic_string(FLEET_COMMS_SESSION_START_STATUS_MESSAGE);
+    let quoted_state_key = toml_basic_string(&state_key);
+    let trusted_hash = toml_basic_string(trusted_hash_for_config_path(config_toml_path));
     format!(
         r#"[[hooks.SessionStart]]
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "{FLEET_COMMS_SESSION_START_COMMAND}"
+command = {command}
+commandWindows = {command_windows}
 timeout = {FLEET_COMMS_SESSION_START_TIMEOUT_SEC}
-statusMessage = "{FLEET_COMMS_SESSION_START_STATUS_MESSAGE}"
+statusMessage = {status_message}
 
-[hooks.state."{state_key}"]
-trusted_hash = "{FLEET_COMMS_SESSION_START_TRUSTED_HASH}"
+[hooks.state.{quoted_state_key}]
+trusted_hash = {trusted_hash}
 "#
     )
+}
+
+fn toml_basic_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string cannot fail")
+}
+
+fn trusted_hash_for_config_path(config_toml_path: &Path) -> &'static str {
+    let path = config_toml_path.display().to_string();
+    if cfg!(windows) || looks_like_windows_path(&path) {
+        FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS
+    } else {
+        FLEET_COMMS_SESSION_START_TRUSTED_HASH
+    }
+}
+
+fn looks_like_windows_path(path: &str) -> bool {
+    path.as_bytes().get(1) == Some(&b':') || path.starts_with("\\\\")
 }
 
 #[cfg(test)]
@@ -155,10 +205,13 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::FLEET_COMMS_SESSION_START_COMMAND;
+    use super::FLEET_COMMS_SESSION_START_COMMAND_WINDOWS;
     use super::FLEET_COMMS_SESSION_START_TRUSTED_HASH;
+    use super::FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS;
     use super::fleet_comms_config_toml_snippet;
     use super::fleet_comms_session_start_state_key;
     use super::fleet_comms_session_start_trusted_hash;
+    use super::fleet_comms_session_start_trusted_hash_for_command;
     use crate::engine::discovery::discover_handlers;
 
     fn user_config_path() -> AbsolutePathBuf {
@@ -201,6 +254,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pinned_windows_trusted_hash_matches_discovery_identity() {
+        assert_eq!(
+            fleet_comms_session_start_trusted_hash_for_command(
+                FLEET_COMMS_SESSION_START_COMMAND_WINDOWS
+            ),
+            FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS,
+            "normalized Windows hook identity computation changed; update \
+             FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS and re-roll fleet hook state"
+        );
+    }
+
     /// The command must embed into a TOML basic string byte-for-byte: only
     /// single quotes, no backslashes, no control characters, single line.
     #[test]
@@ -216,12 +281,45 @@ mod tests {
     }
 
     #[test]
+    fn windows_command_uses_explicit_fail_open_shell() {
+        assert!(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.starts_with("powershell "));
+        assert!(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.contains("Get-Command conversations"));
+        assert!(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.contains("exit 0"));
+        assert!(FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.contains("Substring(0, 8000)"));
+    }
+
+    #[test]
     fn state_key_is_config_path_scoped_and_positional() {
         let key = fleet_comms_session_start_state_key(
             std::path::Path::new("/home/hasna/.codewith/config.toml"),
             /*group_index*/ 0,
         );
         assert_eq!(key, "/home/hasna/.codewith/config.toml:session_start:0:0");
+    }
+
+    #[test]
+    fn snippet_parses_with_windows_config_path() {
+        let snippet = fleet_comms_config_toml_snippet(std::path::Path::new(
+            "C:\\Users\\hasna\\.codewith\\config.toml",
+        ));
+        let config: TomlValue = toml::from_str(&snippet).expect("snippet parses as TOML");
+        let state = config
+            .get("hooks")
+            .and_then(TomlValue::as_table)
+            .and_then(|hooks| hooks.get("state"))
+            .and_then(TomlValue::as_table)
+            .expect("hooks.state table");
+        let state_entry = state
+            .get("C:\\Users\\hasna\\.codewith\\config.toml:session_start:0:0")
+            .and_then(TomlValue::as_table)
+            .expect("Windows hook state entry");
+
+        assert_eq!(
+            state_entry.get("trusted_hash"),
+            Some(&TomlValue::String(
+                FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS.to_string()
+            ))
+        );
     }
 
     /// End-to-end over the real discovery path: parsing the emitted snippet as
@@ -250,7 +348,11 @@ mod tests {
                 event_name: HookEventName::SessionStart,
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 matcher: None,
-                command: Some(FLEET_COMMS_SESSION_START_COMMAND.to_string()),
+                command: Some(if cfg!(windows) {
+                    FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.to_string()
+                } else {
+                    FLEET_COMMS_SESSION_START_COMMAND.to_string()
+                }),
                 timeout_sec: super::FLEET_COMMS_SESSION_START_TIMEOUT_SEC,
                 status_message: Some(super::FLEET_COMMS_SESSION_START_STATUS_MESSAGE.to_string()),
                 source_path: config_path.clone(),
