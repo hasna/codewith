@@ -1291,6 +1291,254 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn external_agent_host_marks_terminal_events_and_leaves_progress_events_open() {
+        let (tx, _rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000310")
+            .expect("thread id should parse");
+
+        for progress in [
+            ThreadExternalAgentEvent::Status {
+                message: "working".to_string(),
+            },
+            ThreadExternalAgentEvent::ProposedAction {
+                proposal: serde_json::json!({"type": "read-file"}),
+            },
+        ] {
+            let host = AppServerExternalAgentHost::new(
+                outgoing.clone(),
+                ThreadStateManager::new(),
+                thread_id,
+                "run-1".to_string(),
+                CancellationToken::new(),
+            );
+            host.emit(progress).await;
+            assert!(
+                !host.terminal_sent(),
+                "progress events must not mark the run terminal"
+            );
+        }
+
+        for terminal in [
+            ThreadExternalAgentEvent::Completed {
+                summary: Some("done".to_string()),
+            },
+            ThreadExternalAgentEvent::Failed {
+                message: "boom".to_string(),
+            },
+            ThreadExternalAgentEvent::Cancelled { reason: None },
+        ] {
+            let host = AppServerExternalAgentHost::new(
+                outgoing.clone(),
+                ThreadStateManager::new(),
+                thread_id,
+                "run-1".to_string(),
+                CancellationToken::new(),
+            );
+            host.emit(terminal).await;
+            assert!(
+                host.terminal_sent(),
+                "terminal events must mark the run terminal even without subscribers"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_drops_terminal_events_without_subscribers() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000311")
+            .expect("thread id should parse");
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            ThreadStateManager::new(),
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        // A terminal event that arrives after every subscriber has gone away is
+        // dropped (never leaked to an unrelated connection) yet still records
+        // that the run finished so `execute` will not double-emit `Failed`.
+        host.emit(ThreadExternalAgentEvent::Cancelled { reason: None })
+            .await;
+
+        assert!(host.terminal_sent());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_delivers_events_to_every_subscribed_connection() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000312")
+            .expect("thread id should parse");
+        for connection in [ConnectionId(7), ConnectionId(8)] {
+            thread_state_manager
+                .connection_initialized(connection, ConnectionCapabilities::default())
+                .await;
+            assert!(
+                thread_state_manager
+                    .try_add_connection_to_thread(thread_id, connection)
+                    .await
+            );
+        }
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            thread_state_manager,
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        host.emit(ThreadExternalAgentEvent::Status {
+            message: "working".to_string(),
+        })
+        .await;
+
+        let mut targeted = Vec::new();
+        for _ in 0..2 {
+            let envelope = rx.recv().await.expect("targeted notification");
+            let OutgoingEnvelope::ToConnection { connection_id, .. } = envelope else {
+                panic!("expected targeted envelope, got {envelope:?}");
+            };
+            targeted.push(connection_id);
+        }
+        targeted.sort_by_key(|connection| connection.0);
+        assert_eq!(targeted, vec![ConnectionId(7), ConnectionId(8)]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_denies_permission_requests_by_default() {
+        let (tx, _rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000313")
+            .expect("thread id should parse");
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            ThreadStateManager::new(),
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        let decision = host
+            .request_permission(ExternalAgentPermissionRequest {
+                id: "perm-1".to_string(),
+                action: ExternalAgentActionRequest::WriteFile {
+                    path: PathBuf::from("/repo/file.txt"),
+                    content: "data".to_string(),
+                },
+                options: vec![
+                    ExternalAgentPermissionOption::AllowOnce,
+                    ExternalAgentPermissionOption::RejectOnce,
+                ],
+            })
+            .await
+            .expect("permission decision");
+
+        assert_eq!(decision, ExternalAgentPermissionDecision::RejectOnce);
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_rejects_managed_actions_and_notifies_proposal() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000314")
+            .expect("thread id should parse");
+        thread_state_manager
+            .connection_initialized(ConnectionId(1), ConnectionCapabilities::default())
+            .await;
+        assert!(
+            thread_state_manager
+                .try_add_connection_to_thread(thread_id, ConnectionId(1))
+                .await
+        );
+        let action = ExternalAgentActionRequest::RunCommand {
+            command: vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
+            cwd: None,
+        };
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            thread_state_manager,
+            thread_id,
+            "run-1".to_string(),
+            CancellationToken::new(),
+        );
+
+        let result = host
+            .perform_action(action.clone())
+            .await
+            .expect("perform_action result");
+
+        assert_eq!(
+            result,
+            ExternalAgentActionResult::Rejected {
+                reason: "external-agent managed action routing is not enabled yet".to_string(),
+            }
+        );
+
+        let envelope = rx.recv().await.expect("proposed-action notification");
+        let OutgoingEnvelope::ToConnection { message, .. } = envelope else {
+            panic!("expected targeted envelope, got {envelope:?}");
+        };
+        let OutgoingMessage::AppServerNotification(ServerNotification::ThreadExternalAgentEvent(
+            notification,
+        )) = message
+        else {
+            panic!("expected external-agent notification, got {message:?}");
+        };
+        assert_eq!(
+            notification.event,
+            ThreadExternalAgentEvent::ProposedAction {
+                proposal: action_json(&action),
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn external_agent_host_reports_cancellation_from_token() {
+        let (tx, _rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000315")
+            .expect("thread id should parse");
+        let token = CancellationToken::new();
+        let host = AppServerExternalAgentHost::new(
+            outgoing,
+            ThreadStateManager::new(),
+            thread_id,
+            "run-1".to_string(),
+            token.clone(),
+        );
+
+        assert!(!host.is_cancelled().await);
+        token.cancel();
+        assert!(host.is_cancelled().await);
+    }
+
     #[test]
     fn external_agent_permission_profile_scopes_read_roots_with_network() {
         let cwd = tempfile::TempDir::new().expect("cwd tempdir");
