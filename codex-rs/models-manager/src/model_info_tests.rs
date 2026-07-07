@@ -109,7 +109,7 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
     assert_eq!(model.display_name, "DeepSeek V4 Flash");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
-    assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
     assert!(!model.used_fallback_model_metadata);
 }
