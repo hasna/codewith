@@ -10,6 +10,15 @@ use codex_login::load_auth_profile;
 use codex_login::load_auth_profile_metadata;
 use codex_model_provider_info::ModelProviderInfo;
 
+fn goal_plan_involves_thread(plan: &AppThreadGoalPlan, thread_id: ThreadId) -> bool {
+    let thread_id = thread_id.to_string();
+    plan.thread_id == thread_id
+        || plan
+            .nodes
+            .iter()
+            .any(|node| node.assigned_thread_id == thread_id)
+}
+
 fn resolved_auth_status_mode(auth: &AuthDotJson) -> AuthMode {
     if let Some(mode) = auth.auth_mode {
         return mode;
@@ -333,6 +342,8 @@ impl ChatWidget {
         self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
         self.refreshing_status_outputs.clear();
         self.refreshing_minimax_usage_status_outputs.clear();
+        self.usage_panel_rate_limit_state = UsagePanelRateLimitState::default();
+        self.usage_panel_minimax_usage_state = UsagePanelMiniMaxUsageState::default();
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
@@ -858,6 +869,7 @@ impl ChatWidget {
             self.current_goal_status_indicator = None;
             self.current_goal_status = None;
             self.update_collaboration_mode_indicator();
+            self.refresh_status_line();
             return;
         }
         if goal.status == AppThreadGoalStatus::BudgetLimited
@@ -873,11 +885,12 @@ impl ChatWidget {
             self.turn_lifecycle.goal_status_active_turn_started_at,
         ));
         self.update_collaboration_mode_indicator();
+        self.refresh_status_line();
     }
 
     pub(crate) fn on_thread_goal_plan_updated(&mut self, plan: AppThreadGoalPlan) {
         if let Some(active_thread_id) = self.thread_id
-            && active_thread_id.to_string() != plan.thread_id
+            && !goal_plan_involves_thread(&plan, active_thread_id)
         {
             return;
         }

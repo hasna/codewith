@@ -30,9 +30,9 @@ struct LoginView: View {
             VStack {
                 HStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(hex: 0x6E6BF2), Color(hex: 0x4B47E0)], startPoint: .top, endPoint: .bottom))
+                        .fill(Theme.accent)
                         .frame(width: 44, height: 26)
-                        .overlay(Image(systemName: "person.crop.rectangle").font(.system(size: 12)).foregroundStyle(.white))
+                        .overlay(Image(systemName: "person.crop.rectangle").font(.system(size: 12)).foregroundStyle(Theme.accentForeground))
                     Spacer()
                 }
                 Spacer()
@@ -135,7 +135,7 @@ struct LoginView: View {
             primaryButton(icon: "checkmark", title: model.loginInProgress ? "Signing in…" : "Continue") {
                 Task { await model.loginWithApiKey(apiKey, providerName: selectedProvider) }
             }
-            .disabled(model.loginInProgress)
+            .disabled(model.loginInProgress || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             backLink { mode = .providers }
         }
     }
@@ -146,19 +146,19 @@ struct LoginView: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 if !icon.isEmpty {
-                    Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accentForeground)
                 }
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.accentForeground)
             }
             .frame(width: 360, height: 52).contentShape(Rectangle())
-            .background(Capsule().fill(Color(hex: 0x0D0D0D)))
+            .background(Capsule().fill(Theme.accent))
         }.buttonStyle(.plain)
     }
     private func secondaryButton(title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .frame(width: 360, height: 52).contentShape(Rectangle())
-                .background(Capsule().fill(Color.white).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
+                .background(Capsule().fill(Theme.fieldFill).overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: 1)))
         }.buttonStyle(.plain)
     }
     private func backLink(_ action: @escaping () -> Void) -> some View {
@@ -175,7 +175,7 @@ struct LoginView: View {
 
 /// A soft multi-lobed "cloud/flower" blob mark with a thin `>_` prompt glyph.
 struct BrandBlob: View {
-    private let grad = LinearGradient(colors: [Color(hex: 0x7E9BF5), Color(hex: 0x6E8BF2), Color(hex: 0x4D54E8)],
+    private let grad = LinearGradient(colors: [Theme.accentHover, Theme.accent],
                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     var body: some View {
         ZStack {
@@ -193,8 +193,8 @@ struct BrandBlob: View {
                 Image(systemName: "chevron.right").font(.system(size: 16, weight: .semibold))
                 Rectangle().frame(width: 9, height: 2.5).cornerRadius(1).offset(y: 6)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.accentForeground)
         }
-        .shadow(color: Color(hex: 0x4B47E0).opacity(0.14), radius: 5, y: 2)
+        .shadow(color: Color.black.opacity(0.08), radius: 5, y: 2)
     }
 }

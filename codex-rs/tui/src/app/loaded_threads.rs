@@ -109,6 +109,7 @@ fn thread_spawn_parent_thread_id(
 mod tests {
     use super::LoadedSubagentThread;
     use super::find_loaded_subagent_threads_for_primary;
+    use codex_app_server_protocol::AuthProfileKind;
     use codex_app_server_protocol::SessionSource;
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStatus;
@@ -137,6 +138,8 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
             name: None,
             turns: Vec::new(),
         }

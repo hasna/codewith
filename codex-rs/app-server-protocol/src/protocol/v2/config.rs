@@ -13,9 +13,12 @@ use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::Schema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -731,6 +734,32 @@ pub struct TextRange {
     pub end: TextPosition,
 }
 
+struct RequiredNullable<T>(std::marker::PhantomData<T>);
+
+impl<T> JsonSchema for RequiredNullable<T>
+where
+    Option<T>: JsonSchema,
+{
+    fn is_referenceable() -> bool {
+        false
+    }
+
+    fn schema_name() -> String {
+        format!(
+            "RequiredNullable_for_{}",
+            <Option<T> as JsonSchema>::schema_name()
+        )
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        Cow::Owned(Self::schema_name())
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        <Option<T> as JsonSchema>::json_schema(generator)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -740,11 +769,9 @@ pub struct ConfigWarningNotification {
     /// Optional extra guidance or error details.
     pub details: Option<String>,
     /// Optional path to the config file that triggered the warning.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[schemars(with = "RequiredNullable<String>", required)]
     pub path: Option<String>,
     /// Optional range for the error location inside the config file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[schemars(with = "RequiredNullable<TextRange>", required)]
     pub range: Option<TextRange>,
 }

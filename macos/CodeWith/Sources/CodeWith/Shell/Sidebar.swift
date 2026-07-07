@@ -12,20 +12,22 @@ struct SidebarItem: Identifiable {
 }
 
 /// Left navigation rail, driven by live app-server data.
-/// Colors/metrics are unchanged from the approved design.
 struct Sidebar: View {
     var model: AppModel
     var onTap: (String) -> Void = { _ in }
     var onThread: (ThreadInfo) -> Void = { _ in }
     var onProject: (ProjectInfo) -> Void = { _ in }
     var onLoadMore: () -> Void = {}
+    @Environment(\.snapshotMode) private var snapshot
 
     private let topItems: [SidebarItem] = [
+        .init(icon: "house", title: "Home"),
         .init(icon: "square.and.pencil", title: "New chat"),
         .init(icon: "magnifyingglass", title: "Search"),
         .init(icon: "square.grid.2x2", title: "Apps"),
         .init(icon: "arrow.trianglehead.2.clockwise.rotate.90", title: "Loops"),
-        .init(icon: "server.rack", title: "Machines"),
+        .init(icon: "target", title: "Goals"),
+        .init(icon: "point.3.connected.trianglepath.dotted", title: "Workflows"),
     ]
 
     var body: some View {
@@ -33,8 +35,27 @@ struct Sidebar: View {
             // Minimal top inset to clear the window traffic-light row.
             Color.clear.frame(height: 28)
 
+            HStack(spacing: 9) {
+                BrandMark()
+                Text("CodeWith")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
+            .padding(.bottom, 12)
+
             ScrollColumn(alignment: .leading, spacing: 1) {
                 ForEach(topItems) { row(for: $0) }
+
+                if !model.machines.isEmpty {
+                    sectionHeader("Machine")
+                    machineSelector()
+                    if let warning = model.pendingMachineSwitchWarning {
+                        emptyHint(warning)
+                    }
+                }
 
                 if !model.projects.isEmpty {
                     sectionHeader("Projects")
@@ -44,10 +65,10 @@ struct Sidebar: View {
                 }
 
                 sectionHeader("Chats")
-                if model.threads.isEmpty {
+                if model.machineScopedThreads.isEmpty {
                     emptyHint(model.connection == .connecting ? "Loading…" : "No sessions yet")
                 } else {
-                    ForEach(model.threads) { thread in
+                    ForEach(model.machineScopedThreads) { thread in
                         threadRow(thread)
                     }
                     if model.hasMoreThreads {
@@ -65,7 +86,6 @@ struct Sidebar: View {
             .padding(.horizontal, 8)
             .padding(.top, 2)
 
-            Divider().overlay(Theme.separator)
             row(for: .init(icon: "gearshape", title: "Settings"))
                 .padding(.horizontal, 8).padding(.vertical, 6)
         }
@@ -121,11 +141,46 @@ struct Sidebar: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
+    private func machineSelector() -> some View {
+        let label = HStack(spacing: 8) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 16)
+            Text(model.currentMachineLabel)
+                .font(Theme.sidebarItem)
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 8))
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .contentShape(Rectangle())
+
+        if snapshot {
+            label
+        } else {
+            Menu {
+                ForEach(model.machines) { machine in
+                    Button(machine.displayName) { model.selectMachine(machine) }
+                }
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func threadRow(_ thread: ThreadInfo) -> some View {
         let isSel = thread.id == model.activeThreadId
         return Button { onThread(thread) } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left").font(.system(size: 12.5)).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).frame(width: 16)
+            HStack(spacing: 6) {
                 Text(thread.name).font(Theme.sidebarItem).foregroundStyle(isSel ? Theme.textPrimary : Theme.textSecondary).lineLimit(1)
                 Spacer(minLength: 4)
                 Text(thread.ageLabel).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
@@ -139,13 +194,13 @@ struct Sidebar: View {
 
 struct BrandMark: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(LinearGradient(colors: [Color(hex: 0x6E6BF2), Color(hex: 0x4B47E0)], startPoint: .top, endPoint: .bottom))
-            .frame(width: 30, height: 19)
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(Theme.accent)
+            .frame(width: 26, height: 26)
             .overlay(
                 Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.accentForeground)
             )
     }
 }

@@ -95,12 +95,13 @@ impl ThreadMonitorRequestProcessor {
         let name = validate_monitor_name(params.name.as_str())?;
         let prompt = validate_monitor_prompt(params.prompt.as_str())?;
         let command = validate_monitor_command(params.command.as_str())?;
-        let cwd = validate_optional_monitor_path("monitor cwd", params.cwd)?;
+        let cwd = validate_optional_monitor_relative_path("monitor cwd", params.cwd)?;
         let routing = params
             .routing
             .map(api_thread_monitor_routing_to_state)
             .unwrap_or(codex_state::ThreadMonitorRouting::Stream);
-        let output_file = validate_optional_monitor_path("monitor outputFile", params.output_file)?;
+        let output_file =
+            validate_optional_monitor_relative_path("monitor outputFile", params.output_file)?;
         let output_file = validate_monitor_output_file_for_routing(routing, output_file)?;
         let state_db = self.prepare_monitor_mutation(thread_id).await?;
         self.ensure_thread_monitor_capacity(&state_db, thread_id)
@@ -375,18 +376,17 @@ impl ThreadMonitorRequestProcessor {
             /*new_thread_memory_mode*/ None,
         )
         .await;
-        if let Some(thread) = running_thread.as_ref()
-            && state_db
+        if let Some(thread) = running_thread.as_ref() {
+            let existing_metadata = state_db
                 .get_thread(thread_id)
                 .await
-                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?
-                .is_none()
-        {
+                .map_err(|err| internal_error(format!("failed to read thread metadata: {err}")))?;
             self.upsert_running_thread_metadata(
                 state_db,
                 thread_id,
                 thread,
                 rollout_path.as_path(),
+                existing_metadata,
             )
             .await?;
         }
@@ -399,19 +399,37 @@ impl ThreadMonitorRequestProcessor {
         thread_id: ThreadId,
         thread: &Arc<CodexThread>,
         rollout_path: &Path,
+        existing_metadata: Option<codex_state::ThreadMetadata>,
     ) -> Result<(), JSONRPCErrorError> {
-        let session_configured = thread.session_configured();
+        let config_snapshot = thread.config_snapshot().await;
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             rollout_path.to_path_buf(),
             Utc::now(),
             SessionSource::default(),
         );
-        builder.thread_source = session_configured.thread_source;
-        builder.model_provider = Some(session_configured.model_provider_id);
-        builder.cwd = session_configured.cwd.to_path_buf();
-        builder.approval_mode = session_configured.approval_policy;
-        let metadata = builder.build(self.config.model_provider_id.as_str());
+        builder.thread_source = config_snapshot.thread_source;
+        builder.model_provider = Some(config_snapshot.model_provider_id);
+        builder.cwd = config_snapshot.cwd.to_path_buf();
+        builder.approval_mode = config_snapshot.approval_policy;
+        let session_metadata = builder.build(self.config.model_provider_id.as_str());
+        let mut metadata = existing_metadata.unwrap_or_else(|| session_metadata.clone());
+        metadata.rollout_path = session_metadata.rollout_path;
+        metadata.thread_source = session_metadata.thread_source;
+        metadata.model_provider = session_metadata.model_provider;
+        metadata.cwd = session_metadata.cwd;
+        metadata.approval_mode = session_metadata.approval_mode;
+        match serde_json::to_string(&config_snapshot.permission_profile) {
+            Ok(permission_profile) => {
+                metadata.sandbox_policy = permission_profile;
+            }
+            Err(err) => {
+                warn!(
+                    thread_id = %thread_id,
+                    "failed to serialize running thread permission profile for monitor metadata: {err}"
+                );
+            }
+        }
         state_db
             .upsert_thread(&metadata)
             .await

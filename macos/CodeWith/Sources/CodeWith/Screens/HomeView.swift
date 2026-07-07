@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The "What should we work on?" empty state. Fully interactive: composer send,
-/// "+", add-menu, and config pills all work.
+/// The "What should we work on?" empty state. Composer send and config pills are
+/// live controls.
 struct HomeView: View {
     @Bindable var model: AppModel
     var showConfigToggle = true
@@ -30,24 +30,20 @@ struct HomeView: View {
                 .padding(.bottom, 24)
 
             Composer(text: $model.composerText,
+                     model: model,
                      onSubmit: onSubmit,
                      onPlus: { model.toggleAddMenu() },
-                     onConfigTap: onToggleConfig,
-                     modelLabel: model.model ?? "gpt-5.5",
-                     effortLabel: model.effort)
-                .frame(width: 480)
-
-            HStack { ProjectMenu(model: model); Spacer() }
-                .padding(.top, 12)
-                .frame(width: 480, alignment: .leading)
+	                     onConfigTap: onToggleConfig,
+	                     modelLabel: model.model ?? "gpt-5.5",
+	                     effortLabel: model.effort)
+                .frame(maxWidth: 620)
+                .padding(.horizontal, 36)
 
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.canvas)
         .overlay {
-            // Dismiss layer + menu only while the add-menu is open, so it never
-            // intercepts taps on the composer/send button when closed.
             if model.showAddMenu {
                 ZStack {
                     Color.black.opacity(0.001).contentShape(Rectangle())
@@ -56,7 +52,8 @@ struct HomeView: View {
                         onAction: { model.handleAddAction($0) },
                         activePeers: model.activePeers,
                         agentRuns: model.addMenuAgentRuns
-                    ).offset(y: 40)
+                    )
+                    .offset(y: 40)
                 }
             }
         }

@@ -3,10 +3,10 @@ use super::ui_management_tools::ActiveSessionsArgs;
 use super::ui_management_tools::BackgroundAgentsArgs;
 use super::ui_management_tools::BackgroundTerminalsArgs;
 use super::ui_management_tools::CapabilitiesArgs;
-use super::ui_management_tools::McpArgs;
 use super::ui_management_tools::MonitorsArgs;
 use super::ui_management_tools::SchedulesArgs;
 use super::ui_management_tools::SessionControlArgs;
+use super::ui_mcp_tool::McpArgs;
 use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
@@ -33,6 +33,12 @@ struct StatusSurfaceArgs {
     action: String,
     item_ids: Option<Vec<String>>,
     use_theme_colors: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatuslineMessageArgs {
+    action: String,
+    message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +87,11 @@ struct ConfigOptionOutput {
     disabled_reason: Option<&'static str>,
 }
 
+pub(super) enum UiDynamicToolOutcome {
+    Respond(JsonValue),
+    Pending,
+}
+
 impl App {
     pub(super) async fn try_handle_ui_dynamic_tool_request(
         &mut self,
@@ -95,11 +106,17 @@ impl App {
         }
 
         let result = match self.validate_ui_dynamic_tool_thread(params) {
-            Ok(()) => self.handle_ui_dynamic_tool_call(app_server, params).await,
+            Ok(()) => {
+                self.handle_ui_dynamic_tool_call(app_server, request_id.clone(), params)
+                    .await
+            }
             Err(err) => Err(err),
         };
         let response = match result {
-            Ok(output) => dynamic_tool_response(output, /*success*/ true),
+            Ok(UiDynamicToolOutcome::Respond(output)) => {
+                dynamic_tool_response(output, /*success*/ true)
+            }
+            Ok(UiDynamicToolOutcome::Pending) => return true,
             Err(message) => {
                 self.chat_widget.add_error_message(message.clone());
                 dynamic_tool_response(json!({ "error": message }), /*success*/ false)
@@ -113,56 +130,85 @@ impl App {
     async fn handle_ui_dynamic_tool_call(
         &mut self,
         app_server: &mut AppServerSession,
+        request_id: AppServerRequestId,
         params: &DynamicToolCallParams,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<UiDynamicToolOutcome, String> {
         match params.tool.as_str() {
             crate::ui_dynamic_tools::STATUSLINE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
-                self.handle_statusline_tool(args).await
+                self.handle_statusline_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
+            }
+            crate::ui_dynamic_tools::STATUSLINE_MESSAGE_TOOL => {
+                let args: StatuslineMessageArgs = parse_arguments(&params.arguments)?;
+                self.handle_statusline_message_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::TERMINAL_TITLE_TOOL => {
                 let args: StatusSurfaceArgs = parse_arguments(&params.arguments)?;
-                self.handle_terminal_title_tool(args).await
+                self.handle_terminal_title_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::CONFIG_TOOL => {
                 let args: ConfigArgs = parse_arguments(&params.arguments)?;
-                self.handle_config_tool(app_server, args).await
+                self.handle_config_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::TMUX_TOOL => {
                 let args: TmuxArgs = parse_arguments(&params.arguments)?;
-                self.handle_tmux_tool(args).await
+                self.handle_tmux_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::BACKGROUND_TERMINALS_TOOL => {
                 let args: BackgroundTerminalsArgs = parse_arguments(&params.arguments)?;
-                self.handle_background_terminals_tool(args).await
+                self.handle_background_terminals_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::MCP_TOOL => {
                 let args: McpArgs = parse_arguments(&params.arguments)?;
-                self.handle_mcp_tool(app_server, args).await
+                self.handle_mcp_tool(app_server, request_id, args).await
             }
             crate::ui_dynamic_tools::BACKGROUND_AGENTS_TOOL => {
                 let args: BackgroundAgentsArgs = parse_arguments(&params.arguments)?;
-                self.handle_background_agents_tool(app_server, args).await
+                self.handle_background_agents_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::ACTIVE_SESSIONS_TOOL => {
                 let args: ActiveSessionsArgs = parse_arguments(&params.arguments)?;
-                self.handle_active_sessions_tool(app_server, args).await
+                self.handle_active_sessions_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::SCHEDULES_TOOL => {
                 let args: SchedulesArgs = parse_arguments(&params.arguments)?;
-                self.handle_schedules_tool(app_server, args).await
+                self.handle_schedules_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::MONITORS_TOOL => {
                 let args: MonitorsArgs = parse_arguments(&params.arguments)?;
-                self.handle_monitors_tool(app_server, args).await
+                self.handle_monitors_tool(app_server, args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::SESSION_CONTROL_TOOL => {
                 let args: SessionControlArgs = parse_arguments(&params.arguments)?;
-                self.handle_session_control_tool(args).await
+                self.handle_session_control_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             crate::ui_dynamic_tools::CAPABILITIES_TOOL => {
                 let args: CapabilitiesArgs = parse_arguments(&params.arguments)?;
-                self.handle_capabilities_tool(args).await
+                self.handle_capabilities_tool(args)
+                    .await
+                    .map(UiDynamicToolOutcome::Respond)
             }
             _ => Err(format!("unsupported Codewith UI tool `{}`", params.tool)),
         }
@@ -225,6 +271,50 @@ impl App {
                 }))
             }
             action => Err(unknown_action(action)),
+        }
+    }
+
+    async fn handle_statusline_message_tool(
+        &mut self,
+        args: StatuslineMessageArgs,
+    ) -> Result<JsonValue, String> {
+        match args.action.as_str() {
+            "set" => {
+                let message = args
+                    .message
+                    .ok_or_else(|| "action=set requires message".to_string())?;
+                let message = self
+                    .chat_widget
+                    .set_agent_statusline_from_tool(Some(message))?;
+                let message_chars = message
+                    .as_ref()
+                    .map_or(0, |message| message.chars().count());
+                tracing::info!(
+                    message_chars,
+                    "agent updated statusline display text from UI tool"
+                );
+                Ok(json!({
+                    "surface": "statusline",
+                    "updated": {
+                        "message": message,
+                    },
+                    "display_only": true,
+                }))
+            }
+            "clear" => {
+                self.chat_widget.set_agent_statusline_from_tool(None)?;
+                tracing::info!("agent cleared statusline display text from UI tool");
+                Ok(json!({
+                    "surface": "statusline",
+                    "updated": {
+                        "message": null,
+                    },
+                    "display_only": true,
+                }))
+            }
+            action => Err(format!(
+                "unknown action `{action}`; expected `set` or `clear`"
+            )),
         }
     }
 
@@ -364,7 +454,7 @@ impl App {
         }))
     }
 
-    async fn resolve_ui_dynamic_tool_request(
+    pub(super) async fn resolve_ui_dynamic_tool_request(
         &mut self,
         app_server: &AppServerSession,
         request_id: AppServerRequestId,
@@ -427,7 +517,7 @@ fn non_empty_trimmed(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn dynamic_tool_response(output: JsonValue, success: bool) -> DynamicToolCallResponse {
+pub(super) fn dynamic_tool_response(output: JsonValue, success: bool) -> DynamicToolCallResponse {
     DynamicToolCallResponse {
         content_items: vec![DynamicToolCallOutputContentItem::InputText {
             text: serde_json::to_string_pretty(&output)
@@ -564,23 +654,42 @@ mod tests {
     #[test]
     fn tmux_destination_from_args_preserves_legacy_name_and_explicit_target() {
         assert_eq!(
-            tmux_destination_from_args(Some("named session".to_string()), None, None,),
+            tmux_destination_from_args(
+                Some("named session".to_string()),
+                /*session*/ None,
+                /*window*/ None,
+            ),
             Ok(TmuxHandoffDestination::NewSession {
                 name: Some("named session".to_string()),
             })
         );
         assert_eq!(
-            tmux_destination_from_args(None, Some("dev".to_string()), Some("codewith".to_string()),),
+            tmux_destination_from_args(
+                /*name*/ None,
+                Some("dev".to_string()),
+                Some("codewith".to_string()),
+            ),
             Ok(TmuxHandoffDestination::ExistingSession {
                 session_name: "dev".to_string(),
                 window_name: Some("codewith".to_string()),
             })
         );
         assert!(
-            tmux_destination_from_args(Some("named".to_string()), Some("dev".to_string()), None,)
-                .is_err()
+            tmux_destination_from_args(
+                Some("named".to_string()),
+                Some("dev".to_string()),
+                /*window*/ None,
+            )
+            .is_err()
         );
-        assert!(tmux_destination_from_args(None, None, Some("codewith".to_string())).is_err());
+        assert!(
+            tmux_destination_from_args(
+                /*name*/ None,
+                /*session*/ None,
+                Some("codewith".to_string())
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -612,5 +721,48 @@ mod tests {
         )
         .expect_err("invalid thread should fail");
         assert!(err.contains("invalid thread_id"));
+    }
+
+    #[tokio::test]
+    async fn statusline_message_tool_returns_display_only_output() {
+        let mut app = super::super::test_support::make_test_app().await;
+
+        let output = app
+            .handle_statusline_message_tool(StatuslineMessageArgs {
+                action: "set".to_string(),
+                message: Some("  Checking\nCI  ".to_string()),
+            })
+            .await
+            .expect("statusline message should update");
+
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "surface": "statusline",
+                "updated": {
+                    "message": "Checking CI",
+                },
+                "display_only": true,
+            })
+        );
+
+        let output = app
+            .handle_statusline_message_tool(StatuslineMessageArgs {
+                action: "clear".to_string(),
+                message: None,
+            })
+            .await
+            .expect("statusline message should clear");
+
+        assert_eq!(
+            output,
+            serde_json::json!({
+                "surface": "statusline",
+                "updated": {
+                    "message": null,
+                },
+                "display_only": true,
+            })
+        );
     }
 }

@@ -419,8 +419,19 @@ async fn side_context_label_shows_parent_status_snapshot() {
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw side conversation footer");
+    #[cfg(target_os = "windows")]
+    insta::with_settings!({ snapshot_suffix => "windows" }, {
+        assert_chatwidget_snapshot!(
+            "side_context_label_shows_parent_status",
+            normalized_backend_snapshot(terminal.backend())
+        );
+    });
+    #[cfg(not(target_os = "windows"))]
     assert_chatwidget_snapshot!(
         "side_context_label_shows_parent_status",
-        normalized_backend_snapshot(terminal.backend())
+        normalized_backend_snapshot(terminal.backend()).replace(
+            "  /tmp/project   Side from main thread · main needs input · Ctrl+C to return    ",
+            "  /tmp/project     Side from main thread · main needs input · Ctrl+C to return  "
+        )
     );
 }

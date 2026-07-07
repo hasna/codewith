@@ -127,11 +127,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_config_popup(&mut self) {
-        let items = crate::common_config_options::common_config_sections()
+        let mut items: Vec<SelectionItem> = crate::common_config_options::common_config_sections()
             .iter()
             .copied()
             .map(|section| config_section_item(&self.config, section))
             .collect();
+        items.push(self.agent_max_threads_menu_item());
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Config".bold()));
@@ -142,6 +143,104 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
             footer_hint: Some(Line::from("Press enter to open; esc to close")),
+            items,
+            ..Default::default()
+        });
+    }
+
+    /// Root-menu entry that opens the agent subagent-thread-limit picker.
+    ///
+    /// When `multi_agent_v2` is enabled the limit is governed by that feature, so the entry is
+    /// shown disabled with an explanatory reason rather than writing a conflicting legacy key.
+    fn agent_max_threads_menu_item(&self) -> SelectionItem {
+        let multi_agent_v2 = self.config.features.enabled(Feature::MultiAgentV2);
+        let description = if multi_agent_v2 {
+            "Governed by multi_agent_v2 (features.multi_agent_v2.max_concurrent_threads_per_session).".to_string()
+        } else {
+            match self.config.agent_max_threads {
+                Some(threads) => format!(
+                    "Max concurrent subagent threads per agent run (currently {threads})."
+                ),
+                None => {
+                    "Max concurrent subagent threads per agent run (currently the built-in default)."
+                        .to_string()
+                }
+            }
+        };
+        let actions: Vec<SelectionAction> = if multi_agent_v2 {
+            Vec::new()
+        } else {
+            vec![Box::new(|tx| {
+                tx.send(AppEvent::OpenAgentMaxThreadsMenu);
+            })]
+        };
+        SelectionItem {
+            name: "Agent subagent threads".to_string(),
+            description: Some(description),
+            is_disabled: multi_agent_v2,
+            disabled_reason: multi_agent_v2.then(|| "Managed by multi_agent_v2.".to_string()),
+            actions,
+            dismiss_on_select: true,
+            ..Default::default()
+        }
+    }
+
+    /// Preset picker for `[agents] max_threads`. Selecting a value persists it to `config.toml`
+    /// (via the shared config-write path) and reports that a restart is required to apply it.
+    pub(crate) fn open_agent_max_threads_popup(&mut self) {
+        if self.config.features.enabled(Feature::MultiAgentV2) {
+            self.add_info_message(
+                "The subagent thread limit is governed by multi_agent_v2 (features.multi_agent_v2.max_concurrent_threads_per_session); agents.max_threads is not used while multi_agent_v2 is enabled.".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        // Mirrors the runtime default cap. When unset, that default is the effective cap, so it is
+        // preselected here.
+        const DEFAULT_AGENT_MAX_THREADS: usize = 6;
+        const PRESETS: [usize; 7] = [1, 2, 3, 4, 6, 8, 12];
+        let current = self.config.agent_max_threads;
+
+        let items: Vec<SelectionItem> = PRESETS
+            .into_iter()
+            .map(|threads| {
+                let is_current = current == Some(threads)
+                    || (current.is_none() && threads == DEFAULT_AGENT_MAX_THREADS);
+                let name = if threads == DEFAULT_AGENT_MAX_THREADS {
+                    format!("{threads} (default)")
+                } else {
+                    threads.to_string()
+                };
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    tx.send(AppEvent::UpdateConfigValue {
+                        key_path: "agents.max_threads".to_string(),
+                        value: serde_json::json!(threads),
+                        label: "Agent subagent thread limit".to_string(),
+                    });
+                })];
+                SelectionItem {
+                    name,
+                    description: Some(format!(
+                        "Allow up to {threads} concurrent subagent threads per agent run."
+                    )),
+                    is_current,
+                    actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Agent subagent threads".bold()));
+        header.push(Line::from(
+            "Cap concurrent subagent threads per agent run; restart to apply.".dim(),
+        ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
         });
@@ -173,6 +272,17 @@ impl ChatWidget {
     }
 
     pub(crate) fn apply_config_popup_value(&mut self, key_path: &str, value: &serde_json::Value) {
+        if key_path == "agents.max_threads" {
+            if let Some(threads) = value.as_u64() {
+                self.config.agent_max_threads = Some(threads as usize);
+            }
+            self.add_info_message(
+                "Agent subagent thread limit saved. Restart the session to apply it (or set [agents] max_threads in config.toml / use -c agents.max_threads=N).".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
         if key_path == "goals.auto_execute" {
             let Some(value) = value.as_str() else {
                 return;

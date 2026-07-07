@@ -53,6 +53,21 @@ You can enable notifications by configuring a script that is run whenever the ag
 To run Codewith non-interactively, run `codewith exec PROMPT` (you can also pass the prompt via `stdin`) and Codewith will work on your task until it decides that it is done and exits. If you provide both a prompt argument and piped stdin, Codewith appends stdin as a `<stdin>` block after the prompt so patterns like `echo "my output" | codewith exec "Summarize this concisely"` work naturally. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
 Headless `codewith exec` runs persist session rollout files by default so long-running automation can resume or inspect the thread later. Use `--durable` or `--persist` when a workflow needs to state that contract explicitly, and use `codewith exec --ephemeral ...` only for intentional one-off runs that should not be materialized on disk.
 
+### Compact output defaults
+
+Agent-facing list/status/history commands and built-in management tools use compact output by default. Default output favors ids, status, timestamps, counts, short text previews, and a hint for the next detail command instead of dumping full records or JSON payloads into the terminal.
+
+Use progressive detail controls when you need more:
+
+```shell
+codewith agent list --limit 50
+codewith agent read <agent-id> --verbose
+codewith agent logs <agent-id> --after-seq 120 --limit 100
+codewith agent logs <agent-id> --json
+```
+
+The model-facing `manage_loop`, `manage_schedule`, and `manage_monitor` tools follow the same policy: default responses are compact summaries; pass `verbose=true` only when full prompts, commands, paths, errors, or event text are needed. Machine-readable CLI output remains available with `--json`.
+
 ### Experimenting with the Codewith Sandbox
 
 To test to see what happens when a command is run under the sandbox provided by Codewith, use the `sandbox` subcommand in Codewith CLI:

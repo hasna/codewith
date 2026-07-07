@@ -14,6 +14,7 @@ use crate::active_session_registry::ActivePeerKind as RegistryPeerKind;
 use crate::active_session_registry::ActivePeerLookupError;
 use crate::active_session_registry::ActivePeerRegistry;
 use crate::active_session_registry::LastSeenAt;
+use codex_app_server_protocol::AuthProfileKind;
 use std::time::Duration;
 
 const TARGET_NOT_LOADED_REASON: &str =
@@ -255,6 +256,11 @@ fn freshness_now() -> ActivePeerFreshness {
 }
 
 pub(super) fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
+    let auth_profile_kind = if peer.auth_profile.is_some() {
+        AuthProfileKind::Named
+    } else {
+        AuthProfileKind::Default
+    };
     ActiveSessionPeer {
         peer_id: peer.peer_id,
         kind: api_peer_kind(peer.kind),
@@ -263,6 +269,8 @@ pub(super) fn api_active_session_peer(peer: ActivePeer) -> ActiveSessionPeer {
         cwd: peer.cwd,
         display_name: peer.display_name,
         agent_path: peer.agent_path,
+        auth_profile: peer.auth_profile,
+        auth_profile_kind,
         capabilities: api_capabilities(peer.capabilities),
         last_seen_at: peer.last_seen_at.unix_seconds(),
     }
@@ -518,8 +526,11 @@ mod tests {
 
     #[test]
     fn target_lookup_accepts_peer_id_without_thread_id() {
-        let lookup = active_session_target_lookup(Some("claude:session-1".to_string()), None)
-            .expect("targetPeerId should be enough");
+        let lookup = active_session_target_lookup(
+            Some("claude:session-1".to_string()),
+            /*target_thread_id*/ None,
+        )
+        .expect("targetPeerId should be enough");
 
         assert_eq!(lookup.peer_id, "claude:session-1",);
         assert_eq!(lookup.thread_id, None);
@@ -531,8 +542,10 @@ mod tests {
 
     #[test]
     fn target_lookup_requires_one_target_identifier() {
-        let err = active_session_target_lookup(None, None)
-            .expect_err("missing target should be rejected");
+        let err = active_session_target_lookup(
+            /*target_peer_id*/ None, /*target_thread_id*/ None,
+        )
+        .expect_err("missing target should be rejected");
 
         assert_eq!(
             err.message,
@@ -551,6 +564,20 @@ mod tests {
     }
 
     #[test]
+    fn api_active_session_peer_sets_auth_profile_kind() {
+        let named_api_peer =
+            api_active_session_peer(test_active_peer(ThreadId::new(), Some("work".to_string())));
+
+        assert_eq!(named_api_peer.auth_profile.as_deref(), Some("work"));
+        assert_eq!(named_api_peer.auth_profile_kind, AuthProfileKind::Named);
+
+        let default_api_peer = api_active_session_peer(test_active_peer(ThreadId::new(), None));
+
+        assert_eq!(default_api_peer.auth_profile, None);
+        assert_eq!(default_api_peer.auth_profile_kind, AuthProfileKind::Default);
+    }
+
+    #[test]
     fn untrusted_sender_descriptor_bounds_peer_display_name() {
         let thread_id = ThreadId::new();
         let peer = ActivePeer {
@@ -563,12 +590,13 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("x".repeat(MAX_ACTIVE_SESSION_DESCRIPTOR_COMPONENT_BYTES + 100)),
             agent_path: None,
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
 
-        let descriptor = untrusted_sender_descriptor(None, Some(&peer));
+        let descriptor = untrusted_sender_descriptor(/*sender_label*/ None, Some(&peer));
 
         assert!(descriptor.ends_with("..."));
         assert!(
@@ -594,9 +622,10 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("Sender".to_string()),
             agent_path: Some("/claimed".to_string()),
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
         let target_peer = ActivePeer {
             peer_id: target_thread_id.to_string(),
@@ -610,14 +639,15 @@ mod tests {
                 .expect("temp dir is absolute"),
             display_name: Some("Target".to_string()),
             agent_path: Some("/target".to_string()),
+            auth_profile: None,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         };
 
         let envelope = active_channel_envelope(
             "msg-1",
-            None,
+            /*sender_label*/ None,
             Some(&sender_peer),
             &target_peer,
             "hello",
@@ -636,5 +666,23 @@ mod tests {
         );
         assert_eq!(communication.author, AgentPath::root());
         assert!(envelope.content.contains("claiming Sender"));
+    }
+
+    fn test_active_peer(thread_id: ThreadId, auth_profile: Option<String>) -> ActivePeer {
+        ActivePeer {
+            peer_id: thread_id.to_string(),
+            kind: ActivePeerKind::CodewithSession,
+            owner: ActivePeerOwner::LocalThread { thread_id },
+            thread_id,
+            session_id: "session".to_string(),
+            cwd: AbsolutePathBuf::from_absolute_path_checked(std::env::temp_dir())
+                .expect("temp dir is absolute"),
+            display_name: None,
+            agent_path: None,
+            auth_profile,
+            process: None,
+            capabilities: ActivePeerCapabilities::codewith_session(),
+            last_seen_at: LastSeenAt::from_unix_seconds(100),
+        }
     }
 }

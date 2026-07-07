@@ -21,6 +21,7 @@ use tokio::time::Instant;
 use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
+use tracing::warn;
 
 const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const OPENAI_MODEL_HEADER: &str = "openai-model";
@@ -267,6 +268,26 @@ fn json_value_as_string(value: &Value) -> Option<String> {
     }
 }
 
+/// Maximum number of bytes of a raw SSE payload that we log when an item fails
+/// to deserialize. The payload is model output (not credentials), but we keep
+/// it bounded so a large item cannot flood the logs.
+const MAX_LOGGED_PAYLOAD_BYTES: usize = 512;
+
+/// Render a JSON payload for diagnostics, truncated to a sane length so a
+/// dropped item is observable without dumping an unbounded blob into the logs.
+fn truncate_payload_for_log(value: &Value) -> String {
+    let raw = value.to_string();
+    if raw.len() <= MAX_LOGGED_PAYLOAD_BYTES {
+        return raw;
+    }
+
+    let mut end = MAX_LOGGED_PAYLOAD_BYTES;
+    while end > 0 && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… (truncated, {} bytes total)", &raw[..end], raw.len())
+}
+
 #[derive(Debug)]
 pub enum ResponsesEventError {
     Api(ApiError),
@@ -286,10 +307,16 @@ pub fn process_responses_event(
     match event.kind.as_str() {
         "response.output_item.done" => {
             if let Some(item_val) = event.item {
-                if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
-                    return Ok(Some(ResponseEvent::OutputItemDone(item)));
+                match ResponseItem::deserialize(&item_val) {
+                    Ok(item) => return Ok(Some(ResponseEvent::OutputItemDone(item))),
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            payload = %truncate_payload_for_log(&item_val),
+                            "dropping unparsable ResponseItem from response.output_item.done",
+                        );
+                    }
                 }
-                debug!("failed to parse ResponseItem from output_item.done");
             }
         }
         "response.output_text.delta" => {
@@ -297,7 +324,7 @@ pub fn process_responses_event(
                 return Ok(Some(ResponseEvent::OutputTextDelta(delta)));
             }
         }
-        "response.custom_tool_call_input.delta" => {
+        "response.custom_tool_call_input.delta" | "response.function_call_arguments.delta" => {
             if let (Some(delta), Some(item_id)) =
                 (event.delta, event.item_id.clone().or(event.call_id.clone()))
             {
@@ -402,10 +429,16 @@ pub fn process_responses_event(
         }
         "response.output_item.added" => {
             if let Some(item_val) = event.item {
-                if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
-                    return Ok(Some(ResponseEvent::OutputItemAdded(item)));
+                match ResponseItem::deserialize(&item_val) {
+                    Ok(item) => return Ok(Some(ResponseEvent::OutputItemAdded(item))),
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            payload = %truncate_payload_for_log(&item_val),
+                            "dropping unparsable ResponseItem from response.output_item.added",
+                        );
+                    }
                 }
-                debug!("failed to parse ResponseItem from output_item.added");
             }
         }
         "response.reasoning_summary_part.added" => {
@@ -828,6 +861,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unparsable_output_item_done_is_dropped_not_fatal() {
+        // An `output_item.done` whose body does not deserialize into a known
+        // `ResponseItem` must be skipped (still observable via a warn log) while
+        // the stream continues to `response.completed`.
+        // Known item `type` ("message") but a structurally invalid body:
+        // `content` must be an array of content items, not a bare string. This
+        // exercises the serde failure path (unknown `type` values are absorbed
+        // by ResponseItem's `#[serde(other)]` variant and would not fail).
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": "this should be an array of content items"
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        // The unparsable item is dropped; only the completed event survives.
+        assert_eq!(events.len(), 1);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::Completed { response_id, .. } if response_id == "resp1"
+        );
+    }
+
+    #[test]
+    fn truncate_payload_for_log_bounds_length() {
+        let short = json!({"type": "message"});
+        assert_eq!(truncate_payload_for_log(&short), short.to_string());
+
+        let big = json!({ "text": "x".repeat(4096) });
+        let rendered = truncate_payload_for_log(&big);
+        assert!(rendered.len() < 4096);
+        assert!(rendered.contains("truncated"));
+    }
+
+    #[tokio::test]
     async fn parses_tool_call_input_deltas() {
         let events = run_sse(vec![
             json!({
@@ -856,7 +933,15 @@ mod tests {
                 delta,
             } if item_id == "ctc_1" && call_id == "call_1" && delta == "*** Begin"
         );
-        assert_matches!(&events[1], ResponseEvent::Completed { .. });
+        assert_matches!(
+            &events[1],
+            ResponseEvent::ToolCallInputDelta {
+                item_id,
+                call_id: None,
+                delta,
+            } if item_id == "fc_1" && delta == "{\"input\":\""
+        );
+        assert_matches!(&events[2], ResponseEvent::Completed { .. });
     }
 
     #[tokio::test]

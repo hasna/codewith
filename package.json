@@ -2,6 +2,15 @@
   "name": "codewith-monorepo",
   "private": true,
   "description": "Tools for repo-wide maintenance.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/codewith.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hasna/codewith/issues"
+  },
+  "homepage": "https://github.com/hasna/codewith#readme",
   "scripts": {
     "format": "prettier --check *.json *.md docs/*.md .github/workflows/*.yml **/*.js",
     "format:fix": "prettier --write *.json *.md docs/*.md .github/workflows/*.yml **/*.js",
@@ -11,19 +20,33 @@
     "prettier": "^3.5.3"
   },
   "resolutions": {
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@babel/core@7.28.4": "7.29.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "ajv@6.12.6": "6.14.0",
+    "ajv@8.17.1": "8.20.0",
+    "brace-expansion@1.1.12": "1.1.13",
+    "brace-expansion@5.0.5": "5.0.6",
     "braces": "^3.0.3",
+    "diff@4.0.2": "4.0.4",
+    "fast-uri": "3.1.2",
     "flatted": "3.4.2",
     "glob@10.4.5": "10.5.0",
     "handlebars": "4.7.9",
+    "hono": "4.12.25",
+    "ip-address": "10.2.0",
+    "js-yaml@3.14.1": "4.2.0",
+    "js-yaml@4.1.0": "4.2.0",
     "micromatch": "^4.0.8",
     "minimatch@3.1.2": "3.1.4",
     "minimatch@9.0.5": "9.0.7",
     "path-to-regexp": "8.4.0",
     "picomatch@2.3.1": "2.3.2",
     "picomatch@4.0.3": "4.0.4",
+    "postcss@8.5.6": "8.5.10",
+    "qs@6.15.1": "6.15.2",
     "rollup": "4.59.0",
-    "semver": "^7.7.1"
+    "semver": "^7.7.1",
+    "yaml@2.8.1": "2.8.3"
   },
   "overrides": {
     "punycode": "^2.3.1"

@@ -24,14 +24,21 @@ enum SnapshotRunner {
 
         let scale = CGFloat(Double(ProcessInfo.processInfo.environment["CODEWITH_SNAPSHOT_SCALE"] ?? "2") ?? 2)
 
+        var failures: [String] = []
         for item in SnapshotCatalog.items {
-            render(item, into: dir, scale: scale)
+            if !render(item, into: dir, scale: scale) {
+                failures.append(item.name)
+            }
+        }
+        if !failures.isEmpty {
+            FileHandle.standardError.write("snapshot: failed screens: \(failures.joined(separator: ", "))\n".data(using: .utf8)!)
+            exit(1)
         }
         FileHandle.standardError.write("snapshot: wrote \(SnapshotCatalog.items.count) screens to \(dir)\n".data(using: .utf8)!)
         exit(0)
     }
 
-    private static func render(_ item: SnapshotItem, into dir: String, scale: CGFloat) {
+    private static func render(_ item: SnapshotItem, into dir: String, scale: CGFloat) -> Bool {
         let renderer = ImageRenderer(content:
             item.view
                 .environment(\.snapshotMode, true)
@@ -45,9 +52,15 @@ enum SnapshotRunner {
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else {
             FileHandle.standardError.write("snapshot: FAILED to render \(item.name)\n".data(using: .utf8)!)
-            return
+            return false
         }
         let path = "\(dir)/\(item.name).png"
-        try? png.write(to: URL(fileURLWithPath: path))
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            return true
+        } catch {
+            FileHandle.standardError.write("snapshot: FAILED to write \(item.name): \(error.localizedDescription)\n".data(using: .utf8)!)
+            return false
+        }
     }
 }

@@ -12,6 +12,11 @@ use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::AuthProfileListResponse;
+use codex_app_server_protocol::AuthProfileSaveCurrentResponse;
+use codex_app_server_protocol::AuthProfileSubscriptionProvider;
+use codex_app_server_protocol::AuthProfileSummary;
+use codex_app_server_protocol::AuthProfileSwitchResponse;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::CancelLoginAccountResponse;
 use codex_app_server_protocol::CancelLoginAccountStatus;
@@ -33,8 +38,10 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::login_with_api_key;
+use codex_login::save_auth_profile;
 use codex_protocol::account::PlanType as AccountPlanType;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
@@ -135,6 +142,56 @@ shell_snapshot = false
 "#
     );
     std::fs::write(config_toml, contents)
+}
+
+fn save_api_key_auth_profile(codex_home: &Path, name: &str, api_key: &str) -> Result<()> {
+    save_auth_profile(
+        codex_home,
+        AuthCredentialsStoreMode::File,
+        name,
+        &api_key_auth(api_key),
+    )?;
+    Ok(())
+}
+
+fn api_key_auth(api_key: &str) -> AuthDotJson {
+    AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
+        openai_api_key: Some(api_key.to_string()),
+        tokens: None,
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+    }
+}
+
+fn api_key_profile_summary(name: &str, active: bool) -> AuthProfileSummary {
+    AuthProfileSummary {
+        name: name.to_string(),
+        subscription_provider: AuthProfileSubscriptionProvider::Chatgpt,
+        auth_mode: Some(AuthMode::ApiKey),
+        email: None,
+        account_id: None,
+        plan: None,
+        active,
+    }
+}
+
+async fn assert_account_updated_notification(
+    mcp: &mut TestAppServer,
+    auth_mode: Option<AuthMode>,
+) -> Result<()> {
+    let note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("account/updated"),
+    )
+    .await??;
+    let parsed: ServerNotification = note.try_into()?;
+    let ServerNotification::AccountUpdated(payload) = parsed else {
+        bail!("unexpected notification: {parsed:?}");
+    };
+    assert_eq!(payload.auth_mode, auth_mode);
+    Ok(())
 }
 
 async fn mock_device_code_usercode(server: &MockServer, interval_seconds: u64) {
@@ -953,6 +1010,200 @@ async fn login_account_api_key_succeeds_and_notifies() -> Result<()> {
     pretty_assertions::assert_eq!(payload.plan_type, None);
 
     assert!(codex_home.path().join("auth.json").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let req_id = mcp
+        .send_login_account_api_key_request("sk-first-key")
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(req_id)),
+    )
+    .await??;
+    let login: LoginAccountResponse = to_response(resp)?;
+    assert_eq!(login, LoginAccountResponse::ApiKey {});
+
+    let save_first_id = mcp
+        .send_raw_request("authProfile/saveCurrent", Some(json!({ "name": "first" })))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(save_first_id)),
+    )
+    .await??;
+    let saved_first: AuthProfileSaveCurrentResponse = to_response(resp)?;
+    assert_eq!(saved_first.profile, api_key_profile_summary("first", true));
+    assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
+
+    let req_id = mcp
+        .send_login_account_api_key_request("sk-second-key")
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(req_id)),
+    )
+    .await??;
+    let login: LoginAccountResponse = to_response(resp)?;
+    assert_eq!(login, LoginAccountResponse::ApiKey {});
+
+    let save_second_id = mcp
+        .send_raw_request("authProfile/saveCurrent", Some(json!({ "name": "second" })))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(save_second_id)),
+    )
+    .await??;
+    let saved_second: AuthProfileSaveCurrentResponse = to_response(resp)?;
+    assert_eq!(
+        saved_second.profile,
+        api_key_profile_summary("second", true)
+    );
+    assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
+
+    let list_id = mcp
+        .send_raw_request("authProfile/list", Some(json!({ "limit": 1 })))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let profiles: AuthProfileListResponse = to_response(resp)?;
+    assert_eq!(
+        profiles,
+        AuthProfileListResponse {
+            data: vec![api_key_profile_summary("first", false)],
+            next_cursor: Some("1".to_string()),
+        }
+    );
+
+    let list_id = mcp
+        .send_raw_request(
+            "authProfile/list",
+            Some(json!({ "cursor": profiles.next_cursor, "limit": 1 })),
+        )
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let profiles: AuthProfileListResponse = to_response(resp)?;
+    assert_eq!(
+        profiles,
+        AuthProfileListResponse {
+            data: vec![api_key_profile_summary("second", true)],
+            next_cursor: None,
+        }
+    );
+
+    let switch_id = mcp
+        .send_raw_request("authProfile/switch", Some(json!({ "name": "first" })))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(switch_id)),
+    )
+    .await??;
+    let switched: AuthProfileSwitchResponse = to_response(resp)?;
+    assert_eq!(switched.profile, api_key_profile_summary("first", true));
+    assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
+
+    let list_id = mcp
+        .send_raw_request("authProfile/list", Some(json!({})))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let profiles: AuthProfileListResponse = to_response(resp)?;
+    assert_eq!(
+        profiles,
+        AuthProfileListResponse {
+            data: vec![
+                api_key_profile_summary("first", true),
+                api_key_profile_summary("second", false),
+            ],
+            next_cursor: None,
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_profile_list_uses_selected_profile_for_active_state() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
+    save_api_key_auth_profile(codex_home.path(), "work", "sk-work-key")?;
+    save_api_key_auth_profile(codex_home.path(), "personal", "sk-personal-key")?;
+
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", Some("work")),
+            ("OPENAI_API_KEY", None),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let list_id = mcp
+        .send_raw_request("authProfile/list", Some(json!({})))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let profiles: AuthProfileListResponse = to_response(resp)?;
+
+    assert_eq!(
+        profiles,
+        AuthProfileListResponse {
+            data: vec![
+                api_key_profile_summary("personal", false),
+                api_key_profile_summary("work", true),
+            ],
+            next_cursor: None,
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_profile_switch_rejects_invalid_profile_name() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_raw_request("authProfile/switch", Some(json!({ "name": "bad/profile" })))
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(
+        err.error.message,
+        "failed to switch auth profile: invalid auth profile name `bad/profile`; use letters, numbers, dots, dashes, or underscores, and start with a letter or number"
+    );
     Ok(())
 }
 

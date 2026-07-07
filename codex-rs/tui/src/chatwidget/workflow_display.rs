@@ -183,14 +183,24 @@ pub(crate) fn thread_workflow_run_detail_lines(
         for step in snapshot.steps.iter().take(8) {
             lines.push(step_line(step));
         }
-        push_remaining_count_line(&mut lines, snapshot.steps.len(), 8, "steps");
+        push_remaining_count_line(
+            &mut lines,
+            snapshot.steps.len(),
+            /*displayed*/ 8,
+            "steps",
+        );
     }
     if !snapshot.verifiers.is_empty() {
         lines.push("Verifiers".bold().into());
         for verifier in snapshot.verifiers.iter().take(8) {
             lines.push(verifier_line(verifier));
         }
-        push_remaining_count_line(&mut lines, snapshot.verifiers.len(), 8, "verifiers");
+        push_remaining_count_line(
+            &mut lines,
+            snapshot.verifiers.len(),
+            /*displayed*/ 8,
+            "verifiers",
+        );
     }
     if !snapshot.events.is_empty() {
         lines.push("Recent events".bold().into());
@@ -208,7 +218,7 @@ pub(crate) fn thread_workflow_run_detail_lines(
                 .into(),
             );
         }
-        push_remaining_count_line(&mut lines, event_count, 8, "events");
+        push_remaining_count_line(&mut lines, event_count, /*displayed*/ 8, "events");
     }
     lines
 }

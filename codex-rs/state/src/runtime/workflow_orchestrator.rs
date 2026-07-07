@@ -1020,7 +1020,7 @@ INSERT INTO background_agent_runs (
     .execute(&mut **tx)
     .await?;
 
-    let event_id = append_background_agent_event_in_tx(
+    let event = append_background_agent_event_in_tx(
         tx,
         background_agent_run_id,
         "agent.started",
@@ -1032,10 +1032,6 @@ INSERT INTO background_agent_runs (
         now,
     )
     .await?;
-    let event_seq: i64 = sqlx::query_scalar("SELECT seq FROM background_agent_events WHERE id = ?")
-        .bind(event_id)
-        .fetch_one(&mut **tx)
-        .await?;
     let status_payload = json!({
         "phase": "queued",
         "workflowRunId": run.run_id.as_str(),
@@ -1045,7 +1041,7 @@ INSERT INTO background_agent_runs (
         tx,
         BackgroundAgentStatusSnapshotUpsert {
             run_id: background_agent_run_id,
-            seq: event_seq,
+            seq: event.seq,
             status: BackgroundAgentRunStatus::Queued,
             desired_state: BackgroundAgentDesiredState::Running,
             summary: "Queued",
@@ -1718,7 +1714,7 @@ WHERE id = ?
             now,
         )
         .await?;
-        let event_id = append_background_agent_event_in_tx(
+        let event = append_background_agent_event_in_tx(
             tx,
             background_agent_run_id.as_str(),
             "agent.stopRequested",
@@ -1731,11 +1727,6 @@ WHERE id = ?
         )
         .await?;
         if terminalize_immediately {
-            let event_seq: i64 =
-                sqlx::query_scalar("SELECT seq FROM background_agent_events WHERE id = ?")
-                    .bind(event_id)
-                    .fetch_one(&mut **tx)
-                    .await?;
             let status_payload = json!({
                 "phase": "cancelled",
                 "reason": "workflow_cancelled",
@@ -1746,7 +1737,7 @@ WHERE id = ?
                 tx,
                 BackgroundAgentStatusSnapshotUpsert {
                     run_id: background_agent_run_id.as_str(),
-                    seq: event_seq,
+                    seq: event.seq,
                     status: BackgroundAgentRunStatus::Cancelled,
                     desired_state: BackgroundAgentDesiredState::Stopped,
                     summary: "Cancelled",
@@ -2107,6 +2098,8 @@ mod tests {
         workflow_id: &str,
         include_second: bool,
     ) -> String {
+        let marker_command = format!("touch {}", marker.display());
+        let marker_command = format!("'{}'", marker_command.replace('\'', "''"));
         let second_step = if include_second {
             r#"
   - id: "adversarial_review"
@@ -2195,7 +2188,7 @@ steps:
           timeout_seconds: 30
           output_limit_bytes: 2048
           commands:
-            - "touch {}"
+            - {marker_command}
           expected_exit_code: 0
 {second_step}artifacts:
   retention: "until_workflow_complete"
@@ -2205,7 +2198,6 @@ cleanup:
   on_cancel: []
   on_complete: []
 "#,
-            marker.display()
         )
     }
 
@@ -2409,8 +2401,14 @@ WHERE plan_id = ? AND key = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("claim-marker");
-        let (run, _) =
-            create_projected_run(&runtime, thread_id, "wf_claim_fence", &marker, false).await;
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_claim_fence",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
 
         let claimed_a = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
@@ -2466,8 +2464,14 @@ WHERE plan_id = ? AND key = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("verifier-command-ran");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_verifier_block", &marker, true).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_verifier_block",
+            &marker,
+            /*include_second*/ true,
+        )
+        .await;
         let claim = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
@@ -2989,14 +2993,16 @@ WHERE plan_id = ? AND key = ?
             .expect("admission should succeed")
             .expect("run should be owned");
         let branch_run_id = admitted.admitted[0].background_agent_run_id.clone();
+        let repo = unique_temp_dir().join("repo");
+        let worktree = repo.join(".git").join("worktrees").join("branch-lease");
         runtime
             .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
                 id: "branch-lease".to_string(),
                 run_id: branch_run_id.clone(),
                 identity: "branch-lease".to_string(),
                 mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: "/repo".to_string(),
-                worktree_path: "/repo/.git/worktrees/branch-lease".to_string(),
+                base_repo_path: repo.to_string_lossy().into_owned(),
+                worktree_path: worktree.to_string_lossy().into_owned(),
                 branch: Some("codewith/branch-lease".to_string()),
                 head_sha: Some("abc123".to_string()),
                 status_snapshot_json: json!({"dirty": true, "paths": ["src/user-work.rs"]}),
@@ -3181,8 +3187,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("cancel-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_cancel_projection", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_cancel_projection",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         let raw_reason = "source_prompt: secret\ncommands:\n  - touch should-not-leak";
 
         let cancelled = runtime
@@ -3249,8 +3261,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("pause-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_pause_projection", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_pause_projection",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         let node_id = projection.snapshot.nodes[0].node_id.clone();
         let activation = runtime
             .thread_goals()
@@ -3376,8 +3394,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("terminal-cancel-marker");
-        let (run, projection) =
-            create_projected_run(&runtime, thread_id, "wf_terminal_cancel", &marker, false).await;
+        let (run, projection) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_terminal_cancel",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         sqlx::query(
             r#"
 UPDATE workflow_runs
@@ -3425,8 +3449,14 @@ WHERE run_id = ?
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("final-cancel-marker");
-        let (run, _) =
-            create_projected_run(&runtime, thread_id, "wf_cancel_finalize", &marker, false).await;
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_cancel_finalize",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
         runtime
             .request_workflow_run_cancel(WorkflowRunCancelParams {
                 run_id: run.run.run_id.clone(),

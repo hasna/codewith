@@ -35,6 +35,12 @@
     "threadId": {
       "type": "string"
     },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "tokenBudget": {
       "format": "int64",
       "type": [

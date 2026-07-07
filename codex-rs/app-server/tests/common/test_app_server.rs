@@ -160,6 +160,19 @@ impl TestAppServer {
         Self::new_with_env_and_args(codex_home, &[], &[DISABLE_PLUGIN_STARTUP_TASKS_ARG]).await
     }
 
+    pub async fn new_with_cwd(codex_home: &Path, cwd: &Path) -> anyhow::Result<Self> {
+        let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
+            .context("should find binary for codex-app-server")?;
+        Self::new_with_program_cwd_env_and_args(
+            codex_home,
+            cwd,
+            &program,
+            &[],
+            &[DISABLE_PLUGIN_STARTUP_TASKS_ARG],
+        )
+        .await
+    }
+
     pub async fn new_without_managed_config(codex_home: &Path) -> anyhow::Result<Self> {
         Self::new_with_env(codex_home, &[(DISABLE_MANAGED_CONFIG_ENV_VAR, Some("1"))]).await
     }
@@ -237,12 +250,29 @@ impl TestAppServer {
         env_overrides: &[(&str, Option<&str>)],
         args: &[&str],
     ) -> anyhow::Result<Self> {
+        Self::new_with_program_cwd_env_and_args(
+            codex_home,
+            codex_home,
+            program,
+            env_overrides,
+            args,
+        )
+        .await
+    }
+
+    async fn new_with_program_cwd_env_and_args(
+        codex_home: &Path,
+        cwd: &Path,
+        program: &Path,
+        env_overrides: &[(&str, Option<&str>)],
+        args: &[&str],
+    ) -> anyhow::Result<Self> {
         let mut cmd = Command::new(program);
 
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        cmd.current_dir(codex_home);
+        cmd.current_dir(cwd);
         cmd.env("CODEWITH_HOME", codex_home);
         cmd.env("CODEX_HOME", codex_home);
         cmd.env("RUST_LOG", "warn");
@@ -1314,8 +1344,8 @@ impl TestAppServer {
     ///
     /// In rare races, the turn can also fail or complete on its own after we send
     /// `turn/interrupt` but before the server emits the interrupt response. The helper treats a
-    /// buffered matching `turn/completed` notification as sufficient terminal cleanup in that
-    /// case so teardown does not flap on timing.
+    /// matching `turn/completed` notification as sufficient terminal cleanup in that case so
+    /// teardown does not flap on timing.
     pub async fn interrupt_turn_and_wait_for_aborted(
         &mut self,
         thread_id: String,
@@ -1328,14 +1358,27 @@ impl TestAppServer {
                 turn_id: turn_id.clone(),
             })
             .await?;
-        match tokio::time::timeout(
-            read_timeout,
-            self.read_stream_until_response_message(RequestId::Integer(interrupt_request_id)),
-        )
+        match tokio::time::timeout(read_timeout, async {
+            self.read_stream_until_message(|message| {
+                Self::message_request_id(message) == Some(&RequestId::Integer(interrupt_request_id))
+            })
+            .await
+        })
         .await
         {
-            Ok(result) => {
-                result.with_context(|| "failed while waiting for turn interrupt response")?;
+            Ok(Ok(JSONRPCMessage::Response(_))) => {}
+            Ok(Ok(JSONRPCMessage::Error(err)))
+                if err.error.message.contains("no active turn to interrupt")
+                    && self.pending_turn_completed_notification(&thread_id, &turn_id) =>
+            {
+                return Ok(());
+            }
+            Ok(Ok(message)) => {
+                anyhow::bail!("expected turn interrupt response, got {message:?}");
+            }
+            Ok(Err(err)) => {
+                return Err(err)
+                    .with_context(|| "failed while waiting for turn interrupt response");
             }
             Err(err) => {
                 if self.pending_turn_completed_notification(&thread_id, &turn_id) {

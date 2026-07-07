@@ -4,6 +4,7 @@
 //! widget entrypoints that apply status state, open setup views, and update the
 //! history-facing `/status` surface.
 
+use super::status_state::AGENT_STATUSLINE_MAX_CHARS;
 use super::*;
 
 impl ChatWidget {
@@ -62,6 +63,24 @@ impl ChatWidget {
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
         );
+    }
+
+    /// Sets or clears model-authored statusline display text.
+    ///
+    /// This is display-only session state for the `status`/`run-state` surface item. It is never
+    /// persisted and does not affect permissions, prompts, turn lifecycle, or approval UI.
+    pub(crate) fn set_agent_statusline_from_tool(
+        &mut self,
+        message: Option<String>,
+    ) -> Result<Option<String>, String> {
+        let message = message
+            .map(|message| normalize_agent_statusline_message(&message))
+            .transpose()?;
+        self.status_state
+            .record_agent_statusline_tool_update(Instant::now())?;
+        self.status_state.agent_statusline = message.clone();
+        self.refresh_status_surfaces();
+        Ok(message)
     }
 
     /// Sets the currently rendered footer status-line value.
@@ -159,12 +178,18 @@ impl ChatWidget {
 
     /// Returns the configured final-message summary ids, or the default ordering when unset.
     pub(crate) fn configured_message_summary_items(&self) -> Vec<String> {
-        self.config.tui_message_summary.clone().unwrap_or_else(|| {
-            history_cell::DEFAULT_MESSAGE_SUMMARY_ITEMS
+        let Some(items) = self.config.tui_message_summary.as_ref() else {
+            return default_message_summary_item_ids();
+        };
+        if items.is_empty()
+            || items
                 .iter()
-                .map(ToString::to_string)
-                .collect()
-        })
+                .any(|item| item.parse::<history_cell::MessageSummaryItem>().is_ok())
+        {
+            return items.clone();
+        }
+
+        default_message_summary_item_ids()
     }
 
     pub(super) fn message_summary_items(&self) -> Vec<history_cell::MessageSummaryItem> {
@@ -484,4 +509,34 @@ impl ChatWidget {
             Some(effort) => effort.as_str().to_string(),
         }
     }
+}
+
+fn default_message_summary_item_ids() -> Vec<String> {
+    history_cell::DEFAULT_MESSAGE_SUMMARY_ITEMS
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn normalize_agent_statusline_message(message: &str) -> Result<String, String> {
+    if message.chars().any(|ch| {
+        (ch.is_control() && !ch.is_whitespace())
+            || matches!(
+                ch,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            )
+    }) {
+        return Err("statusline message must not contain terminal control characters".to_string());
+    }
+
+    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return Err("statusline message must not be empty".to_string());
+    }
+    if normalized.chars().count() > AGENT_STATUSLINE_MAX_CHARS {
+        return Err(format!(
+            "statusline message must be at most {AGENT_STATUSLINE_MAX_CHARS} characters"
+        ));
+    }
+    Ok(normalized)
 }

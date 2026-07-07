@@ -21,7 +21,9 @@ jobs:
     # pushes to main also run the native Windows test job for broader Windows
     # signal without putting PR latency back on the critical path. Cargo CI
     # owns V8/code-mode test coverage for now.
-    timeout-minutes: 180
+    # Above the heavy Bazel step's 170-min step timeout: an overrun fails the
+    # STEP, not the JOB, so !cancelled() stays true and Save banks the cache.
+    timeout-minutes: 185
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +75,40 @@ jobs:
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
 
+      - name: Configure keyless Bazel disk cache
+        id: disk_cache_cfg
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
+          # keyed RBE runs do not. Never print the key, only test its presence.
+          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            echo "keyless=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "keyless=false" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "path=${HOME}/.cache/bazel-disk-cache" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Bazel disk cache (keyless)
+        id: disk_cache_restore
+        if: runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+          restore-keys: |
+            bazel-disk-${{ github.job }}-${{ matrix.target }}-
+
       - name: bazel test //...
+        # Bounded below the job timeout-minutes so a cold keyless build that
+        # overruns fails THIS STEP (a failure) instead of the JOB (a
+        # cancellation). !cancelled() then stays true and the Prune/Save steps
+        # below bank the partial disk cache; the job still fails until the
+        # build finishes within the window (no fake-green).
+        timeout-minutes: 170
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -108,10 +143,25 @@ jobs:
             -- \
             "${bazel_targets[@]}"
 
+      - name: Prune Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Bound to 8 GiB before saving (GitHub actions/cache entry limit is 10 GB).
+          bash .github/scripts/prune-bazel-disk-cache.sh "${{ steps.disk_cache_cfg.outputs.path }}" $((8 * 1024 * 1024 * 1024))
+
+      - name: Save Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
         continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-execution-logs-test-${{ matrix.target }}
           path: ${{ runner.temp }}/bazel-execution-logs
@@ -216,7 +266,7 @@ jobs:
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
         continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-execution-logs-test-x86_64-pc-windows-gnullvm-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/bazel-execution-logs
@@ -299,7 +349,7 @@ jobs:
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
         continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm
           path: ${{ runner.temp }}/bazel-execution-logs
@@ -316,7 +366,9 @@ jobs:
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
 
   clippy:
-    timeout-minutes: 180
+    # Above the heavy Bazel step's 170-min step timeout: an overrun fails the
+    # STEP, not the JOB, so !cancelled() stays true and Save banks the cache.
+    timeout-minutes: 185
     strategy:
       fail-fast: false
       matrix:
@@ -345,7 +397,40 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Configure keyless Bazel disk cache
+        id: disk_cache_cfg
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
+          # keyed RBE runs do not. Never print the key, only test its presence.
+          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            echo "keyless=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "keyless=false" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "path=${HOME}/.cache/bazel-disk-cache" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Bazel disk cache (keyless)
+        id: disk_cache_restore
+        if: runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+          restore-keys: |
+            bazel-disk-${{ github.job }}-${{ matrix.target }}-
+
       - name: bazel build --config=clippy lint targets
+        # Bounded below the job timeout-minutes so a cold keyless build that
+        # overruns fails THIS STEP (a failure) instead of the JOB (a
+        # cancellation). !cancelled() then stays true and the Prune/Save steps
+        # below bank the partial disk cache; the job still fails until the
+        # build finishes within the window (no fake-green).
+        timeout-minutes: 170
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -388,10 +473,25 @@ jobs:
             -- \
             "${bazel_targets[@]}"
 
+      - name: Prune Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Bound to 8 GiB before saving (GitHub actions/cache entry limit is 10 GB).
+          bash .github/scripts/prune-bazel-disk-cache.sh "${{ steps.disk_cache_cfg.outputs.path }}" $((8 * 1024 * 1024 * 1024))
+
+      - name: Save Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
         continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-execution-logs-clippy-${{ matrix.target }}
           path: ${{ runner.temp }}/bazel-execution-logs
@@ -408,7 +508,9 @@ jobs:
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
 
   verify-release-build:
-    timeout-minutes: 180
+    # Above the heavy Bazel step's 170-min step timeout: an overrun fails the
+    # STEP, not the JOB, so !cancelled() stays true and Save banks the cache.
+    timeout-minutes: 185
     strategy:
       fail-fast: false
       matrix:
@@ -434,7 +536,40 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Configure keyless Bazel disk cache
+        id: disk_cache_cfg
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
+          # keyed RBE runs do not. Never print the key, only test its presence.
+          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            echo "keyless=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "keyless=false" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "path=${HOME}/.cache/bazel-disk-cache" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Bazel disk cache (keyless)
+        id: disk_cache_restore
+        if: runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+          restore-keys: |
+            bazel-disk-${{ github.job }}-${{ matrix.target }}-
+
       - name: bazel build verify-release-build targets
+        # Bounded below the job timeout-minutes so a cold keyless build that
+        # overruns fails THIS STEP (a failure) instead of the JOB (a
+        # cancellation). !cancelled() then stays true and the Prune/Save steps
+        # below bank the partial disk cache; the job still fails until the
+        # build finishes within the window (no fake-green).
+        timeout-minutes: 170
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -494,10 +629,25 @@ jobs:
             -- \
             //codex-rs/bwrap:bwrap
 
+      - name: Prune Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Bound to 8 GiB before saving (GitHub actions/cache entry limit is 10 GB).
+          bash .github/scripts/prune-bazel-disk-cache.sh "${{ steps.disk_cache_cfg.outputs.path }}" $((8 * 1024 * 1024 * 1024))
+
+      - name: Save Bazel disk cache (keyless)
+        if: always() && !cancelled() && runner.os == 'Linux' && steps.disk_cache_cfg.outputs.keyless == 'true' && steps.disk_cache_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.disk_cache_cfg.outputs.path }}
+          key: bazel-disk-${{ github.job }}-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml') }}
+
       - name: Upload Bazel execution logs
         if: always() && !cancelled()
         continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bazel-execution-logs-verify-release-build-${{ matrix.target }}
           path: ${{ runner.temp }}/bazel-execution-logs

@@ -36,8 +36,8 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         codex_home.as_path(),
         &server.uri(),
         &BTreeMap::new(),
-        200_000,
-        None,
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         "compact",
     )?;
@@ -119,24 +119,77 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
             task: "inspect the auth wiring".to_string(),
         }
     );
-    let cancel_id = mcp
-        .send_thread_external_agent_cancel_request(ThreadExternalAgentCancelParams {
-            thread_id: thread.id.clone(),
-            run_id,
-        })
-        .await?;
-    let cancel_resp: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(cancel_id)),
-    )
-    .await??;
-    assert_eq!(
-        to_response::<ThreadExternalAgentCancelResponse>(cancel_resp)?,
-        ThreadExternalAgentCancelResponse {
-            cancelled: true,
-            message: "external-agent run cancellation requested".to_string(),
-        }
-    );
+
+    if cfg!(windows) {
+        let failed_notification = timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_notification_message("thread/externalAgent/event"),
+        )
+        .await??;
+        let failed: ThreadExternalAgentEventNotification = serde_json::from_value(
+            failed_notification
+                .params
+                .expect("external-agent failure event params"),
+        )?;
+        assert_eq!(failed.thread_id, thread.id);
+        assert_eq!(failed.run_id, run_id);
+        let ThreadExternalAgentEvent::Failed { message } = failed.event else {
+            anyhow::bail!("expected external-agent failure event");
+        };
+        assert!(
+            message.contains("platform sandbox is not available"),
+            "unexpected failure message: {message}"
+        );
+
+        let inactive_response: ThreadExternalAgentCancelResponse =
+            timeout(DEFAULT_TIMEOUT, async {
+                loop {
+                    let cancel_id = mcp
+                        .send_thread_external_agent_cancel_request(
+                            ThreadExternalAgentCancelParams {
+                                thread_id: thread.id.clone(),
+                                run_id: run_id.clone(),
+                            },
+                        )
+                        .await?;
+                    let cancel_resp: JSONRPCResponse = mcp
+                        .read_stream_until_response_message(RequestId::Integer(cancel_id))
+                        .await?;
+                    let response = to_response::<ThreadExternalAgentCancelResponse>(cancel_resp)?;
+                    if !response.cancelled {
+                        return Ok::<ThreadExternalAgentCancelResponse, anyhow::Error>(response);
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await??;
+        assert_eq!(
+            inactive_response,
+            ThreadExternalAgentCancelResponse {
+                cancelled: false,
+                message: format!("external-agent run `{run_id}` is not active"),
+            }
+        );
+    } else {
+        let cancel_id = mcp
+            .send_thread_external_agent_cancel_request(ThreadExternalAgentCancelParams {
+                thread_id: thread.id.clone(),
+                run_id: run_id.clone(),
+            })
+            .await?;
+        let cancel_resp: JSONRPCResponse = timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(cancel_id)),
+        )
+        .await??;
+        assert_eq!(
+            to_response::<ThreadExternalAgentCancelResponse>(cancel_resp)?,
+            ThreadExternalAgentCancelResponse {
+                cancelled: true,
+                message: "external-agent run cancellation requested".to_string(),
+            }
+        );
+    }
 
     let grok_alias_id = mcp
         .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
@@ -210,14 +263,23 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         mcp.read_stream_until_response_message(RequestId::Integer(claude_id)),
     )
     .await??;
+    let claude_response: ThreadExternalAgentStartResponse = to_response(claude_resp)?;
     assert_eq!(
-        to_response::<ThreadExternalAgentStartResponse>(claude_resp)?,
-        ThreadExternalAgentStartResponse {
-            status: ThreadExternalAgentStartStatus::Gated,
-            run_id: None,
-            message: "external-agent runtime `claude` requires an active Claude.ai auth profile"
-                .to_string(),
-        }
+        claude_response.status,
+        ThreadExternalAgentStartStatus::Gated
+    );
+    assert_eq!(claude_response.run_id, None);
+    assert!(
+        claude_response
+            .message
+            .starts_with("Claude Code external-agent runtime is gated: missing runtime."),
+        "expected Claude runtime readiness gate, got: {}",
+        claude_response.message
+    );
+    assert!(
+        !claude_response.message.contains("auth profile"),
+        "Claude runtime should not be gated on a generic Claude.ai auth profile: {}",
+        claude_response.message
     );
 
     Ok(())

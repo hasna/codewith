@@ -41,6 +41,15 @@
         }
       ]
     },
+    "AuthProfileSubscriptionProvider": {
+      "enum": [
+        "chatgpt",
+        "claudeAi",
+        "cursor",
+        "grok"
+      ],
+      "type": "string"
+    },
     "AuthProfileSummary": {
       "properties": {
         "accountId": {
@@ -78,7 +87,7 @@
           ]
         },
         "subscriptionProvider": {
-          "type": "string"
+          "$ref": "#/definitions/AuthProfileSubscriptionProvider"
         }
       },
       "required": [

@@ -238,4 +238,5 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.collaboration_mode.is_some()
         || params.session_prompt.is_some()
         || params.personality.is_some()
+        || params.worktree_mode.is_some()
 }

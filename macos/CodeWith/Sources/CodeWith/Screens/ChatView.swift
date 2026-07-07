@@ -16,7 +16,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar — title + project selector, and the right-sidebar (config) opener.
+            // Top bar with the session title and session-details opener.
             HStack(spacing: 8) {
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
@@ -35,12 +35,12 @@ struct ChatView: View {
             // Conversation
             ScrollColumn(alignment: .leading, spacing: 0) {
                 if model.activeMessages.isEmpty {
-                    Text(model.turnInProgress ? "Working…" : "")
+                    Text(model.visibleTurnInProgress ? "Working…" : "")
                         .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
                         .padding(.top, 8)
                 } else {
                     ForEach(model.activeMessages) { messageView($0) }
-                    if model.turnInProgress {
+                    if model.visibleTurnInProgress {
                         Text("Working…").font(.system(size: 12)).foregroundStyle(Theme.textTertiary).padding(.top, 4)
                     }
                 }
@@ -97,10 +97,11 @@ struct ChatView: View {
 
             // Composer
             Composer(placeholder: "Ask for follow-up changes",
-                     stopMode: model.turnInProgress,
-                     text: $model.composerText, onSubmit: onSubmit,
+                     stopMode: model.visibleTurnInProgress,
+                     text: $model.composerText, model: model, onSubmit: onSubmit,
                      onStop: { Task { await model.interrupt() } },
-                     onPlus: onPlus, onConfigTap: onToggleConfig,
+                     onPlus: { model.toggleAddMenu() },
+                     onConfigTap: onToggleConfig,
                      modelLabel: model.model ?? "gpt-5.5", effortLabel: model.effort)
                 .padding(.horizontal, 24).padding(.vertical, 14)
         }
@@ -109,10 +110,12 @@ struct ChatView: View {
         .overlay(alignment: .bottomLeading) {
             if model.showAddMenu {
                 AddMenu(
-                    onAction: onAddAction,
+                    onAction: { model.handleAddAction($0) },
                     activePeers: model.activePeers,
                     agentRuns: model.addMenuAgentRuns
-                ).padding(.leading, 24).padding(.bottom, 68)
+                )
+                .padding(.leading, 24)
+                .padding(.bottom, 68)
             }
         }
     }
@@ -124,7 +127,7 @@ struct ChatView: View {
             HStack { Spacer()
                 Text(m.text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex: 0xEDEDEF)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Theme.controlFill))
             }
             .padding(.bottom, 16)
         case .assistant:
@@ -337,7 +340,7 @@ struct PendingServerRequestPanel: View {
                 ForEach(prompt.actions) { action in
                     Button(action.title) { onAction(action) }
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(action.isPrimary ? .white : Theme.textSecondary)
+                        .foregroundStyle(action.isPrimary ? Theme.accentForeground : Theme.textSecondary)
                         .buttonStyle(.plain)
                         .padding(.horizontal, 10)
                         .frame(height: 26)

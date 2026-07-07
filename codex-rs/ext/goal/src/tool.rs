@@ -11,6 +11,8 @@ use codex_extension_api::ToolSpec;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
 use codex_protocol::protocol::ThreadGoalStatus;
+use codex_protocol::protocol::derive_thread_goal_title_from_objective;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use serde::Deserialize;
 use serde::Serialize;
@@ -66,9 +68,27 @@ enum GoalToolKind {
 #[serde(rename_all = "snake_case")]
 pub struct CreateGoalRequest {
     pub objective: String,
+    pub title: Option<String>,
     pub token_budget: Option<i64>,
+    pub post_goal_context: Option<PostGoalContextActionArg>,
     #[serde(default)]
     pub clear_existing_goal: bool,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum PostGoalContextActionArg {
+    Keep,
+    Compact,
+}
+
+impl From<PostGoalContextActionArg> for codex_state::PostGoalContextAction {
+    fn from(value: PostGoalContextActionArg) -> Self {
+        match value {
+            PostGoalContextActionArg::Keep => Self::Keep,
+            PostGoalContextActionArg::Compact => Self::Compact,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +110,8 @@ pub(crate) struct GoalToolResponse {
     remaining_tokens: Option<i64>,
     completion_budget_report: Option<String>,
     goal_plan_completion_report: Option<GoalPlanCompletionReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_lifecycle_report: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -295,6 +317,9 @@ impl GoalToolExecutor {
         request.objective = request.objective.trim().to_string();
         validate_thread_goal_objective(&request.objective)
             .map_err(FunctionCallError::RespondToModel)?;
+        let title = normalize_thread_goal_title(request.title.as_deref())
+            .map_err(FunctionCallError::RespondToModel)?
+            .unwrap_or_else(|| derive_thread_goal_title_from_objective(&request.objective));
         validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
 
         let existing_goal = if request.clear_existing_goal {
@@ -320,9 +345,10 @@ impl GoalToolExecutor {
         let goal = if request.clear_existing_goal {
             self.state_db
                 .thread_goals()
-                .replace_thread_goal(
+                .replace_thread_goal_with_title(
                     self.thread_id,
                     request.objective.as_str(),
+                    Some(title.as_str()),
                     codex_state::ThreadGoalStatus::Active,
                     request.token_budget,
                 )
@@ -333,9 +359,10 @@ impl GoalToolExecutor {
         } else {
             self.state_db
                 .thread_goals()
-                .insert_thread_goal(
+                .insert_thread_goal_with_title(
                     self.thread_id,
                     request.objective.as_str(),
+                    Some(title.as_str()),
                     codex_state::ThreadGoalStatus::Active,
                     request.token_budget,
                 )
@@ -351,6 +378,17 @@ impl GoalToolExecutor {
                 })?
         };
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
+        if let Some(action) = request.post_goal_context {
+            self.state_db
+                .thread_goals()
+                .set_thread_goal_context_action(self.thread_id, &goal.goal_id, action.into())
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to set goal context lifecycle policy: {err}"
+                    ))
+                })?;
+        }
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
@@ -414,6 +452,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 codex_state::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
                     expected_goal_id: Some(expected_goal_id),
@@ -463,7 +502,6 @@ impl GoalToolExecutor {
                             "failed to advance goal plan: {err}"
                         ))
                     })?
-                    .map(|outcome| (outcome.snapshot, outcome.activated_goal))
             }
             ThreadGoalStatus::Deferred => {
                 let plan_config = self.plan_config.as_ref().ok_or_else(|| {
@@ -482,9 +520,8 @@ impl GoalToolExecutor {
                             "failed to advance deferred goal plan: {err}"
                         ))
                     })?
-                    .map(|outcome| (outcome.snapshot, outcome.activated_goal))
             }
-            ThreadGoalStatus::Blocked | ThreadGoalStatus::Cancelled => self
+            _ => self
                 .state_db
                 .thread_goals()
                 .sync_goal_plan_node_for_goal(self.thread_id, &goal)
@@ -492,36 +529,56 @@ impl GoalToolExecutor {
                 .map_err(|err| {
                     FunctionCallError::RespondToModel(format!("failed to sync goal plan: {err}"))
                 })?
-                .map(|snapshot| (snapshot, None)),
-            ThreadGoalStatus::Active
-            | ThreadGoalStatus::Paused
-            | ThreadGoalStatus::UsageLimited
-            | ThreadGoalStatus::BudgetLimited => unreachable!("status validated above"),
+                .map(|snapshot| codex_state::ThreadGoalPlanAdvanceOutcome {
+                    snapshot,
+                    activated_goal: None,
+                }),
+        };
+        let context_lifecycle_report = if args.status == ThreadGoalStatus::Complete {
+            let plan_config = self.plan_config.as_ref().ok_or_else(|| {
+                FunctionCallError::Fatal("goal update tool missing runtime config".to_string())
+            })?;
+            plan_config
+                .apply_post_completion_context_policy(&goal, plan_outcome.as_ref())
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to apply post-goal context lifecycle policy: {err}"
+                    ))
+                })?
+        } else {
+            None
         };
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
-        let (goal_plans, activated_goal, goal_plan_completion_report) =
-            if let Some((snapshot, activated_goal)) = plan_outcome {
-                self.event_emitter.thread_goal_plan_updated(
-                    format!("{}-goal-plan", invocation.call_id),
-                    Some(invocation.turn_id.clone()),
-                    snapshot.clone(),
-                );
-                let goal_plan_completion_report =
-                    GoalPlanCompletionReport::from_snapshot_if_terminal(&snapshot);
-                let activated_goal = self
-                    .apply_activated_goal_from_plan(&invocation, activated_goal)
-                    .await?;
-                (
-                    vec![GoalPlanResponse::from(snapshot)],
-                    activated_goal,
-                    goal_plan_completion_report,
-                )
-            } else {
-                (Vec::new(), None, None)
-            };
-        goal_response_with_plan_and_report(
+        let (goal_plans, activated_goal, goal_plan_completion_report) = if let Some(outcome) =
+            plan_outcome
+        {
+            self.event_emitter.thread_goal_plan_updated(
+                format!("{}-goal-plan", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                outcome.snapshot.clone(),
+            );
+            let goal_plan_completion_report = GoalPlanCompletionReport::from_snapshot_if_terminal(
+                &outcome.snapshot,
+                self.thread_id,
+            );
+            let activated_goal = self
+                .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
+                .await?;
+            (
+                vec![GoalPlanResponse::from_snapshot_for_thread(
+                    outcome.snapshot,
+                    self.thread_id,
+                )],
+                activated_goal,
+                goal_plan_completion_report,
+            )
+        } else {
+            (Vec::new(), None, None)
+        };
+        goal_response_with_plan_report_and_context(
             Some(goal),
             activated_goal,
             goal_plans,
@@ -531,6 +588,7 @@ impl GoalToolExecutor {
                 CompletionBudgetReport::Omit
             },
             goal_plan_completion_report,
+            context_lifecycle_report,
         )
     }
 
@@ -598,6 +656,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 codex_state::GoalUpdate {
                     objective: None,
+                    title: None,
                     status: Some(codex_state::ThreadGoalStatus::Active),
                     token_budget: None,
                     expected_goal_id: Some(existing_goal.goal_id.clone()),
@@ -812,7 +871,7 @@ pub(crate) fn goal_response_with_plan(
         activated_goal,
         goal_plans,
         completion_budget_report,
-        None,
+        /*goal_plan_completion_report*/ None,
     )
 }
 
@@ -823,12 +882,31 @@ pub(crate) fn goal_response_with_plan_and_report(
     completion_budget_report: CompletionBudgetReport,
     goal_plan_completion_report: Option<GoalPlanCompletionReport>,
 ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    goal_response_with_plan_report_and_context(
+        goal,
+        activated_goal,
+        goal_plans,
+        completion_budget_report,
+        goal_plan_completion_report,
+        /*context_lifecycle_report*/ None,
+    )
+}
+
+pub(crate) fn goal_response_with_plan_report_and_context(
+    goal: Option<ThreadGoal>,
+    activated_goal: Option<ThreadGoal>,
+    goal_plans: Vec<GoalPlanResponse>,
+    completion_budget_report: CompletionBudgetReport,
+    goal_plan_completion_report: Option<GoalPlanCompletionReport>,
+    context_lifecycle_report: Option<String>,
+) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
     let value = serde_json::to_value(GoalToolResponse::new(
         goal,
         activated_goal,
         goal_plans,
         completion_budget_report,
         goal_plan_completion_report,
+        context_lifecycle_report,
     ))
     .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(Box::new(JsonToolOutput::new(value)))
@@ -841,6 +919,7 @@ impl GoalToolResponse {
         goal_plans: Vec<GoalPlanResponse>,
         report_mode: CompletionBudgetReport,
         goal_plan_completion_report: Option<GoalPlanCompletionReport>,
+        context_lifecycle_report: Option<String>,
     ) -> Self {
         let remaining_tokens = goal.as_ref().and_then(|goal| {
             goal.token_budget
@@ -868,6 +947,7 @@ impl GoalToolResponse {
             remaining_tokens,
             completion_budget_report,
             goal_plan_completion_report,
+            context_lifecycle_report,
         }
     }
 }
@@ -916,6 +996,7 @@ pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadG
         thread_id: goal.thread_id,
         goal_id: goal.goal_id,
         objective: goal.objective,
+        title: goal.title,
         status: protocol_status_from_state(goal.status),
         token_budget: goal.token_budget,
         tokens_used: goal.tokens_used,

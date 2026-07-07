@@ -10,6 +10,18 @@
         "kind": {
           "$ref": "#/definitions/AdditionalContextKind"
         },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AdditionalContextSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional provenance for client-supplied context from a local app store.\n\nThis metadata is for clients and auditability. It does not change model-visible content or trust: `kind` remains the authority for whether `value` is injected as untrusted user context or application context."
+        },
         "value": {
           "type": "string"
         }
@@ -26,6 +38,37 @@
         "application"
       ],
       "type": "string"
+    },
+    "AdditionalContextSource": {
+      "properties": {
+        "id": {
+          "description": "Stable record id inside the source namespace.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional user-facing label for rendering/editing the context source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "description": "Stable source namespace, for example `open-projects`, `open-todos`, `open-conversations`, or `open-mementos`.",
+          "type": "string"
+        },
+        "recordType": {
+          "description": "Optional source record kind, for example `project`, `task`, `conversation`, or `memento`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "namespace"
+      ],
+      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",

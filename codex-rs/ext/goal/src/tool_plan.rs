@@ -1,7 +1,10 @@
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolOutput;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadGoal;
+use codex_protocol::protocol::derive_thread_goal_title_from_objective;
+use codex_protocol::protocol::normalize_thread_goal_title;
 use codex_protocol::protocol::validate_thread_goal_objective;
 use serde::Deserialize;
 use serde::Serialize;
@@ -11,6 +14,7 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::runtime::GoalPlanRuntimeConfig;
 use crate::tool::CompletionBudgetReport;
 use crate::tool::GoalToolExecutor;
+use crate::tool::PostGoalContextActionArg;
 use crate::tool::fill_empty_thread_preview_if_possible;
 use crate::tool::goal_response_with_plan;
 use crate::tool::parse_arguments;
@@ -23,20 +27,25 @@ const MAX_GOAL_PLAN_RESPONSE_NODES: usize = 16;
 const MAX_GOAL_PLAN_RESPONSE_OBJECTIVE_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 struct CreateGoalPlanRequest {
     goals: Vec<CreateGoalPlanNodeRequest>,
     #[serde(default)]
     clear_existing_goal: bool,
     max_tokens_per_goal_plan: Option<i64>,
+    post_goal_context: Option<PostGoalContextActionArg>,
+    post_goal_plan_context: Option<PostGoalContextActionArg>,
     append_to_plan_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 struct CreateGoalPlanNodeRequest {
     key: String,
     objective: String,
+    title: Option<String>,
     #[serde(default)]
     depends_on: Vec<String>,
     #[serde(default)]
@@ -45,6 +54,7 @@ struct CreateGoalPlanNodeRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 struct ActivateGoalPlanNodeRequest {
     node_id: String,
@@ -110,10 +120,12 @@ pub(crate) struct GoalPlanCompletionReport {
 struct GoalPlanCompletionNodeReport {
     key: String,
     objective: String,
+    title: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     objective_truncated: bool,
     status: String,
     ready: bool,
+    assigned_thread_id: String,
     token_budget: Option<i64>,
     tokens_used: i64,
     time_used_seconds: i64,
@@ -125,10 +137,12 @@ struct GoalPlanNodeResponse {
     node_id: String,
     plan_id: String,
     thread_id: String,
+    assigned_thread_id: String,
     key: String,
     sequence: i64,
     priority: i64,
     objective: String,
+    title: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     objective_truncated: bool,
     status: String,
@@ -186,6 +200,8 @@ impl GoalToolExecutor {
                 .map(|node| codex_state::ThreadGoalPlanNodeCreateParams {
                     key: node.key,
                     objective: node.objective,
+                    assigned_thread_id: None,
+                    title: None,
                     priority: node.priority.unwrap_or(0),
                     token_budget: node.token_budget,
                     depends_on: node.depends_on,
@@ -225,10 +241,18 @@ impl GoalToolExecutor {
             return goal_response_with_plan(
                 goal,
                 /*activated_goal*/ None,
-                vec![GoalPlanResponse::from(snapshot)],
+                vec![GoalPlanResponse::from_snapshot_for_thread(
+                    snapshot,
+                    self.thread_id,
+                )],
                 CompletionBudgetReport::Omit,
             );
         }
+        let nodes = request
+            .goals
+            .into_iter()
+            .map(goal_plan_node_create_params)
+            .collect::<Result<Vec<_>, FunctionCallError>>()?;
         let existing_goal = self
             .state_db
             .thread_goals()
@@ -262,17 +286,6 @@ impl GoalToolExecutor {
                 })?;
         }
 
-        let nodes = request
-            .goals
-            .into_iter()
-            .map(|node| codex_state::ThreadGoalPlanNodeCreateParams {
-                key: node.key,
-                objective: node.objective,
-                priority: node.priority.unwrap_or(0),
-                token_budget: node.token_budget,
-                depends_on: node.depends_on,
-            })
-            .collect();
         let max_tokens = match (
             request.max_tokens_per_goal_plan,
             plan_config.max_tokens_per_goal_plan,
@@ -294,6 +307,30 @@ impl GoalToolExecutor {
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("failed to create goal plan: {err}"))
             })?;
+        if request.post_goal_context.is_some() || request.post_goal_plan_context.is_some() {
+            let post_goal_action = request
+                .post_goal_context
+                .map(codex_state::PostGoalContextAction::from)
+                .unwrap_or(plan_config.post_goal_context);
+            let post_goal_plan_action = request
+                .post_goal_plan_context
+                .map(codex_state::PostGoalContextAction::from)
+                .unwrap_or(plan_config.post_goal_plan_context);
+            self.state_db
+                .thread_goals()
+                .set_thread_goal_plan_context_actions(
+                    self.thread_id,
+                    outcome.snapshot.plan.plan_id.as_str(),
+                    post_goal_action,
+                    post_goal_plan_action,
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to set goal plan context lifecycle policy: {err}"
+                    ))
+                })?;
+        }
         let activated_goal = self
             .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
             .await?;
@@ -302,7 +339,10 @@ impl GoalToolExecutor {
             Some(invocation.turn_id.clone()),
             outcome.snapshot.clone(),
         );
-        let goal_plans = vec![GoalPlanResponse::from(outcome.snapshot)];
+        let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
+            outcome.snapshot,
+            self.thread_id,
+        )];
         goal_response_with_plan(
             activated_goal.clone(),
             activated_goal,
@@ -369,7 +409,10 @@ impl GoalToolExecutor {
             Some(invocation.turn_id.clone()),
             outcome.snapshot.clone(),
         );
-        let goal_plans = vec![GoalPlanResponse::from(outcome.snapshot)];
+        let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
+            outcome.snapshot,
+            self.thread_id,
+        )];
         goal_response_with_plan(
             activated_goal.clone(),
             activated_goal,
@@ -451,11 +494,35 @@ impl GoalToolExecutor {
             .thread_goals()
             .list_thread_goal_plans(self.thread_id)
             .await
-            .map(|plans| plans.into_iter().map(GoalPlanResponse::from).collect())
+            .map(|plans| {
+                plans
+                    .into_iter()
+                    .map(|snapshot| {
+                        GoalPlanResponse::from_snapshot_for_thread(snapshot, self.thread_id)
+                    })
+                    .collect()
+            })
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("failed to read goal plans: {err}"))
             })
     }
+}
+
+fn goal_plan_node_create_params(
+    node: CreateGoalPlanNodeRequest,
+) -> Result<codex_state::ThreadGoalPlanNodeCreateParams, FunctionCallError> {
+    let title = normalize_thread_goal_title(node.title.as_deref())
+        .map_err(FunctionCallError::RespondToModel)?
+        .unwrap_or_else(|| derive_thread_goal_title_from_objective(&node.objective));
+    Ok(codex_state::ThreadGoalPlanNodeCreateParams {
+        key: node.key,
+        objective: node.objective,
+        assigned_thread_id: None,
+        title: Some(title),
+        priority: node.priority.unwrap_or(0),
+        token_budget: node.token_budget,
+        depends_on: node.depends_on,
+    })
 }
 
 fn validate_goal_plan_request(
@@ -563,19 +630,23 @@ fn is_valid_goal_plan_node_key(key: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-impl From<codex_state::ThreadGoalPlanSnapshot> for GoalPlanResponse {
-    fn from(snapshot: codex_state::ThreadGoalPlanSnapshot) -> Self {
+impl GoalPlanResponse {
+    pub(crate) fn from_snapshot_for_thread(
+        snapshot: codex_state::ThreadGoalPlanSnapshot,
+        thread_id: ThreadId,
+    ) -> Self {
         let summary = snapshot.usage_summary();
         let ready_node_ids = snapshot
-            .ready_node_ids()
+            .ready_node_ids_for_thread(thread_id)
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
-        let nodes_omitted_count = snapshot
-            .nodes
-            .len()
-            .saturating_sub(MAX_GOAL_PLAN_RESPONSE_NODES);
+        let ready_node_count = i64::try_from(ready_node_ids.len()).unwrap_or(i64::MAX);
+        let visible_node_count = snapshot.visible_node_count_for_thread(thread_id);
+        let visible_nodes =
+            snapshot.visible_nodes_for_thread(thread_id, MAX_GOAL_PLAN_RESPONSE_NODES);
+        let nodes_omitted_count = visible_node_count.saturating_sub(visible_nodes.len());
         Self {
-            plan_id: snapshot.plan.plan_id,
+            plan_id: snapshot.plan.plan_id.clone(),
             thread_id: snapshot.plan.thread_id.to_string(),
             status: snapshot.plan.status.as_str().to_string(),
             auto_execute: snapshot.plan.auto_execute.as_str().to_string(),
@@ -585,7 +656,7 @@ impl From<codex_state::ThreadGoalPlanSnapshot> for GoalPlanResponse {
             remaining_tokens: summary.remaining_tokens,
             node_count: summary.node_count,
             completed_node_count: summary.completed_node_count,
-            ready_node_count: summary.ready_node_count,
+            ready_node_count,
             active_node_count: summary.active_node_count,
             pending_node_count: summary.pending_node_count,
             paused_node_count: summary.paused_node_count,
@@ -597,13 +668,11 @@ impl From<codex_state::ThreadGoalPlanSnapshot> for GoalPlanResponse {
             created_at: snapshot.plan.created_at.timestamp(),
             updated_at: snapshot.plan.updated_at.timestamp(),
             nodes_omitted_count: nodes_omitted_count as i64,
-            nodes: snapshot
-                .nodes
+            nodes: visible_nodes
                 .into_iter()
-                .take(MAX_GOAL_PLAN_RESPONSE_NODES)
                 .map(|node| {
                     let ready = ready_node_ids.contains(&node.node_id);
-                    GoalPlanNodeResponse::from_node(node, ready)
+                    GoalPlanNodeResponse::from_node(node.clone(), ready)
                 })
                 .collect(),
         }
@@ -613,6 +682,7 @@ impl From<codex_state::ThreadGoalPlanSnapshot> for GoalPlanResponse {
 impl GoalPlanCompletionReport {
     pub(crate) fn from_snapshot_if_terminal(
         snapshot: &codex_state::ThreadGoalPlanSnapshot,
+        thread_id: ThreadId,
     ) -> Option<Self> {
         if !matches!(
             snapshot.plan.status,
@@ -625,13 +695,13 @@ impl GoalPlanCompletionReport {
 
         let summary = snapshot.usage_summary();
         let ready_node_ids = snapshot
-            .ready_node_ids()
+            .ready_node_ids_for_thread(thread_id)
             .into_iter()
             .collect::<HashSet<_>>();
-        let nodes_omitted_count = snapshot
-            .nodes
-            .len()
-            .saturating_sub(MAX_GOAL_PLAN_RESPONSE_NODES);
+        let visible_node_count = snapshot.visible_node_count_for_thread(thread_id);
+        let visible_nodes =
+            snapshot.visible_nodes_for_thread(thread_id, MAX_GOAL_PLAN_RESPONSE_NODES);
+        let nodes_omitted_count = visible_node_count.saturating_sub(visible_nodes.len());
         Some(Self {
             plan_id: snapshot.plan.plan_id.clone(),
             status: snapshot.plan.status.as_str().to_string(),
@@ -651,18 +721,18 @@ impl GoalPlanCompletionReport {
             deferred_node_count: summary.deferred_node_count,
             cancelled_node_count: summary.cancelled_node_count,
             nodes_omitted_count: nodes_omitted_count as i64,
-            nodes: snapshot
-                .nodes
-                .iter()
-                .take(MAX_GOAL_PLAN_RESPONSE_NODES)
+            nodes: visible_nodes
+                .into_iter()
                 .map(|node| {
                     let (objective, objective_truncated) = truncated_objective(&node.objective);
                     GoalPlanCompletionNodeReport {
                         key: node.key.clone(),
                         objective,
+                        title: node.title.clone(),
                         objective_truncated,
                         status: node.status.as_str().to_string(),
                         ready: ready_node_ids.contains(&node.node_id),
+                        assigned_thread_id: node.assigned_thread_id.to_string(),
                         token_budget: node.token_budget,
                         tokens_used: node.tokens_used,
                         time_used_seconds: node.time_used_seconds,
@@ -683,10 +753,12 @@ impl GoalPlanNodeResponse {
             node_id: node.node_id,
             plan_id: node.plan_id,
             thread_id: node.thread_id.to_string(),
+            assigned_thread_id: node.assigned_thread_id.to_string(),
             key: node.key,
             sequence: node.sequence,
             priority: node.priority,
             objective,
+            title: node.title,
             objective_truncated,
             status: node.status.as_str().to_string(),
             ready,

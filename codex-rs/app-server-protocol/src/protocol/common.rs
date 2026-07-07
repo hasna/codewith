@@ -80,6 +80,16 @@ macro_rules! experimental_method_entry {
     };
 }
 
+#[cfg(test)]
+macro_rules! client_method_entry {
+    ($variant:ident => $wire:literal) => {
+        $wire
+    };
+    ($variant:ident) => {
+        ""
+    };
+}
+
 macro_rules! experimental_type_entry {
     (#[experimental($reason:expr)] $ty:ty) => {
         stringify!($ty)
@@ -463,6 +473,12 @@ macro_rules! client_request_definitions {
                 experimental_method_entry!($(#[experimental($reason)])? $(=> $wire)?),
             )*
         ];
+        #[cfg(test)]
+        pub(crate) const CLIENT_METHODS: &[&str] = &[
+            $(
+                client_method_entry!($variant $(=> $wire)?),
+            )*
+        ];
         pub(crate) const EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES: &[&str] = &[
             $(
                 experimental_type_entry!($(#[experimental($reason)])? $params),
@@ -606,6 +622,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalPlanActivateNodeResponse,
     },
+    ThreadGoalPlanAddGoal => "thread/goalPlan/addGoal" {
+        params: v2::ThreadGoalPlanAddGoalParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanAddGoalResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -680,6 +701,26 @@ client_request_definitions! {
         params: v2::ThreadMonitorDeleteParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMonitorDeleteResponse,
+    },
+    WebhookEventList => "webhook/event/list" {
+        params: v2::WebhookEventListParams,
+        serialization: global_shared_read("webhook-event"),
+        response: v2::WebhookEventListResponse,
+    },
+    WebhookEventRead => "webhook/event/read" {
+        params: v2::WebhookEventReadParams,
+        serialization: global_shared_read("webhook-event"),
+        response: v2::WebhookEventReadResponse,
+    },
+    WebhookEventMark => "webhook/event/mark" {
+        params: v2::WebhookEventMarkParams,
+        serialization: global("webhook-event"),
+        response: v2::WebhookEventMarkResponse,
+    },
+    WebhookEventIngest => "webhook/event/ingest" {
+        params: v2::WebhookEventIngestParams,
+        serialization: global("webhook-event"),
+        response: v2::WebhookEventIngestResponse,
     },
     #[experimental("thread/workflow/create")]
     ThreadWorkflowCreate => "thread/workflow/create" {
@@ -1032,6 +1073,21 @@ client_request_definitions! {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadShellCommandResponse,
+    },
+    ThreadQueuedMessageList => "thread/queuedMessage/list" {
+        params: v2::ThreadQueuedMessageListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageListResponse,
+    },
+    ThreadQueuedMessageUpdate => "thread/queuedMessage/update" {
+        params: v2::ThreadQueuedMessageUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageUpdateResponse,
+    },
+    ThreadQueuedMessageMove => "thread/queuedMessage/move" {
+        params: v2::ThreadQueuedMessageMoveParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueuedMessageMoveResponse,
     },
     #[experimental("thread/externalAgent/start")]
     ThreadExternalAgentStart => "thread/externalAgent/start" {
@@ -1470,6 +1526,12 @@ client_request_definitions! {
         params: v2::AuthProfileListParams,
         serialization: global_shared_read("account-auth"),
         response: v2::AuthProfileListResponse,
+    },
+
+    AuthProfileSaveCurrent => "authProfile/saveCurrent" {
+        params: v2::AuthProfileSaveCurrentParams,
+        serialization: global("account-auth"),
+        response: v2::AuthProfileSaveCurrentResponse,
     },
 
     AuthProfileSwitch => "authProfile/switch" {
@@ -2410,6 +2472,7 @@ mod tests {
             params: v2::ThreadGoalSetParams {
                 thread_id: "goal-thread".to_string(),
                 objective: Some("ship it".to_string()),
+                title: None,
                 status: None,
                 token_budget: None,
             },
@@ -2544,6 +2607,8 @@ mod tests {
                 cwd,
                 display_name: Some("remote review".to_string()),
                 agent_path: Some("/review".to_string()),
+                auth_profile: Some("work".to_string()),
+                auth_profile_kind: v2::AuthProfileKind::Named,
                 capabilities: vec![
                     v2::ActiveSessionCapability::ReceiveMessage,
                     v2::ActiveSessionCapability::QueueMessage,
@@ -2566,6 +2631,8 @@ mod tests {
                     "cwd": cwd_string,
                     "displayName": "remote review",
                     "agentPath": "/review",
+                    "authProfile": "work",
+                    "authProfileKind": "named",
                     "capabilities": [
                         "receiveMessage",
                         "queueMessage",
@@ -2677,6 +2744,9 @@ mod tests {
                 agent_path: None,
                 model_provider: "openai".to_string(),
                 model: Some("gpt-5.2".to_string()),
+                auth_profile: Some("work".to_string()),
+                auth_profile_kind: v2::AuthProfileKind::Named,
+                account_label: Some("work@example.com".to_string()),
                 source: v2::SessionSource::Cli,
                 thread_source: Some(v2::ThreadSource::User),
                 created_at: 1_781_700_000,
@@ -2713,6 +2783,9 @@ mod tests {
                     "agentPath": null,
                     "modelProvider": "openai",
                     "model": "gpt-5.2",
+                    "authProfile": "work",
+                    "authProfileKind": "named",
+                    "accountLabel": "work@example.com",
                     "source": "cli",
                     "threadSource": "user",
                     "createdAt": 1781700000,
@@ -3310,6 +3383,8 @@ mod tests {
                     agent_nickname: None,
                     agent_role: None,
                     git_info: None,
+                    auth_profile: None,
+                    auth_profile_kind: v2::AuthProfileKind::Unknown,
                     name: None,
                     turns: Vec::new(),
                 },
@@ -3318,6 +3393,7 @@ mod tests {
                 service_tier: None,
                 cwd,
                 runtime_workspace_roots: Vec::new(),
+                profile_workspace_roots: Vec::new(),
                 instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
                 approval_policy: v2::AskForApproval::OnFailure,
                 approvals_reviewer: v2::ApprovalsReviewer::User,
@@ -3356,6 +3432,8 @@ mod tests {
                         "agentNickname": null,
                         "agentRole": null,
                         "gitInfo": null,
+                        "authProfile": null,
+                        "authProfileKind": "unknown",
                         "name": null,
                         "turns": []
                     },
@@ -3364,6 +3442,7 @@ mod tests {
                     "serviceTier": null,
                     "cwd": absolute_path_string("tmp"),
                     "runtimeWorkspaceRoots": [],
+                    "profileWorkspaceRoots": [],
                     "instructionSources": [absolute_path_string("tmp/AGENTS.md")],
                     "approvalPolicy": "on-failure",
                     "approvalsReviewer": "user",
@@ -3497,44 +3576,6 @@ mod tests {
     }
 
     #[test]
-    fn serialize_auth_profile_list() -> Result<()> {
-        let request = ClientRequest::AuthProfileList {
-            request_id: RequestId::Integer(6),
-            params: v2::AuthProfileListParams {},
-        };
-        assert_eq!(
-            json!({
-                "method": "authProfile/list",
-                "id": 6,
-                "params": {}
-            }),
-            serde_json::to_value(&request)?,
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn serialize_auth_profile_switch() -> Result<()> {
-        let request = ClientRequest::AuthProfileSwitch {
-            request_id: RequestId::Integer(7),
-            params: v2::AuthProfileSwitchParams {
-                name: "work".to_string(),
-            },
-        };
-        assert_eq!(
-            json!({
-                "method": "authProfile/switch",
-                "id": 7,
-                "params": {
-                    "name": "work"
-                }
-            }),
-            serde_json::to_value(&request)?,
-        );
-        Ok(())
-    }
-
-    #[test]
     fn serialize_account_login_chatgpt_auth_tokens() -> Result<()> {
         let request = ClientRequest::LoginAccount {
             request_id: RequestId::Integer(6),
@@ -3554,6 +3595,77 @@ mod tests {
                     "chatgptAccountId": "org-123",
                     "chatgptPlanType": "business"
                 }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_list() -> Result<()> {
+        let request = ClientRequest::AuthProfileList {
+            request_id: RequestId::Integer(6),
+            params: v2::AuthProfileListParams {
+                cursor: None,
+                limit: None,
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(6));
+        assert_eq!(request.method(), "authProfile/list");
+        assert_eq!(
+            json!({
+                "method": "authProfile/list",
+                "id": 6,
+                "params": {
+                    "cursor": null,
+                    "limit": null,
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_save_current() -> Result<()> {
+        let request = ClientRequest::AuthProfileSaveCurrent {
+            request_id: RequestId::Integer(7),
+            params: v2::AuthProfileSaveCurrentParams {
+                name: "work".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(7));
+        assert_eq!(request.method(), "authProfile/saveCurrent");
+        assert_eq!(
+            json!({
+                "method": "authProfile/saveCurrent",
+                "id": 7,
+                "params": {
+                    "name": "work",
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_auth_profile_switch() -> Result<()> {
+        let request = ClientRequest::AuthProfileSwitch {
+            request_id: RequestId::Integer(8),
+            params: v2::AuthProfileSwitchParams {
+                name: "work".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(8));
+        assert_eq!(request.method(), "authProfile/switch");
+        assert_eq!(
+            json!({
+                "method": "authProfile/switch",
+                "id": 8,
+                "params": {
+                    "name": "work",
+                },
             }),
             serde_json::to_value(&request)?,
         );
@@ -4197,6 +4309,7 @@ mod tests {
             params: v2::ThreadGoalSetParams {
                 thread_id: "thr_123".to_string(),
                 objective: Some("ship goal mode".to_string()),
+                title: None,
                 status: Some(v2::ThreadGoalStatus::Active),
                 token_budget: Some(Some(10_000)),
             },
@@ -4222,8 +4335,15 @@ mod tests {
                 node_id: "node_123".to_string(),
             },
         };
-        let clear_request = ClientRequest::ThreadGoalClear {
+        let add_goal_request = ClientRequest::ThreadGoalPlanAddGoal {
             request_id: RequestId::Integer(5),
+            params: v2::ThreadGoalPlanAddGoalParams {
+                thread_id: "thr_123".to_string(),
+                objective: "queue goal mode".to_string(),
+            },
+        };
+        let clear_request = ClientRequest::ThreadGoalClear {
+            request_id: RequestId::Integer(6),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
             },
@@ -4243,6 +4363,10 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&activate_node_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&add_goal_request),
             None
         );
         assert_eq!(
@@ -4673,6 +4797,7 @@ mod tests {
             thread_id: "thr_123".to_string(),
             goal_id: "goal_123".to_string(),
             objective: "ship goal mode".to_string(),
+            title: None,
             status: v2::ThreadGoalStatus::Active,
             token_budget: Some(10_000),
             tokens_used: 123,
@@ -4726,6 +4851,7 @@ mod tests {
                     },
                     personality: None,
                     session_prompt: None,
+                    worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
                 },
             });
 

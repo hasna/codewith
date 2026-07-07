@@ -59,10 +59,10 @@ struct GlassToggle: View {
 
     @ViewBuilder private var capsule: some View {
         Capsule()
-            .fill(on ? Theme.toggleBlue : Color(hex: 0xD8D8DC))
+            .fill(on ? Theme.toggleBlue : Theme.cardStroke)
             .frame(width: 28, height: 16)
             .overlay(alignment: on ? .trailing : .leading) {
-                Circle().fill(.white).frame(width: 12, height: 12).padding(2)
+                Circle().fill(Theme.fieldFill).frame(width: 12, height: 12).padding(2)
                     .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
             }
     }
@@ -110,7 +110,7 @@ struct ChoiceCard: View {
             ZStack {
                 if selected {
                     Circle().fill(Theme.accent).frame(width: 16, height: 16)
-                    Circle().fill(.white).frame(width: 6, height: 6)
+                    Circle().fill(Theme.accentForeground).frame(width: 6, height: 6)
                 } else {
                     Circle().strokeBorder(Theme.cardStroke, lineWidth: 1).frame(width: 16, height: 16)
                 }
@@ -118,7 +118,7 @@ struct ChoiceCard: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white)
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Theme.toggleBlue.opacity(0.5) : Theme.cardStroke, lineWidth: 1)))
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(Theme.fieldFill)
+            .overlay(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).strokeBorder(selected ? Theme.toggleBlue.opacity(0.5) : Theme.cardStroke, lineWidth: 1)))
     }
 }

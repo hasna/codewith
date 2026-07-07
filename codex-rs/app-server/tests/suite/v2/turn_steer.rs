@@ -432,6 +432,7 @@ async fn turn_steer_rejects_context_only_input_without_merging_context() -> Resu
         AdditionalContextEntry {
             value: "tab one".to_string(),
             kind: AdditionalContextKind::Untrusted,
+            source: None,
         },
     )]));
     let steer_req = mcp

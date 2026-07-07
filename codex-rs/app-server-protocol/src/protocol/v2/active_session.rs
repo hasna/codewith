@@ -1,3 +1,4 @@
+use super::AuthProfileKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -46,6 +47,12 @@ pub struct ActiveSessionPeer {
     pub cwd: AbsolutePathBuf,
     pub display_name: Option<String>,
     pub agent_path: Option<String>,
+    /// Auth profile selected for model requests in this active peer, if known.
+    #[serde(default)]
+    pub auth_profile: Option<String>,
+    /// Whether `authProfile` is the default root profile or a named profile.
+    #[serde(default)]
+    pub auth_profile_kind: AuthProfileKind,
     #[serde(default)]
     pub capabilities: Vec<ActiveSessionCapability>,
     pub last_seen_at: i64,

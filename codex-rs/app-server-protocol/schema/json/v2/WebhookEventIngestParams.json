@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "eventType": {
+      "type": "string"
+    },
+    "externalDeliveryId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "idempotencyKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payloadJson": true,
+    "sourceAppId": {
+      "type": "string"
+    },
+    "sourceAppName": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "subscriptionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetThreadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "eventType",
+    "payloadJson",
+    "sourceAppId"
+  ],
+  "title": "WebhookEventIngestParams",
+  "type": "object"
+}

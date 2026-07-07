@@ -25,6 +25,11 @@ impl ChatWidget {
             .set_queue_submissions(/*queue_submissions*/ false);
         if previous_thread_id != self.thread_id {
             self.review.recent_auto_review_denials = RecentAutoReviewDenials::default();
+            self.teaching_mode_enabled = self
+                .thread_id
+                .as_ref()
+                .and_then(|thread_id| self.teaching_mode_by_thread.get(thread_id).copied())
+                .unwrap_or(false);
         }
         self.refresh_plan_mode_nudge();
         self.turn_lifecycle.reset_thread();

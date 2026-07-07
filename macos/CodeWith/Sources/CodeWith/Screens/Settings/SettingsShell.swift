@@ -18,8 +18,23 @@ struct SettingsShell<Content: View>: View {
         [
             ("Personal", [
                 .init(icon: "gearshape", title: "General"),
+                .init(icon: "person.crop.circle", title: "Profile"),
+                .init(icon: "sun.max", title: "Appearance"),
                 .init(icon: "slider.horizontal.3", title: "Configuration"),
                 .init(icon: "sparkles", title: "Personalization"),
+                .init(icon: "command", title: "Keyboard shortcuts"),
+                .init(icon: "creditcard", title: "Usage & billing"),
+            ]),
+            ("Integrations", [
+                .init(icon: "antenna.radiowaves.left.and.right", title: "MCP servers"),
+            ]),
+            ("Coding", [
+                .init(icon: "server.rack", title: "Machines"),
+                .init(icon: "link", title: "Hooks"),
+                .init(icon: "arrow.triangle.pull", title: "Worktrees"),
+            ]),
+            ("Archived", [
+                .init(icon: "archivebox", title: "Archived chats"),
             ]),
         ]
     }

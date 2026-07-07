@@ -189,6 +189,8 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
     expected_tools_names.extend([
         "update_plan",
         "rename_session",
+        "manage_auth_profiles",
+        "get_usage",
         "manage_loop",
         "manage_monitor",
         "manage_schedule",

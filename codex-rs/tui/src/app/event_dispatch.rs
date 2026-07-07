@@ -234,6 +234,14 @@ impl App {
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(thread_id) = self.chat_widget.thread_id() {
+                    if self.chat_widget.rollout_path().is_none() {
+                        self.chat_widget.add_error_message(
+                            "This session is still starting and cannot be forked yet. Send a message first, then try /fork again."
+                                .to_string(),
+                        );
+                        tui.frame_requester().schedule_frame();
+                        return Ok(AppRunControl::Continue);
+                    }
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;
                     match app_server.fork_thread(self.config.clone(), thread_id).await {
@@ -269,9 +277,7 @@ impl App {
                             }
                         }
                         Err(err) => {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to fork current session through the app server: {err}"
-                            ));
+                            self.chat_widget.add_error_message(fork_error_message(&err));
                         }
                     }
                 } else {
@@ -832,6 +838,13 @@ impl App {
                     tracing::warn!("failed to set MCP tool enabled from TUI action: {err}");
                 }
             }
+            AppEvent::ConfirmAgentMcpMutation { request_id } => {
+                self.confirm_agent_mcp_mutation(app_server, request_id)
+                    .await;
+            }
+            AppEvent::DenyAgentMcpMutation { request_id } => {
+                self.deny_agent_mcp_mutation(app_server, request_id).await;
+            }
             AppEvent::StartMcpServerOauthLogin { name } => {
                 self.start_mcp_server_oauth_login(app_server, name);
             }
@@ -968,6 +981,25 @@ impl App {
             }
             AppEvent::ActivateThreadGoalPlanNode { thread_id, node_id } => {
                 self.activate_thread_goal_plan_node(app_server, thread_id, node_id)
+                    .await;
+            }
+            AppEvent::OpenQueuedMessages { thread_id } => {
+                self.open_queued_messages(app_server, thread_id).await;
+            }
+            AppEvent::UpdateQueuedThreadMessage {
+                thread_id,
+                message_id,
+                text,
+            } => {
+                self.update_queued_thread_message(app_server, thread_id, message_id, text)
+                    .await;
+            }
+            AppEvent::MoveQueuedThreadMessage {
+                thread_id,
+                message_id,
+                direction,
+            } => {
+                self.move_queued_thread_message(app_server, thread_id, message_id, direction)
                     .await;
             }
             AppEvent::OpenThreadLoopManager { thread_id } => {
@@ -1141,6 +1173,38 @@ impl App {
                 self.read_thread_monitor(app_server, thread_id, monitor_id)
                     .await;
             }
+            AppEvent::OpenWebhookInbox { thread_id } => {
+                self.open_webhook_inbox(app_server, thread_id).await;
+            }
+            AppEvent::OpenWebhookEventActions {
+                event_id,
+                thread_id,
+            } => {
+                self.open_webhook_event_actions(app_server, event_id, thread_id)
+                    .await;
+            }
+            AppEvent::MarkWebhookEvent {
+                event_id,
+                status,
+                thread_id,
+            } => {
+                self.mark_webhook_event(app_server, event_id, status, thread_id)
+                    .await;
+            }
+            AppEvent::InjectWebhookEvent {
+                event_id,
+                thread_id,
+            } => {
+                self.inject_webhook_event(app_server, event_id, thread_id)
+                    .await;
+            }
+            AppEvent::QueueWebhookEvent {
+                event_id,
+                thread_id,
+            } => {
+                self.queue_webhook_event(app_server, event_id, thread_id)
+                    .await;
+            }
             AppEvent::StopThreadMonitor {
                 thread_id,
                 monitor_id,
@@ -1232,6 +1296,23 @@ impl App {
                 start_point,
             } => {
                 self.create_worktree(app_server, name, branch, start_point)
+                    .await;
+            }
+            AppEvent::StartPullRequestMode {
+                name,
+                branch,
+                start_point,
+            } => {
+                self.start_pull_request_mode(app_server, name, branch, start_point)
+                    .await;
+            }
+            AppEvent::StartVariants {
+                count,
+                name,
+                start_point,
+                prompt,
+            } => {
+                self.start_variants(app_server, count, name, start_point, prompt)
                     .await;
             }
             AppEvent::OpenWorktreeActions {
@@ -1327,7 +1408,9 @@ impl App {
                 auth_profile,
                 result,
             } => {
-                self.apply_minimax_usage_loaded(origin, auth_profile, result);
+                if self.apply_minimax_usage_loaded(origin, auth_profile, result) {
+                    tui.frame_requester().schedule_frame();
+                }
             }
             AppEvent::UsageSelfHealRetry { retry_id } => {
                 if self.chat_widget.on_usage_self_heal_retry(retry_id) {
@@ -1501,6 +1584,9 @@ impl App {
             }
             AppEvent::OpenConfigSection { section } => {
                 self.chat_widget.open_config_section_popup(section);
+            }
+            AppEvent::OpenAgentMaxThreadsMenu => {
+                self.chat_widget.open_agent_max_threads_popup();
             }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
@@ -2386,6 +2472,10 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::CreateAgentThread => {
+                self.create_agent_thread_from_picker(tui, app_server)
+                    .await?;
+            }
             AppEvent::OpenAgentRenamePrompt {
                 thread_id,
                 current_name,
@@ -3075,21 +3165,53 @@ impl App {
         result: Result<Vec<RateLimitSnapshot>, String>,
     ) -> RateLimitRefreshCompletion {
         let is_current_profile = auth_profile == self.config.selected_auth_profile;
+        let heartbeat_profile = matches!(origin, RateLimitRefreshOrigin::Heartbeat)
+            .then(|| target.auth_profile_key(self.config.selected_auth_profile.as_deref()))
+            .flatten();
+        if let RateLimitRefreshOrigin::UsagePanel { request_id } = origin
+            && !self
+                .chat_widget
+                .is_usage_panel_rate_limit_refresh_current(request_id)
+        {
+            tracing::debug!(
+                request_id,
+                "discarding superseded /usage rate-limit refresh result"
+            );
+            return RateLimitRefreshCompletion::None;
+        }
+
         if target.targets_selected_profile() && !is_current_profile {
             tracing::debug!(
                 request_auth_profile = ?auth_profile,
                 current_auth_profile = ?self.config.selected_auth_profile,
                 "discarding stale account/rateLimits/read result after auth profile change"
             );
-            if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
-                self.chat_widget
-                    .finish_status_rate_limit_refresh(request_id);
-            }
-            return RateLimitRefreshCompletion::None;
+            let completion = match origin {
+                RateLimitRefreshOrigin::StatusCommand { request_id } => {
+                    self.chat_widget
+                        .finish_status_rate_limit_refresh(request_id);
+                    RateLimitRefreshCompletion::None
+                }
+                RateLimitRefreshOrigin::UsagePanel { request_id } => {
+                    self.chat_widget.finish_usage_panel_rate_limit_refresh(
+                        request_id,
+                        Err("Usage refresh was superseded by an auth profile change".to_string()),
+                    );
+                    RateLimitRefreshCompletion::ScheduleFrame
+                }
+                RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
+                    RateLimitRefreshCompletion::None
+                }
+            };
+            return completion;
         }
 
         match result {
             Ok(snapshots) => {
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
+                }
                 if is_current_profile {
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
@@ -3103,6 +3225,11 @@ impl App {
                         self.chat_widget.refresh_profile_popup_if_active();
                         RateLimitRefreshCompletion::ScheduleFrame
                     }
+                    RateLimitRefreshOrigin::UsagePanel { request_id } => {
+                        self.chat_widget
+                            .finish_usage_panel_rate_limit_refresh(request_id, Ok(()));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
                     RateLimitRefreshOrigin::StatusCommand { request_id } => {
                         self.chat_widget
                             .finish_status_rate_limit_refresh(request_id);
@@ -3111,19 +3238,37 @@ impl App {
                 }
             }
             Err(err) => {
-                if matches!(origin, RateLimitRefreshOrigin::StatusCommand { .. })
-                    || target.targets_selected_profile()
+                if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
+                    self.chat_widget
+                        .record_auth_profile_usage_heartbeat_failure(heartbeat_profile);
+                }
+                if matches!(
+                    origin,
+                    RateLimitRefreshOrigin::StatusCommand { .. }
+                        | RateLimitRefreshOrigin::UsagePanel { .. }
+                ) || target.targets_selected_profile()
                     || is_current_profile
                 {
                     tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
                 } else {
                     tracing::debug!("account/rateLimits/read heartbeat failed: {err}");
                 }
-                if let RateLimitRefreshOrigin::StatusCommand { request_id } = origin {
-                    self.chat_widget
-                        .finish_status_rate_limit_refresh(request_id);
+
+                match origin {
+                    RateLimitRefreshOrigin::StatusCommand { request_id } => {
+                        self.chat_widget
+                            .finish_status_rate_limit_refresh(request_id);
+                        RateLimitRefreshCompletion::None
+                    }
+                    RateLimitRefreshOrigin::UsagePanel { request_id } => {
+                        self.chat_widget
+                            .finish_usage_panel_rate_limit_refresh(request_id, Err(err));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
+                        RateLimitRefreshCompletion::None
+                    }
                 }
-                RateLimitRefreshCompletion::None
             }
         }
     }
@@ -3133,26 +3278,53 @@ impl App {
         origin: MiniMaxUsageRefreshOrigin,
         auth_profile: Option<String>,
         result: Result<crate::minimax_usage::MiniMaxUsageSnapshot, String>,
-    ) {
-        let MiniMaxUsageRefreshOrigin::StatusCommand { request_id } = origin;
+    ) -> bool {
         if auth_profile != self.config.selected_auth_profile {
             tracing::debug!(
                 request_auth_profile = ?auth_profile,
                 current_auth_profile = ?self.config.selected_auth_profile,
                 "discarding stale MiniMax usage result after auth profile change"
             );
-            self.chat_widget.finish_status_minimax_usage_refresh(
-                request_id,
-                Err("MiniMax usage refresh was superseded by an auth profile change".to_string()),
-            );
-            return;
+            let should_schedule_frame = match origin {
+                MiniMaxUsageRefreshOrigin::StatusCommand { request_id } => {
+                    self.chat_widget.finish_status_minimax_usage_refresh(
+                        request_id,
+                        Err(
+                            "MiniMax usage refresh was superseded by an auth profile change"
+                                .to_string(),
+                        ),
+                    );
+                    false
+                }
+                MiniMaxUsageRefreshOrigin::UsagePanel { request_id } => {
+                    self.chat_widget.finish_usage_panel_minimax_usage_refresh(
+                        request_id,
+                        Err(
+                            "MiniMax usage refresh was superseded by an auth profile change"
+                                .to_string(),
+                        ),
+                    );
+                    true
+                }
+            };
+            return should_schedule_frame;
         }
 
         if let Err(err) = result.as_ref() {
             tracing::warn!("MiniMax usage refresh failed during TUI refresh: {err}");
         }
-        self.chat_widget
-            .finish_status_minimax_usage_refresh(request_id, result);
+        match origin {
+            MiniMaxUsageRefreshOrigin::StatusCommand { request_id } => {
+                self.chat_widget
+                    .finish_status_minimax_usage_refresh(request_id, result);
+                false
+            }
+            MiniMaxUsageRefreshOrigin::UsagePanel { request_id } => {
+                self.chat_widget
+                    .finish_usage_panel_minimax_usage_refresh(request_id, result);
+                true
+            }
+        }
     }
 }
 

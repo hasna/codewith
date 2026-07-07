@@ -39,9 +39,16 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WorktreeAttachResponse;
+use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeCleanupResponse;
 use codex_app_server_protocol::WorktreeCreateResponse;
 use codex_app_server_protocol::WorktreeDetachResponse;
@@ -77,6 +84,7 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result<()> {
@@ -187,7 +195,8 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         AgentRunStatus::Completed
     );
 
-    let first_events_page = agent_events_page(&mut restarted, &agent_id, None, Some(1)).await?;
+    let first_events_page =
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(1)).await?;
     assert_eq!(first_events_page.data.len(), 1);
     assert_eq!(first_events_page.data[0].event_type, "agent.started");
     assert_eq!(first_events_page.next_cursor, Some("event:1".to_string()));
@@ -205,7 +214,8 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         "agent.workerStarting"
     );
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
-    let all_events = agent_events_page(&mut restarted, &agent_id, None, Some(20)).await?;
+    let all_events =
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
     let event_types = all_events
         .data
         .iter()
@@ -314,7 +324,20 @@ async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
     let state_db = init_state_db(codex_home.path()).await?;
     for index in 0..501 {
         let agent_id = format!("paged-run-{index:03}");
-        seed_queued_agent_run(state_db.as_ref(), agent_id.as_str(), None, "paged run").await?;
+        seed_queued_agent_run(
+            state_db.as_ref(),
+            agent_id.as_str(),
+            /*idempotency_key*/ None,
+            "paged run",
+        )
+        .await?;
+        state_db
+            .update_background_agent_run_status(
+                agent_id.as_str(),
+                StateBackgroundAgentRunStatus::Completed,
+                Some("completed by pagination test"),
+            )
+            .await?;
     }
     let mut mcp = init_mcp(codex_home.path()).await?;
 
@@ -715,7 +738,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "picked up by periodic supervisor",
     )
     .await?;
@@ -754,7 +777,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     assert_eq!(agent.agent_id, agent_id);
     assert!(agent.thread_id.is_some());
 
-    let events = agent_events_page(&mut mcp, agent_id.as_str(), None, Some(20)).await?;
+    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(20)).await?;
     let event_types = events
         .data
         .iter()
@@ -779,7 +802,7 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "wait for approval",
     )
     .await?;
@@ -1025,10 +1048,11 @@ async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "delete then stop",
     )
     .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let delete_id = mcp
@@ -1080,7 +1104,7 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
     seed_queued_agent_run(
         state_db.as_ref(),
         agent_id.as_str(),
-        None,
+        /*idempotency_key*/ None,
         "wait for approval",
     )
     .await?;
@@ -1263,6 +1287,7 @@ async fn worktree_list_without_current_repo_does_not_return_global_worktrees() -
     let state_db = init_state_db(codex_home.path()).await?;
     let other_repo = codex_home.path().join("other-repo");
     create_managed_worktree(state_db.as_ref(), "wt-other-repo", other_repo.as_path()).await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let request_id = mcp
@@ -1302,6 +1327,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             test_summary_json: None,
         })
         .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let list_request_id = mcp
@@ -1310,7 +1336,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let list_response: WorktreeListResponse = read_response(&mut mcp, list_request_id).await?;
     assert_eq!(vec!["wt-current".to_string()], worktree_ids(&list_response));
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         list_response.policy.current_base_repo_path
     );
 
@@ -1325,7 +1351,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
     let read_other: WorktreeReadResponse = read_response(&mut mcp, read_other_request_id).await?;
     assert_eq!(None, read_other.worktree);
     assert_eq!(
-        Some(repo_path.display().to_string()),
+        Some(protocol_path(&repo_path)),
         read_other.policy.current_base_repo_path
     );
 
@@ -1334,7 +1360,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             "worktree/read",
             Some(json!({
                 "worktreeId": "wt-other",
-                "baseRepoPath": other_repo.display().to_string(),
+                "baseRepoPath": protocol_path(&other_repo),
             })),
         )
         .await?;
@@ -1348,7 +1374,7 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             .map(|worktree| worktree.worktree_id.clone())
     );
     assert_eq!(
-        Some(other_repo.display().to_string()),
+        Some(protocol_path(&other_repo)),
         read_requested_repo.policy.current_base_repo_path
     );
 
@@ -1357,26 +1383,15 @@ async fn worktree_list_and_read_are_scoped_to_current_repo() -> Result<()> {
             "worktree/mergeCandidate/list",
             Some(json!({
                 "worktreeId": "wt-other",
+                "status": "open",
             })),
         )
         .await?;
     let other_candidates: WorktreeMergeCandidateListResponse =
         read_response(&mut mcp, list_other_candidates_request_id).await?;
-    assert_eq!(Vec::<String>::new(), merge_candidate_ids(&other_candidates));
-
-    let refresh_other_error = raw_request_error(
-        &mut mcp,
-        "worktree/mergeCandidate/refresh",
-        json!({
-            "worktreeId": "wt-other",
-            "targetRef": "HEAD",
-        }),
-    )
-    .await?;
-    assert_eq!(INVALID_PARAMS_ERROR_CODE, refresh_other_error.error.code);
     assert_eq!(
-        "worktree/mergeCandidate/refresh worktree not found",
-        refresh_other_error.error.message
+        Vec::<String>::new(),
+        worktree_ids_from_candidates(&other_candidates)
     );
 
     let apply_other_request_id = mcp
@@ -1412,6 +1427,8 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     init_git_repo(codex_home.path())?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     write_config(codex_home.path(), server.uri().as_str())?;
+    git(codex_home.path(), &["add", "config.toml"])?;
+    git(codex_home.path(), &["commit", "-m", "add test config"])?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let invalid_branch_error = raw_request_error(
@@ -1419,7 +1436,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
         "worktree/create",
         json!({
             "name": "invalid",
-            "branch": "bad..branch",
+            "branch": "-bad",
             "startPoint": "HEAD",
         }),
     )
@@ -1551,7 +1568,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert_eq!(1, reconciled.discovered);
     assert!(reconciled.updated >= 1);
     assert!(reconciled.data.iter().any(|worktree| {
-        worktree.worktree_path == manual_path.to_string_lossy()
+        worktree.worktree_path == protocol_path(&manual_path)
             && worktree
                 .identity
                 .as_deref()
@@ -1560,7 +1577,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert!(reconciled.data.iter().any(|worktree| {
         worktree.worktree_id == "outside-root"
             && worktree.lifecycle_status == WorktreeLifecycleStatus::Active
-            && worktree.worktree_path == outside_root_path.to_string_lossy()
+            && worktree.worktree_path == protocol_path(&outside_root_path)
     }));
 
     let cleanup_request_id = mcp
@@ -1857,7 +1874,7 @@ async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<(
     seed_queued_agent_run(
         state_db.as_ref(),
         "agent-run-cleanup-guard",
-        None,
+        /*idempotency_key*/ None,
         "guard nonterminal owner cleanup",
     )
     .await?;
@@ -2033,19 +2050,254 @@ async fn worktree_cleanup_background_agent_lease_uses_lease_release_path() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Result<()> {
+async fn worktree_create_rejects_subagent_threads() -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     write_config(codex_home.path(), server.uri().as_str())?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id =
+        start_thread_for_worktree_attach_with_source(&mut mcp, Some(ThreadSource::Subagent))
+            .await?;
+
+    let error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "subagent-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, error.error.code);
+    assert_eq!(
+        "subagent sessions cannot create managed worktrees",
+        error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_worktree_mode_blocks_session_create_and_attach() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let repo_path = codex_home.path().join("repo");
+    std::fs::create_dir_all(repo_path.as_path())?;
+    init_git_repo(repo_path.as_path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    create_managed_worktree(state_db.as_ref(), "wt-shared", repo_path.as_path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), repo_path.as_path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::Shared,
+    )
+    .await?;
+
+    let create_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "shared-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "baseRepoPath": repo_path.display().to_string(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, create_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        create_error.error.message
+    );
+
+    let attach_error = raw_request_error(
+        &mut mcp,
+        "worktree/attach",
+        json!({
+            "worktreeId": "wt-shared",
+            "threadId": thread_id,
+            "agentRunId": null,
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, attach_error.error.code);
+    assert_eq!(
+        "managed worktrees are disabled for this session",
+        attach_error.error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pull_request_worktree_mode_requires_attached_worktree_for_turns() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "done",
+        )?])
+        .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let state_db = init_state_db(codex_home.path()).await?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), codex_home.path())
+        .await?;
+    update_thread_worktree_mode(
+        &mut mcp,
+        thread_id.as_str(),
+        codex_protocol::protocol::SessionWorktreeMode::PullRequest,
+    )
+    .await?;
+
+    let turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "implement the PR-mode feature".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, turn_error.error.code);
+    assert_eq!(
+        "pull-request mode requires an attached active managed worktree before starting a turn",
+        turn_error.error.message
+    );
+
+    let retain_cleanup_error = raw_request_error(
+        &mut mcp,
+        "worktree/create",
+        json!({
+            "name": "pr-retain-denied",
+            "startPoint": "HEAD",
+            "threadId": thread_id,
+            "cleanupPolicy": "retain",
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, retain_cleanup_error.error.code);
+    assert_eq!(
+        "pull-request mode worktrees use deleteIfClean cleanup policy",
+        retain_cleanup_error.error.message
+    );
+
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "pr-mode",
+                "startPoint": "HEAD",
+                "threadId": thread_id,
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    assert_eq!(
+        WorktreeCleanupPolicy::DeleteIfClean,
+        created.worktree.cleanup_policy
+    );
+    assert_eq!(WorktreeOwnerKind::MainSession, created.worktree.owner_kind);
+    assert_eq!(Some(thread_id.clone()), created.worktree.owner_thread_id);
+    assert!(
+        created
+            .worktree
+            .identity
+            .as_deref()
+            .is_some_and(|identity| identity.starts_with("pr-mode:"))
+    );
+
+    let outside_cwd_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "try to keep working from the shared checkout".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let outside_cwd_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(outside_cwd_turn_request_id)),
+    )
+    .await??;
+    assert_eq!(INVALID_REQUEST_ERROR_CODE, outside_cwd_error.error.code);
+    assert!(
+        outside_cwd_error
+            .error
+            .message
+            .contains("pull-request mode requires cwd"),
+        "unexpected error: {}",
+        outside_cwd_error.error.message
+    );
+
+    let successful_turn_request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            cwd: Some(std::path::PathBuf::from(
+                created.worktree.worktree_path.as_str(),
+            )),
+            input: vec![V2UserInput::Text {
+                text: "now work inside the PR worktree".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let successful_turn_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(successful_turn_request_id)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response(successful_turn_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let repo_path = codex_home.path().join("repo");
+    std::fs::create_dir(&repo_path)?;
+    init_git_repo(repo_path.as_path())?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    std::fs::write(repo_path.join(".gitignore"), ".codewith/\n")?;
+    git(repo_path.as_path(), &["add", ".gitignore"])?;
+    git(repo_path.as_path(), &["commit", "-m", "ignore worktrees"])?;
+    let base_repo_path = repo_path.display().to_string();
+
+    let mut mcp = init_mcp_with_cwd(codex_home.path(), repo_path.as_path()).await?;
     let create_request_id = mcp
         .send_raw_request(
             "worktree/create",
             Some(json!({
                 "name": "mergeable",
                 "startPoint": "HEAD",
+                "baseRepoPath": base_repo_path,
             })),
         )
         .await?;
@@ -2170,21 +2422,24 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         final_refreshed.candidate.status
     );
     let candidate_id = final_refreshed.candidate.candidate_id.clone();
-    let list_final_open_request_id = mcp
-        .send_raw_request(
-            "worktree/mergeCandidate/list",
-            Some(json!({
-                "worktreeId": created.worktree.worktree_id,
-                "status": "open",
-            })),
-        )
-        .await?;
-    let final_open_candidates: WorktreeMergeCandidateListResponse =
-        read_response(&mut mcp, list_final_open_request_id).await?;
+    std::fs::write(repo_path.join("target-untracked.txt"), "target dirt\n")?;
+    let dirty_target_apply_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": candidate_id,
+        }),
+    )
+    .await?;
     assert_eq!(
-        vec![candidate_id.clone()],
-        merge_candidate_ids(&final_open_candidates)
+        INVALID_PARAMS_ERROR_CODE,
+        dirty_target_apply_error.error.code
     );
+    assert_eq!(
+        "worktree/mergeCandidate/apply requires a clean target checkout",
+        dirty_target_apply_error.error.message
+    );
+    std::fs::remove_file(repo_path.join("target-untracked.txt"))?;
 
     let apply_request_id = mcp
         .send_raw_request(
@@ -2202,12 +2457,94 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "merge candidate\n",
-        std::fs::read_to_string(codex_home.path().join("feature.txt"))?
+        std::fs::read_to_string(repo_path.join("feature.txt"))?.replace("\r\n", "\n")
+    );
+    assert_eq!(
+        "later work\n",
+        std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
     );
     assert_eq!(
         "later work\n",
         std::fs::read_to_string(codex_home.path().join("later.txt"))?
     );
+
+    let race_create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "target-race",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let race_created: WorktreeCreateResponse =
+        read_response(&mut mcp, race_create_request_id).await?;
+    let race_worktree_path = std::path::PathBuf::from(race_created.worktree.worktree_path.as_str());
+    std::fs::write(race_worktree_path.join("race.txt"), "race candidate\n")?;
+    git(race_worktree_path.as_path(), &["add", "race.txt"])?;
+    git(
+        race_worktree_path.as_path(),
+        &["commit", "-m", "add race candidate"],
+    )?;
+    let race_refresh_request_id = mcp
+        .send_raw_request(
+            "worktree/mergeCandidate/refresh",
+            Some(json!({
+                "worktreeId": race_created.worktree.worktree_id,
+                "targetRef": "HEAD",
+            })),
+        )
+        .await?;
+    let race_refreshed: WorktreeMergeCandidateRefreshResponse =
+        read_response(&mut mcp, race_refresh_request_id).await?;
+    assert_eq!(
+        WorktreeMergeCandidateStatus::Open,
+        race_refreshed.candidate.status
+    );
+    std::fs::write(
+        codex_home.path().join("main-advanced.txt"),
+        "main advanced\n",
+    )?;
+    git(codex_home.path(), &["add", "main-advanced.txt"])?;
+    git(codex_home.path(), &["commit", "-m", "advance merge target"])?;
+    let target_changed_apply_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/apply",
+        json!({
+            "candidateId": race_refreshed.candidate.candidate_id,
+        }),
+    )
+    .await?;
+    assert_eq!(
+        INVALID_PARAMS_ERROR_CODE,
+        target_changed_apply_error.error.code
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .starts_with("worktree/mergeCandidate/apply target changed from "),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(
+        target_changed_apply_error
+            .error
+            .message
+            .ends_with("; refresh before applying"),
+        "unexpected target changed error: {}",
+        target_changed_apply_error.error.message
+    );
+    assert!(!codex_home.path().join("race.txt").exists());
+    assert_eq!(
+        "race candidate\n",
+        std::fs::read_to_string(race_worktree_path.join("race.txt"))?
+    );
+    assert_eq!(
+        "main advanced\n",
+        std::fs::read_to_string(codex_home.path().join("main-advanced.txt"))?
+    );
+
     let dismiss_applied_error = raw_request_error(
         &mut mcp,
         "worktree/mergeCandidate/dismiss",
@@ -2236,6 +2573,20 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         apply_again_error.error.message
     );
 
+    let dismiss_applied_error = raw_request_error(
+        &mut mcp,
+        "worktree/mergeCandidate/dismiss",
+        json!({
+            "candidateId": candidate_id.clone(),
+        }),
+    )
+    .await?;
+    assert_eq!(INVALID_PARAMS_ERROR_CODE, dismiss_applied_error.error.code);
+    assert_eq!(
+        "worktree/mergeCandidate/dismiss requires an open or blocked candidate",
+        dismiss_applied_error.error.message
+    );
+
     Ok(())
 }
 
@@ -2253,21 +2604,33 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
     seed_queued_agent_run(
         state_db.as_ref(),
         "agent-run-attach",
-        None,
+        /*idempotency_key*/ None,
         "attach this agent to a worktree",
     )
     .await?;
+    state_db
+        .update_background_agent_run_status(
+            "agent-run-attach",
+            StateBackgroundAgentRunStatus::WaitingOnUser,
+            Some("waiting for attach test"),
+        )
+        .await?;
+    drop(state_db);
 
     let mut mcp = init_mcp(codex_home.path()).await?;
-    let thread_id = start_thread_for_worktree_attach(&mut mcp).await?;
-    upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id.as_str(), repo_path.as_path())
-        .await?;
+    let thread_id_string = start_thread_for_worktree_attach(&mut mcp).await?;
+    upsert_thread_for_worktree_attach_with_retry(
+        codex_home.path(),
+        thread_id_string.as_str(),
+        repo_path.as_path(),
+    )
+    .await?;
     let attach_request_id = mcp
         .send_raw_request(
             "worktree/attach",
             Some(json!({
                 "worktreeId": "wt-attach",
-                "threadId": thread_id,
+                "threadId": thread_id_string,
                 "agentRunId": null,
             })),
         )
@@ -2275,7 +2638,10 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
     let attach: WorktreeAttachResponse = read_response(&mut mcp, attach_request_id).await?;
     assert_eq!("wt-attach", attach.worktree.worktree_id);
     assert_eq!(WorktreeOwnerKind::MainSession, attach.worktree.owner_kind);
-    assert_eq!(Some(thread_id.clone()), attach.worktree.owner_thread_id);
+    assert_eq!(
+        Some(thread_id_string.clone()),
+        attach.worktree.owner_thread_id
+    );
     assert_eq!(None, attach.worktree.owner_agent_run_id);
 
     let read_request_id = mcp
@@ -2288,7 +2654,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         .await?;
     let read: WorktreeReadResponse = read_response(&mut mcp, read_request_id).await?;
     let worktree = read.worktree.expect("attached worktree should be readable");
-    assert_eq!(Some(thread_id.clone()), worktree.owner_thread_id);
+    assert_eq!(Some(thread_id_string.clone()), worktree.owner_thread_id);
     assert_eq!(None, worktree.owner_agent_run_id);
 
     let detach_request_id = mcp
@@ -2296,7 +2662,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
             "worktree/detach",
             Some(json!({
                 "worktreeId": "wt-attach",
-                "threadId": thread_id,
+                "threadId": thread_id_string,
                 "agentRunId": null,
             })),
         )
@@ -2353,7 +2719,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         "worktree/attach",
         json!({
             "worktreeId": "wt-attach",
-            "threadId": thread_id,
+            "threadId": thread_id_string,
             "agentRunId": "agent-run-1",
         }),
     )
@@ -2475,6 +2841,12 @@ async fn init_mcp(codex_home: &Path) -> Result<McpProcess> {
     Ok(mcp)
 }
 
+async fn init_mcp_with_cwd(codex_home: &Path, cwd: &Path) -> Result<McpProcess> {
+    let mut mcp = McpProcess::new_with_cwd(codex_home, cwd).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    Ok(mcp)
+}
+
 async fn init_state_db(codex_home: &Path) -> Result<Arc<codex_state::StateRuntime>> {
     let state_db =
         codex_state::StateRuntime::init(codex_home.to_path_buf(), "mock_provider".into()).await?;
@@ -2504,6 +2876,32 @@ fn git(cwd: &Path, args: &[&str]) -> Result<()> {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn protocol_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(not(windows))]
+    let path = path.to_path_buf();
+
+    let path = path.to_string_lossy().into_owned();
+    strip_windows_verbatim_prefix(path)
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn strip_windows_verbatim_prefix(path: String) -> String {
+    path
 }
 
 async fn create_managed_worktree(
@@ -2562,7 +2960,7 @@ async fn create_background_agent_git_worktree_lease(
     seed_queued_agent_run(
         state_db,
         agent_id,
-        None,
+        /*idempotency_key*/ None,
         "release a leased background-agent worktree",
     )
     .await?;
@@ -2627,9 +3025,17 @@ async fn create_background_agent_git_worktree_lease(
 }
 
 async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String> {
+    start_thread_for_worktree_attach_with_source(mcp, /*thread_source*/ None).await
+}
+
+async fn start_thread_for_worktree_attach_with_source(
+    mcp: &mut McpProcess,
+    thread_source: Option<ThreadSource>,
+) -> Result<String> {
     let request_id = mcp
         .send_thread_start_request(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            thread_source,
             ..Default::default()
         })
         .await?;
@@ -2642,20 +3048,64 @@ async fn start_thread_for_worktree_attach(mcp: &mut McpProcess) -> Result<String
     Ok(response.thread.id)
 }
 
+async fn upsert_thread_for_worktree_attach_with_retry(
+    codex_home: &Path,
+    thread_id: &str,
+    cwd: &Path,
+) -> Result<()> {
+    for attempt in 0..5 {
+        let result = async {
+            let state_db = init_state_db(codex_home).await?;
+            upsert_thread_for_worktree_attach(state_db.as_ref(), thread_id, cwd).await
+        }
+        .await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err) if sqlite_lock_error(&err) && attempt < 4 => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+async fn update_thread_worktree_mode(
+    mcp: &mut McpProcess,
+    thread_id: &str,
+    worktree_mode: codex_protocol::protocol::SessionWorktreeMode,
+) -> Result<()> {
+    let request_id = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            worktree_mode: Some(worktree_mode),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadSettingsUpdateResponse = read_response(mcp, request_id).await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/settings/updated"),
+    )
+    .await??;
+    Ok(())
+}
+
 async fn upsert_thread_for_worktree_attach(
     state_db: &codex_state::StateRuntime,
     thread_id: &str,
     cwd: &Path,
 ) -> Result<()> {
     let thread_id = ThreadId::from_string(thread_id)?;
+    let rollout_path = state_db
+        .codex_home()
+        .join(format!("rollout-{thread_id}.jsonl"));
     let now = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0)
         .ok_or_else(|| anyhow::anyhow!("timestamp should parse"))?;
     state_db
         .upsert_thread(&codex_state::ThreadMetadata {
             id: thread_id,
-            rollout_path: state_db
-                .codex_home()
-                .join(format!("rollout-{thread_id}.jsonl")),
+            rollout_path,
             created_at: now,
             updated_at: now,
             source: "cli".to_string(),
@@ -2683,6 +3133,14 @@ async fn upsert_thread_for_worktree_attach(
     Ok(())
 }
 
+fn sqlite_lock_error(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("database is locked")
+        || message.contains("database is busy")
+        || message.contains("code: 5")
+        || message.contains("code: 517")
+}
+
 fn worktree_ids(response: &WorktreeListResponse) -> Vec<String> {
     response
         .data
@@ -2691,11 +3149,11 @@ fn worktree_ids(response: &WorktreeListResponse) -> Vec<String> {
         .collect()
 }
 
-fn merge_candidate_ids(response: &WorktreeMergeCandidateListResponse) -> Vec<String> {
+fn worktree_ids_from_candidates(response: &WorktreeMergeCandidateListResponse) -> Vec<String> {
     response
         .data
         .iter()
-        .map(|candidate| candidate.candidate_id.clone())
+        .map(|candidate| candidate.worktree_id.clone())
         .collect()
 }
 

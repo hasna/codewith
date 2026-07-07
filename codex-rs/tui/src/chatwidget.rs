@@ -368,6 +368,7 @@ mod loop_display;
 mod loop_slash;
 mod mission_control_menu;
 mod monitor_display;
+mod webhook_display;
 mod workflow_display;
 mod workflow_slash;
 mod worktree_display;
@@ -380,10 +381,13 @@ mod input_submission;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_agent_approval;
 mod mcp_manager;
 mod mcp_startup;
+pub(crate) use self::mcp_agent_approval::McpAgentMutationApprovalSummary;
 use self::mcp_startup::McpStartupStatus;
 mod pets;
+mod queued_messages;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;
@@ -444,6 +448,7 @@ mod status_panel;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
+mod teaching_mode;
 mod tool_lifecycle;
 mod tool_requests;
 mod transcript;
@@ -451,8 +456,11 @@ use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
+mod usage_panel;
 mod usage_profile_broker;
 mod usage_self_heal;
+use self::usage_panel::UsagePanelMiniMaxUsageState;
+use self::usage_panel::UsagePanelRateLimitState;
 use self::usage_self_heal::UsageSelfHealErrorKind;
 use self::usage_self_heal::UsageSelfHealState;
 mod user_messages;
@@ -507,9 +515,20 @@ const USER_SHELL_COMMAND_HELP_HINT: &str = "Example: !ls";
 const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
 const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe.";
+const PERMISSIONS_SAVED_SUBTITLE: &str = "Saved to config.toml.";
+const AUTH_PROFILE_PERMISSIONS_SAVED_SUBTITLE: &str =
+    "Saved to config.toml; this auth profile remembers the choice.";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_STATUS_LINE_ITEMS: [&str; 2] = ["model-with-reasoning", "current-dir"];
 const MAX_AGENT_COPY_HISTORY: usize = 32;
+
+fn permissions_saved_subtitle(config: &Config) -> &'static str {
+    if config.selected_auth_profile.is_some() {
+        AUTH_PROFILE_PERMISSIONS_SAVED_SUBTITLE
+    } else {
+        PERMISSIONS_SAVED_SUBTITLE
+    }
+}
 
 /// Common initialization parameters shared by all `ChatWidget` constructors.
 pub(crate) struct ChatWidgetInit {
@@ -576,6 +595,8 @@ pub(crate) struct ChatWidget {
     active_collaboration_mask: Option<CollaborationModeMask>,
     /// Extra developer prompt scoped to the active session/thread only.
     session_prompt: Option<String>,
+    teaching_mode_enabled: bool,
+    teaching_mode_by_thread: HashMap<ThreadId, bool>,
     has_chatgpt_account: bool,
     model_catalog: Arc<ModelCatalog>,
     session_telemetry: SessionTelemetry,
@@ -589,10 +610,13 @@ pub(crate) struct ChatWidget {
     auth_profile_rate_limit_snapshots_by_profile:
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
+    auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap<Option<String>, Instant>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
+    usage_panel_rate_limit_state: UsagePanelRateLimitState,
+    usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

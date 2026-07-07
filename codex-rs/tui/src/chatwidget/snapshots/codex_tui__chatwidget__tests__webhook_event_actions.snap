@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/webhook.rs
+expression: "render_bottom_popup(&chat, 120)"
+---
+  Webhook evt-1234
+  GitHub · pull_request.opened · 2024-01-02 00:00:00 UTC
+
+     Event details                 Untrusted external payload: {"action":"opened","authorization":"<redacted>"}
+     Inject into curre… (disabled) Add this event as labeled untrusted context (disabled: No current thread is
+                                   available.)
+     Queue for later (disabled)    Store this event in the current thread mailbox (disabled: No current thread is
+                                   available.)
+› 1. Mark processed                Mark this inbox event as handled
+  2. Archive                       Hide this event from normal follow-up work
+  3. Back to inbox                 Return to all webhook events
+
+  Press enter to confirm or esc to go back

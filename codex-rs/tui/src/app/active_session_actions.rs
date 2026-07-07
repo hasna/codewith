@@ -7,6 +7,8 @@ use codex_app_server_protocol::ActiveSessionMessageDelivery;
 use codex_app_server_protocol::ActiveSessionPeer;
 use codex_app_server_protocol::ActiveSessionPeerKind;
 use codex_app_server_protocol::ActiveSessionSendStatus;
+#[cfg(test)]
+use codex_app_server_protocol::AuthProfileKind;
 use codex_protocol::ThreadId;
 
 const ACTIVE_SESSION_SEND_HINT: &str =
@@ -201,6 +203,8 @@ mod tests {
                 .expect("absolute cwd"),
             display_name: Some("reviewer".to_string()),
             agent_path: Some("/root/reviewer".to_string()),
+            auth_profile: Some("work".to_string()),
+            auth_profile_kind: AuthProfileKind::Named,
             capabilities: vec![
                 ActiveSessionCapability::ReceiveMessage,
                 ActiveSessionCapability::QueueMessage,
@@ -209,10 +213,9 @@ mod tests {
             last_seen_at: 1_781_512_883,
         };
 
-        insta::assert_snapshot!(format_active_session_peer(
-            &peer,
-            Some(peer.thread_id.as_str())
-        ));
+        let row = format_active_session_peer(&peer, Some(peer.thread_id.as_str()))
+            .replace(&peer.cwd.display().to_string(), "/workspace/open-codewith");
+        insta::assert_snapshot!(row);
     }
 
     #[test]

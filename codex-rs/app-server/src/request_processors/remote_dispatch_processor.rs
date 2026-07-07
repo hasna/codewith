@@ -34,6 +34,7 @@ use codex_protocol::ThreadId;
 use codex_rollout::StateDbHandle;
 use serde_json::json;
 
+use super::thread_mailbox_context::validate_mailbox_payload_context_size;
 use super::thread_mailbox_processor::mapping::api_mailbox_receipt;
 use super::thread_mailbox_processor::mapping::api_mailbox_summary;
 use super::thread_pending_interaction_processor::api_pending_interaction;
@@ -245,6 +246,8 @@ impl RemoteDispatchRequestProcessor {
         } else {
             MissionControlDeliveryPolicy::LiveOnly
         };
+        validate_mailbox_payload_context_size(&json!({ "text": text.as_str() }))
+            .map_err(invalid_request)?;
         let preview = truncate_preview(text.as_str());
         if submit_params.dry_run {
             return Ok(Some(
@@ -737,7 +740,11 @@ fn remote_instruction_payload(
     });
     match delivery_policy {
         MissionControlDeliveryPolicy::LiveOnly => {
-            json!({ "text": text, "remoteDispatch": remote_dispatch })
+            json!({
+                "text": text,
+                "delivery": "liveOnly",
+                "remoteDispatch": remote_dispatch,
+            })
         }
         MissionControlDeliveryPolicy::ResumeAndTrigger => {
             json!({
@@ -1176,6 +1183,10 @@ mod tests {
             page.data[0].payload_json["text"].as_str()
         );
         assert_eq!(
+            Some("liveOnly"),
+            page.data[0].payload_json["delivery"].as_str()
+        );
+        assert_eq!(
             Some("trusted"),
             page.data[0].payload_json["remoteDispatch"]["sourceMachineId"].as_str()
         );
@@ -1369,9 +1380,35 @@ mod tests {
         create_pending_user_input_interaction_with_server_request(
             &state_db,
             "interaction-live-client",
+            /*server_request_id_json*/
             Some(json!(7)),
         )
         .await;
+
+        let mut dry_run_params =
+            test_respond_pending_submit_params("trusted", "local", "interaction-live-client");
+        dry_run_params.dry_run = true;
+        let err = RemoteDispatchRequestProcessor::new(Some(state_db.clone()))
+            .submit(dry_run_params)
+            .await
+            .expect_err("live client-bound interaction dry-run should fail");
+
+        assert!(
+            err.message
+                .contains("pending interaction is tied to a live client request"),
+            "unexpected error: {}",
+            err.message
+        );
+
+        let stored = state_db
+            .get_thread_pending_interaction("interaction-live-client")
+            .await
+            .expect("pending interaction should reload")
+            .expect("pending interaction should exist");
+        assert_eq!(
+            codex_state::PendingInteractionStatus::Pending,
+            stored.status
+        );
 
         let err = RemoteDispatchRequestProcessor::new(Some(state_db))
             .submit(test_respond_pending_submit_params(

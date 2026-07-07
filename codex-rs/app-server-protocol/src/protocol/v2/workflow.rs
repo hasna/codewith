@@ -176,9 +176,9 @@ pub struct ThreadWorkflowRun {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub started_at: Option<i64>,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub completed_at: Option<i64>,
 }
 
@@ -201,9 +201,9 @@ pub struct ThreadWorkflowRunStep {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub started_at: Option<i64>,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub completed_at: Option<i64>,
 }
 
@@ -220,13 +220,13 @@ pub struct ThreadWorkflowRunStepVerifier {
     pub reason_code: Option<String>,
     #[ts(type = "number")]
     pub attempt_count: i64,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub max_attempts: Option<i64>,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
-    #[ts(type = "number")]
+    #[ts(type = "number | null")]
     pub completed_at: Option<i64>,
 }
 

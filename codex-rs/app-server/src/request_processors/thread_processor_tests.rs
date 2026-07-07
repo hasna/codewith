@@ -53,14 +53,19 @@ mod thread_processor_behavior_tests {
     use chrono::Utc;
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ThreadItem;
+    use codex_app_server_protocol::ThreadQueuedMessage;
+    use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
+    use codex_app_server_protocol::ThreadQueuedMessageStats;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
     use codex_config::SessionThreadConfig;
     use codex_config::StaticThreadConfigLoader;
     use codex_config::ThreadConfigSource;
+    use codex_core::QueuedMailboxMessage;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
+    use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
@@ -76,11 +81,13 @@ mod thread_processor_behavior_tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::InitialHistory;
+    use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::protocol::ResumedHistory;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SessionWorktreeMode;
     use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
@@ -213,6 +220,82 @@ mod thread_processor_behavior_tests {
         let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn queued_message_helpers_project_core_queue_for_api() {
+        let thread_id = ThreadId::new();
+        let author = AgentPath::root().join("author").expect("author path");
+        let recipient = AgentPath::root().join("recipient").expect("recipient path");
+        let messages = vec![
+            QueuedMailboxMessage {
+                id: "msg-1".to_string(),
+                communication: InterAgentCommunication::new(
+                    author.clone(),
+                    recipient.clone(),
+                    Vec::new(),
+                    "first queued".to_string(),
+                    /*trigger_turn*/ false,
+                ),
+            },
+            QueuedMailboxMessage {
+                id: "msg-2".to_string(),
+                communication: InterAgentCommunication::new(
+                    author.clone(),
+                    recipient.clone(),
+                    Vec::new(),
+                    "second queued".to_string(),
+                    /*trigger_turn*/ true,
+                ),
+            },
+        ];
+
+        assert_eq!(
+            queued_messages_api_view(thread_id, &messages),
+            vec![
+                ThreadQueuedMessage {
+                    message_id: "msg-1".to_string(),
+                    thread_id: thread_id.to_string(),
+                    position: 1,
+                    author: author.to_string(),
+                    recipient: recipient.to_string(),
+                    text: "first queued".to_string(),
+                    trigger_turn: false,
+                },
+                ThreadQueuedMessage {
+                    message_id: "msg-2".to_string(),
+                    thread_id: thread_id.to_string(),
+                    position: 2,
+                    author: author.to_string(),
+                    recipient: recipient.to_string(),
+                    text: "second queued".to_string(),
+                    trigger_turn: true,
+                },
+            ]
+        );
+        assert_eq!(
+            queued_message_stats(&messages),
+            ThreadQueuedMessageStats {
+                total: 2,
+                trigger_turn: 1,
+            }
+        );
+
+        validate_queued_message_id("msg-1").expect("valid message id");
+        assert!(validate_queued_message_id(" ").is_err());
+        validate_queued_message_text("revised queued message").expect("valid message text");
+        assert!(validate_queued_message_text("").is_err());
+        assert!(
+            validate_queued_message_text(&"x".repeat(MAX_THREAD_QUEUED_MESSAGE_BYTES + 1)).is_err()
+        );
+        assert_eq!(
+            core_queued_message_move_direction(ThreadQueuedMessageMoveDirection::Up),
+            CoreQueuedMailboxMoveDirection::Up
+        );
+        assert_eq!(
+            core_queued_message_move_direction(ThreadQueuedMessageMoveDirection::Down),
+            CoreQueuedMailboxMoveDirection::Down
+        );
     }
 
     #[test]
@@ -459,6 +542,7 @@ mod thread_processor_behavior_tests {
             agent_role: None,
             agent_path: None,
             git_info: None,
+            auth_profile: Some(Some("work".to_string())),
             approval_mode: AskForApproval::OnRequest,
             permission_profile: PermissionProfile::read_only(),
             token_usage: None,
@@ -754,6 +838,7 @@ mod thread_processor_behavior_tests {
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            worktree_mode: SessionWorktreeMode::Manual,
         };
 
         assert_eq!(
@@ -815,6 +900,7 @@ mod thread_processor_behavior_tests {
             forked_from_thread_id: None,
             parent_thread_id: None,
             thread_source: None,
+            worktree_mode: SessionWorktreeMode::Manual,
         };
 
         assert_eq!(
@@ -890,6 +976,8 @@ mod thread_processor_behavior_tests {
             workspace_roots: None,
             current_date: None,
             timezone: None,
+            machine_id: None,
+            machine_name: None,
             approval_policy: AskForApproval::OnRequest,
             sandbox_policy: codex_protocol::protocol::SandboxPolicy::DangerFullAccess,
             permission_profile: None,
@@ -900,12 +988,84 @@ mod thread_processor_behavior_tests {
             personality: None,
             collaboration_mode: None,
             session_prompt: None,
+            worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
             multi_agent_version: None,
             auth_profile: auth_profile.map(|value| value.map(str::to_string)),
             realtime_active: None,
             effort: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         })
+    }
+
+    fn turn_context_with_permission_profile(
+        thread_id: ThreadId,
+        permission_profile: PermissionProfile,
+    ) -> RolloutItem {
+        let RolloutItem::TurnContext(mut turn_context) =
+            turn_context_with_auth_profile(thread_id, None)
+        else {
+            unreachable!("helper returns turn context")
+        };
+        turn_context.permission_profile = Some(permission_profile);
+        RolloutItem::TurnContext(turn_context)
+    }
+
+    fn turn_context_with_cwd_and_workspace_roots(
+        thread_id: ThreadId,
+        cwd: AbsolutePathBuf,
+        workspace_roots: Vec<AbsolutePathBuf>,
+    ) -> RolloutItem {
+        let RolloutItem::TurnContext(mut turn_context) =
+            turn_context_with_auth_profile(thread_id, None)
+        else {
+            unreachable!("helper returns turn context")
+        };
+        turn_context.cwd = cwd.to_path_buf();
+        turn_context.workspace_roots = Some(workspace_roots);
+        RolloutItem::TurnContext(turn_context)
+    }
+
+    fn turn_context_with_approval_policy(
+        thread_id: ThreadId,
+        approval_policy: AskForApproval,
+    ) -> RolloutItem {
+        let RolloutItem::TurnContext(mut turn_context) =
+            turn_context_with_auth_profile(thread_id, None)
+        else {
+            unreachable!("helper returns turn context")
+        };
+        turn_context.approval_policy = approval_policy;
+        RolloutItem::TurnContext(turn_context)
+    }
+
+    fn session_configured_with_approval_settings(
+        thread_id: ThreadId,
+        approval_policy: AskForApproval,
+        approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
+    ) -> RolloutItem {
+        RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::SessionConfigured(
+            codex_protocol::protocol::SessionConfiguredEvent {
+                session_id: codex_protocol::SessionId::new(),
+                thread_id,
+                forked_from_id: None,
+                parent_thread_id: None,
+                thread_source: None,
+                thread_name: None,
+                model: "gpt-5.1-codex".to_string(),
+                model_provider_id: "openai".to_string(),
+                service_tier: None,
+                approval_policy,
+                approvals_reviewer,
+                permission_profile: PermissionProfile::read_only(),
+                active_permission_profile: None,
+                cwd: test_path_buf("/tmp").abs(),
+                workspace_roots: None,
+                reasoning_effort: None,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: None,
+            },
+        ))
     }
 
     #[test]
@@ -1115,6 +1275,248 @@ mod thread_processor_behavior_tests {
         );
         assert_eq!(request_overrides, None);
         Ok(())
+    }
+
+    #[test]
+    fn merge_persisted_permission_profile_from_history_restores_latest_profile() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![
+                turn_context_with_permission_profile(conversation_id, PermissionProfile::Disabled),
+                turn_context_with_permission_profile(
+                    conversation_id,
+                    PermissionProfile::read_only(),
+                ),
+            ],
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_permission_profile_from_history(&mut typesafe_overrides, None, &history);
+
+        assert_eq!(
+            typesafe_overrides.permission_profile,
+            Some(PermissionProfile::read_only())
+        );
+    }
+
+    #[test]
+    fn merge_persisted_permission_profile_from_history_preserves_explicit_permission_override() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![turn_context_with_permission_profile(
+                conversation_id,
+                PermissionProfile::read_only(),
+            )],
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides {
+            sandbox_mode: Some(codex_protocol::config_types::SandboxMode::DangerFullAccess),
+            ..Default::default()
+        };
+
+        merge_persisted_permission_profile_from_history(&mut typesafe_overrides, None, &history);
+
+        assert_eq!(typesafe_overrides.permission_profile, None);
+        assert_eq!(
+            typesafe_overrides.sandbox_mode,
+            Some(codex_protocol::config_types::SandboxMode::DangerFullAccess)
+        );
+    }
+
+    #[test]
+    fn merge_persisted_approval_settings_from_history_restores_latest_values() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![
+                session_configured_with_approval_settings(
+                    conversation_id,
+                    AskForApproval::OnRequest,
+                    codex_protocol::config_types::ApprovalsReviewer::User,
+                ),
+                turn_context_with_approval_policy(conversation_id, AskForApproval::Never),
+            ],
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_approval_settings_from_history(&mut typesafe_overrides, None, &history);
+
+        assert_eq!(
+            typesafe_overrides.approval_policy,
+            Some(AskForApproval::Never)
+        );
+        assert_eq!(
+            typesafe_overrides.approvals_reviewer,
+            Some(codex_protocol::config_types::ApprovalsReviewer::User)
+        );
+    }
+
+    #[test]
+    fn merge_persisted_approval_settings_from_history_preserves_explicit_overrides() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![session_configured_with_approval_settings(
+                conversation_id,
+                AskForApproval::Never,
+                codex_protocol::config_types::ApprovalsReviewer::User,
+            )],
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides {
+            approval_policy: Some(AskForApproval::OnRequest),
+            approvals_reviewer: Some(codex_protocol::config_types::ApprovalsReviewer::AutoReview),
+            ..Default::default()
+        };
+
+        merge_persisted_approval_settings_from_history(&mut typesafe_overrides, None, &history);
+
+        assert_eq!(
+            typesafe_overrides.approval_policy,
+            Some(AskForApproval::OnRequest)
+        );
+        assert_eq!(
+            typesafe_overrides.approvals_reviewer,
+            Some(codex_protocol::config_types::ApprovalsReviewer::AutoReview)
+        );
+    }
+
+    #[test]
+    fn merge_persisted_permission_profile_from_history_preserves_request_config_override() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![turn_context_with_permission_profile(
+                conversation_id,
+                PermissionProfile::read_only(),
+            )],
+            rollout_path: None,
+        });
+        let request_overrides = HashMap::from([(
+            "sandbox_mode".to_string(),
+            serde_json::Value::String("danger-full-access".to_string()),
+        )]);
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_permission_profile_from_history(
+            &mut typesafe_overrides,
+            Some(&request_overrides),
+            &history,
+        );
+
+        assert_eq!(typesafe_overrides.permission_profile, None);
+    }
+
+    #[test]
+    fn merge_persisted_approval_settings_from_history_preserves_request_config_overrides() {
+        let conversation_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![session_configured_with_approval_settings(
+                conversation_id,
+                AskForApproval::Never,
+                codex_protocol::config_types::ApprovalsReviewer::User,
+            )],
+            rollout_path: None,
+        });
+        let request_overrides = HashMap::from([
+            (
+                "approval_policy".to_string(),
+                serde_json::Value::String("on-request".to_string()),
+            ),
+            (
+                "approvals_reviewer".to_string(),
+                serde_json::Value::String("auto_review".to_string()),
+            ),
+        ]);
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_approval_settings_from_history(
+            &mut typesafe_overrides,
+            Some(&request_overrides),
+            &history,
+        );
+
+        assert_eq!(typesafe_overrides.approval_policy, None);
+        assert_eq!(typesafe_overrides.approvals_reviewer, None);
+    }
+
+    #[test]
+    fn merge_persisted_cwd_and_workspace_roots_from_history_restores_latest_values() {
+        let conversation_id = ThreadId::new();
+        let old_cwd = test_path_buf("/tmp/old-cwd").abs();
+        let latest_cwd = test_path_buf("/tmp/latest-cwd").abs();
+        let old_root = test_path_buf("/tmp/old-root").abs();
+        let latest_root = test_path_buf("/tmp/latest-root").abs();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![
+                turn_context_with_cwd_and_workspace_roots(
+                    conversation_id,
+                    old_cwd.clone(),
+                    vec![old_cwd, old_root],
+                ),
+                turn_context_with_cwd_and_workspace_roots(
+                    conversation_id,
+                    latest_cwd.clone(),
+                    vec![latest_cwd.clone(), latest_root.clone()],
+                ),
+            ],
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_cwd_and_workspace_roots_from_history(
+            &mut typesafe_overrides,
+            None,
+            &history,
+        );
+
+        assert_eq!(typesafe_overrides.cwd, Some(latest_cwd.to_path_buf()));
+        assert_eq!(
+            typesafe_overrides.workspace_roots,
+            Some(vec![latest_cwd, latest_root])
+        );
+    }
+
+    #[test]
+    fn merge_persisted_cwd_and_workspace_roots_from_history_preserves_request_config_overrides() {
+        let conversation_id = ThreadId::new();
+        let persisted_cwd = test_path_buf("/tmp/persisted-cwd").abs();
+        let persisted_root = test_path_buf("/tmp/persisted-root").abs();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history: vec![turn_context_with_cwd_and_workspace_roots(
+                conversation_id,
+                persisted_cwd,
+                vec![persisted_root],
+            )],
+            rollout_path: None,
+        });
+        let request_overrides = HashMap::from([
+            (
+                "cwd".to_string(),
+                serde_json::Value::String("/tmp/explicit-cwd".to_string()),
+            ),
+            (
+                "workspace_roots".to_string(),
+                serde_json::json!(["/tmp/explicit-root"]),
+            ),
+        ]);
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_cwd_and_workspace_roots_from_history(
+            &mut typesafe_overrides,
+            Some(&request_overrides),
+            &history,
+        );
+
+        assert_eq!(typesafe_overrides.cwd, None);
+        assert_eq!(typesafe_overrides.workspace_roots, None);
     }
 
     #[test]

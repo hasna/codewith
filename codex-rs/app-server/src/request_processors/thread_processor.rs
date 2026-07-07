@@ -1,10 +1,14 @@
 use super::*;
 use crate::error_code::method_not_found;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const MAX_THREAD_QUEUED_MESSAGE_BYTES: usize = 4 * 1024;
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -171,6 +175,224 @@ fn merge_persisted_resume_metadata(
     }
 }
 
+fn merge_persisted_permission_profile_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.permission_profile.is_some()
+        || typesafe_overrides.default_permissions.is_some()
+        || typesafe_overrides.sandbox_mode.is_some()
+        || request_override_contains_any(
+            request_overrides,
+            &["permission_profile", "default_permissions", "sandbox_mode"],
+        )
+    {
+        return;
+    }
+
+    if let Some(permission_profile) = permission_profile_from_history(thread_history) {
+        typesafe_overrides.permission_profile = Some(permission_profile);
+    }
+}
+
+fn merge_persisted_approval_settings_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.approval_policy.is_none()
+        && !request_override_contains(request_overrides, "approval_policy")
+        && let Some(approval_policy) = approval_policy_from_history(thread_history)
+    {
+        typesafe_overrides.approval_policy = Some(approval_policy);
+    }
+    if typesafe_overrides.approvals_reviewer.is_none()
+        && !request_override_contains(request_overrides, "approvals_reviewer")
+        && let Some(approvals_reviewer) = approvals_reviewer_from_history(thread_history)
+    {
+        typesafe_overrides.approvals_reviewer = Some(approvals_reviewer);
+    }
+}
+
+fn merge_persisted_cwd_and_workspace_roots_from_history(
+    typesafe_overrides: &mut ConfigOverrides,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    thread_history: &InitialHistory,
+) {
+    if typesafe_overrides.cwd.is_none()
+        && !request_override_contains(request_overrides, "cwd")
+        && let Some(cwd) = cwd_from_history(thread_history)
+    {
+        typesafe_overrides.cwd = Some(cwd);
+    }
+
+    if typesafe_overrides.workspace_roots.is_none()
+        && !request_override_contains_any(
+            request_overrides,
+            &["workspace_roots", "runtime_workspace_roots"],
+        )
+        && let Some(workspace_roots) = workspace_roots_from_history(thread_history)
+    {
+        typesafe_overrides.workspace_roots = Some(workspace_roots);
+    }
+}
+
+fn permission_profile_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            permission_profile_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => permission_profile_from_items(items, None),
+    }
+}
+
+fn permission_profile_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::models::PermissionProfile> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.permission_profile())
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.permission_profile.clone())
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.permission_profile.clone())
+        }
+        _ => None,
+    })
+}
+
+fn approval_policy_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::protocol::AskForApproval> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            approval_policy_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => approval_policy_from_items(items, None),
+    }
+}
+
+fn approval_policy_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::protocol::AskForApproval> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.approval_policy)
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.approval_policy)
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.approval_policy)
+        }
+        _ => None,
+    })
+}
+
+fn approvals_reviewer_from_history(
+    thread_history: &InitialHistory,
+) -> Option<codex_protocol::config_types::ApprovalsReviewer> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            approvals_reviewer_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, None),
+    }
+}
+
+fn approvals_reviewer_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<codex_protocol::config_types::ApprovalsReviewer> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.approvals_reviewer)
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.approvals_reviewer)
+        }
+        _ => None,
+    })
+}
+
+fn cwd_from_history(thread_history: &InitialHistory) -> Option<PathBuf> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            cwd_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => cwd_from_items(items, None),
+    }
+}
+
+fn cwd_from_items(items: &[RolloutItem], thread_id: Option<ThreadId>) -> Option<PathBuf> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            Some(turn_context.cwd.clone())
+        }
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+            Some(event.thread_settings.cwd.to_path_buf())
+        }
+        RolloutItem::EventMsg(EventMsg::SessionConfigured(event))
+            if thread_id.is_none_or(|thread_id| event.thread_id == thread_id) =>
+        {
+            Some(event.cwd.to_path_buf())
+        }
+        RolloutItem::SessionMeta(meta_line)
+            if thread_id.is_none_or(|thread_id| meta_line.meta.id == thread_id) =>
+        {
+            Some(meta_line.meta.cwd.clone())
+        }
+        _ => None,
+    })
+}
+
+fn workspace_roots_from_history(thread_history: &InitialHistory) -> Option<Vec<AbsolutePathBuf>> {
+    match thread_history {
+        InitialHistory::New | InitialHistory::Cleared => None,
+        InitialHistory::Resumed(resumed) => {
+            workspace_roots_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
+        }
+        InitialHistory::Forked(items) => workspace_roots_from_items(items, None),
+    }
+}
+
+fn workspace_roots_from_items(
+    items: &[RolloutItem],
+    thread_id: Option<ThreadId>,
+) -> Option<Vec<AbsolutePathBuf>> {
+    items.iter().rev().find_map(|item| match item {
+        RolloutItem::TurnContext(turn_context)
+            if thread_id.is_none_or(|thread_id| turn_context.thread_id == Some(thread_id)) =>
+        {
+            turn_context.workspace_roots.clone()
+        }
+        _ => None,
+    })
+}
+
 pub(super) fn merge_persisted_auth_profile_from_history(
     typesafe_overrides: &mut ConfigOverrides,
     thread_history: &InitialHistory,
@@ -214,6 +436,13 @@ fn request_override_contains(
     key: &str,
 ) -> bool {
     request_overrides.is_some_and(|overrides| overrides.contains_key(key))
+}
+
+fn request_override_contains_any(
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    keys: &[&str],
+) -> bool {
+    request_overrides.is_some_and(|overrides| keys.iter().any(|key| overrides.contains_key(*key)))
 }
 
 fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
@@ -654,6 +883,33 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_queued_message_list(
+        &self,
+        params: ThreadQueuedMessageListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_list_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_queued_message_update(
+        &self,
+        params: ThreadQueuedMessageUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_update_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_queued_message_move(
+        &self,
+        params: ThreadQueuedMessageMoveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_queued_message_move_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_turns_list(
         &self,
         params: ThreadTurnsListParams,
@@ -883,6 +1139,7 @@ impl ThreadRequestProcessor {
             ephemeral,
             session_start_source,
             thread_source,
+            parent_thread_id,
             environments,
         } = params;
         if sandbox.is_some() && permissions.is_some() {
@@ -890,6 +1147,34 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        let parent_thread_id = parent_thread_id
+            .map(|parent_thread_id| {
+                ThreadId::from_string(&parent_thread_id)
+                    .map_err(|_| invalid_request("`parentThreadId` must be a valid thread id"))
+            })
+            .transpose()?;
+        let (session_source, thread_source) = match (parent_thread_id, thread_source) {
+            (Some(_), Some(codex_app_server_protocol::ThreadSource::User))
+            | (Some(_), Some(codex_app_server_protocol::ThreadSource::MemoryConsolidation)) => {
+                return Err(invalid_request(
+                    "`parentThreadId` can only be used with `threadSource: \"subagent\"`",
+                ));
+            }
+            (Some(parent_thread_id), Some(codex_app_server_protocol::ThreadSource::Subagent))
+            | (Some(parent_thread_id), None) => (
+                Some(CoreSessionSource::SubAgent(
+                    CoreSubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    },
+                )),
+                Some(codex_protocol::protocol::ThreadSource::Subagent),
+            ),
+            (None, thread_source) => (None, thread_source.map(Into::into)),
+        };
         let environment_selections = self.parse_environment_selections(environments)?;
         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
         let mut typesafe_overrides = self.build_thread_config_overrides(
@@ -936,7 +1221,8 @@ impl ThreadRequestProcessor {
                 typesafe_overrides,
                 dynamic_tools,
                 session_start_source,
-                thread_source.map(Into::into),
+                session_source,
+                thread_source,
                 environment_selections,
                 service_name,
                 experimental_raw_events,
@@ -1009,6 +1295,7 @@ impl ThreadRequestProcessor {
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<ApiDynamicToolSpec>>,
         session_start_source: Option<codex_app_server_protocol::ThreadStartSource>,
+        session_source: Option<CoreSessionSource>,
         thread_source: Option<codex_protocol::protocol::ThreadSource>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         service_name: Option<String>,
@@ -1125,7 +1412,7 @@ impl ThreadRequestProcessor {
                     codex_app_server_protocol::ThreadStartSource::Startup => InitialHistory::New,
                     codex_app_server_protocol::ThreadStartSource::Clear => InitialHistory::Cleared,
                 },
-                session_source: None,
+                session_source,
                 thread_source,
                 dynamic_tools: core_dynamic_tools,
                 metrics_service_name: service_name,
@@ -1225,6 +1512,7 @@ impl ThreadRequestProcessor {
             service_tier: config_snapshot.service_tier,
             cwd: config_snapshot.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
+            profile_workspace_roots: config_snapshot.profile_workspace_roots,
             instruction_sources,
             approval_policy: config_snapshot.approval_policy.into(),
             approvals_reviewer: config_snapshot.approvals_reviewer.into(),
@@ -2109,6 +2397,109 @@ impl ThreadRequestProcessor {
         Ok(ThreadReadResponse { thread })
     }
 
+    async fn thread_queued_message_list_inner(
+        &self,
+        params: ThreadQueuedMessageListParams,
+    ) -> Result<ThreadQueuedMessageListResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageListParams {
+            thread_id,
+            cursor,
+            limit,
+        } = params;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let messages = thread.queued_mailbox_messages().await;
+        let stats = queued_message_stats(&messages);
+        let data = queued_messages_api_view(thread_uuid, &messages);
+
+        if data.is_empty() {
+            return Ok(ThreadQueuedMessageListResponse {
+                data,
+                next_cursor: None,
+                stats,
+            });
+        }
+
+        let total = data.len();
+        let start = match cursor {
+            Some(cursor) => data
+                .iter()
+                .position(|message| message.message_id == cursor)
+                .map(|idx| idx + 1)
+                .ok_or_else(|| invalid_request(format!("invalid cursor: {cursor}")))?,
+            None => 0,
+        };
+        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
+        let end = start.saturating_add(effective_limit).min(total);
+        let page = data[start..end].to_vec();
+        let next_cursor = page
+            .last()
+            .filter(|_| end < total)
+            .map(|message| message.message_id.clone());
+
+        Ok(ThreadQueuedMessageListResponse {
+            data: page,
+            next_cursor,
+            stats,
+        })
+    }
+
+    async fn thread_queued_message_update_inner(
+        &self,
+        params: ThreadQueuedMessageUpdateParams,
+    ) -> Result<ThreadQueuedMessageUpdateResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageUpdateParams {
+            thread_id,
+            message_id,
+            text,
+        } = params;
+        validate_queued_message_id(&message_id)?;
+        validate_queued_message_text(&text)?;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let updated = thread
+            .update_queued_mailbox_message(&message_id, text)
+            .await
+            .is_some();
+        let message = if updated {
+            let messages = thread.queued_mailbox_messages().await;
+            queued_messages_api_view(thread_uuid, &messages)
+                .into_iter()
+                .find(|message| message.message_id == message_id)
+        } else {
+            None
+        };
+        Ok(ThreadQueuedMessageUpdateResponse { message })
+    }
+
+    async fn thread_queued_message_move_inner(
+        &self,
+        params: ThreadQueuedMessageMoveParams,
+    ) -> Result<ThreadQueuedMessageMoveResponse, JSONRPCErrorError> {
+        let ThreadQueuedMessageMoveParams {
+            thread_id,
+            message_id,
+            direction,
+        } = params;
+        validate_queued_message_id(&message_id)?;
+        let (thread_uuid, thread) = self.load_thread(&thread_id).await?;
+        let messages_before_move = thread.queued_mailbox_messages().await;
+        let current_message = queued_messages_api_view(thread_uuid, &messages_before_move)
+            .into_iter()
+            .find(|message| message.message_id == message_id);
+        let moved = thread
+            .move_queued_mailbox_message(&message_id, core_queued_message_move_direction(direction))
+            .await
+            .is_some();
+        let message = if moved {
+            let messages = thread.queued_mailbox_messages().await;
+            queued_messages_api_view(thread_uuid, &messages)
+                .into_iter()
+                .find(|message| message.message_id == message_id)
+        } else {
+            current_message
+        };
+        Ok(ThreadQueuedMessageMoveResponse { moved, message })
+    }
+
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
     async fn read_thread_view(
         &self,
@@ -2722,6 +3113,7 @@ impl ThreadRequestProcessor {
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
                     runtime_workspace_roots: config_snapshot.workspace_roots,
+                    profile_workspace_roots: config_snapshot.profile_workspace_roots,
                     instruction_sources,
                     approval_policy: session_configured.approval_policy.into(),
                     approvals_reviewer: session_configured.approvals_reviewer.into(),
@@ -2776,6 +3168,21 @@ impl ThreadRequestProcessor {
             return None;
         };
         merge_persisted_auth_profile_from_history(typesafe_overrides, thread_history);
+        merge_persisted_cwd_and_workspace_roots_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
+        merge_persisted_approval_settings_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
+        merge_persisted_permission_profile_from_history(
+            typesafe_overrides,
+            request_overrides.as_ref(),
+            thread_history,
+        );
         let state_db_ctx = self.state_db.clone()?;
         let persisted_metadata = state_db_ctx
             .get_thread(resumed_history.conversation_id)
@@ -3437,6 +3844,7 @@ impl ThreadRequestProcessor {
             service_tier: session_configured.service_tier,
             cwd: session_configured.cwd,
             runtime_workspace_roots: config_snapshot.workspace_roots,
+            profile_workspace_roots: config_snapshot.profile_workspace_roots,
             instruction_sources,
             approval_policy: session_configured.approval_policy.into(),
             approvals_reviewer: session_configured.approvals_reviewer.into(),
@@ -4075,6 +4483,11 @@ pub(crate) fn thread_from_stored_thread(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let (auth_profile_kind, auth_profile) = match thread.auth_profile {
+        None => (AuthProfileKind::Unknown, None),
+        Some(None) => (AuthProfileKind::Default, None),
+        Some(Some(profile)) => (AuthProfileKind::Named, Some(profile)),
+    };
     let thread = Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -4098,6 +4511,8 @@ pub(crate) fn thread_from_stored_thread(
         source: source.into(),
         thread_source: thread.thread_source.map(Into::into),
         git_info,
+        auth_profile,
+        auth_profile_kind,
         name: thread.name,
         turns: Vec::new(),
     };
@@ -4238,6 +4653,67 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
         .unwrap_or_default()
 }
 
+fn queued_messages_api_view(
+    thread_id: ThreadId,
+    messages: &[QueuedMailboxMessage],
+) -> Vec<ThreadQueuedMessage> {
+    messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| ThreadQueuedMessage {
+            message_id: message.id.clone(),
+            thread_id: thread_id.to_string(),
+            position: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            author: message.communication.author.to_string(),
+            recipient: message.communication.recipient.to_string(),
+            text: message.communication.content.clone(),
+            trigger_turn: message.communication.trigger_turn,
+        })
+        .collect()
+}
+
+fn queued_message_stats(messages: &[QueuedMailboxMessage]) -> ThreadQueuedMessageStats {
+    ThreadQueuedMessageStats {
+        total: u32::try_from(messages.len()).unwrap_or(u32::MAX),
+        trigger_turn: u32::try_from(
+            messages
+                .iter()
+                .filter(|message| message.communication.trigger_turn)
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
+    }
+}
+
+fn validate_queued_message_id(message_id: &str) -> Result<(), JSONRPCErrorError> {
+    if message_id.trim().is_empty() {
+        return Err(invalid_request("messageId must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_queued_message_text(text: &str) -> Result<(), JSONRPCErrorError> {
+    if text.trim().is_empty() {
+        return Err(invalid_request("text must not be empty"));
+    }
+    if text.len() > MAX_THREAD_QUEUED_MESSAGE_BYTES {
+        return Err(invalid_request(format!(
+            "text is too large: {} bytes exceeds the {MAX_THREAD_QUEUED_MESSAGE_BYTES} byte limit",
+            text.len()
+        )));
+    }
+    Ok(())
+}
+
+fn core_queued_message_move_direction(
+    direction: ThreadQueuedMessageMoveDirection,
+) -> CoreQueuedMailboxMoveDirection {
+    match direction {
+        ThreadQueuedMessageMoveDirection::Up => CoreQueuedMailboxMoveDirection::Up,
+        ThreadQueuedMessageMoveDirection::Down => CoreQueuedMailboxMoveDirection::Down,
+    }
+}
+
 fn requested_permissions_trust_project(overrides: &ConfigOverrides, cwd: &Path) -> bool {
     if matches!(
         overrides.sandbox_mode,
@@ -4284,11 +4760,14 @@ fn build_thread_from_snapshot(
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let parent_thread_id = config_snapshot
+        .parent_thread_id
+        .or_else(|| config_snapshot.session_source.parent_thread_id());
     Thread {
         id: thread_id.to_string(),
         session_id,
         forked_from_id: None,
-        parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
+        parent_thread_id: parent_thread_id.map(|id| id.to_string()),
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
         model_provider: config_snapshot.model_provider_id.clone(),
@@ -4303,6 +4782,12 @@ fn build_thread_from_snapshot(
         source: config_snapshot.session_source.clone().into(),
         thread_source: config_snapshot.thread_source.map(Into::into),
         git_info: None,
+        auth_profile: config_snapshot.selected_auth_profile.clone(),
+        auth_profile_kind: if config_snapshot.selected_auth_profile.is_some() {
+            AuthProfileKind::Named
+        } else {
+            AuthProfileKind::Default
+        },
         name: None,
         turns: Vec::new(),
     }

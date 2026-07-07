@@ -105,6 +105,7 @@ mod goal_plans;
 mod goals;
 mod local_active_sessions;
 mod logs;
+pub(crate) use logs::LogPruneTargets;
 mod machine_registry;
 mod mailbox;
 mod managed_worktrees;
@@ -116,6 +117,7 @@ mod schedules;
 #[cfg(test)]
 mod test_support;
 mod threads;
+mod webhooks;
 mod workflow_automation;
 mod workflow_goal_plan_projections;
 mod workflow_orchestrator;
@@ -125,9 +127,41 @@ mod workflows;
 const STATE_RUNTIME_STARTUP_LOCK_FILENAME: &str = ".state-runtime-startup.lock";
 const STATE_RUNTIME_STARTUP_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 const STATE_RUNTIME_STARTUP_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Truncate the WAL back down to (at most) this size whenever a checkpoint
+/// resets it, and escalate opportunistic checkpoints to TRUNCATE once the
+/// WAL grows past it.
+const WAL_JOURNAL_SIZE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// How often long-lived processes opportunistically checkpoint the state DB
+/// WAL so that checkpoint starvation cannot let it grow without bound.
+const STATE_WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(300);
+/// Auto-checkpoint threshold in WAL pages. With SQLite's default 4 KiB page
+/// size this is ~4 MiB, matching SQLite's built-in default but set explicitly
+/// so short-lived processes reliably checkpoint on their own.
+const WAL_AUTOCHECKPOINT_PAGES: u32 = 1000;
+/// Writer pools are capped at a single connection so that, within one process,
+/// at most one connection per DB can ever hold (or attempt to acquire) the
+/// SQLite write lock. This eliminates *intra-process*
+/// `SQLITE_BUSY_SNAPSHOT` (extended code 517), which can otherwise occur when
+/// one pooled connection commits a write while a second pooled connection is
+/// mid-read-snapshot and then tries to write against the now-stale snapshot —
+/// no other process needs to be involved. Serializing writes onto one
+/// connection does not hurt read throughput because read-only query paths are
+/// routed to a separate multi-connection reader pool (see
+/// [`READER_MAX_CONNECTIONS`]); WAL permits many concurrent readers alongside
+/// the single writer.
+const WRITER_MAX_CONNECTIONS: u32 = 1;
+/// Reader pools open the database read-only (`SQLITE_OPEN_READONLY`) and allow
+/// several concurrent connections. Under WAL these readers run concurrently
+/// with the single writer, and because a read-only connection never attempts a
+/// write it can never raise 517. `read_only(true)` is also a safety belt: if a
+/// write-bearing statement is ever routed here by mistake it fails loudly at
+/// the database layer instead of silently re-introducing multi-writer 517.
+const READER_MAX_CONNECTIONS: u32 = 5;
 
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
+pub use goal_plans::ThreadGoalPlanAddOutcome;
+pub use goal_plans::ThreadGoalPlanAddParams;
 pub use goal_plans::ThreadGoalPlanAdvanceOutcome;
 pub use goal_plans::ThreadGoalPlanAppendParams;
 pub use goal_plans::ThreadGoalPlanCreateParams;
@@ -135,6 +169,7 @@ pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
+pub use goals::GoalDeleteOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use local_active_sessions::LocalActiveSessionHeartbeatParams;
@@ -188,8 +223,18 @@ pub use schedules::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;
+pub use schedules::ThreadScheduleDueClaimParams;
+pub use schedules::ThreadScheduleNowClaimParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
+pub use webhooks::DEFAULT_WEBHOOK_EVENT_LIST_LIMIT;
+pub use webhooks::MAX_WEBHOOK_EVENT_LIST_LIMIT;
+pub use webhooks::WEBHOOK_EVENT_DEDUPE_CONFLICT_MESSAGE;
+pub use webhooks::WebhookEventIngestOutcome;
+pub use webhooks::WebhookEventIngestParams;
+pub use webhooks::WebhookEventListPage;
+pub use webhooks::WebhookEventListParams;
+pub use webhooks::WebhookEventStore;
 pub use workflow_automation::WorkflowAutomationStore;
 pub use workflow_automation::WorkflowMonitorObservationOutcome;
 pub use workflow_automation::WorkflowMonitorObservationParams;
@@ -244,6 +289,7 @@ struct RuntimeDbSpec {
     filename: &'static str,
     kind: DbKind,
     open_phase: &'static str,
+    open_reader_phase: &'static str,
     migrate_phase: &'static str,
 }
 
@@ -258,6 +304,7 @@ const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: STATE_DB_FILENAME,
     kind: DbKind::State,
     open_phase: "open_state",
+    open_reader_phase: "open_state_reader",
     migrate_phase: "migrate_state",
 };
 
@@ -266,6 +313,7 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: LOGS_DB_FILENAME,
     kind: DbKind::Logs,
     open_phase: "open_logs",
+    open_reader_phase: "open_logs_reader",
     migrate_phase: "migrate_logs",
 };
 
@@ -274,6 +322,7 @@ const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: GOALS_DB_FILENAME,
     kind: DbKind::Goals,
     open_phase: "open_goals",
+    open_reader_phase: "open_goals_reader",
     migrate_phase: "migrate_goals",
 };
 
@@ -282,6 +331,7 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: MEMORIES_DB_FILENAME,
     kind: DbKind::Memories,
     open_phase: "open_memories",
+    open_reader_phase: "open_memories_reader",
     migrate_phase: "migrate_memories",
 };
 
@@ -297,12 +347,25 @@ pub struct RuntimeDbPath {
 pub struct StateRuntime {
     codex_home: PathBuf,
     default_provider: String,
+    /// Single-connection writer pool for the state DB (see
+    /// [`WRITER_MAX_CONNECTIONS`]). All writes and read-then-write
+    /// transactions run here; this is the pool every store is handed.
     pool: Arc<sqlx::SqlitePool>,
+    /// Read-only, multi-connection reader pool for the state DB (see
+    /// [`READER_MAX_CONNECTIONS`]). Pure-`SELECT` query paths (e.g. thread
+    /// listing) are routed here so they stay concurrent despite the
+    /// single-connection writer.
+    reader_pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    /// Read-only reader pool for the logs DB; see [`Self::reader_pool`].
+    logs_reader_pool: Arc<sqlx::SqlitePool>,
+    goals_pool: Arc<sqlx::SqlitePool>,
+    memories_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     thread_schedules: ScheduleStore,
     thread_monitors: MonitorStore,
     local_active_sessions: LocalActiveSessionStore,
+    webhook_events: WebhookEventStore,
     machine_registry: MachineRegistryStore,
     mailbox_messages: MailboxMessageStore,
     managed_worktrees: ManagedWorktreeStore,
@@ -312,8 +375,10 @@ pub struct StateRuntime {
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
+/// Guard proving that this process owns the state runtime startup lock.
 pub struct StateRuntimeStartupLock {
     _file: std::fs::File,
+    path: PathBuf,
 }
 
 pub fn state_runtime_startup_lock_path(sqlite_home: &Path) -> PathBuf {
@@ -352,7 +417,10 @@ async fn try_acquire_state_runtime_startup_lock(
             .write(true)
             .open(lock_path.as_path())?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(StateRuntimeStartupLock { _file: file })),
+            Ok(()) => Ok(Some(StateRuntimeStartupLock {
+                _file: file,
+                path: lock_path,
+            })),
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(err) => Err(err.into()),
         }
@@ -376,8 +444,15 @@ impl StateRuntime {
     pub async fn init_with_acquired_startup_lock(
         codex_home: PathBuf,
         default_provider: String,
-        _startup_lock: &StateRuntimeStartupLock,
+        startup_lock: &StateRuntimeStartupLock,
     ) -> anyhow::Result<Arc<Self>> {
+        let expected_lock_path = state_runtime_startup_lock_path(codex_home.as_path());
+        anyhow::ensure!(
+            startup_lock.path == expected_lock_path,
+            "state startup lock at {} does not guard {}",
+            startup_lock.path.display(),
+            codex_home.display()
+        );
         Self::init_inner(
             codex_home,
             default_provider,
@@ -449,6 +524,32 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        // Reader pools are opened only after the writer pools above have created
+        // and migrated the database files, so a read-only connection never has
+        // to create the file or run WAL recovery. They serve the read-heavy,
+        // pure-`SELECT` query paths concurrently with the single writer.
+        let reader_pool = match open_reader_sqlite(&state_path, STATE_DB, telemetry_override).await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!(
+                    "failed to open state reader db at {}: {err}",
+                    state_path.display()
+                );
+                return Err(err);
+            }
+        };
+        let logs_reader_pool =
+            match open_reader_sqlite(&logs_path, LOGS_DB, telemetry_override).await {
+                Ok(db) => Arc::new(db),
+                Err(err) => {
+                    warn!(
+                        "failed to open logs reader db at {}: {err}",
+                        logs_path.display()
+                    );
+                    return Err(err);
+                }
+            };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -479,6 +580,7 @@ impl StateRuntime {
             thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
             local_active_sessions: LocalActiveSessionStore::new(Arc::clone(&pool)),
+            webhook_events: WebhookEventStore::new(Arc::clone(&pool)),
             machine_registry: MachineRegistryStore::new(Arc::clone(&pool)),
             mailbox_messages: MailboxMessageStore::new(Arc::clone(&pool)),
             managed_worktrees: ManagedWorktreeStore::new(Arc::clone(&pool)),
@@ -486,7 +588,11 @@ impl StateRuntime {
             workflow_automation: WorkflowAutomationStore::new(Arc::clone(&pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
+            reader_pool,
             logs_pool,
+            logs_reader_pool,
+            goals_pool: Arc::clone(&goals_pool),
+            memories_pool: Arc::clone(&memories_pool),
             codex_home,
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
@@ -497,6 +603,13 @@ impl StateRuntime {
                 logs_path.display(),
             );
         }
+        if let Err(err) = runtime.run_state_wal_checkpoint_maintenance().await {
+            warn!(
+                "failed to run WAL checkpoint maintenance for state db at {}: {err}",
+                state_path.display(),
+            );
+        }
+        spawn_state_wal_checkpoint_task(&runtime);
         Ok(runtime)
     }
 
@@ -519,6 +632,10 @@ impl StateRuntime {
 
     pub fn local_active_sessions(&self) -> &LocalActiveSessionStore {
         &self.local_active_sessions
+    }
+
+    pub fn webhook_events(&self) -> &WebhookEventStore {
+        &self.webhook_events
     }
 
     pub fn machine_registry(&self) -> &MachineRegistryStore {
@@ -562,6 +679,90 @@ impl StateRuntime {
         pool.close().await;
         Ok(true)
     }
+
+    /// Opportunistically checkpoints the WAL for every runtime SQLite pool
+    /// (state, logs, goals, memories) so that checkpoint starvation across many
+    /// concurrent processes cannot let any WAL grow without bound (which in
+    /// turn inflates busy/snapshot contention). The logs WAL in particular is
+    /// the hottest write target, so it must be checkpointed on the same cadence
+    /// as the state DB rather than only on startup.
+    ///
+    /// Uses a non-blocking PASSIVE checkpoint by default and escalates to
+    /// TRUNCATE once a WAL exceeds [`WAL_JOURNAL_SIZE_LIMIT_BYTES`]. Each pool
+    /// is attempted independently; a failure on one pool is logged and does not
+    /// prevent the others from being checkpointed.
+    pub async fn run_state_wal_checkpoint_maintenance(&self) -> anyhow::Result<()> {
+        let home = self.codex_home.as_path();
+        let pools: [(&SqlitePool, PathBuf); 4] = [
+            (self.pool.as_ref(), STATE_DB.path(home)),
+            (self.logs_pool.as_ref(), LOGS_DB.path(home)),
+            (self.goals_pool.as_ref(), GOALS_DB.path(home)),
+            (self.memories_pool.as_ref(), MEMORIES_DB.path(home)),
+        ];
+        let mut first_error: Option<anyhow::Error> = None;
+        for (pool, path) in pools {
+            if let Err(err) = checkpoint_wal_in_pool(pool, path.as_path()).await {
+                tracing::debug!(
+                    "WAL checkpoint maintenance failed for {}: {err}",
+                    path.display()
+                );
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+}
+
+fn wal_path_for_db(db_path: &Path) -> PathBuf {
+    let mut wal = db_path.as_os_str().to_os_string();
+    wal.push("-wal");
+    PathBuf::from(wal)
+}
+
+async fn checkpoint_wal_in_pool(pool: &SqlitePool, db_path: &Path) -> anyhow::Result<()> {
+    let wal_len = tokio::fs::metadata(wal_path_for_db(db_path))
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    // PASSIVE checkpoints copy whatever is immediately available without
+    // waiting on readers or writers. Once the WAL exceeds the journal size
+    // limit, escalate to TRUNCATE (bounded by the connection busy_timeout)
+    // so the file is actually reset instead of growing without bound.
+    let statement = if wal_len > WAL_JOURNAL_SIZE_LIMIT_BYTES {
+        "PRAGMA wal_checkpoint(TRUNCATE)"
+    } else {
+        "PRAGMA wal_checkpoint(PASSIVE)"
+    };
+    sqlx::query(statement).execute(pool).await?;
+    Ok(())
+}
+
+/// Spawns a background task that periodically runs WAL checkpoint
+/// maintenance for as long as the runtime is alive. Short-lived CLI
+/// processes exit before the first tick; long-lived daemons get a periodic
+/// checkpoint even when foreground write traffic starves automatic ones.
+fn spawn_state_wal_checkpoint_task(runtime: &Arc<StateRuntime>) {
+    let weak = Arc::downgrade(runtime);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(STATE_WAL_CHECKPOINT_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consume the immediate first tick; startup maintenance already ran.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Some(runtime) = weak.upgrade() else {
+                return;
+            };
+            if let Err(err) = runtime.run_state_wal_checkpoint_maintenance().await {
+                tracing::debug!("state db WAL checkpoint maintenance failed: {err}");
+            }
+        }
+    });
 }
 
 fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
@@ -571,6 +772,20 @@ fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .busy_timeout(Duration::from_secs(30))
+        // Cap how large the WAL file may remain after a checkpoint resets
+        // it. Without this, a WAL that ballooned under checkpoint starvation
+        // stays huge on disk forever and keeps checkpoint latencies (and
+        // busy contention) high.
+        .pragma(
+            "journal_size_limit",
+            WAL_JOURNAL_SIZE_LIMIT_BYTES.to_string(),
+        )
+        // Explicitly bound the auto-checkpoint threshold (in WAL pages) so even
+        // short-lived processes that exit before the periodic checkpoint task
+        // ticks still checkpoint opportunistically once the WAL crosses this
+        // size. Left implicit, a process that only ever writes small batches
+        // could leave an ever-growing WAL for the next process to inherit.
+        .pragma("wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES.to_string())
         .log_statements(LevelFilter::Off)
 }
 
@@ -617,8 +832,12 @@ async fn open_sqlite(
 ) -> anyhow::Result<SqlitePool> {
     let options = base_sqlite_options(path).auto_vacuum(SqliteAutoVacuum::Incremental);
     let started = Instant::now();
+    // Single writer connection per DB: see WRITER_MAX_CONNECTIONS. This is the
+    // pool used for every write and every read-then-write transaction, so at
+    // most one connection per process can hold the SQLite write lock and
+    // intra-process SQLITE_BUSY_SNAPSHOT (517) cannot occur.
     let pool_result = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(WRITER_MAX_CONNECTIONS)
         .connect_with(options)
         .await
         .map_err(anyhow::Error::from);
@@ -631,7 +850,13 @@ async fn open_sqlite(
     );
     let pool = pool_result?;
     let started = Instant::now();
-    let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
+    let migrate_result = async {
+        if matches!(spec.kind, DbKind::Goals) {
+            repair_legacy_goals_deferred_migration_stamp(&pool, migrator).await?;
+        }
+        migrator.run(&pool).await.map_err(anyhow::Error::from)
+    }
+    .await;
     crate::telemetry::record_init_result(
         telemetry_override,
         spec.kind,
@@ -641,6 +866,137 @@ async fn open_sqlite(
     );
     migrate_result?;
     Ok(pool)
+}
+
+/// Connect options for a read-only reader pool.
+///
+/// Deliberately minimal: it opens the file read-only and does **not** set the
+/// `journal_mode`/`synchronous`/`journal_size_limit`/`wal_autocheckpoint`
+/// pragmas, all of which require write access and would fail on a
+/// `SQLITE_OPEN_READONLY` connection. WAL journaling and its tuning are owned
+/// by the writer pool ([`base_sqlite_options`]); a read-only connection simply
+/// attaches to the existing WAL to read the latest committed snapshot.
+/// `create_if_missing(false)` ensures the reader never races the writer to
+/// create the database or its `-wal`/`-shm` sidecars.
+fn reader_sqlite_options(path: &Path) -> SqliteConnectOptions {
+    SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .busy_timeout(Duration::from_secs(30))
+        .log_statements(LevelFilter::Off)
+}
+
+/// Open a read-only, multi-connection reader pool for `spec`'s database.
+///
+/// Must be called only after the corresponding writer pool has created and
+/// migrated the file (see [`open_sqlite`]); reading is otherwise racy against
+/// file/WAL creation.
+async fn open_reader_sqlite(
+    path: &Path,
+    spec: RuntimeDbSpec,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    let options = reader_sqlite_options(path);
+    let started = Instant::now();
+    let pool_result = SqlitePoolOptions::new()
+        .max_connections(READER_MAX_CONNECTIONS)
+        .connect_with(options)
+        .await
+        .map_err(anyhow::Error::from);
+    crate::telemetry::record_init_result(
+        telemetry_override,
+        spec.kind,
+        spec.open_reader_phase,
+        started.elapsed(),
+        &pool_result,
+    );
+    pool_result
+}
+
+/// SHA-384 checksum of the goals migration file
+/// `0005_thread_goal_deferred.sql` exactly as shipped in published codewith
+/// 0.1.48 builds (tag `rust-v0.1.48`). Validated against sqlx's checksum
+/// algorithm and the archived migration bytes by
+/// `legacy_0148_goals_deferred_checksum_matches_sqlx_checksum`.
+const LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX: &str = "3cfd6e6b956509f5cd9946b7d648daf1773baffa75d5ee6c472aa521987c2cf392dbdf39e6d9d8a8a64586f793331e6c";
+
+/// Version of the "thread goal deferred" migration in the current goals
+/// migration set (`goals_migrations/0008_thread_goal_deferred.sql`).
+const GOALS_DEFERRED_MIGRATION_VERSION: i64 = 8;
+
+fn decode_hex_checksum(hex: &str) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!(
+        hex.len().is_multiple_of(2),
+        "hex checksum must have an even number of digits"
+    );
+    (0..hex.len())
+        .step_by(2)
+        .map(|idx| {
+            u8::from_str_radix(&hex[idx..idx + 2], 16)
+                .map_err(|err| anyhow::anyhow!("invalid hex checksum digit: {err}"))
+        })
+        .collect()
+}
+
+/// Re-stamp goals `_sqlx_migrations` rows written by published codewith
+/// 0.1.48 before running the current migrator.
+///
+/// 0.1.48 shipped the "thread goal deferred" table rebuild as goals migration
+/// version 5, while published 0.1.45 (and the current set) use versions 5-7
+/// for plan-node assignments, goal context lifecycle, and goal titles, and
+/// the current set renumbers the deferred rebuild to version 8. A database
+/// stamped by 0.1.48 therefore fails checksum validation with
+/// `VersionMismatch(5)` against the current migrator, which would disable the
+/// entire sqlite state layer at startup.
+///
+/// Repair: move the 0.1.48 stamp (matched by its exact legacy checksum, so
+/// 0.1.45-lineage databases are untouched) from version 5 to version 8 with
+/// the embedded version-8 checksum. The migrator then applies the missing
+/// versions 5-7 on top of the legacy schema; those migrations are additive
+/// (ALTER TABLE ADD COLUMN / CREATE TABLE / CREATE INDEX on objects absent
+/// from the 0.1.48 schema) and are folded into the current version-8 rebuild,
+/// so the repaired database converges on the same schema as a fresh one.
+///
+/// The state-runtime startup lock is held while this runs, so the repair
+/// cannot race another process's migrator.
+async fn repair_legacy_goals_deferred_migration_stamp(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    let has_migrations_table: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if has_migrations_table.is_none() {
+        // Fresh database: nothing to repair.
+        return Ok(());
+    }
+    let deferred = migrator
+        .iter()
+        .find(|migration| migration.version == GOALS_DEFERRED_MIGRATION_VERSION)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "goals migration set is missing version {GOALS_DEFERRED_MIGRATION_VERSION}"
+            )
+        })?;
+    let legacy_checksum = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)?;
+    let repaired = sqlx::query(
+        "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = 5 AND checksum = ?",
+    )
+    .bind(deferred.version)
+    .bind(deferred.description.as_ref())
+    .bind(deferred.checksum.as_ref())
+    .bind(legacy_checksum)
+    .execute(pool)
+    .await?;
+    if repaired.rows_affected() > 0 {
+        warn!(
+            "re-stamped legacy codewith 0.1.48 goals migration version 5 as version {GOALS_DEFERRED_MIGRATION_VERSION}"
+        );
+    }
+    Ok(())
 }
 
 pub(super) async fn ensure_backfill_state_row_in_pool(
@@ -723,8 +1079,13 @@ pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> 
 
 #[cfg(test)]
 mod tests {
+    use super::GOALS_DEFERRED_MIGRATION_VERSION;
+    use super::LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX;
     use super::StateRuntime;
+    use super::decode_hex_checksum;
     use super::goals_db_path;
+    use super::logs_db_path;
+    use super::memories_db_path;
     use super::open_state_sqlite;
     use super::runtime_goals_migrator;
     use super::runtime_state_migrator;
@@ -738,8 +1099,11 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migration;
+    use sqlx::migrate::MigrationType;
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::borrow::Cow;
@@ -878,6 +1242,122 @@ mod tests {
             .expect("second lock task should complete")
             .expect("second startup lock should succeed");
         drop(second_lock);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn init_with_acquired_startup_lock_rejects_mismatched_home() {
+        let locked_home = unique_temp_dir();
+        let target_home = unique_temp_dir();
+        let startup_lock = super::acquire_state_runtime_startup_lock(locked_home.as_path())
+            .await
+            .expect("startup lock");
+
+        let result = StateRuntime::init_with_acquired_startup_lock(
+            target_home.clone(),
+            "test-provider".to_string(),
+            &startup_lock,
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("mismatched startup lock should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("state startup lock at"));
+        let _ = tokio::fs::remove_dir_all(locked_home).await;
+        let _ = tokio::fs::remove_dir_all(target_home).await;
+    }
+
+    #[tokio::test]
+    async fn writer_pools_use_a_single_connection_and_readers_stay_concurrent() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+
+        // Every writer pool must expose exactly one connection so that, within
+        // a single process, at most one connection per DB can hold the SQLite
+        // write lock. This is what makes intra-process SQLITE_BUSY_SNAPSHOT
+        // (extended code 517) impossible.
+        for (label, pool) in [
+            ("state", runtime.pool.as_ref()),
+            ("logs", runtime.logs_pool.as_ref()),
+            ("goals", runtime.goals_pool.as_ref()),
+            ("memories", runtime.memories_pool.as_ref()),
+        ] {
+            assert_eq!(
+                1,
+                pool.options().get_max_connections(),
+                "{label} writer pool must have a single connection"
+            );
+        }
+
+        // Reader pools keep multiple connections so read-only query paths stay
+        // concurrent alongside the single writer.
+        for (label, reader) in [
+            ("state", runtime.reader_pool.as_ref()),
+            ("logs", runtime.logs_reader_pool.as_ref()),
+        ] {
+            assert_eq!(
+                super::READER_MAX_CONNECTIONS,
+                reader.options().get_max_connections(),
+                "{label} reader pool must allow concurrent connections"
+            );
+        }
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_state_writes_and_reads_do_not_raise_busy_snapshot() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+
+        // Seed a known thread that concurrent readers can fetch while writers
+        // keep committing new rows.
+        let seed_id = ThreadId::new();
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                codex_home.as_path(),
+                seed_id,
+                codex_home.clone(),
+            ))
+            .await
+            .expect("seed thread should upsert");
+
+        // Fan out many concurrent writers and readers against the state DB.
+        // With a multi-connection writer pool, one connection committing a
+        // write while another connection held a read snapshot could raise
+        // SQLITE_BUSY_SNAPSHOT (517) with no other process involved; the
+        // single-connection writer pool plus the read-only reader pool must
+        // make that impossible (and must not deadlock).
+        let mut handles = Vec::new();
+        for _ in 0..12 {
+            let runtime = runtime.clone();
+            let cwd = codex_home.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..8 {
+                    let thread_id = ThreadId::new();
+                    let metadata = test_thread_metadata(cwd.as_path(), thread_id, cwd.clone());
+                    runtime.upsert_thread(&metadata).await?;
+                    // Reads exercise the separate reader pool concurrently with
+                    // the writes above.
+                    runtime.get_thread(thread_id).await?;
+                    runtime.get_thread(seed_id).await?;
+                }
+                anyhow::Ok(())
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .expect("write/read task should not panic")
+                .expect("concurrent writes and reads must not raise 517");
+        }
+
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
@@ -1050,7 +1530,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open state db");
-        migrator_through(&STATE_MIGRATOR, 44)
+        migrator_through(&STATE_MIGRATOR, /*version*/ 44)
             .run(&pool)
             .await
             .expect("apply pre-automation workflow schema");
@@ -1123,7 +1603,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open goals db");
-        migrator_through(&GOALS_MIGRATOR, 2)
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 2)
             .run(&pool)
             .await
             .expect("apply pre-projection goals schema");
@@ -1216,7 +1696,7 @@ INSERT INTO background_agent_worktree_leases (
         )
         .await
         .expect("open goals db");
-        migrator_through(&GOALS_MIGRATOR, 3)
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 3)
             .run(&pool)
             .await
             .expect("apply pre-cancellation goals schema");
@@ -1290,12 +1770,13 @@ INSERT INTO thread_goal_plan_nodes (
             .execute(&current_pool)
             .await
             .expect("plan node cancellation status should be accepted");
-        let statuses: (String, String, String) = sqlx::query_as(
+        let statuses: (String, String, String, String) = sqlx::query_as(
             r#"
 SELECT
     goal.status,
     plan.status,
-    node.status
+    node.status,
+    node.assigned_thread_id
 FROM thread_goals goal
 JOIN thread_goal_plans plan ON plan.thread_id = goal.thread_id
 JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
@@ -1308,11 +1789,239 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
             (
                 "cancelled".to_string(),
                 "cancelled".to_string(),
-                "cancelled".to_string()
+                "cancelled".to_string(),
+                "thread-1".to_string()
             ),
             statuses
         );
         current_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    /// Goals migration `0005_thread_goal_deferred.sql` exactly as shipped in
+    /// published codewith 0.1.48 (tag `rust-v0.1.48`). Kept outside
+    /// `goals_migrations/` so the embedded migrator never picks it up.
+    const LEGACY_0148_GOALS_DEFERRED_V5_SQL: &str =
+        include_str!("runtime/fixtures/goals_0148_0005_thread_goal_deferred.sql");
+
+    fn legacy_0148_goals_deferred_migration() -> Migration {
+        Migration::new(
+            5,
+            Cow::Borrowed("thread goal deferred"),
+            MigrationType::Simple,
+            LEGACY_0148_GOALS_DEFERRED_V5_SQL.into_sql_str(),
+            /*no_tx*/ true,
+        )
+    }
+
+    #[test]
+    fn legacy_0148_goals_deferred_checksum_matches_sqlx_checksum() {
+        let expected = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)
+            .expect("legacy checksum hex should decode");
+        assert_eq!(
+            expected.as_slice(),
+            legacy_0148_goals_deferred_migration().checksum.as_ref(),
+            "hardcoded legacy checksum must match sqlx's checksum of the archived 0.1.48 migration bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn goals_db_stamped_by_codewith_0148_repairs_and_migrates() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let goals_path = goals_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&goals_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open goals db");
+        // Recreate a goals database exactly as published codewith 0.1.48
+        // left it: shared versions 1-4 plus the deferred table rebuild
+        // stamped as version 5.
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 4)
+            .run(&pool)
+            .await
+            .expect("apply goals schema through version 4");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goals (
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('thread-1', 'goal-1', 'Survive the 0.1.48 upgrade.', 'active', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy goal should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('plan-1', 'thread-1', 'active', 'ready_only', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('node-1', 'plan-1', 'thread-1', 'step', 0, 0, 'Do the step.', 'pending', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan node should insert");
+        let legacy_migrator = Migrator {
+            migrations: Cow::Owned(vec![legacy_0148_goals_deferred_migration()]),
+            ignore_missing: true,
+            locking: true,
+            no_tx: false,
+            table_name: GOALS_MIGRATOR.table_name.clone(),
+            create_schemas: GOALS_MIGRATOR.create_schemas.clone(),
+        };
+        legacy_migrator
+            .run(&pool)
+            .await
+            .expect("apply the 0.1.48 deferred migration as version 5");
+        // The legacy rebuild introduced the deferred status.
+        sqlx::query("UPDATE thread_goals SET status = 'deferred' WHERE thread_id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .expect("legacy schema should accept deferred status");
+        let stamped: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .expect("legacy stamps should query");
+        assert_eq!(
+            vec![1, 2, 3, 4, 5],
+            stamped
+                .iter()
+                .map(|(version, _)| *version)
+                .collect::<Vec<_>>()
+        );
+        let legacy_checksum = decode_hex_checksum(LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX)
+            .expect("legacy checksum hex should decode");
+        assert_eq!(
+            legacy_checksum,
+            stamped.last().expect("version 5 stamp").1,
+            "version 5 must be stamped with the published 0.1.48 checksum"
+        );
+        pool.close().await;
+
+        // Without the repair, the current migrator rejects the 0.1.48 stamp.
+        let strict_pool = open_db_pool(goals_path.as_path()).await;
+        let unrepaired_err = runtime_goals_migrator()
+            .run(&strict_pool)
+            .await
+            .expect_err("current migrator must reject the unrepaired 0.1.48 stamp");
+        assert!(matches!(unrepaired_err, MigrateError::VersionMismatch(5)));
+        strict_pool.close().await;
+
+        // Full runtime init repairs the stamp and applies the missing
+        // versions 5-7 on top of the legacy schema.
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize on a 0.1.48-stamped goals db");
+        runtime.pool.close().await;
+        runtime.logs_pool.close().await;
+        drop(runtime);
+
+        let query_pool = open_db_pool(goals_path.as_path()).await;
+        let stamped: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&query_pool)
+                .await
+                .expect("repaired stamps should query");
+        assert_eq!(
+            (1..=8).collect::<Vec<i64>>(),
+            stamped
+                .iter()
+                .map(|(version, _)| *version)
+                .collect::<Vec<_>>()
+        );
+        let embedded_deferred_checksum = GOALS_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == GOALS_DEFERRED_MIGRATION_VERSION)
+            .expect("embedded deferred migration")
+            .checksum
+            .to_vec();
+        assert_eq!(
+            embedded_deferred_checksum,
+            stamped.last().expect("version 8 stamp").1,
+            "version 8 must carry the embedded deferred checksum after repair"
+        );
+        // The repaired database converges on the fresh schema: assignment
+        // backfill, title columns, lifecycle table, and all four plan-node
+        // indexes.
+        let (status, assigned_thread_id, goal_title): (String, String, Option<String>) =
+            sqlx::query_as(
+                r#"
+SELECT goal.status, node.assigned_thread_id, goal.title
+FROM thread_goals goal
+JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
+                "#,
+            )
+            .fetch_one(&query_pool)
+            .await
+            .expect("repaired schema should join goals and nodes");
+        assert_eq!("deferred", status);
+        assert_eq!("thread-1", assigned_thread_id);
+        assert_eq!(None, goal_title);
+        let lifecycle_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_context_lifecycle")
+                .fetch_one(&query_pool)
+                .await
+                .expect("goal context lifecycle table should exist");
+        assert_eq!(0, lifecycle_count);
+        let indexes: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'thread_goal_plan_nodes' AND name LIKE 'idx_%' ORDER BY name",
+        )
+        .fetch_all(&query_pool)
+        .await
+        .expect("plan node indexes should query");
+        assert_eq!(
+            vec![
+                "idx_thread_goal_plan_nodes_assigned_status".to_string(),
+                "idx_thread_goal_plan_nodes_plan_status".to_string(),
+                "idx_thread_goal_plan_nodes_projected_goal".to_string(),
+                "idx_thread_goal_plan_nodes_thread_status".to_string(),
+            ],
+            indexes
+        );
+        // Idempotence: a second init sees nothing left to repair.
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize again after the repair");
+        runtime.pool.close().await;
+        runtime.logs_pool.close().await;
+        drop(runtime);
+        query_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -1346,6 +2055,8 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
             "migrate_goals",
             "open_memories",
             "migrate_memories",
+            "open_state_reader",
+            "open_logs_reader",
             "ensure_backfill_state",
             "post_init_query",
         ]
@@ -1356,6 +2067,58 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
 
         runtime.pool.close().await;
         runtime.logs_pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn wal_checkpoint_maintenance_checkpoints_all_runtime_pools() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        // Generate WAL frames on the logs pool -- the hottest write target,
+        // which previously was not covered by periodic checkpoint maintenance.
+        runtime
+            .insert_logs(&[crate::LogEntry {
+                ts: 1,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some("checkpoint-coverage".to_string()),
+                feedback_log_body: Some("checkpoint-coverage".to_string()),
+                thread_id: Some("thread-ckpt".to_string()),
+                process_uuid: Some("proc-ckpt".to_string()),
+                module_path: Some("mod".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(1),
+            }])
+            .await
+            .expect("insert log");
+
+        // Maintenance must succeed across every runtime pool, not just state.
+        runtime
+            .run_state_wal_checkpoint_maintenance()
+            .await
+            .expect("checkpoint maintenance across all pools");
+
+        // All four runtime databases are opened and reachable by maintenance.
+        for path in [
+            state_db_path(codex_home.as_path()),
+            logs_db_path(codex_home.as_path()),
+            goals_db_path(codex_home.as_path()),
+            memories_db_path(codex_home.as_path()),
+        ] {
+            assert!(path.exists(), "expected db file at {}", path.display());
+        }
+
+        // The inserted log survives the checkpoint (frames flushed into the DB).
+        let rows = runtime
+            .query_logs(&crate::LogQuery::default())
+            .await
+            .expect("query logs after checkpoint");
+        assert_eq!(rows.len(), 1);
+
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

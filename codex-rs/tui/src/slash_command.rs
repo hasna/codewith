@@ -52,6 +52,7 @@ pub enum SlashCommand {
     Recap,
     Plan,
     Goal,
+    Teach,
     #[strum(
         to_string = "mission-control",
         serialize = "mission",
@@ -60,6 +61,7 @@ pub enum SlashCommand {
     MissionControl,
     Workflow,
     Loop,
+    Queued,
     Schedule,
     Monitor,
     #[strum(
@@ -77,6 +79,7 @@ pub enum SlashCommand {
     )]
     BackgroundAgent,
     Worktree,
+    Variant,
     ExternalAgent,
     Side,
     Btw,
@@ -85,6 +88,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Usage,
     Stats,
     Changelog,
     DebugConfig,
@@ -97,6 +101,8 @@ pub enum SlashCommand {
     #[strum(to_string = "mcp", serialize = "mcps")]
     Mcp,
     Apps,
+    #[strum(to_string = "webhook", serialize = "webhooks")]
+    Webhook,
     Plugins,
     Logout,
     Quit,
@@ -140,6 +146,7 @@ impl SlashCommand {
             SlashCommand::Skills => "use skills to improve how Codewith performs specific tasks",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
+            SlashCommand::Usage => "show usage, context, and rate limits",
             SlashCommand::Stats => "show session stats and provider usage",
             SlashCommand::Changelog => "show what changed in Codewith releases",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
@@ -162,9 +169,11 @@ impl SlashCommand {
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Teach => "toggle teaching callouts for future replies",
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
+            SlashCommand::Queued => "view and manage queued messages",
             SlashCommand::Schedule => "schedule and manage prompts for the current thread",
             SlashCommand::Monitor => "create and manage dynamic monitors for this thread",
             SlashCommand::Session => "switch the active session or agent thread",
@@ -172,6 +181,7 @@ impl SlashCommand {
             SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::BackgroundAgent => "manage durable background agents",
             SlashCommand::Worktree => "manage Codewith-managed worktrees",
+            SlashCommand::Variant => "spawn variants in managed worktrees",
             SlashCommand::ExternalAgent => "stage an external coding-agent task",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
@@ -188,6 +198,7 @@ impl SlashCommand {
             SlashCommand::Memories => "configure memory use and generation",
             SlashCommand::Mcp => "open the MCP control center",
             SlashCommand::Apps => "manage apps",
+            SlashCommand::Webhook => "show app webhook and event inbox",
             SlashCommand::Plugins => "browse plugins",
             SlashCommand::Logout => "log out of Codewith",
             SlashCommand::Rollout => "print the rollout file path",
@@ -211,13 +222,17 @@ impl SlashCommand {
                 | SlashCommand::Prompt
                 | SlashCommand::Plan
                 | SlashCommand::Goal
+                | SlashCommand::Teach
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
+                | SlashCommand::Queued
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Agent
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Worktree
+                | SlashCommand::Pr
+                | SlashCommand::Variant
                 | SlashCommand::Recap
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -242,6 +257,7 @@ impl SlashCommand {
                 | SlashCommand::Diff
                 | SlashCommand::Mention
                 | SlashCommand::Status
+                | SlashCommand::Usage
                 | SlashCommand::Stats
                 | SlashCommand::Changelog
                 | SlashCommand::Ide
@@ -272,6 +288,7 @@ impl SlashCommand {
             | SlashCommand::Memories
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Variant
             | SlashCommand::Clear
             | SlashCommand::Logout => false,
             SlashCommand::Diff
@@ -285,6 +302,7 @@ impl SlashCommand {
             | SlashCommand::Skills
             | SlashCommand::Hooks
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
@@ -292,9 +310,11 @@ impl SlashCommand {
             | SlashCommand::Ps
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::Teach
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
+            | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::Pair
@@ -303,6 +323,7 @@ impl SlashCommand {
             | SlashCommand::Session
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::Webhook
             | SlashCommand::Plugins
             | SlashCommand::Title
             | SlashCommand::Statusline
@@ -323,7 +344,19 @@ impl SlashCommand {
         }
     }
 
-    fn is_visible(self) -> bool {
+    /// If this command is a backwards-compatible duplicate, return the visible command it aliases.
+    pub fn hidden_alias_target(self) -> Option<SlashCommand> {
+        match self {
+            SlashCommand::BackgroundAgent => Some(SlashCommand::Agent),
+            SlashCommand::MultiAgents => Some(SlashCommand::Session),
+            SlashCommand::Exit => Some(SlashCommand::Quit),
+            SlashCommand::Btw => Some(SlashCommand::Side),
+            SlashCommand::Stats => Some(SlashCommand::Status),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_visible(self) -> bool {
         match self {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
@@ -331,12 +364,8 @@ impl SlashCommand {
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
             // Hidden aliases: these still parse and dispatch (see
             // `find_builtin_command`) but are kept out of the completion popup to
-            // debloat it. `/exit`→`/quit`, `/btw`→`/side`, `/stats`→`/status`.
-            SlashCommand::BackgroundAgent
-            | SlashCommand::MultiAgents
-            | SlashCommand::Exit
-            | SlashCommand::Btw
-            | SlashCommand::Stats => false,
+            // debloat it.
+            command if command.hidden_alias_target().is_some() => false,
             _ => true,
         }
     }
@@ -370,14 +399,25 @@ mod tests {
 
     #[test]
     fn hidden_duplicate_aliases_parse_but_are_not_listed() {
-        // `/exit`, `/btw`, `/stats` still dispatch (they parse) but are kept out
-        // of the completion popup to debloat it; their canonical twins stay.
-        for (alias, canonical) in [
-            (SlashCommand::Exit, SlashCommand::Quit),
-            (SlashCommand::Btw, SlashCommand::Side),
-            (SlashCommand::Stats, SlashCommand::Status),
+        // Hidden duplicates still dispatch but are kept out of the completion
+        // popup to debloat it; their canonical twins stay visible.
+        for (alias_name, alias, canonical) in [
+            (
+                "background-agent",
+                SlashCommand::BackgroundAgent,
+                SlashCommand::Agent,
+            ),
+            (
+                "subagents",
+                SlashCommand::MultiAgents,
+                SlashCommand::Session,
+            ),
+            ("exit", SlashCommand::Exit, SlashCommand::Quit),
+            ("btw", SlashCommand::Btw, SlashCommand::Side),
+            ("stats", SlashCommand::Stats, SlashCommand::Status),
         ] {
-            assert_eq!(SlashCommand::from_str(alias.command()), Ok(alias));
+            assert_eq!(SlashCommand::from_str(alias_name), Ok(alias));
+            assert_eq!(alias.hidden_alias_target(), Some(canonical));
             let listed = super::built_in_slash_commands();
             assert!(
                 !listed.iter().any(|(_, c)| *c == alias),
@@ -409,6 +449,22 @@ mod tests {
     }
 
     #[test]
+    fn webhooks_alias_parses_to_webhook_command() {
+        assert_eq!(SlashCommand::Webhook.command(), "webhook");
+        assert_eq!(
+            SlashCommand::from_str("webhooks"),
+            Ok(SlashCommand::Webhook)
+        );
+        assert_eq!(
+            SlashCommand::Webhook.description(),
+            "show app webhook and event inbox"
+        );
+        assert!(SlashCommand::Webhook.available_during_task());
+        assert!(!SlashCommand::Webhook.available_in_side_conversation());
+        assert!(!SlashCommand::Webhook.supports_inline_args());
+    }
+
+    #[test]
     fn pr_command_has_pull_request_aliases() {
         assert_eq!(SlashCommand::Pr.command(), "pr");
         assert_eq!(SlashCommand::from_str("prs"), Ok(SlashCommand::Pr));
@@ -423,7 +479,20 @@ mod tests {
         );
         assert!(SlashCommand::Pr.available_during_task());
         assert!(!SlashCommand::Pr.available_in_side_conversation());
-        assert!(!SlashCommand::Pr.supports_inline_args());
+        assert!(SlashCommand::Pr.supports_inline_args());
+    }
+
+    #[test]
+    fn teach_command_supports_session_teaching_mode_controls() {
+        assert_eq!(SlashCommand::Teach.command(), "teach");
+        assert_eq!(SlashCommand::from_str("teach"), Ok(SlashCommand::Teach));
+        assert_eq!(
+            SlashCommand::Teach.description(),
+            "toggle teaching callouts for future replies"
+        );
+        assert!(SlashCommand::Teach.supports_inline_args());
+        assert!(SlashCommand::Teach.available_during_task());
+        assert!(!SlashCommand::Teach.available_in_side_conversation());
     }
 
     #[test]
@@ -500,19 +569,39 @@ mod tests {
     fn certain_commands_are_available_during_task() {
         assert!(SlashCommand::Goal.available_during_task());
         assert!(SlashCommand::Workflow.available_during_task());
+        assert!(SlashCommand::Queued.available_during_task());
+        assert!(SlashCommand::Queued.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
         assert!(SlashCommand::Ide.available_during_task());
+        assert_eq!(SlashCommand::from_str("usage"), Ok(SlashCommand::Usage));
+        assert_eq!(
+            SlashCommand::Usage.description(),
+            "show usage, context, and rate limits"
+        );
+        assert!(SlashCommand::Usage.available_during_task());
+        assert!(SlashCommand::Usage.available_in_side_conversation());
+        assert!(!SlashCommand::Usage.supports_inline_args());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(name, command)| *name == "usage" && *command == SlashCommand::Usage)
+        );
         assert!(SlashCommand::Stats.available_during_task());
         assert!(SlashCommand::Stats.available_in_side_conversation());
         assert!(SlashCommand::Changelog.available_during_task());
         assert!(SlashCommand::Changelog.available_in_side_conversation());
         assert!(SlashCommand::Title.available_during_task());
         assert!(SlashCommand::Statusline.available_during_task());
+        assert!(SlashCommand::Summary.available_during_task());
         assert!(SlashCommand::MissionControl.available_during_task());
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
+        assert!(SlashCommand::Teach.available_during_task());
+        assert!(SlashCommand::Teach.supports_inline_args());
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
+        assert!(SlashCommand::Webhook.available_during_task());
     }
 
     #[test]
@@ -521,11 +610,17 @@ mod tests {
             SlashCommand::Profile,
             SlashCommand::Goal,
             SlashCommand::Loop,
+            SlashCommand::Queued,
             SlashCommand::Workflow,
             SlashCommand::MissionControl,
             SlashCommand::Pr,
+            SlashCommand::Teach,
+            SlashCommand::Webhook,
             SlashCommand::Worktree,
             SlashCommand::Status,
+            SlashCommand::Usage,
+            SlashCommand::Statusline,
+            SlashCommand::Summary,
             SlashCommand::Changelog,
         ];
         for command in available {
@@ -543,6 +638,7 @@ mod tests {
             SlashCommand::Config,
             SlashCommand::Resume,
             SlashCommand::Tmux,
+            SlashCommand::Variant,
         ];
         for command in unavailable {
             assert!(
@@ -601,6 +697,18 @@ mod tests {
         );
         assert!(SlashCommand::ExternalAgent.supports_inline_args());
         assert!(!SlashCommand::ExternalAgent.available_during_task());
+    }
+
+    #[test]
+    fn variant_command_supports_inline_args_and_waits_for_idle_session() {
+        assert_eq!(SlashCommand::Variant.command(), "variant");
+        assert_eq!(SlashCommand::from_str("variant"), Ok(SlashCommand::Variant));
+        assert_eq!(
+            SlashCommand::Variant.description(),
+            "spawn variants in managed worktrees"
+        );
+        assert!(SlashCommand::Variant.supports_inline_args());
+        assert!(!SlashCommand::Variant.available_during_task());
     }
 
     #[test]

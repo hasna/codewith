@@ -36,7 +36,7 @@ pub fn create_manage_loop_tool() -> ToolSpec {
         (
             "parent_schedule_id".to_string(),
             JsonSchema::string(Some(
-                "Optional parent loop schedule id for creating a nested loop. The parent must be a recurring loop in the current thread; nested loops are limited to depth 3, must use dynamic or interval cadences, and the child cadence must be slower than the parent cadence."
+                "Optional parent loop schedule id for creating a nested loop. The parent must be a recurring loop in the current thread; nested loops are limited to depth 5, must use dynamic or interval cadences, and the child cadence must be slower than the parent cadence."
                     .to_string(),
             )),
         ),
@@ -68,16 +68,24 @@ pub fn create_manage_loop_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "verbose".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. When true, return full prompts, lease timestamps, and complete run stats instead of the compact summary."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_LOOP_TOOL_NAME.to_string(),
         description: r#"Manage recurring `/loop` schedules for the current thread.
 Use `list` before mutating when the user did not name a specific loop, or when exact run counts are needed.
+List and mutation responses are compact by default: they include ids, timing, status, prompt previews, and counts. Set `verbose=true` only when full prompts or complete run stats are needed.
 `create` adds a recurring prompt with an interval, cron expression, or dynamic one-minute cadence.
-For nested loops, pass parent_schedule_id on create; child loops must run slower than their parent and nesting is limited to three levels.
+For nested loops, pass parent_schedule_id on create; child loops must run slower than their parent and nesting is limited to five levels.
 `stop` pauses future scheduled runs; it does not abort an already running turn.
-`clear` deletes the selected loop schedule.
+`clear` deletes the selected loop schedule and any nested child loop schedules.
 The tool is scoped to the current thread and rejects schedule ids from other threads."#
             .to_string(),
         strict: false,

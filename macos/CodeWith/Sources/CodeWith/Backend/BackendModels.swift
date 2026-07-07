@@ -10,6 +10,7 @@ struct ThreadInfo: Identifiable, Hashable {
     var createdAt: String?
     var modelProvider: String?
     var status: String?
+    var machineId: String?
     var gitOriginUrl: String?
     var gitBranch: String?
     var gitSha: String?
@@ -27,6 +28,11 @@ struct ThreadInfo: Identifiable, Hashable {
         modelProvider = v["modelProvider"]?.string
         // status is an object {type: "idle"|"active"|...} on the wire.
         status = v["status"]?["type"]?.string ?? v["status"]?.string
+        machineId = v["machineId"]?.string
+            ?? v["sourceMachineId"]?.string
+            ?? v["targetMachineId"]?.string
+            ?? v["machine"]?["machineId"]?.string
+            ?? v["machine"]?["id"]?.string
         gitOriginUrl = v["gitInfo"]?["originUrl"]?.string
         gitBranch = v["gitInfo"]?["branch"]?.string
         gitSha = v["gitInfo"]?["sha"]?.string
@@ -59,6 +65,57 @@ struct ThreadInfo: Identifiable, Hashable {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return iso.date(from: s) ?? ISO8601DateFormatter().date(from: s)
     }
+}
+
+/// Thread-scoped settings returned by thread read/resume/update RPCs.
+struct ThreadSessionSettings: Hashable {
+    var model: String?
+    var provider: String?
+    var effort: String?
+    var permissionProfileId: String?
+    var authProfile: String?
+    var clearsAuthProfile: Bool
+
+    init(
+        model: String? = nil,
+        provider: String? = nil,
+        effort: String? = nil,
+        permissionProfileId: String? = nil,
+        authProfile: String? = nil,
+        clearsAuthProfile: Bool = false
+    ) {
+        self.model = model
+        self.provider = provider
+        self.effort = effort
+        self.permissionProfileId = permissionProfileId
+        self.authProfile = authProfile
+        self.clearsAuthProfile = clearsAuthProfile
+    }
+
+    init?(from v: JSONValue) {
+        let settings = v["threadSettings"] ?? v["settings"] ?? v["thread"]?["threadSettings"] ?? v["thread"]?["settings"] ?? v
+        let authProfileValue = settings["authProfile"] ?? settings["auth_profile"]
+        self.init(
+            model: settings["model"]?.string,
+            provider: settings["modelProvider"]?.string ?? settings["model_provider"]?.string,
+            effort: settings["effort"]?.string
+                ?? settings["reasoningEffort"]?.string
+                ?? settings["reasoning_effort"]?.string,
+            permissionProfileId: settings["activePermissionProfile"]?["id"]?.string
+                ?? settings["active_permission_profile"]?["id"]?.string
+                ?? settings["permissions"]?.string,
+            authProfile: authProfileValue?.string,
+            clearsAuthProfile: authProfileValue?.isNull == true
+        )
+        if model == nil, provider == nil, effort == nil, permissionProfileId == nil, authProfile == nil, !clearsAuthProfile {
+            return nil
+        }
+    }
+}
+
+struct ThreadReadResult: Hashable {
+    var messages: [ChatMessage]
+    var settings: ThreadSessionSettings?
 }
 
 /// A project = a repo / working directory that has sessions. Grouped by git
@@ -249,15 +306,35 @@ struct DesktopSettingsInfo: Hashable {
 struct ConfigRequirementsInfo: Hashable {
     var allowedApprovalPolicies: [String]?
     var allowedSandboxModes: [String]?
+    var allowedPermissionProfiles: [String]?
+    var defaultPermissions: String?
 
     init(from v: JSONValue) {
-        allowedApprovalPolicies = Self.stringArray(v["allowedApprovalPolicies"])
+        allowedApprovalPolicies = Self.approvalPolicyArray(v["allowedApprovalPolicies"])
         allowedSandboxModes = Self.stringArray(v["allowedSandboxModes"])
+        allowedPermissionProfiles = Self.permissionProfileArray(v["allowedPermissionProfiles"])
+        defaultPermissions = v["defaultPermissions"]?.string
+    }
+
+    static func approvalPolicyArray(_ value: JSONValue?) -> [String]? {
+        guard let array = value?.array else { return nil }
+        return array.compactMap { item in
+            if let string = item.string { return string }
+            if item["granular"] != nil { return "granular" }
+            return nil
+        }
     }
 
     static func stringArray(_ value: JSONValue?) -> [String]? {
         guard let array = value?.array else { return nil }
         return array.compactMap(\.string)
+    }
+
+    static func permissionProfileArray(_ value: JSONValue?) -> [String]? {
+        guard let object = value?.object else { return nil }
+        return object.compactMap { key, enabled in
+            enabled.bool == false ? nil : key
+        }.sorted()
     }
 
     func approvalOptions(defaults: [String]) -> [String] {
@@ -270,6 +347,11 @@ struct ConfigRequirementsInfo: Hashable {
 
     func allowsSandbox(_ mode: String) -> Bool {
         allowedSandboxModes?.contains(mode) ?? true
+    }
+
+    func permissionProfileOptions(defaults: [String]) -> [String] {
+        guard let allowedPermissionProfiles else { return defaults }
+        return defaults.filter { allowedPermissionProfiles.contains($0) }
     }
 }
 
@@ -293,9 +375,19 @@ struct AuthProfileInfo: Identifiable, Hashable {
     init(from v: JSONValue) {
         name = v["name"]?.string ?? "profile"
         email = v["email"]?.string ?? v["accountId"]?.string ?? ""
-        provider = v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? ""
+        provider = Self.providerDisplayName(v["subscriptionProvider"]?.string ?? v["provider"]?.string ?? "")
         plan = v["plan"]?.string ?? v["authMode"]?.string ?? ""
         active = v["active"]?.bool ?? false
+    }
+
+    private static func providerDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "chatgpt": return "ChatGPT"
+        case "claudeAi": return "Claude.ai"
+        case "cursor": return "Cursor"
+        case "grok": return "Grok"
+        default: return provider
+        }
     }
 }
 
@@ -528,10 +620,53 @@ struct GoalPlanNodeInfo: Identifiable, Hashable {
     }
 }
 
-struct ThreadGoalState: Hashable {
+struct ThreadGoalState: Identifiable, Hashable {
+    var id: String { threadId }
     var threadId: String
     var goal: GoalInfo?
     var goalPlans: [GoalPlanInfo]
+}
+
+/// A workflow spec or run attached to a thread.
+struct WorkflowInfo: Identifiable, Hashable {
+    enum Kind: String, Hashable {
+        case workflow, run
+    }
+
+    var id: String
+    var threadId: String
+    var title: String
+    var subtitle: String
+    var status: String
+    var kind: Kind
+    var updatedAt: Int
+
+    init(workflow v: JSONValue, fallbackThreadId: String) {
+        let recordId = v["workflowRecordId"]?.string ?? v["id"]?.string ?? UUID().uuidString
+        id = "workflow:\(recordId)"
+        threadId = v["threadId"]?.string ?? fallbackThreadId
+        title = v["displayName"]?.string ?? v["specWorkflowId"]?.string ?? "Workflow"
+        status = v["status"]?.string ?? "draft"
+        kind = .workflow
+        updatedAt = v["updatedAt"]?.int ?? 0
+        let steps = v["stepCount"]?.int ?? 0
+        let agents = v["agentCount"]?.int ?? 0
+        subtitle = "\(steps) step\(steps == 1 ? "" : "s") · \(agents) agent\(agents == 1 ? "" : "s")"
+    }
+
+    init(run v: JSONValue, fallbackThreadId: String) {
+        let runId = v["runId"]?.string ?? v["id"]?.string ?? UUID().uuidString
+        id = "run:\(runId)"
+        threadId = v["threadId"]?.string ?? fallbackThreadId
+        title = "Run \(runId.prefix(8))"
+        status = v["status"]?.string ?? "pending"
+        kind = .run
+        updatedAt = v["updatedAt"]?.int ?? 0
+        let succeeded = v["succeededStepCount"]?.int ?? 0
+        let failed = v["failedStepCount"]?.int ?? 0
+        let active = v["activeStepCount"]?.int ?? 0
+        subtitle = "\(succeeded) succeeded · \(failed) failed · \(active) active"
+    }
 }
 
 /// A currently loaded app-server peer that can receive active-session messages.
@@ -658,6 +793,113 @@ struct AgentAttachmentInfo {
 
     var pendingCount: Int {
         pendingInteractions.count
+    }
+}
+
+struct AccountUsageInfo: Hashable {
+    var lifetimeTokens: Int?
+    var peakDailyTokens: Int?
+    var longestRunningTurnSec: Int?
+    var currentStreakDays: Int?
+    var longestStreakDays: Int?
+    var dailyBuckets: [AccountUsageBucket]
+
+    init(from v: JSONValue) {
+        let summary = v["summary"] ?? .null
+        lifetimeTokens = summary["lifetimeTokens"]?.int
+        peakDailyTokens = summary["peakDailyTokens"]?.int
+        longestRunningTurnSec = summary["longestRunningTurnSec"]?.int
+        currentStreakDays = summary["currentStreakDays"]?.int
+        longestStreakDays = summary["longestStreakDays"]?.int
+        dailyBuckets = (v["dailyUsageBuckets"]?.array ?? []).map(AccountUsageBucket.init(from:))
+    }
+}
+
+struct AccountUsageBucket: Identifiable, Hashable {
+    var id: String { startDate }
+    var startDate: String
+    var tokens: Int
+
+    init(from v: JSONValue) {
+        startDate = v["startDate"]?.string ?? ""
+        tokens = v["tokens"]?.int ?? 0
+    }
+}
+
+struct McpServerStatusInfo: Identifiable, Hashable {
+    var id: String { name }
+    var name: String
+    var authStatus: String
+    var toolCount: Int
+    var resourceCount: Int
+
+    init(from v: JSONValue) {
+        name = v["name"]?.string ?? "server"
+        authStatus = v["authStatus"]?["type"]?.string ?? v["authStatus"]?.string ?? "unknown"
+        toolCount = v["tools"]?.object?.count ?? 0
+        resourceCount = (v["resources"]?.array ?? []).count
+            + (v["resourceTemplates"]?.array ?? []).count
+    }
+}
+
+struct HookEntryInfo: Identifiable, Hashable {
+    var id: String { cwd }
+    var cwd: String
+    var hooks: [HookInfo]
+    var warnings: [String]
+    var errors: [String]
+
+    init(from v: JSONValue) {
+        cwd = v["cwd"]?.string ?? ""
+        hooks = (v["hooks"]?.array ?? []).map(HookInfo.init(from:))
+        warnings = (v["warnings"]?.array ?? []).compactMap(\.string)
+        errors = (v["errors"]?.array ?? []).compactMap { error in
+            error["message"]?.string
+        }
+    }
+}
+
+struct HookInfo: Identifiable, Hashable {
+    var id: String { key }
+    var key: String
+    var eventName: String
+    var handlerType: String
+    var matcher: String?
+    var command: String?
+    var enabled: Bool
+    var trustStatus: String
+
+    init(from v: JSONValue) {
+        key = v["key"]?.string ?? UUID().uuidString
+        eventName = v["eventName"]?.string ?? ""
+        handlerType = v["handlerType"]?.string ?? ""
+        matcher = v["matcher"]?.string
+        command = v["command"]?.string
+        enabled = v["enabled"]?.bool ?? false
+        trustStatus = v["trustStatus"]?.string ?? "unknown"
+    }
+}
+
+struct WorktreeInfo: Identifiable, Hashable {
+    var id: String { worktreeId }
+    var worktreeId: String
+    var baseRepoPath: String
+    var worktreePath: String
+    var branch: String?
+    var lifecycleStatus: String
+    var dirty: Bool
+    var ownerKind: String
+    var updatedAt: Int
+
+    init(from v: JSONValue) {
+        worktreeId = v["worktreeId"]?.string ?? UUID().uuidString
+        baseRepoPath = v["baseRepoPath"]?.string ?? ""
+        worktreePath = v["worktreePath"]?.string ?? ""
+        branch = v["branch"]?.string
+        lifecycleStatus = v["lifecycleStatus"]?.string ?? "unknown"
+        dirty = v["dirty"]?.bool ?? false
+        ownerKind = v["ownerKind"]?.string ?? ""
+        updatedAt = v["updatedAt"]?.int ?? 0
     }
 }
 

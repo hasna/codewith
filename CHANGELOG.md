@@ -11,28 +11,349 @@ The fork-specific history starts after upstream commit `20fedafff8` on
 loop tasks`.
 
 Sources used to rebuild this changelog: local git history and tags,
-`origin/main`, release branches for `0.1.27` and `0.1.28`, GitHub Releases for
-`rust-v0.1.26` through `rust-v0.1.29` and `rust-v0.1.33`, and npm metadata for
-`@hasna/codewith`.
+`origin/main`, release branches for `0.1.27`, `0.1.28`, and `0.1.46`,
+GitHub Releases, and npm metadata for `@hasna/codewith`.
 
 Known evidence gaps:
 
-- GitHub Releases currently exist only for `0.1.26`, `0.1.27`, `0.1.28`,
-  `0.1.29`, and `0.1.33`.
-- GitHub Releases were not found for `0.1.30`, `0.1.31`, `0.1.32`, or
-  `0.1.34`, though matching local tags and npm publications exist.
+- GitHub Releases currently exist for `0.1.26`, `0.1.27`, `0.1.28`,
+  `0.1.29`, `0.1.33`, `0.1.39`, `0.1.40`, `0.1.41`, `0.1.42`,
+  `0.1.43`, `0.1.45`, and `0.1.46`.
+- GitHub Releases were not found for `0.1.30`, `0.1.31`, `0.1.32`,
+  `0.1.34`, `0.1.35`, `0.1.36`, `0.1.37`, `0.1.38`, or `0.1.44`,
+  though matching local tags and/or npm publications exist for some of these
+  versions.
 - The GitHub Release bodies for `0.1.29` and `0.1.33` were generated from tag
   commit messages, not this changelog.
 - npm has published `0.1.4`, `0.1.6`, and `0.1.15`, but no matching local tag
   or committed release bump was found in the current refs.
 - npm metadata still has old timestamps for `0.1.0` and `0.1.1`, but
   `npm view @hasna/codewith versions` currently starts at `0.1.2`.
-- `0.1.27` and `0.1.28` live on release branches, not `origin/main`.
+- `0.1.27`, `0.1.28`, and `0.1.46` live on release branches, not
+  `origin/main`; `0.1.46` was cut from `fix/loops-runtime-0.1.46`.
+- `origin/main` remains at Codewith `0.1.45` until the `0.1.46` hotfix branch
+  is merged, cherry-picked, or superseded by a later release.
+- The `rust-v0.1.46` GitHub Release is metadata-only and is not marked latest;
+  use `rust-v0.1.45` for the latest asset-bearing platform binary release until
+  a later full asset release supersedes it.
 - This file intentionally excludes pre-fork alpha tags
   `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
   SDK tags, and `rusty-v8-v*` dependency artifact tags.
 
 ## [Unreleased]
+
+## [0.1.57] - 2026-07-05
+
+Tag: `rust-v0.1.57`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.57>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.56...rust-v0.1.57>
+
+Hotfix release for the loop-worker fork-conflict failure class, plus a
+user-facing agent max-threads control and the CI npm publish repair
+(#121, #123).
+
+### Fixed
+
+- Core: a full-history subagent fork (`fork_context=true` on stable v1,
+  `fork_turns=all` on multi_agent_v2) combined with `agent_type`, `model`, or
+  `reasoning_effort` no longer hard-rejects the spawn. Those overrides were
+  already ignored on the full-fork path (the child config is built from the
+  parent), so the reject was converted into a notice of the ignored fields
+  (logged via `tracing::warn`) and the fork proceeds with inherited values.
+  This removes the conflict-class errors that were failing routed loop
+  workers in production; tool-schema descriptions now state the fields are
+  inherited on a full-history fork. (#121)
+- Release: the `publish-npm` job now authenticates with the
+  `NODE_AUTH_TOKEN` repository secret. npm trusted publishing (OIDC) was
+  never configured for the `@hasna/codewith*` packages, so no fork release
+  had ever published from CI; every prior npm release was published by hand.
+  (#123)
+
+### Added
+
+- TUI: `/config` gains an agent max-threads control for the existing
+  `[agents] max_threads` cap (preset choices, persisted to `config.toml`,
+  live-applied to the session), replacing hand-editing of
+  `~/.codewith/config.toml`. Hidden while `multi_agent_v2` governs threads.
+  (#121)
+
+## [0.1.56] - 2026-07-04
+
+Tag: `rust-v0.1.56`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.56>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.55...rust-v0.1.56>
+
+Stability and provider-compatibility release. Follows 0.1.55 with 17 merged
+pull requests (#90-#107) focused on sqlite state-layer contention, chat and
+responses API compatibility across providers, TUI robustness, and the release
+toolchain pin that unblocks reproducible platform builds.
+
+### Fixed
+
+- State layer: writes are serialized on a single-connection pool to eliminate
+  intra-process `SQLITE_BUSY (517)` under concurrent sessions; hot write paths
+  (mailbox, logs, rollout) retry `BUSY_SNAPSHOT` and use `BEGIN IMMEDIATE`.
+- Chat-Completions tool-calling hardened for compatibility providers; dropped
+  SSE items are now observable and `function_call_arguments.delta` is handled;
+  reasoning is read and replayed on the chat-completions path.
+- `reasoning_effort: none` maps to `low` for Cerebras/NVIDIA chat/completions;
+  namespace tools are disabled for the xAI responses API; Gemini
+  `thought_signature` round-trips and the stray `client_version` query
+  parameter is dropped.
+- Provider catalog: ollama and lmstudio built-in providers restored; known
+  provider-model metadata and fallbacks refreshed.
+- TUI: `/fork` degrades gracefully on a thread with no rollout yet; `/apps`
+  surfaces the underlying app/list failure reason; Enter dispatches the exact
+  slash alias (`/exit` no longer opens `/experimental`).
+- Core: router `FunctionCallError` auto-log downgraded from error to debug;
+  arg0 helper-symlink spawn race closed under concurrent sessions.
+- Release: Rust toolchain pinned to 1.96.1 in the release workflows for
+  reproducible cross-platform builds.
+
+### Performance
+
+- State: default INFO-level log capture, bounded HTTP traces, off-transaction
+  prune, and WAL checkpoints across all pools.
+
+## [0.1.55] - 2026-07-02
+
+Tag: `rust-v0.1.55`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.55>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.54...rust-v0.1.55>
+
+Consolidation release: merges all outstanding work since 0.1.51 (40 pull requests,
+17 branches, and the 0.1.52-0.1.54 release lineage whose tags never published).
+Versions 0.1.52-0.1.54 were tagged but never reached npm due to release-pipeline
+failures fixed here.
+
+### Fixed
+
+- Release pipeline: libcap-2.75 musl download now falls back across verified
+  mirrors (kernel.org -> OSUOSL -> Debian) with mandatory checksum; macOS
+  builds use CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 and the aarch64 primary
+  runs on macos-15-xlarge, ending the 3-hour timeouts that killed 0.1.52-0.1.54.
+- Goals state: databases stamped by published 0.1.48 are repaired before
+  migration, preventing a permanent VersionMismatch(5) that disabled the
+  sqlite state layer (threads, schedules, mailbox, goals) after upgrade.
+- OpenRouter GLM-5.2 metadata restored (parallel tool calls, High/XHigh
+  reasoning presets, gpt-oss-120b as default fallback).
+- Usage-profile broker: scheduled dispatches now defer while all sibling
+  profiles are cooling down instead of feeding the failure circuit breaker.
+- Remote and sandboxed filesystems support symlink-safe reads, so project
+  instructions (CODEWITH.md/AGENTS.md) load in remote sessions.
+- Mailbox: queued-input API restored; delivery defer rolls back on enqueue
+  rejection; delivery-policy parsing matches the SQL claim filter; queued
+  context delivery is bounded.
+- Loops/schedules: deferred runs during usage waits; stale-scheduler guards;
+  live-session owner routing; scheduled turns no longer truncate interactive
+  session history.
+- macOS app: dock re-open restores the hidden window; deploy script bundles a
+  real CLI binary with CLI-derived bundle version.
+
+### Added
+
+- /teach, /variant, /usage, /pair TUI commands; slash-command alias dedupe.
+- Webhook event inbox; session PR worktree mode; nested loops to depth five;
+  goal plan appends; approval-gated agent MCP management; compact CLI output;
+  experimental smart suggest; CODEWITH.md native instruction imports.
+- Auth profile usage health checks and hardened usage-profile autoswitch.
+- Codewith bridge adapter surfaces (profile list --json, authProfile in thread
+  inventory); workflow model routing contract; sourced additional context.
+- Security hardening: canonical PR-mode cwd, thread-monitor path handling,
+  remote-control-origin RPC gating, mission-control model tool hardening,
+  update-RPC import blocking, symlinked project-instruction rejection,
+  remote-control credential handling.
+- macOS app: navigation data and session controls, profile settings flows,
+  visual system aligned with the Hasna dashboard.
+- Release CI: sccache (fail-open) across release workflows for warm-cache
+  builds from 0.1.56 onward.
+
+### Security
+
+- Node supply-chain advisories patched; anyhow 1.0.103 (RUSTSEC-2026-0190);
+  quick-xml advisories documented as compile-time-only exposure; gitleaks
+  config with tightly-scoped test-canary allowlist.
+
+### Known issues
+
+- Windows argument-comment-lint CI job fails on aws-lc-sys feature probes
+  under clang-cl (pre-existing; release builds unaffected).
+- sccache resolves its latest release at install time (fail-open; pin planned).
+- Remote no-follow reads have a documented TOCTOU window between metadata and
+  read RPCs.
+
+### Fixed
+
+- Recovered loop-driven and long-running turns from context-window overflow
+  errors by compacting mid-turn and retrying once before surfacing the failure.
+
+## [0.1.54] - 2026-07-02
+
+Tag: `rust-v0.1.54`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.54>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.53...rust-v0.1.54>
+
+### Fixed
+
+- Tuned macOS primary release builds to override the workspace release
+  `codegen-units = 1` setting, preventing the full CLI release build from
+  timing out before npm publishing can run.
+
+## [0.1.53] - 2026-07-01
+
+Tag: `rust-v0.1.53`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.53>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.52...rust-v0.1.53>
+
+### Fixed
+
+- Preserved durable resumed thread cwd, workspace roots, permission profile,
+  auth profile, model settings, approval policy, and reasoning effort unless a
+  `codewith exec resume` caller explicitly overrides them.
+- Restored permission profiles from persisted rollout history when resuming
+  headless threads, preventing ambient caller sandbox defaults from replacing
+  the original agentic work sandbox.
+- Fixed the human startup summary for resumed `codewith exec` sessions so it
+  reports the effective resumed session configuration instead of the local
+  caller process defaults.
+
+## [0.1.52] - 2026-07-01
+
+Tag: `rust-v0.1.52`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.52>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.51...rust-v0.1.52>
+
+### Fixed
+
+- Added explicit durable headless execution flags for `codewith exec`
+  (`--durable` and `--persist`) while keeping persistent execution as the
+  default and rejecting conflicting `--ephemeral` usage.
+- Preserved GPT-5.5 model metadata at the full 272k context window and added
+  focused regression coverage for GPT-5.5 context-window handling and
+  auto-compact behavior.
+
+## [0.1.51] - 2026-06-26
+
+Tag: `rust-v0.1.51`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.51>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.50...rust-v0.1.51>
+
+### Fixed
+
+- Added a SQLite-level guard so already-running stale Codewith scheduler
+  processes cannot claim a `/loop` that belongs to a fresh live interactive
+  session, preventing background execution from stealing turns that should be
+  visible in the TUI.
+- Hardened manual `/loop` run-now claims with the same live-owner protection,
+  including regression coverage for legacy claim suppression, foreign live-owner
+  rejection, and owner-scoped successful claims.
+
+## [0.1.50] - 2026-06-26
+
+Tag: `rust-v0.1.50`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.50>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.49...rust-v0.1.50>
+
+### Fixed
+
+- Fixed fresh interactive `/loop` sessions so creating a loop materializes the
+  thread rollout before the loop can fire, allowing cold resume and cross-process
+  recovery instead of failing with `thread not found`.
+- Routed due scheduled loop claims away from other local Codewith processes
+  while a fresh live owner is active, so background pollers cannot consume a
+  loop that should inject into the visible interactive session.
+- Added regression coverage for fresh no-turn loop materialization, foreign
+  active-owner claim suppression, stale-owner recovery, and repeated visible
+  scheduled-turn injection.
+
+## [0.1.49] - 2026-06-26
+
+Tag: `rust-v0.1.49`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.49>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.47...rust-v0.1.49>
+
+### Notes
+
+- Corrective release that intentionally supersedes `0.1.48`. The `0.1.48`
+  publish came from a broad spark01 preservation branch and could trigger local
+  SQLite migration checksum failures; this release returns to the migration-safe
+  `0.1.47` base and reapplies the loop and mailbox fixes.
+
+### Fixed
+
+- Hardened scheduled `/loop` execution so usage waits and busy threads defer
+  runs without incrementing failure counts, then re-arm correctly after retry.
+- Restored repeated interval loop injection as visible interactive turns, with
+  regression coverage proving each firing creates a fresh turn, persists user
+  and assistant messages, and submits a distinct model request.
+- Reapplied mailbox dispatcher fixes on the safe migration base, including
+  queued mailbox input handling and local active-session migration stability.
+
+## [0.1.46] - 2026-06-24
+
+Tag: `rust-v0.1.46`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.46>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.45...rust-v0.1.46>
+
+### Fixed
+
+- Hardened scheduled Codewith runs so usage-profile handoff, auth-profile
+  fallback, and usage-exhaustion retry timing are resolved before a scheduled
+  turn starts.
+- Hardened scheduled-run turn bookkeeping so immediate approval, permission, or
+  startup failures do not lose the run mapping before the model-side wait can
+  resume.
+- Improved scheduled-run failure messages with contextual error reporting and
+  structured handling for turn errors.
+- Clarified the scheduled-run prompt so cadence text is treated as schedule
+  context and durable follow-up work uses native goal tools rather than
+  accidental nested schedules.
+
+### Release
+
+- Published `@hasna/codewith` `0.1.46` as a scheduled-run hotfix from the
+  `fix/loops-runtime-0.1.46` release branch.
+- Left `@hasna/codewith-sdk` and `@hasna/codewith-responses-api-proxy` at
+  `0.1.45`; those packages are staged by the release packaging script from
+  source manifests that intentionally keep template versions.
+- Reconciled the missing GitHub Release metadata for `rust-v0.1.46` as a
+  metadata-only, non-latest release during the 2026-06-24 release-compliance
+  follow-up; no platform binaries, installers, checksums, or DotSlash artifacts
+  were attached to this hotfix release.
+
+## [0.1.45] - 2026-06-24
+
+Tag: `rust-v0.1.45`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.45>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.43...rust-v0.1.45>
+
+### Changed
+
+- Prepared the branch and worktree drain release after merging the completed
+  non-macOS backlog PRs into `main`.
+- Bumped the Codewith CLI, Rust workspace, and npm package metadata to
+  `0.1.45`.
+
+### Fixed
+
+- Included the merged drain hardening for queued rules, session machine context,
+  schedule auth recovery, pending interaction responses, provider usage
+  accounting, managed worktree cleanup, SQLite feedback log churn, TUI PR
+  surfaces, statusline summaries, and goal title display.
+- Moved the x86_64 macOS release build to the `macos-15-xlarge` runner so the
+  signed platform package matrix can complete.
+
+### Verification
+
+- Rebuilt and smoke-tested the Linux ARM64 release binary and npm package before
+  publish; the `rust-release` workflow builds and publishes the remaining
+  signed platform packages from this tag.
+
+## [0.1.43] - 2026-06-21
+
+Tag: `rust-v0.1.43`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.43>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.42...rust-v0.1.43>
 
 ### Added
 
@@ -46,6 +367,9 @@ Known evidence gaps:
 - Added `/changelog` in the TUI so release notes are available inside the
   product.
 - Added Mission Control schedule visibility and schedule-aware empty states.
+- Added Z.ai GLM-5.2 model metadata with the documented `glm-5.2` model ID,
+  1M context window, text-only input modality, native tool/web-search support,
+  and GLM-5.2 reasoning presets.
 
 ### Changed
 
@@ -55,6 +379,9 @@ Known evidence gaps:
   effort estimates when planning work.
 - Improved loop and schedule manager rows so prompts are the primary label and
   status/spec details stay in row descriptions.
+- Aligned Claude external-agent auth with Claude Agent SDK guidance by using
+  API-key/provider environment auth for launches and hiding Claude.ai from the
+  generic new subscription-profile picker.
 
 ### Fixed
 

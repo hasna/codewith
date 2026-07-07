@@ -15,6 +15,8 @@ use super::loop_slash::LoopSlashCommand;
 use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
+use super::queued_messages::LocalQueuedMessageMoveDirection;
+use super::teaching_mode::TeachingModeCommand;
 use super::workflow_slash::WORKFLOW_USAGE;
 use super::workflow_slash::WORKFLOW_USAGE_HINT;
 use super::workflow_slash::WorkflowSlashCommand;
@@ -34,6 +36,7 @@ use crate::goal_display::GOAL_USAGE;
 use crate::tmux_handoff::TmuxHandoffDestination;
 use chrono::Utc;
 use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit as ApiThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
@@ -136,12 +139,50 @@ enum WorktreeSlashCommand {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum PullRequestSlashCommand {
+    Overview,
+    Start {
+        name: Option<String>,
+        branch: Option<String>,
+        start_point: Option<String>,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VariantSlashCommand {
+    count: u8,
+    name: Option<String>,
+    start_point: Option<String>,
+    prompt: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum ActiveSessionSlashCommand {
     List,
     Send {
         target_peer_id: String,
         message: String,
         wake: bool,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueuedMessageTarget {
+    User(usize),
+    Retry(usize),
+    Agent(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueuedSlashCommand {
+    List,
+    Edit {
+        target: QueuedMessageTarget,
+        text: String,
+    },
+    Move {
+        target: QueuedMessageTarget,
+        direction: ThreadQueuedMessageMoveDirection,
     },
 }
 
@@ -177,10 +218,18 @@ const BACKGROUND_AGENT_START_USAGE: &str =
 const BACKGROUND_AGENT_USAGE: &str = "Usage: /agent [peers|send [--wake] <peer-id> <message>|list|diagnostics|start [--worktree <id>] [--goal <objective>] <prompt>|read|attach|detach|stop|delete] [id]";
 const BACKGROUND_AGENT_USAGE_HINT: &str = "Examples: /agent peers, /agent send <peer-id> hello, /agent start fix the flaky test, /agent start --goal=fix-tests fix the flaky test";
 const ACTIVE_SESSION_SEND_USAGE: &str = "Usage: /agent send [--wake] <peer-id> <message>";
+const PR_USAGE: &str = "Usage: /pr [start [name] [--branch <branch>] [--start-point <ref>]]";
+const PR_USAGE_HINT: &str =
+    "Examples: /pr, /pr start, /pr start auth-fix --branch codewith/auth-fix --start main";
 const WORKTREE_USAGE: &str =
     "Usage: /worktree [list|create|reconcile|read|actions|use|release|cleanup|merge] [args]";
 const WORKTREE_USAGE_HINT: &str = "Examples: /worktree create feature, /worktree read <id>, /worktree use <id>, /worktree cleanup <id>, /worktree merge <id> [target]";
+const VARIANT_USAGE: &str =
+    "Usage: /variant --count <2-5> [--name <slug>] [--start-point <ref>] <prompt>";
+const VARIANT_USAGE_HINT: &str = "Examples: /variant --count 3 --name parser improve parser errors, /variant -n 2 -- --audit logging";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
+const QUEUED_USAGE: &str = "Usage: /queued [list|stats|edit <position|retry:n|agent:messageId> <text>|up <position|retry:n|agent:messageId>|down <position|retry:n|agent:messageId>]";
+const QUEUED_USAGE_HINT: &str = "Examples: /queued, /queued edit 1 follow up, /queued up retry:2, /queued edit agent:<messageId> revised";
 const EXTERNAL_AGENT_USAGE: &str =
     "Usage: /external-agent [inline|--inline] [plan|propose] [cursor|grok-build|claude] [task]";
 const TMUX_USAGE: &str = "Usage: /tmux [--replace|--no-replace] [session-name] | /tmux --session <session> [--window <window>]";
@@ -203,6 +252,108 @@ fn split_external_agent_token(input: &str) -> Option<(&str, &str)> {
     let token_end = input.find(char::is_whitespace).unwrap_or(input.len());
     let (token, rest) = input.split_at(token_end);
     Some((token, rest.trim_start()))
+}
+
+fn parse_queued_slash_args(input: &str) -> Result<QueuedSlashCommand, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(QueuedSlashCommand::List);
+    }
+    let Some((head, rest)) = split_external_agent_token(input) else {
+        return Ok(QueuedSlashCommand::List);
+    };
+    match head.to_ascii_lowercase().as_str() {
+        "list" | "stats" => {
+            if rest.is_empty() {
+                Ok(QueuedSlashCommand::List)
+            } else {
+                Err(QUEUED_USAGE.to_string())
+            }
+        }
+        "edit" => {
+            let Some((target, text)) = split_external_agent_token(rest) else {
+                return Err(QUEUED_USAGE.to_string());
+            };
+            let text = text.trim();
+            if text.is_empty() {
+                return Err("Queued message text must not be empty.".to_string());
+            }
+            Ok(QueuedSlashCommand::Edit {
+                target: parse_queued_message_target(target)?,
+                text: text.to_string(),
+            })
+        }
+        "up" => parse_queued_move(rest, ThreadQueuedMessageMoveDirection::Up),
+        "down" => parse_queued_move(rest, ThreadQueuedMessageMoveDirection::Down),
+        "move" => {
+            let Some((target, rest)) = split_external_agent_token(rest) else {
+                return Err(QUEUED_USAGE.to_string());
+            };
+            let Some((direction, trailing)) = split_external_agent_token(rest) else {
+                return Err(QUEUED_USAGE.to_string());
+            };
+            if !trailing.is_empty() {
+                return Err(QUEUED_USAGE.to_string());
+            }
+            let direction = match direction.to_ascii_lowercase().as_str() {
+                "up" => ThreadQueuedMessageMoveDirection::Up,
+                "down" => ThreadQueuedMessageMoveDirection::Down,
+                _ => return Err(QUEUED_USAGE.to_string()),
+            };
+            Ok(QueuedSlashCommand::Move {
+                target: parse_queued_message_target(target)?,
+                direction,
+            })
+        }
+        _ => Err(QUEUED_USAGE.to_string()),
+    }
+}
+
+fn parse_queued_move(
+    input: &str,
+    direction: ThreadQueuedMessageMoveDirection,
+) -> Result<QueuedSlashCommand, String> {
+    let Some((target, rest)) = split_external_agent_token(input) else {
+        return Err(QUEUED_USAGE.to_string());
+    };
+    if !rest.is_empty() {
+        return Err(QUEUED_USAGE.to_string());
+    }
+    Ok(QueuedSlashCommand::Move {
+        target: parse_queued_message_target(target)?,
+        direction,
+    })
+}
+
+fn parse_queued_message_target(input: &str) -> Result<QueuedMessageTarget, String> {
+    if let Some(id) = input
+        .strip_prefix("agent:")
+        .or_else(|| input.strip_prefix("a:"))
+    {
+        if id.trim().is_empty() {
+            return Err("agent messageId must not be empty.".to_string());
+        }
+        return Ok(QueuedMessageTarget::Agent(id.to_string()));
+    }
+    if let Some(raw_position) = input
+        .strip_prefix("retry:")
+        .or_else(|| input.strip_prefix("r:"))
+        .or_else(|| input.strip_prefix("steer:"))
+        .or_else(|| input.strip_prefix("s:"))
+    {
+        let position = raw_position
+            .parse::<usize>()
+            .map_err(|_| QUEUED_USAGE.to_string())?;
+        return Ok(QueuedMessageTarget::Retry(position));
+    }
+    let raw_position = input
+        .strip_prefix("user:")
+        .or_else(|| input.strip_prefix("u:"))
+        .unwrap_or(input);
+    let position = raw_position
+        .parse::<usize>()
+        .map_err(|_| QUEUED_USAGE.to_string())?;
+    Ok(QueuedMessageTarget::User(position))
 }
 
 fn parse_external_agent_mode(token: &str) -> Option<ThreadExternalAgentMode> {
@@ -260,8 +411,11 @@ fn parse_external_agent_args(trimmed: &str) -> Option<ExternalAgentSlashCommand<
     if trimmed.is_empty() {
         return None;
     }
-    let (mode, inline, rest) =
-        parse_external_agent_options(trimmed, ThreadExternalAgentMode::Plan, true)?;
+    let (mode, inline, rest) = parse_external_agent_options(
+        trimmed,
+        ThreadExternalAgentMode::Plan,
+        /*allow_inline*/ true,
+    )?;
     let (head, rest) = split_external_agent_token(rest)?;
     Some(ExternalAgentSlashCommand::Runtime {
         runtime_id: head,
@@ -395,6 +549,7 @@ impl ChatWidget {
             SlashCommand::Goal
                 | SlashCommand::MissionControl
                 | SlashCommand::Loop
+                | SlashCommand::Queued
                 | SlashCommand::Schedule
                 | SlashCommand::Monitor
                 | SlashCommand::Workflow
@@ -404,6 +559,7 @@ impl ChatWidget {
                 | SlashCommand::BackgroundAgent
                 | SlashCommand::Pair
                 | SlashCommand::Worktree
+                | SlashCommand::Variant
                 | SlashCommand::ExternalAgent
         ) {
             self.bottom_pane.drain_pending_submission_state();
@@ -529,7 +685,7 @@ impl ChatWidget {
             .send(AppEvent::RawOutputModeChanged { enabled });
     }
 
-    fn next_status_request_id(&mut self) -> u64 {
+    pub(super) fn next_status_request_id(&mut self) -> u64 {
         let request_id = self.next_status_refresh_request_id;
         self.next_status_refresh_request_id = self.next_status_refresh_request_id.wrapping_add(1);
         request_id
@@ -679,6 +835,122 @@ impl ChatWidget {
         }
     }
 
+    fn dispatch_queued_slash_command(&mut self, trimmed: &str, source: SlashCommandDispatchSource) {
+        let command = match parse_queued_slash_args(trimmed) {
+            Ok(command) => command,
+            Err(message) => {
+                self.add_error_message(message);
+                self.add_info_message(
+                    QUEUED_USAGE.to_string(),
+                    Some(QUEUED_USAGE_HINT.to_string()),
+                );
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
+                return;
+            }
+        };
+
+        match command {
+            QueuedSlashCommand::List => {
+                self.app_event_tx.send(AppEvent::OpenQueuedMessages {
+                    thread_id: self.thread_id,
+                });
+            }
+            QueuedSlashCommand::Edit { target, text } => match target {
+                QueuedMessageTarget::User(position) => {
+                    match self.edit_local_queued_message(position, text) {
+                        Ok(()) => self.add_info_message(
+                            "Queued user message updated".to_string(),
+                            Some(format!("position: {position}")),
+                        ),
+                        Err(message) => self.add_error_message(message),
+                    }
+                }
+                QueuedMessageTarget::Retry(position) => {
+                    match self.edit_rejected_queued_message(position, text) {
+                        Ok(()) => self.add_info_message(
+                            "Queued retry message updated".to_string(),
+                            Some(format!("position: retry:{position}")),
+                        ),
+                        Err(message) => self.add_error_message(message),
+                    }
+                }
+                QueuedMessageTarget::Agent(message_id) => {
+                    let Some(thread_id) = self.thread_id else {
+                        self.add_error_message(
+                            "Agent queued messages are unavailable before the session starts."
+                                .to_string(),
+                        );
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    };
+                    self.app_event_tx.send(AppEvent::UpdateQueuedThreadMessage {
+                        thread_id,
+                        message_id,
+                        text,
+                    });
+                }
+            },
+            QueuedSlashCommand::Move { target, direction } => match target {
+                QueuedMessageTarget::User(position) => {
+                    let local_direction = match direction {
+                        ThreadQueuedMessageMoveDirection::Up => LocalQueuedMessageMoveDirection::Up,
+                        ThreadQueuedMessageMoveDirection::Down => {
+                            LocalQueuedMessageMoveDirection::Down
+                        }
+                    };
+                    match self.move_local_queued_message(position, local_direction) {
+                        Ok(new_position) => self.add_info_message(
+                            "Queued user message moved".to_string(),
+                            Some(format!("new position: {new_position}")),
+                        ),
+                        Err(message) => self.add_error_message(message),
+                    }
+                }
+                QueuedMessageTarget::Retry(position) => {
+                    let local_direction = match direction {
+                        ThreadQueuedMessageMoveDirection::Up => LocalQueuedMessageMoveDirection::Up,
+                        ThreadQueuedMessageMoveDirection::Down => {
+                            LocalQueuedMessageMoveDirection::Down
+                        }
+                    };
+                    match self.move_rejected_queued_message(position, local_direction) {
+                        Ok(new_position) => self.add_info_message(
+                            "Queued retry message moved".to_string(),
+                            Some(format!("new position: retry:{new_position}")),
+                        ),
+                        Err(message) => self.add_error_message(message),
+                    }
+                }
+                QueuedMessageTarget::Agent(message_id) => {
+                    let Some(thread_id) = self.thread_id else {
+                        self.add_error_message(
+                            "Agent queued messages are unavailable before the session starts."
+                                .to_string(),
+                        );
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    };
+                    self.app_event_tx.send(AppEvent::MoveQueuedThreadMessage {
+                        thread_id,
+                        message_id,
+                        direction,
+                    });
+                }
+            },
+        }
+
+        self.append_message_history_entry(format!("/queued {trimmed}"));
+        if source == SlashCommandDispatchSource::Live {
+            self.bottom_pane.drain_pending_submission_state();
+        }
+    }
+
     /// Run a slash command on behalf of an interactive surface (e.g. an
     /// actionable row in the `/status` panel). Equivalent to the user typing it.
     pub(crate) fn run_slash_command(&mut self, cmd: SlashCommand) {
@@ -762,6 +1034,13 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Fork => {
+                if self.thread_id.is_some() && self.current_rollout_path.is_none() {
+                    self.add_error_message(
+                        "This session is still starting and cannot be forked yet. Send a message first, then try /fork again."
+                            .to_string(),
+                    );
+                    return;
+                }
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
             }
             SlashCommand::App => {
@@ -863,6 +1142,9 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Teach => {
+                self.apply_teaching_mode_command(TeachingModeCommand::Toggle);
+            }
             SlashCommand::MissionControl => {
                 self.app_event_tx.send(AppEvent::OpenMissionControlOverview);
                 self.append_message_history_entry("/mission-control".to_string());
@@ -888,6 +1170,12 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenWorktreeManager);
                 self.append_message_history_entry("/worktree".to_string());
             }
+            SlashCommand::Variant => {
+                self.add_info_message(
+                    VARIANT_USAGE.to_string(),
+                    Some(VARIANT_USAGE_HINT.to_string()),
+                );
+            }
             SlashCommand::Loop => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
                     return;
@@ -902,6 +1190,12 @@ impl ChatWidget {
                         Some(LOOP_USAGE_HINT.to_string()),
                     );
                 }
+            }
+            SlashCommand::Queued => {
+                self.app_event_tx.send(AppEvent::OpenQueuedMessages {
+                    thread_id: self.thread_id,
+                });
+                self.append_message_history_entry("/queued".to_string());
             }
             SlashCommand::Schedule => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
@@ -1027,7 +1321,40 @@ impl ChatWidget {
                 self.request_quit_without_confirmation();
             }
             SlashCommand::Logout => {
-                self.app_event_tx.send(AppEvent::Logout);
+                let mut header = ColumnRenderable::new();
+                header.push(Line::from("Log out of Codewith?".bold()));
+                header.push(Line::from(
+                    "This clears the active login and exits the TUI after logout succeeds.".dim(),
+                ));
+
+                self.bottom_pane.show_selection_view(SelectionViewParams {
+                    view_id: Some("logout-confirmation"),
+                    footer_hint: Some(standard_popup_hint_line()),
+                    header: Box::new(header),
+                    items: vec![
+                        SelectionItem {
+                            name: "No, keep working".to_string(),
+                            description: Some(
+                                "Return to this session without logging out".to_string(),
+                            ),
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                        SelectionItem {
+                            name: "Yes, log out and exit".to_string(),
+                            description: Some(
+                                "Clear the active login and shut down Codewith".to_string(),
+                            ),
+                            actions: vec![Box::new(|tx| {
+                                tx.send(AppEvent::Logout);
+                            })],
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                });
+                self.request_redraw();
             }
             SlashCommand::Copy => {
                 self.copy_last_agent_markdown();
@@ -1074,6 +1401,9 @@ impl ChatWidget {
             SlashCommand::Status | SlashCommand::Stats => {
                 self.open_status_panel();
             }
+            SlashCommand::Usage => {
+                self.open_usage_panel();
+            }
             SlashCommand::Changelog => {
                 self.add_changelog_output();
             }
@@ -1106,6 +1436,12 @@ impl ChatWidget {
             }
             SlashCommand::Apps => {
                 self.add_connectors_output();
+            }
+            SlashCommand::Webhook => {
+                self.app_event_tx.send(AppEvent::OpenWebhookInbox {
+                    thread_id: self.thread_id,
+                });
+                self.append_message_history_entry("/webhook".to_string());
             }
             SlashCommand::Plugins => {
                 self.add_plugins_output();
@@ -1317,6 +1653,10 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Teach => match TeachingModeCommand::parse(trimmed) {
+                Ok(command) => self.apply_teaching_mode_command(command),
+                Err(usage) => self.add_error_message(usage.to_string()),
+            },
             SlashCommand::ExternalAgent => {
                 self.handle_external_agent_command_args(trimmed);
             }
@@ -1454,7 +1794,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::SetThreadGoalObjective {
                     thread_id,
                     objective: objective.to_string(),
-                    mode: ThreadGoalSetMode::ConfirmIfExists,
+                    mode: ThreadGoalSetMode::QueueIfExists,
                 });
                 self.append_message_history_entry(format!("/goal {trimmed}"));
                 if source == SlashCommandDispatchSource::Live {
@@ -1526,6 +1866,41 @@ impl ChatWidget {
                             self.bottom_pane.drain_pending_submission_state();
                         }
                     }
+                }
+            }
+            SlashCommand::Pr if !trimmed.is_empty() => {
+                let command = match parse_pull_request_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(PR_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                match command {
+                    PullRequestSlashCommand::Overview => {
+                        self.app_event_tx.send(AppEvent::OpenPullRequestOverview);
+                    }
+                    PullRequestSlashCommand::Start {
+                        name,
+                        branch,
+                        start_point,
+                    } => {
+                        self.app_event_tx.send(AppEvent::StartPullRequestMode {
+                            name,
+                            branch,
+                            start_point,
+                        });
+                    }
+                }
+                self.append_message_history_entry(format!("/pr {trimmed}"));
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
                 }
             }
             SlashCommand::Worktree if !trimmed.is_empty() => {
@@ -1611,6 +1986,31 @@ impl ChatWidget {
                     self.bottom_pane.drain_pending_submission_state();
                 }
             }
+            SlashCommand::Variant if !trimmed.is_empty() => {
+                let command = match parse_variant_slash_args(trimmed) {
+                    Ok(command) => command,
+                    Err(err) => {
+                        self.add_error_message(err.message);
+                        if let Some(hint) = err.hint {
+                            self.add_info_message(VARIANT_USAGE.to_string(), Some(hint));
+                        }
+                        if source == SlashCommandDispatchSource::Live {
+                            self.bottom_pane.drain_pending_submission_state();
+                        }
+                        return;
+                    }
+                };
+                self.app_event_tx.send(AppEvent::StartVariants {
+                    count: command.count,
+                    name: command.name,
+                    start_point: command.start_point,
+                    prompt: command.prompt,
+                });
+                self.append_message_history_entry(format!("/variant {trimmed}"));
+                if source == SlashCommandDispatchSource::Live {
+                    self.bottom_pane.drain_pending_submission_state();
+                }
+            }
             SlashCommand::Loop if !trimmed.is_empty() => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
                     return;
@@ -1629,6 +2029,9 @@ impl ChatWidget {
                     }
                 };
                 self.dispatch_loop_slash_command(command, trimmed, source);
+            }
+            SlashCommand::Queued if !trimmed.is_empty() => {
+                self.dispatch_queued_slash_command(trimmed, source);
             }
             SlashCommand::Schedule if !trimmed.is_empty() => {
                 if !self.config.features.enabled(Feature::ScheduledTasks) {
@@ -2311,16 +2714,19 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Ide
             | SlashCommand::Status
+            | SlashCommand::Usage
             | SlashCommand::Stats
             | SlashCommand::Changelog
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Mcp
             | SlashCommand::Apps
+            | SlashCommand::Webhook
             | SlashCommand::Plugins
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Teach
             | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::Recap
@@ -2351,11 +2757,13 @@ impl ChatWidget {
             | SlashCommand::MissionControl
             | SlashCommand::Workflow
             | SlashCommand::Loop
+            | SlashCommand::Queued
             | SlashCommand::Schedule
             | SlashCommand::Monitor
             | SlashCommand::Pair
             | SlashCommand::Session
             | SlashCommand::Worktree
+            | SlashCommand::Variant
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
@@ -2638,6 +3046,145 @@ fn parse_worktree_slash_args(input: &str) -> Result<WorktreeSlashCommand, Monito
         "cleanup" | "clean" | "delete" | "remove" | "rm" => parse_worktree_cleanup_args(rest),
         "merge" | "candidate" => parse_worktree_merge_args(rest),
         _ => Err(worktree_usage_error(WORKTREE_USAGE)),
+    }
+}
+
+fn parse_pull_request_slash_args(
+    input: &str,
+) -> Result<PullRequestSlashCommand, MonitorSlashParseError> {
+    let trimmed = input.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return Ok(PullRequestSlashCommand::Overview);
+    };
+    let rest = trimmed[first.len()..].trim();
+
+    match first.to_ascii_lowercase().as_str() {
+        "overview" | "list" | "show" => {
+            if rest.is_empty() {
+                Ok(PullRequestSlashCommand::Overview)
+            } else {
+                Err(pr_usage_error("Usage: /pr"))
+            }
+        }
+        "start" | "mode" => {
+            let WorktreeSlashCommand::Create {
+                name,
+                branch,
+                start_point,
+            } = parse_worktree_create_args(rest).map_err(|_| pr_usage_error(PR_USAGE))?
+            else {
+                return Err(pr_usage_error(PR_USAGE));
+            };
+            Ok(PullRequestSlashCommand::Start {
+                name,
+                branch,
+                start_point,
+            })
+        }
+        _ => Err(pr_usage_error(PR_USAGE)),
+    }
+}
+
+fn parse_variant_slash_args(input: &str) -> Result<VariantSlashCommand, MonitorSlashParseError> {
+    let mut remaining = input.trim();
+    let mut count = None;
+    let mut name = None;
+    let mut start_point = None;
+
+    while let Some((token, rest)) = split_external_agent_token(remaining) {
+        if token == "--" {
+            remaining = rest;
+            break;
+        }
+        if let Some(value) = token.strip_prefix("--count=") {
+            count = Some(parse_variant_count(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("-n=") {
+            count = Some(parse_variant_count(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--name=") {
+            name = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start-point=") {
+            start_point = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--start=") {
+            start_point = Some(parse_required_variant_option_value(value)?);
+            remaining = rest;
+            continue;
+        }
+
+        match token {
+            "--count" | "-n" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                count = Some(parse_variant_count(value)?);
+                remaining = next_rest;
+            }
+            "--name" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                name = Some(parse_required_variant_option_value(value)?);
+                remaining = next_rest;
+            }
+            "--start-point" | "--start" => {
+                let Some((value, next_rest)) = split_external_agent_token(rest) else {
+                    return Err(variant_usage_error(VARIANT_USAGE));
+                };
+                start_point = Some(parse_required_variant_option_value(value)?);
+                remaining = next_rest;
+            }
+            option if option.starts_with('-') => return Err(variant_usage_error(VARIANT_USAGE)),
+            _ => break,
+        }
+    }
+
+    let Some(count) = count else {
+        return Err(variant_usage_error(
+            "Variant count is required. Use --count <2-5> or -n <2-5>.",
+        ));
+    };
+    let prompt = remaining.trim();
+    if prompt.is_empty() {
+        return Err(variant_usage_error("Variant prompt is required."));
+    }
+
+    Ok(VariantSlashCommand {
+        count,
+        name,
+        start_point,
+        prompt: prompt.to_string(),
+    })
+}
+
+fn parse_variant_count(value: &str) -> Result<u8, MonitorSlashParseError> {
+    let count = value
+        .parse::<u8>()
+        .map_err(|_| variant_usage_error("Variant count must be a number from 2 to 5."))?;
+    if !(2..=5).contains(&count) {
+        return Err(variant_usage_error(
+            "Variant count must be between 2 and 5.",
+        ));
+    }
+    Ok(count)
+}
+
+fn parse_required_variant_option_value(value: &str) -> Result<String, MonitorSlashParseError> {
+    let value = value.trim();
+    if value.is_empty() || value.starts_with('-') {
+        Err(variant_usage_error(VARIANT_USAGE))
+    } else {
+        Ok(value.to_string())
     }
 }
 
@@ -2982,6 +3529,20 @@ fn worktree_usage_error(usage: &'static str) -> MonitorSlashParseError {
         hint: Some(WORKTREE_USAGE_HINT.to_string()),
     }
 }
+
+fn pr_usage_error(usage: &'static str) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: usage.to_string(),
+        hint: Some(PR_USAGE_HINT.to_string()),
+    }
+}
+
+fn variant_usage_error(message: impl Into<String>) -> MonitorSlashParseError {
+    MonitorSlashParseError {
+        message: message.into(),
+        hint: Some(VARIANT_USAGE_HINT.to_string()),
+    }
+}
 fn loop_create_request_to_api(
     request: LoopCreateRequest,
 ) -> Result<(String, ThreadSchedulePromptSource, ThreadScheduleSpec), ()> {
@@ -3073,14 +3634,22 @@ fn parse_service_tier_state_arg(args: &str) -> Option<ServiceTierStateArg> {
 mod external_agent_arg_tests {
     use super::BackgroundAgentSlashCommand;
     use super::ExternalAgentSlashCommand;
+    use super::PullRequestSlashCommand;
+    use super::QueuedMessageTarget;
+    use super::QueuedSlashCommand;
     use super::TmuxSlashCommand;
+    use super::VariantSlashCommand;
     use super::WorktreeSlashCommand;
     use super::parse_background_agent_slash_args;
     use super::parse_external_agent_args;
+    use super::parse_pull_request_slash_args;
+    use super::parse_queued_slash_args;
     use super::parse_tmux_slash_args;
+    use super::parse_variant_slash_args;
     use super::parse_worktree_slash_args;
     use crate::tmux_handoff::TmuxHandoffDestination;
     use codex_app_server_protocol::ThreadExternalAgentMode;
+    use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 
     #[test]
     fn parses_external_agent_runtime_and_prompt() {
@@ -3275,6 +3844,89 @@ mod external_agent_arg_tests {
     }
 
     #[test]
+    fn parses_pull_request_mode_commands() {
+        assert_eq!(
+            parse_pull_request_slash_args("").expect("empty pr args"),
+            PullRequestSlashCommand::Overview
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("show").expect("show pr args"),
+            PullRequestSlashCommand::Overview
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("start auth-fix --branch codewith/auth-fix --start main")
+                .expect("pr start args"),
+            PullRequestSlashCommand::Start {
+                name: Some("auth-fix".to_string()),
+                branch: Some("codewith/auth-fix".to_string()),
+                start_point: Some("main".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_pull_request_slash_args("start").expect("plain pr start"),
+            PullRequestSlashCommand::Start {
+                name: None,
+                branch: None,
+                start_point: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_pull_request_mode_commands() {
+        assert!(parse_pull_request_slash_args("show extra").is_err());
+        assert!(parse_pull_request_slash_args("start one two").is_err());
+        assert!(parse_pull_request_slash_args("start --branch").is_err());
+        assert!(parse_pull_request_slash_args("unknown").is_err());
+    }
+
+    #[test]
+    fn parses_variant_slash_args() {
+        assert_eq!(
+            parse_variant_slash_args("--count 3 --name parser --start-point main improve parsing")
+                .expect("variant args"),
+            VariantSlashCommand {
+                count: 3,
+                name: Some("parser".to_string()),
+                start_point: Some("main".to_string()),
+                prompt: "improve parsing".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_variant_slash_args("-n 2 -- --audit logging").expect("variant flag prompt"),
+            VariantSlashCommand {
+                count: 2,
+                name: None,
+                start_point: None,
+                prompt: "--audit logging".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_variant_slash_args("--count=5 --name=ui --start=HEAD~1 build alternatives")
+                .expect("variant equals flags"),
+            VariantSlashCommand {
+                count: 5,
+                name: Some("ui".to_string()),
+                start_point: Some("HEAD~1".to_string()),
+                prompt: "build alternatives".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_variant_slash_args() {
+        assert!(parse_variant_slash_args("").is_err());
+        assert!(parse_variant_slash_args("improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count nope improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 0 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 1 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 6 improve parsing").is_err());
+        assert!(parse_variant_slash_args("--count 2").is_err());
+        assert!(parse_variant_slash_args("--count 2 --name").is_err());
+        assert!(parse_variant_slash_args("--count 2 --unknown improve parsing").is_err());
+    }
+
+    #[test]
     fn parses_background_agent_start_worktree_flag() {
         assert_eq!(
             parse_background_agent_slash_args("start fix tests").expect("plain start"),
@@ -3386,5 +4038,72 @@ mod external_agent_arg_tests {
         assert!(parse_background_agent_slash_args("start --goal").is_err());
         assert!(parse_background_agent_slash_args("start --goal -- fix tests").is_err());
         assert!(parse_background_agent_slash_args("start --goal= fix tests").is_err());
+    }
+
+    #[test]
+    fn parses_queued_slash_args() {
+        assert_eq!(
+            parse_queued_slash_args("").expect("empty queued args"),
+            QueuedSlashCommand::List
+        );
+        assert_eq!(
+            parse_queued_slash_args("stats").expect("stats queued args"),
+            QueuedSlashCommand::List
+        );
+        assert_eq!(
+            parse_queued_slash_args("edit 2 revised follow-up").expect("edit user args"),
+            QueuedSlashCommand::Edit {
+                target: QueuedMessageTarget::User(2),
+                text: "revised follow-up".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("edit user:3 revised follow-up").expect("edit user alias"),
+            QueuedSlashCommand::Edit {
+                target: QueuedMessageTarget::User(3),
+                text: "revised follow-up".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("edit agent:msg-1 revised agent message")
+                .expect("edit agent args"),
+            QueuedSlashCommand::Edit {
+                target: QueuedMessageTarget::Agent("msg-1".to_string()),
+                text: "revised agent message".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("edit retry:2 revised retry message").expect("edit retry args"),
+            QueuedSlashCommand::Edit {
+                target: QueuedMessageTarget::Retry(2),
+                text: "revised retry message".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("up a:msg-2").expect("move agent alias"),
+            QueuedSlashCommand::Move {
+                target: QueuedMessageTarget::Agent("msg-2".to_string()),
+                direction: ThreadQueuedMessageMoveDirection::Up,
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("up r:2").expect("move retry alias"),
+            QueuedSlashCommand::Move {
+                target: QueuedMessageTarget::Retry(2),
+                direction: ThreadQueuedMessageMoveDirection::Up,
+            }
+        );
+        assert_eq!(
+            parse_queued_slash_args("move u:4 down").expect("move user alias"),
+            QueuedSlashCommand::Move {
+                target: QueuedMessageTarget::User(4),
+                direction: ThreadQueuedMessageMoveDirection::Down,
+            }
+        );
+
+        assert!(parse_queued_slash_args("edit 1").is_err());
+        assert!(parse_queued_slash_args("up 1 extra").is_err());
+        assert!(parse_queued_slash_args("move 1 sideways").is_err());
+        assert!(parse_queued_slash_args("edit agent: revised").is_err());
     }
 }

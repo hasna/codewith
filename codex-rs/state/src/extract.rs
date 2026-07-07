@@ -168,6 +168,7 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SessionWorktreeMode;
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
@@ -275,6 +276,7 @@ mod tests {
                     thread_id: metadata.id,
                     goal_id: "goal-1".to_string(),
                     objective: "optimize the benchmark".to_string(),
+                    title: None,
                     status: ThreadGoalStatus::Active,
                     token_budget: None,
                     tokens_used: 0,
@@ -352,6 +354,8 @@ mod tests {
                 workspace_roots: None,
                 current_date: None,
                 timezone: None,
+                machine_id: None,
+                machine_name: None,
                 thread_id: None,
                 auth_profile: None,
                 approval_policy: AskForApproval::Never,
@@ -363,6 +367,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 session_prompt: None,
@@ -394,6 +399,8 @@ mod tests {
                 workspace_roots: None,
                 current_date: None,
                 timezone: None,
+                machine_id: None,
+                machine_name: None,
                 thread_id: None,
                 auth_profile: None,
                 approval_policy: AskForApproval::OnRequest,
@@ -405,6 +412,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 session_prompt: None,
@@ -433,6 +441,8 @@ mod tests {
                 workspace_roots: None,
                 current_date: None,
                 timezone: None,
+                machine_id: None,
+                machine_name: None,
                 thread_id: None,
                 auth_profile: None,
                 approval_policy: AskForApproval::OnRequest,
@@ -444,6 +454,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 session_prompt: None,
@@ -468,6 +479,8 @@ mod tests {
                 workspace_roots: None,
                 current_date: None,
                 timezone: None,
+                machine_id: None,
+                machine_name: None,
                 thread_id: None,
                 auth_profile: None,
                 approval_policy: AskForApproval::OnRequest,
@@ -479,6 +492,7 @@ mod tests {
                 model_provider_id: None,
                 personality: None,
                 collaboration_mode: None,
+                worktree_mode: SessionWorktreeMode::Manual,
                 multi_agent_version: None,
                 realtime_active: None,
                 session_prompt: None,

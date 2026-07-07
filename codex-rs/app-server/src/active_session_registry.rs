@@ -50,6 +50,7 @@ pub(crate) struct ActivePeerRegistration {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) display_name: Option<String>,
     pub(crate) agent_path: Option<String>,
+    pub(crate) auth_profile: Option<String>,
     pub(crate) process: Option<ActivePeerProcess>,
     pub(crate) capabilities: ActivePeerCapabilities,
 }
@@ -64,6 +65,7 @@ pub(crate) struct ActivePeer {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) display_name: Option<String>,
     pub(crate) agent_path: Option<String>,
+    pub(crate) auth_profile: Option<String>,
     pub(crate) process: Option<ActivePeerProcess>,
     pub(crate) capabilities: ActivePeerCapabilities,
     pub(crate) last_seen_at: LastSeenAt,
@@ -80,6 +82,7 @@ impl ActivePeer {
             cwd: registration.cwd,
             display_name: registration.display_name,
             agent_path: registration.agent_path,
+            auth_profile: registration.auth_profile,
             process: registration.process,
             capabilities: registration.capabilities,
             last_seen_at,
@@ -374,6 +377,7 @@ fn active_peer_registration(
         cwd: config_snapshot.cwd.clone(),
         display_name,
         agent_path,
+        auth_profile: config_snapshot.selected_auth_profile.clone(),
         process: None,
         capabilities: ActivePeerCapabilities::codewith_session(),
     }
@@ -431,6 +435,7 @@ mod tests {
             cwd: test_cwd(),
             display_name: Some(format!("Peer {name}")),
             agent_path: None,
+            auth_profile: Some("work".to_string()),
             process: Some(ActivePeerProcess {
                 pid: 1234,
                 executable: Some(PathBuf::from("/usr/bin/codewith")),
@@ -460,17 +465,22 @@ mod tests {
     fn register_lists_active_peer() {
         let mut registry = ActivePeerRegistry::default();
         let registration = registration("thread-a");
-        let expected =
-            ActivePeer::from_registration(registration.clone(), LastSeenAt::from_unix_seconds(100));
+        let expected = ActivePeer::from_registration(
+            registration.clone(),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
+        );
 
         let registered = register_valid(
             &mut registry,
             registration,
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
 
         assert_eq!(registered, expected);
-        assert_eq!(registry.list_active(freshness(110, 30)), vec![expected]);
+        assert_eq!(
+            registry.list_active(freshness(/*now*/ 110, /*stale_after_seconds*/ 30)),
+            vec![expected]
+        );
     }
 
     #[test]
@@ -480,7 +490,7 @@ mod tests {
         register_valid(
             &mut registry,
             registration.clone(),
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
 
         let mut updated_registration = registration;
@@ -488,17 +498,20 @@ mod tests {
         updated_registration.agent_path = Some("agent/worker".to_string());
         let expected = ActivePeer::from_registration(
             updated_registration.clone(),
-            LastSeenAt::from_unix_seconds(130),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 130),
         );
 
         let updated = register_valid(
             &mut registry,
             updated_registration,
-            LastSeenAt::from_unix_seconds(130),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 130),
         );
 
         assert_eq!(updated, expected);
-        assert_eq!(registry.list_active(freshness(130, 30)), vec![expected]);
+        assert_eq!(
+            registry.list_active(freshness(/*now*/ 130, /*stale_after_seconds*/ 30)),
+            vec![expected]
+        );
     }
 
     #[test]
@@ -510,7 +523,7 @@ mod tests {
         let registered = register_valid(
             &mut registry,
             registration,
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
 
         assert_eq!(registered.owner, expected_owner);
@@ -526,7 +539,10 @@ mod tests {
         };
 
         let err = registry
-            .register(registration.clone(), LastSeenAt::from_unix_seconds(100))
+            .register(
+                registration.clone(),
+                LastSeenAt::from_unix_seconds(/*seconds*/ 100),
+            )
             .expect_err("mismatched owner should be rejected");
 
         assert_eq!(
@@ -546,7 +562,10 @@ mod tests {
         registration.peer_id = "not-the-thread-id".to_string();
 
         let err = registry
-            .register(registration.clone(), LastSeenAt::from_unix_seconds(100))
+            .register(
+                registration.clone(),
+                LastSeenAt::from_unix_seconds(/*seconds*/ 100),
+            )
             .expect_err("mismatched local peer id should be rejected");
 
         assert_eq!(
@@ -567,18 +586,23 @@ mod tests {
         registration.owner = ActivePeerOwner::BridgeAdapter {
             adapter_id: "claude-code".to_string(),
         };
-        let expected =
-            ActivePeer::from_registration(registration.clone(), LastSeenAt::from_unix_seconds(100));
+        let expected = ActivePeer::from_registration(
+            registration.clone(),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
+        );
 
         let registered = register_valid(
             &mut registry,
             registration,
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
 
         assert_eq!(registered, expected);
         assert_eq!(
-            registry.get_active("claude:session-1", freshness(100, 0)),
+            registry.get_active(
+                "claude:session-1",
+                freshness(/*now*/ 100, /*stale_after_seconds*/ 0),
+            ),
             Ok(expected)
         );
     }
@@ -594,7 +618,10 @@ mod tests {
         };
 
         let err = registry
-            .register(registration.clone(), LastSeenAt::from_unix_seconds(100))
+            .register(
+                registration.clone(),
+                LastSeenAt::from_unix_seconds(/*seconds*/ 100),
+            )
             .expect_err("empty bridge adapter id should be rejected");
 
         assert_eq!(
@@ -613,17 +640,23 @@ mod tests {
         let mut expected = register_valid(
             &mut registry,
             registration,
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
-        expected.last_seen_at = LastSeenAt::from_unix_seconds(150);
+        expected.last_seen_at = LastSeenAt::from_unix_seconds(/*seconds*/ 150);
 
         let updated = registry
-            .heartbeat(peer_id.as_str(), LastSeenAt::from_unix_seconds(150))
+            .heartbeat(
+                peer_id.as_str(),
+                LastSeenAt::from_unix_seconds(/*seconds*/ 150),
+            )
             .expect("peer exists");
 
         assert_eq!(updated, expected);
         assert_eq!(
-            registry.get_active(peer_id.as_str(), freshness(170, 30)),
+            registry.get_active(
+                peer_id.as_str(),
+                freshness(/*now*/ 170, /*stale_after_seconds*/ 30),
+            ),
             Ok(expected)
         );
     }
@@ -636,16 +669,22 @@ mod tests {
         let registered = register_valid(
             &mut registry,
             registration,
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
 
-        assert_eq!(registry.list_active(freshness(131, 30)), Vec::new());
         assert_eq!(
-            registry.get_active(peer_id.as_str(), freshness(131, 30)),
+            registry.list_active(freshness(/*now*/ 131, /*stale_after_seconds*/ 30)),
+            Vec::new()
+        );
+        assert_eq!(
+            registry.get_active(
+                peer_id.as_str(),
+                freshness(/*now*/ 131, /*stale_after_seconds*/ 30),
+            ),
             Err(ActivePeerLookupError::Inactive {
                 peer_id,
                 last_seen_at: registered.last_seen_at,
-                now: LastSeenAt::from_unix_seconds(131),
+                now: LastSeenAt::from_unix_seconds(/*seconds*/ 131),
             })
         );
     }
@@ -655,7 +694,10 @@ mod tests {
         let registry = ActivePeerRegistry::default();
 
         assert_eq!(
-            registry.get_active("missing", freshness(100, 30)),
+            registry.get_active(
+                "missing",
+                freshness(/*now*/ 100, /*stale_after_seconds*/ 30)
+            ),
             Err(ActivePeerLookupError::Unknown {
                 peer_id: "missing".to_string(),
             })
@@ -668,16 +710,22 @@ mod tests {
         let inactive = register_valid(
             &mut registry,
             registration("thread-a"),
-            LastSeenAt::from_unix_seconds(100),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         );
         let active = register_valid(
             &mut registry,
             registration("thread-b"),
-            LastSeenAt::from_unix_seconds(130),
+            LastSeenAt::from_unix_seconds(/*seconds*/ 130),
         );
 
-        assert_eq!(registry.remove_inactive(freshness(131, 30)), vec![inactive]);
-        assert_eq!(registry.list_active(freshness(131, 30)), vec![active]);
+        assert_eq!(
+            registry.remove_inactive(freshness(/*now*/ 131, /*stale_after_seconds*/ 30)),
+            vec![inactive]
+        );
+        assert_eq!(
+            registry.list_active(freshness(/*now*/ 131, /*stale_after_seconds*/ 30)),
+            vec![active]
+        );
     }
 
     #[test]

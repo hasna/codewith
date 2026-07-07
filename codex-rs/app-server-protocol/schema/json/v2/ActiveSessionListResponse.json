@@ -22,6 +22,23 @@
             "null"
           ]
         },
+        "authProfile": {
+          "default": null,
+          "description": "Auth profile selected for model requests in this active peer, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authProfileKind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthProfileKind"
+            }
+          ],
+          "default": "unknown",
+          "description": "Whether `authProfile` is the default root profile or a named profile."
+        },
         "capabilities": {
           "default": [],
           "items": {
@@ -79,6 +96,31 @@
         "bridgeAdapter"
       ],
       "type": "string"
+    },
+    "AuthProfileKind": {
+      "oneOf": [
+        {
+          "description": "The source did not record auth profile selection.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The default root auth profile was selected explicitly or by runtime default.",
+          "enum": [
+            "default"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A named auth profile was selected.",
+          "enum": [
+            "named"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "properties": {

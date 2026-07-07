@@ -2,6 +2,8 @@ use super::background_agent_processor::BackgroundAgentRequestProcessor;
 use super::background_agent_processor::api_worktree_from_state;
 use super::background_agent_processor::api_worktree_merge_candidate_from_state;
 use super::thread_processor::ThreadRequestProcessor;
+use super::worktree_paths::path_to_api_string;
+use super::worktree_paths::paths_equivalent;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use anyhow::Context;
@@ -97,6 +99,7 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SessionWorktreeMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_permissions::PermissionGrantScope;
@@ -112,7 +115,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -189,6 +191,12 @@ fn api_worktree_session_mode_from_config(mode: CoreWorktreeSessionMode) -> Workt
     }
 }
 
+struct SessionWorktreePolicy {
+    worktree_mode: SessionWorktreeMode,
+    is_subagent: bool,
+    cwd: AbsolutePathBuf,
+}
+
 impl ThreadRequestProcessor {
     pub(crate) fn start_background_agent_supervisor(&self) {
         let Some(context) = self.background_agent_worker_context() else {
@@ -224,8 +232,11 @@ impl ThreadRequestProcessor {
             let mut interval = tokio::time::interval(BACKGROUND_AGENT_RECONCILE_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                if let Err(err) =
-                    reconcile_background_agent_worker_processes(context.clone(), None).await
+                if let Err(err) = reconcile_background_agent_worker_processes(
+                    context.clone(),
+                    /*only_run_id*/ None,
+                )
+                .await
                 {
                     warn!("background agent process reconcile failed: {err}");
                 }
@@ -490,7 +501,7 @@ impl ThreadRequestProcessor {
                 .into(),
             ));
         };
-        params.base_repo_path = Some(base_repo_path.to_string_lossy().into_owned());
+        params.base_repo_path = Some(path_to_api_string(base_repo_path.as_path()));
         self.background_agent_state_processor()
             .worktree_list_inner(params, policy)
             .await
@@ -520,28 +531,95 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    async fn session_worktree_policy_for_thread(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> Result<SessionWorktreePolicy, JSONRPCErrorError> {
+        let thread = self
+            .thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|_| invalid_params(format!("thread not found: {thread_id}")))?;
+        let snapshot = thread.config_snapshot().await;
+        let is_subagent = snapshot.session_source.is_non_root_agent()
+            || matches!(snapshot.thread_source, Some(ThreadSource::Subagent));
+        Ok(SessionWorktreePolicy {
+            worktree_mode: snapshot.worktree_mode,
+            is_subagent,
+            cwd: snapshot.cwd,
+        })
+    }
+
     pub(crate) async fn worktree_create(
         &self,
         params: WorktreeCreateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
-        let base_repo_path = self
-            .resolve_worktree_base_repo_path(params.base_repo_path.as_deref())
-            .await?
-            .ok_or_else(|| invalid_params("worktree/create requires a git repository"))?;
-        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
-        ensure_worktree_policy_enabled(&policy)?;
+        if self.background_agent_worker_process
+            || self.thread_manager.session_source().is_non_root_agent()
+        {
+            return Err(invalid_params(
+                "subagent sessions cannot create managed worktrees",
+            ));
+        }
         let attach_thread_id = params
             .thread_id
             .as_deref()
             .map(codex_protocol::ThreadId::from_string)
             .transpose()
             .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+        let attach_thread_policy = if let Some(thread_id) = attach_thread_id {
+            let thread_policy = self.session_worktree_policy_for_thread(thread_id).await?;
+            if thread_policy.is_subagent {
+                return Err(invalid_params(
+                    "subagent sessions cannot create managed worktrees",
+                ));
+            }
+            if thread_policy.worktree_mode == SessionWorktreeMode::Shared {
+                return Err(invalid_params(
+                    "managed worktrees are disabled for this session",
+                ));
+            }
+            Some(thread_policy)
+        } else {
+            None
+        };
+        let base_repo_cwd = attach_thread_policy
+            .as_ref()
+            .map(|policy| &policy.cwd)
+            .unwrap_or(&self.config.cwd);
+        let base_repo_path = self
+            .resolve_worktree_base_repo_path_for_cwd(
+                params.base_repo_path.as_deref(),
+                base_repo_cwd,
+            )
+            .await?
+            .ok_or_else(|| invalid_params("worktree/create requires a git repository"))?;
+        let policy = self.worktree_policy(Some(base_repo_path.as_path()));
+        ensure_worktree_policy_enabled(&policy)?;
         if attach_thread_id.is_some() && policy.main_sessions == WorktreeSessionMode::Off {
             return Err(invalid_params(
                 "main-session worktrees are disabled in config",
             ));
         }
+        let cleanup_policy = if attach_thread_policy
+            .as_ref()
+            .is_some_and(|policy| policy.worktree_mode == SessionWorktreeMode::PullRequest)
+        {
+            if params.cleanup_policy.is_some_and(|cleanup_policy| {
+                cleanup_policy != WorktreeCleanupPolicy::DeleteIfClean
+            }) {
+                return Err(invalid_params(
+                    "pull-request mode worktrees use deleteIfClean cleanup policy",
+                ));
+            }
+            codex_state::ManagedWorktreeCleanupPolicy::DeleteIfClean
+        } else {
+            params
+                .cleanup_policy
+                .map(state_worktree_cleanup_policy)
+                .unwrap_or_else(|| state_worktree_cleanup_policy(policy.cleanup_default))
+        };
 
         let worktree_id = Uuid::new_v4().to_string();
         let branch = worktree_branch_name(
@@ -611,15 +689,19 @@ impl ThreadRequestProcessor {
             move || get_git_worktree_status_snapshot(worktree_path.as_path())
         })
         .await?;
-        let cleanup_policy = params
-            .cleanup_policy
-            .map(state_worktree_cleanup_policy)
-            .unwrap_or_else(|| state_worktree_cleanup_policy(policy.cleanup_default));
         let create_result = state_db
             .managed_worktrees()
             .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
                 worktree_id: Some(worktree_id.clone()),
-                identity: Some(format!("manual:{worktree_id}")),
+                identity: Some(
+                    match attach_thread_policy
+                        .as_ref()
+                        .map(|policy| policy.worktree_mode)
+                    {
+                        Some(SessionWorktreeMode::PullRequest) => format!("pr-mode:{worktree_id}"),
+                        _ => format!("manual:{worktree_id}"),
+                    },
+                ),
                 mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
                 base_repo_path: base_repo_path.clone(),
                 worktree_path: worktree_path.clone(),
@@ -804,7 +886,7 @@ impl ThreadRequestProcessor {
             .background_agent_state_processor()
             .worktree_list_inner(
                 WorktreeListParams {
-                    base_repo_path: Some(base_repo_path.display().to_string()),
+                    base_repo_path: Some(path_to_api_string(base_repo_path.as_path())),
                     include_deleted: Some(true),
                     cursor: None,
                     limit: Some(codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT),
@@ -836,6 +918,16 @@ impl ThreadRequestProcessor {
             return Err(invalid_params(
                 "main-session worktrees are disabled in config",
             ));
+        }
+        if let Some(thread_id) = params.thread_id.as_deref() {
+            let thread_id = codex_protocol::ThreadId::from_string(thread_id)
+                .map_err(|err| invalid_params(format!("invalid threadId: {err}")))?;
+            let thread_policy = self.session_worktree_policy_for_thread(thread_id).await?;
+            if thread_policy.worktree_mode == SessionWorktreeMode::Shared {
+                return Err(invalid_params(
+                    "managed worktrees are disabled for this session",
+                ));
+            }
         }
         if params.agent_run_id.is_some() && policy.sub_sessions == WorktreeSessionMode::Off {
             return Err(invalid_params(
@@ -1020,16 +1112,24 @@ impl ThreadRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
         let current_base_repo_path = self
-            .resolve_current_worktree_base_repo_path("worktree/mergeCandidate/list")
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
             .await?;
         let worktree = state_db
             .managed_worktrees()
             .get_managed_worktree(params.worktree_id.as_str())
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?;
-        if worktree.as_ref().is_none_or(|worktree| {
-            !worktree_matches_base_repo(worktree, current_base_repo_path.as_path())
-        }) {
+        let Some(worktree) = worktree else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
+            ));
+        };
+        if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
             return Ok(Some(
                 WorktreeMergeCandidateListResponse { data: Vec::new() }.into(),
             ));
@@ -1180,7 +1280,7 @@ impl ThreadRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
         let current_base_repo_path = self
-            .resolve_current_worktree_base_repo_path("worktree/mergeCandidate/apply")
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
             .await?;
         let candidate = state_db
             .managed_worktrees()
@@ -1203,6 +1303,11 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
             .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
+            ));
+        };
         if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
             return Ok(Some(
                 WorktreeMergeCandidateApplyResponse { candidate: None }.into(),
@@ -1233,7 +1338,7 @@ impl ThreadRequestProcessor {
             move || get_git_worktree_status_snapshot(base_repo_path.as_path())
         })
         .await?;
-        if status_snapshot_has_tracked_changes(&target_status) {
+        if status_snapshot_has_merge_target_changes(&target_status) {
             return Err(invalid_params(
                 "worktree/mergeCandidate/apply requires a clean target checkout",
             ));
@@ -1291,7 +1396,7 @@ impl ThreadRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let state_db = self.worktree_state_db()?;
         let current_base_repo_path = self
-            .resolve_current_worktree_base_repo_path("worktree/mergeCandidate/dismiss")
+            .resolve_worktree_base_repo_path(/*requested_base_repo_path*/ None)
             .await?;
         let candidate = state_db
             .managed_worktrees()
@@ -1309,6 +1414,11 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to read worktree: {err}")))?
             .ok_or_else(|| invalid_params("merge candidate worktree not found"))?;
+        let Some(current_base_repo_path) = current_base_repo_path else {
+            return Ok(Some(
+                WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
+            ));
+        };
         if !worktree_matches_base_repo(&worktree, current_base_repo_path.as_path()) {
             return Ok(Some(
                 WorktreeMergeCandidateDismissResponse { candidate: None }.into(),
@@ -1347,10 +1457,18 @@ impl ThreadRequestProcessor {
         &self,
         requested_base_repo_path: Option<&str>,
     ) -> Result<Option<PathBuf>, JSONRPCErrorError> {
-        let current_base_repo_path =
-            resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &self.config.cwd)
-                .await
-                .map(AbsolutePathBuf::into_path_buf);
+        self.resolve_worktree_base_repo_path_for_cwd(requested_base_repo_path, &self.config.cwd)
+            .await
+    }
+
+    async fn resolve_worktree_base_repo_path_for_cwd(
+        &self,
+        requested_base_repo_path: Option<&str>,
+        cwd: &AbsolutePathBuf,
+    ) -> Result<Option<PathBuf>, JSONRPCErrorError> {
+        let current_base_repo_path = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), cwd)
+            .await
+            .map(AbsolutePathBuf::into_path_buf);
         let requested_base_repo_path = requested_base_repo_path
             .map(str::trim)
             .filter(|path| !path.is_empty());
@@ -1380,8 +1498,7 @@ impl ThreadRequestProcessor {
             cleanup_default: api_worktree_cleanup_policy_from_config(config.cleanup_default),
             main_sessions: api_worktree_session_mode_from_config(config.main_sessions),
             sub_sessions: api_worktree_session_mode_from_config(config.sub_sessions),
-            current_base_repo_path: current_base_repo_path
-                .map(|path| path.to_string_lossy().into_owned()),
+            current_base_repo_path: current_base_repo_path.map(path_to_api_string),
         }
     }
 
@@ -2013,73 +2130,7 @@ async fn linked_worktree_is_absent(
 }
 
 fn paths_match(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
-fn worktree_matches_base_repo(
-    worktree: &codex_state::ManagedWorktree,
-    base_repo_path: &Path,
-) -> bool {
-    worktree.base_repo_path.as_path() == base_repo_path
-}
-
-fn status_snapshot_has_tracked_changes(status_snapshot: &GitWorktreeStatusSnapshot) -> bool {
-    status_snapshot.records.iter().any(|record| {
-        record
-            .chars()
-            .next()
-            .is_some_and(|prefix| matches!(prefix, '1' | '2' | 'u'))
-    })
-}
-
-fn stored_status_snapshot_for_cleanup(
-    worktree: &codex_state::ManagedWorktree,
-) -> GitWorktreeStatusSnapshot {
-    let records = worktree
-        .status_snapshot_json
-        .get("records")
-        .and_then(Value::as_array)
-        .map(|records| {
-            records
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .filter(|records| !records.is_empty())
-        .unwrap_or_else(|| {
-            vec![format!(
-                "cleanup blocked for owner background agent {:?}",
-                worktree.owner_agent_run_id
-            )]
-        });
-    GitWorktreeStatusSnapshot {
-        dirty: worktree
-            .status_snapshot_json
-            .get("dirty")
-            .and_then(Value::as_bool)
-            .unwrap_or(worktree.dirty),
-        branch: worktree
-            .status_snapshot_json
-            .get("branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| worktree.branch.clone()),
-        head_sha: worktree
-            .status_snapshot_json
-            .get("headSha")
-            .or_else(|| worktree.status_snapshot_json.get("head_sha"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| worktree.head_sha.clone()),
-        records,
-    }
+    paths_equivalent(left, right)
 }
 
 fn ensure_worktree_policy_enabled(policy: &WorktreePolicy) -> Result<(), JSONRPCErrorError> {
@@ -2322,6 +2373,13 @@ async fn load_all_managed_worktrees(
     }
 }
 
+fn worktree_matches_base_repo(
+    worktree: &codex_state::ManagedWorktree,
+    base_repo_path: &Path,
+) -> bool {
+    paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
+}
+
 async fn status_snapshot_for_release(
     worktree: &codex_state::ManagedWorktree,
     force_delete: Option<bool>,
@@ -2340,6 +2398,62 @@ async fn status_snapshot_for_release(
             records: vec![format!("status probe failed before force cleanup: {err:?}")],
         }),
         Err(err) => Err(err),
+    }
+}
+
+fn status_snapshot_has_merge_target_changes(status_snapshot: &GitWorktreeStatusSnapshot) -> bool {
+    status_snapshot.records.iter().any(|record| {
+        if record.starts_with("# ") {
+            return false;
+        }
+        if let Some(path) = record.strip_prefix("? ") {
+            return !path.starts_with(".codewith/worktrees/");
+        }
+        !record.trim().is_empty()
+    })
+}
+
+fn stored_status_snapshot_for_cleanup(
+    worktree: &codex_state::ManagedWorktree,
+) -> GitWorktreeStatusSnapshot {
+    let records = worktree
+        .status_snapshot_json
+        .get("records")
+        .and_then(Value::as_array)
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|records| !records.is_empty())
+        .unwrap_or_else(|| {
+            vec![format!(
+                "cleanup blocked for owner background agent {:?}",
+                worktree.owner_agent_run_id
+            )]
+        });
+    GitWorktreeStatusSnapshot {
+        dirty: worktree
+            .status_snapshot_json
+            .get("dirty")
+            .and_then(Value::as_bool)
+            .unwrap_or(worktree.dirty),
+        branch: worktree
+            .status_snapshot_json
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.branch.clone()),
+        head_sha: worktree
+            .status_snapshot_json
+            .get("headSha")
+            .or_else(|| worktree.status_snapshot_json.get("head_sha"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| worktree.head_sha.clone()),
+        records,
     }
 }
 
@@ -2581,14 +2695,14 @@ async fn run_background_agent_worker(
         run.id,
         run.generation.saturating_add(1)
     );
-    let Some(generation) = context
-        .state_db
-        .claim_background_agent_supervisor(
+    let Some(generation) = retry_transient_sqlite_busy("claim background agent supervisor", || {
+        context.state_db.claim_background_agent_supervisor(
             run.id.as_str(),
             context.supervisor_id.as_str(),
             process_lease_id.as_str(),
         )
-        .await?
+    })
+    .await?
     else {
         debug!(run_id = %run.id, "background agent run was not claimable");
         return Ok(());
@@ -2630,19 +2744,21 @@ async fn run_background_agent_worker(
     let stderr_log_path_string = stderr_log_path
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
-    if !context
-        .state_db
-        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
-            run_id: run.id.as_str(),
-            supervisor_id: context.supervisor_id.as_str(),
-            generation,
-            pid,
-            pgid,
-            job_id: job_id.as_deref(),
-            start_token: process_start_token.as_deref(),
-            stderr_log_path: stderr_log_path_string.as_deref(),
-        })
-        .await?
+    if !retry_transient_sqlite_busy("record background agent execution handle", || {
+        context.state_db.record_background_agent_execution_handle(
+            BackgroundAgentExecutionHandleParams {
+                run_id: run.id.as_str(),
+                supervisor_id: context.supervisor_id.as_str(),
+                generation,
+                pid,
+                pgid,
+                job_id: job_id.as_deref(),
+                start_token: process_start_token.as_deref(),
+                stderr_log_path: stderr_log_path_string.as_deref(),
+            },
+        )
+    })
+    .await?
     {
         return Err(background_agent_ownership_lost(run.id.as_str(), generation));
     }
@@ -2709,7 +2825,13 @@ async fn run_background_agent_worker(
     if !bound {
         return Err(background_agent_ownership_lost(run.id.as_str(), generation));
     }
-    ensure_background_agent_worker_current(&context, run.id.as_str(), generation, false).await?;
+    ensure_background_agent_worker_current(
+        &context,
+        run.id.as_str(),
+        generation,
+        /*allow_terminal_current*/ false,
+    )
+    .await?;
     insert_initial_goal_for_background_thread(
         &context.state_db,
         run.id.as_str(),
@@ -3167,64 +3289,80 @@ async fn handle_background_agent_event(
 ) -> anyhow::Result<bool> {
     match msg {
         EventMsg::TurnStarted(event) => {
-            append_status(
-                context,
+            tolerate_transient_busy(
+                append_status(
+                    context,
+                    run_id,
+                    generation,
+                    BackgroundAgentRunStatus::Running,
+                    "turn started",
+                    "agent.turnStarted",
+                    json!({"turnId": event.turn_id, "startedAt": event.started_at}),
+                )
+                .await,
                 run_id,
-                generation,
-                BackgroundAgentRunStatus::Running,
-                "turn started",
-                "agent.turnStarted",
-                json!({"turnId": event.turn_id, "startedAt": event.started_at}),
-            )
-            .await?;
+                "turn started status",
+            )?;
         }
         EventMsg::AgentMessageContentDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.messageDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.messageDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "message delta event",
+            )?;
         }
         EventMsg::PlanDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.planDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.planDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "plan delta event",
+            )?;
         }
         EventMsg::ReasoningContentDelta(delta) => {
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.reasoningDelta",
+                    &json!({
+                        "threadId": delta.thread_id,
+                        "turnId": delta.turn_id,
+                        "itemId": delta.item_id,
+                        "delta": delta.delta,
+                    }),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                "agent.reasoningDelta",
-                &json!({
-                    "threadId": delta.thread_id,
-                    "turnId": delta.turn_id,
-                    "itemId": delta.item_id,
-                    "delta": delta.delta,
-                }),
-                false,
-            )
-            .await?;
+                "reasoning delta event",
+            )?;
         }
         EventMsg::ExecApprovalRequest(event) => {
             let interaction = create_pending_interaction(
@@ -3439,17 +3577,17 @@ async fn handle_background_agent_event(
                 }),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish completed background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
                     Some(0),
-                    None,
+                    /*exit_signal*/ None,
                     Some("completed"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         EventMsg::TurnAborted(event) => {
@@ -3476,17 +3614,17 @@ async fn handle_background_agent_event(
                 }),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish aborted background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("turn aborted"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         EventMsg::ShutdownComplete => {
@@ -3500,30 +3638,34 @@ async fn handle_background_agent_event(
                 json!({}),
             )
             .await?;
-            context
-                .state_db
-                .finish_background_agent_process_lease(
+            retry_transient_sqlite_busy("finish shutdown background agent process lease", || {
+                context.state_db.finish_background_agent_process_lease(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
                     Some(1),
-                    None,
+                    /*exit_signal*/ None,
                     Some("worker shutdown completed"),
                 )
-                .await?;
+            })
+            .await?;
             return Ok(true);
         }
         other => {
             let event_type = core_event_type(&other);
-            append_background_agent_event_with_retry(
-                context,
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    event_type,
+                    &json!({}),
+                    false,
+                )
+                .await,
                 run_id,
-                generation,
-                event_type,
-                &json!({}),
-                false,
-            )
-            .await?;
+                "mirrored core event",
+            )?;
         }
     }
     Ok(false)
@@ -3594,28 +3736,37 @@ async fn wait_for_pending_interaction(
                 anyhow::bail!("background agent stopped while waiting for interaction");
             }
             _ = poll.tick() => {
-                context.state_db.expire_timed_out_interactions().await?;
-                if !context
-                    .state_db
-                    .heartbeat_background_agent_run(
+                retry_transient_sqlite_busy("expire background agent interactions", || {
+                    context.state_db.expire_timed_out_interactions()
+                })
+                .await?;
+                if !retry_transient_sqlite_busy("heartbeat background agent interaction wait", || {
+                    context.state_db.heartbeat_background_agent_run(
                         run_id,
                         context.supervisor_id.as_str(),
                         generation,
                     )
-                    .await?
+                })
+                .await?
                 {
                     return Err(background_agent_ownership_lost(run_id, generation));
                 }
-                let Some(run) = context.state_db.get_run(run_id).await? else {
+                let Some(run) = retry_transient_sqlite_busy(
+                    "load background agent during interaction wait",
+                    || context.state_db.get_run(run_id),
+                )
+                .await?
+                else {
                     anyhow::bail!("background agent run disappeared while waiting");
                 };
                 if run.desired_state != BackgroundAgentDesiredState::Running {
                     anyhow::bail!("background agent no longer wants to run");
                 }
-                let Some(updated) = context
-                    .state_db
-                    .get_pending_interaction(interaction.id.as_str())
-                    .await?
+                let Some(updated) = retry_transient_sqlite_busy(
+                    "load pending background agent interaction",
+                    || context.state_db.get_pending_interaction(interaction.id.as_str()),
+                )
+                .await?
                 else {
                     anyhow::bail!("pending interaction disappeared: {}", interaction.id);
                 };
@@ -3627,16 +3778,19 @@ async fn wait_for_pending_interaction(
                         | BackgroundAgentPendingInteractionStatus::Denied
                         | BackgroundAgentPendingInteractionStatus::WorkerNoLongerWaiting
                 ) {
-                    if !context
-                        .state_db
-                        .update_background_agent_run_status_for_supervisor(
+                    if !retry_transient_sqlite_busy(
+                        "restore background agent status after interaction",
+                        || {
+                            context.state_db.update_background_agent_run_status_for_supervisor(
                             run_id,
                             context.supervisor_id.as_str(),
                             generation,
                             BackgroundAgentRunStatus::Running,
                             Some("pending interaction resolved"),
                         )
-                        .await?
+                        },
+                    )
+                    .await?
                     {
                         return Err(background_agent_ownership_lost(run_id, generation));
                     }
@@ -3652,10 +3806,14 @@ async fn refresh_startup_heartbeat(
     run_id: &str,
     generation: i64,
 ) -> anyhow::Result<()> {
-    if context
-        .state_db
-        .heartbeat_background_agent_run(run_id, context.supervisor_id.as_str(), generation)
-        .await?
+    if retry_transient_sqlite_busy("refresh background agent startup heartbeat", || {
+        context.state_db.heartbeat_background_agent_run(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+        )
+    })
+    .await?
     {
         Ok(())
     } else {
@@ -3693,15 +3851,23 @@ async fn heartbeat_and_continue(
     generation: i64,
     thread: &Arc<codex_core::CodexThread>,
 ) -> anyhow::Result<bool> {
-    if !context
-        .state_db
-        .heartbeat_background_agent_run(run_id, context.supervisor_id.as_str(), generation)
-        .await?
+    if !retry_transient_sqlite_busy("heartbeat background agent run", || {
+        context.state_db.heartbeat_background_agent_run(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+        )
+    })
+    .await?
     {
         let _ = thread.submit(Op::Interrupt).await;
         return Ok(false);
     }
-    let Some(run) = context.state_db.get_run(run_id).await? else {
+    let Some(run) = retry_transient_sqlite_busy("load background agent after heartbeat", || {
+        context.state_db.get_run(run_id)
+    })
+    .await?
+    else {
         return Ok(false);
     };
     if run.desired_state == BackgroundAgentDesiredState::Running {
@@ -3738,7 +3904,10 @@ async fn stop_background_thread(
     run_id: &str,
     generation: i64,
 ) -> anyhow::Result<()> {
-    let run = context.state_db.get_run(run_id).await?;
+    let run = retry_transient_sqlite_busy("load background agent before stop", || {
+        context.state_db.get_run(run_id)
+    })
+    .await?;
     let desired_state = run
         .as_ref()
         .map(|run| run.desired_state)
@@ -3768,17 +3937,17 @@ async fn stop_background_thread(
         json!({"reason": reason}),
     )
     .await?;
-    context
-        .state_db
-        .finish_background_agent_process_lease(
+    retry_transient_sqlite_busy("finish stopped background agent process lease", || {
+        context.state_db.finish_background_agent_process_lease(
             run_id,
             context.supervisor_id.as_str(),
             generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some(reason),
         )
-        .await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -3878,11 +4047,13 @@ async fn latest_execution_payload(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
 ) -> anyhow::Result<Option<Value>> {
-    Ok(context
-        .state_db
-        .get_latest_execution_snapshot(run_id)
+    Ok(
+        retry_transient_sqlite_busy("load latest background agent execution snapshot", || {
+            context.state_db.get_latest_execution_snapshot(run_id)
+        })
         .await?
-        .map(|snapshot| snapshot.payload_json))
+        .map(|snapshot| snapshot.payload_json),
+    )
 }
 
 async fn append_background_agent_event_with_retry(
@@ -3909,7 +4080,12 @@ async fn ensure_background_agent_worker_current(
     generation: i64,
     allow_terminal_current: bool,
 ) -> anyhow::Result<()> {
-    let Some(run) = context.state_db.get_run(run_id).await? else {
+    let Some(run) =
+        retry_transient_sqlite_busy("load background agent for ownership check", || {
+            context.state_db.get_run(run_id)
+        })
+        .await?
+    else {
         return Err(background_agent_ownership_lost(run_id, generation));
     };
     if run.supervisor_id.as_deref() != Some(context.supervisor_id.as_str())
@@ -3936,9 +4112,12 @@ async fn count_active_pending_interactions_for_run(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
 ) -> anyhow::Result<i64> {
-    let interactions = context
-        .state_db
-        .list_pending_interactions(run_id, None)
+    let interactions =
+        retry_transient_sqlite_busy("list background agent pending interactions", || {
+            context
+                .state_db
+                .list_pending_interactions(run_id, /*status*/ None)
+        })
         .await?;
     Ok(interactions
         .into_iter()
@@ -3957,6 +4136,18 @@ async fn mark_background_agent_worker_failed(
     run_id: &str,
     err: &anyhow::Error,
 ) -> anyhow::Result<()> {
+    if is_transient_sqlite_busy(err) {
+        // The worker only lost a bookkeeping write to state DB contention;
+        // the run itself is not known to be unhealthy. Leave its status
+        // untouched: the heartbeat-timeout orphan sweep will mark it
+        // recoverable and the supervisor will resume it, instead of
+        // permanently failing a healthy run.
+        warn!(
+            run_id,
+            "background agent worker hit persistent SQLite busy; leaving run recoverable instead of marking it failed: {err}"
+        );
+        return Ok(());
+    }
     let Some(run) = context.state_db.get_run(run_id).await? else {
         return Ok(());
     };
@@ -3982,17 +4173,17 @@ async fn mark_background_agent_worker_failed(
             json!({"reason": "desired_state_changed"}),
         )
         .await?;
-        context
-            .state_db
-            .finish_background_agent_process_lease(
+        retry_transient_sqlite_busy("finish cancelled background agent failure lease", || {
+            context.state_db.finish_background_agent_process_lease(
                 run_id,
                 context.supervisor_id.as_str(),
                 run.generation,
                 Some(1),
-                None,
+                /*exit_signal*/ None,
                 Some("worker stopped"),
             )
-            .await?;
+        })
+        .await?;
         return Ok(());
     }
     append_status(
@@ -4005,17 +4196,17 @@ async fn mark_background_agent_worker_failed(
         json!({"error": err.to_string()}),
     )
     .await?;
-    context
-        .state_db
-        .finish_background_agent_process_lease(
+    retry_transient_sqlite_busy("finish failed background agent process lease", || {
+        context.state_db.finish_background_agent_process_lease(
             run_id,
             context.supervisor_id.as_str(),
             run.generation,
             Some(1),
-            None,
+            /*exit_signal*/ None,
             Some("worker failed"),
         )
-        .await?;
+    })
+    .await?;
     Ok(())
 }
 
@@ -4221,36 +4412,45 @@ fn core_event_type(msg: &EventMsg) -> &'static str {
     }
 }
 
-async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, mut f: F) -> anyhow::Result<T>
+/// Retries state DB operations on transient SQLITE_BUSY /
+/// SQLITE_BUSY_SNAPSHOT with exponential backoff plus jitter and a total
+/// sleep budget of at least 15s (see `codex_state::busy_retry`). The shared
+/// state DB is written by many concurrent processes, so short bursts of
+/// lock/snapshot contention are expected and must not fail healthy runs.
+async fn retry_transient_sqlite_busy<T, F, Fut>(operation: &str, f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
 {
-    let mut delay = Duration::from_millis(25);
-    for attempt in 0..5 {
-        match f().await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_transient_sqlite_busy(&err) && attempt < 4 => {
-                debug!(
-                    operation,
-                    attempt = attempt + 1,
-                    "retrying background agent operation after SQLite busy: {err}"
-                );
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    unreachable!("retry loop should return on success or final error")
+    codex_state::busy_retry::retry_on_busy(operation, f).await
 }
 
 fn is_transient_sqlite_busy(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("database is locked")
-        || message.contains("database is busy")
-        || message.contains("code: 5")
-        || message.contains("code: 517")
+    codex_state::busy_retry::is_transient_busy_error(err)
+}
+
+/// Treats a failed best-effort bookkeeping write as non-fatal when the
+/// failure is transient SQLite contention. A missed mirror/status event does
+/// not affect the model turn, so a healthy run must not be torn down (and
+/// marked failed) just because the state DB stayed busy past the retry
+/// budget. Non-busy errors (including ownership loss) still propagate.
+fn tolerate_transient_busy<T>(
+    result: anyhow::Result<T>,
+    run_id: &str,
+    what: &'static str,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if is_transient_sqlite_busy(&err) => {
+            warn!(
+                run_id,
+                what,
+                "skipping best-effort background agent bookkeeping write after persistent SQLite busy: {err}"
+            );
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub(super) fn new_background_agent_supervisor_id() -> String {
@@ -4303,7 +4503,11 @@ mod tests {
                 .ends_with("background-agent-daemon/workers/run%2Fwith%20path.stderr.log")
         );
         let events = state_db
-            .list_background_agent_events_after("run/with path", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "run/with path",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
             .await?;
         let event_types = events
             .iter()

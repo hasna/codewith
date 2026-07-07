@@ -15,9 +15,15 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
+        "claude-sonnet-5",
+        "Claude Sonnet 5",
+        "Anthropic's latest Sonnet model with adaptive thinking for coding, agents, and enterprise workflows.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
         "claude-sonnet-4-6",
         "Claude Sonnet 4.6",
-        "Anthropic's latest Sonnet model for coding, agents, and enterprise workflows.",
+        "Anthropic's prior-generation Sonnet model for coding, agents, and enterprise workflows.",
         /*is_default*/ false,
     ),
     KnownProviderFallbackModel::new(
@@ -42,6 +48,11 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
         )),
         "claude-opus-4-7" => Some(model(
             "Claude Opus 4.7",
+            /*context_window*/ 1_000_000,
+            /*supports_reasoning*/ true,
+        )),
+        "claude-sonnet-5" => Some(model(
+            "Claude Sonnet 5",
             /*context_window*/ 1_000_000,
             /*supports_reasoning*/ true,
         )),

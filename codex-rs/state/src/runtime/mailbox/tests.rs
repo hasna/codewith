@@ -15,8 +15,20 @@ async fn enqueue_is_idempotent_per_target_thread() -> anyhow::Result<()> {
         ))
         .await?;
 
-    let first = enqueue_test_message(runtime.as_ref(), thread_id, "same-key", 3).await?;
-    let second = enqueue_test_message(runtime.as_ref(), thread_id, "same-key", 3).await?;
+    let first = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "same-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
+    let second = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "same-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
 
     assert!(first.created);
     assert!(!second.created);
@@ -29,7 +41,13 @@ async fn enqueue_is_idempotent_per_target_thread() -> anyhow::Result<()> {
 async fn claim_ack_and_receipts_are_durable() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    let enqueued = enqueue_test_message(runtime.as_ref(), thread_id, "claim-key", 3).await?;
+    let enqueued = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "claim-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
     let claim = claim_next(runtime.as_ref(), thread_id)
         .await?
         .expect("claimed");
@@ -76,7 +94,13 @@ async fn claim_ack_and_receipts_are_durable() -> anyhow::Result<()> {
 async fn retry_after_attempt_budget_poisoned_message() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    enqueue_test_message(runtime.as_ref(), thread_id, "retry-key", 1).await?;
+    enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "retry-key",
+        /*max_attempts*/ 1,
+    )
+    .await?;
     let claim = claim_next(runtime.as_ref(), thread_id)
         .await?
         .expect("claimed");
@@ -105,7 +129,13 @@ async fn retry_after_attempt_budget_poisoned_message() -> anyhow::Result<()> {
 async fn expired_claim_can_be_reclaimed() -> anyhow::Result<()> {
     let runtime = test_runtime_with_thread().await?;
     let thread_id = test_thread_id();
-    enqueue_test_message(runtime.as_ref(), thread_id, "expire-key", 3).await?;
+    enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "expire-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
     let now = Utc::now();
     let first = runtime
         .mailbox_messages()
@@ -153,8 +183,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
         runtime.as_ref(),
         low_priority_thread_id,
         "global-low-priority",
-        3,
-        0,
+        /*max_attempts*/ 3,
+        /*priority*/ 0,
         Some(now),
     )
     .await?;
@@ -162,8 +192,8 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
         runtime.as_ref(),
         high_priority_thread_id,
         "global-high-priority",
-        3,
-        10,
+        /*max_attempts*/ 3,
+        /*priority*/ 10,
         Some(now),
     )
     .await?;
@@ -218,6 +248,62 @@ async fn dispatch_claim_claims_due_messages_across_targets_once() -> anyhow::Res
         second_claim.message.target_thread_id,
         low_priority_thread_id
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_claim_skips_manual_claim_messages_without_delivery_policy() -> anyhow::Result<()>
+{
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let now = Utc::now();
+    let manual = runtime
+        .mailbox_messages()
+        .enqueue_message(MailboxEnqueueParams {
+            target_thread_id: thread_id,
+            sender_thread_id: None,
+            sender_label: Some("coordinator".to_string()),
+            idempotency_key: Some("manual-claim-only".to_string()),
+            kind: crate::MailboxMessageKind::UserInstruction,
+            payload_json: serde_json::json!({ "text": "hello" }),
+            payload_preview: "hello".to_string(),
+            priority: 10,
+            max_attempts: 3,
+            next_attempt_at: Some(now),
+            expires_at: None,
+        })
+        .await?;
+    let automatic = enqueue_test_message_with_options(
+        runtime.as_ref(),
+        thread_id,
+        "automatic-claim",
+        /*max_attempts*/ 3,
+        /*priority*/ 0,
+        Some(now),
+    )
+    .await?;
+
+    let dispatch_claim = runtime
+        .mailbox_messages()
+        .claim_next_due_message(MailboxDispatchClaimParams {
+            lease_owner: "global-dispatcher".to_string(),
+            lease_duration: std::time::Duration::from_secs(30),
+            now,
+            local_active_owner_id: "local-owner".to_string(),
+            local_active_fresh_after: now - chrono::Duration::seconds(5),
+        })
+        .await?
+        .expect("automatic message should be eligible for dispatch claim");
+    assert_eq!(
+        dispatch_claim.message.message_id,
+        automatic.message.message_id
+    );
+
+    let manual_claim = claim_next(runtime.as_ref(), thread_id)
+        .await?
+        .expect("plain mailbox message should remain available for manual claim");
+    assert_eq!(manual_claim.message.message_id, manual.message.message_id);
 
     Ok(())
 }
@@ -771,7 +857,13 @@ async fn claimed_message_survives_restart_and_reclaims_expired_lease() -> anyhow
                 runtime.codex_home().join("workspace"),
             ))
             .await?;
-        let enqueued = enqueue_test_message(runtime.as_ref(), thread_id, "restart-key", 3).await?;
+        let enqueued = enqueue_test_message(
+            runtime.as_ref(),
+            thread_id,
+            "restart-key",
+            /*max_attempts*/ 3,
+        )
+        .await?;
         first_claimed_at = Utc::now();
         let first = runtime
             .mailbox_messages()
@@ -846,6 +938,83 @@ async fn claimed_message_survives_restart_and_reclaims_expired_lease() -> anyhow
     Ok(())
 }
 
+/// The dispatcher polls `claim_next_*` once per second in every process. If a
+/// claim raced another writer and simply failed, the poll would drop the
+/// message with a warning. This test defeats the connection `busy_timeout`
+/// (set to zero) so contention surfaces as `SQLITE_BUSY` immediately, then
+/// holds the write lock on a second connection while a claim runs. The claim
+/// can only succeed because `claim_next_message_inner` wraps the write in
+/// `retry_on_busy`; without the wrapper it would fail on the first `BEGIN
+/// IMMEDIATE`.
+#[tokio::test]
+async fn claim_next_message_retries_under_write_lock_contention() -> anyhow::Result<()> {
+    use sqlx::ConnectOptions;
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::sqlite::SqliteJournalMode;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    let runtime = test_runtime_with_thread().await?;
+    let thread_id = test_thread_id();
+    let enqueued = enqueue_test_message(
+        runtime.as_ref(),
+        thread_id,
+        "contended-key",
+        /*max_attempts*/ 3,
+    )
+    .await?;
+
+    // A second connection group to the same state DB file, with the busy
+    // handler disabled so lock contention raises SQLITE_BUSY instantly instead
+    // of waiting. This isolates the application-level retry loop.
+    let db_path = crate::runtime::state_db_path(runtime.codex_home());
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::ZERO);
+
+    // Hold the write lock on a dedicated connection.
+    let mut holder = options.clone().connect().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await?;
+    sqlx::query("DELETE FROM thread_mailbox_target_leases WHERE 1 = 0")
+        .execute(&mut holder)
+        .await?;
+
+    let contended_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let store = MailboxMessageStore::new(Arc::new(contended_pool));
+
+    let claim_task = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            store
+                .claim_next_message(MailboxClaimParams {
+                    target_thread_id: thread_id,
+                    lease_owner: "dispatcher".to_string(),
+                    lease_duration: std::time::Duration::from_secs(30),
+                    now: Utc::now(),
+                })
+                .await
+        })
+    };
+
+    // Give the claim time to hit SQLITE_BUSY and enter its retry loop, then
+    // release the write lock so a retry can succeed.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    sqlx::query("COMMIT").execute(&mut holder).await?;
+    drop(holder);
+
+    let claim = claim_task
+        .await?
+        .expect("claim should not error under contention")
+        .expect("a queued message should be claimed after retrying");
+    assert_eq!(claim.message.message_id, enqueued.message.message_id);
+    assert_eq!(claim.message.status, crate::MailboxMessageStatus::Claimed);
+
+    Ok(())
+}
+
 async fn test_runtime_with_thread() -> anyhow::Result<Arc<StateRuntime>> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     runtime
@@ -873,8 +1042,8 @@ async fn enqueue_test_message(
         target_thread_id,
         idempotency_key,
         max_attempts,
-        0,
-        None,
+        /*priority*/ 0,
+        /*next_attempt_at*/ None,
     )
     .await
 }
@@ -895,7 +1064,7 @@ async fn enqueue_test_message_with_options(
             sender_label: Some("coordinator".to_string()),
             idempotency_key: Some(idempotency_key.to_string()),
             kind: crate::MailboxMessageKind::UserInstruction,
-            payload_json: serde_json::json!({ "text": "hello" }),
+            payload_json: serde_json::json!({ "text": "hello", "delivery": "liveOnly" }),
             payload_preview: "hello".to_string(),
             priority,
             max_attempts,

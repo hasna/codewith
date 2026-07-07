@@ -10,6 +10,7 @@ use crate::facts::AnalyticsFact;
 use crate::facts::InvocationType;
 use codex_app_server_protocol::ApprovalsReviewer as AppServerApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval as AppServerAskForApproval;
+use codex_app_server_protocol::AuthProfileKind;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ClientResponsePayload;
 use codex_app_server_protocol::RequestId;
@@ -139,6 +140,8 @@ fn sample_thread(thread_id: &str) -> Thread {
         agent_nickname: None,
         agent_role: None,
         git_info: None,
+        auth_profile: None,
+        auth_profile_kind: AuthProfileKind::Unknown,
         name: None,
         turns: Vec::new(),
     }
@@ -152,6 +155,7 @@ fn sample_thread_start_response() -> ClientResponsePayload {
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AppServerAskForApproval::OnFailure,
         approvals_reviewer: AppServerApprovalsReviewer::User,
@@ -170,6 +174,7 @@ fn sample_thread_resume_response() -> ClientResponsePayload {
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AppServerAskForApproval::OnFailure,
         approvals_reviewer: AppServerApprovalsReviewer::User,
@@ -189,6 +194,7 @@ fn sample_thread_fork_response() -> ClientResponsePayload {
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
         runtime_workspace_roots: Vec::new(),
+        profile_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AppServerAskForApproval::OnFailure,
         approvals_reviewer: AppServerApprovalsReviewer::User,

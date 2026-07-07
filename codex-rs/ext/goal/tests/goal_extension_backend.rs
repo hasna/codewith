@@ -27,6 +27,7 @@ use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalSetRequest;
+use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_goal_extension::install_with_backend;
 use codex_protocol::ThreadId;
@@ -71,6 +72,7 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
                 "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
+                "title": "ship goal extension backend",
                 "status": "active",
                 "tokenBudget": 123,
                 "tokensUsed": 0,
@@ -91,6 +93,40 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
     assert_eq!(
         metadata.preview.as_deref(),
         Some("ship goal extension backend")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_rejects_blank_explicit_title() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    let err = match create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "ship goal extension backend",
+                "title": "   ",
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("blank goal title should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("goal title must not be empty".to_string())
+    );
+    assert_eq!(
+        None,
+        runtime.thread_goals().get_thread_goal(thread_id).await?
     );
     Ok(())
 }
@@ -163,6 +199,90 @@ async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Res
         "investigate"
     );
     assert_eq!(result["remainingTokens"], serde_json::Value::Null);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_tools_persist_context_lifecycle_actions() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "compact after standalone goal",
+                "post_goal_context": "compact",
+            }),
+        ))
+        .await?;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("created goal should exist"))?;
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_context_action(thread_id, goal.goal_id.as_str())
+            .await?
+    );
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "clear_existing_goal": true,
+            "post_goal_context": "compact",
+            "post_goal_plan_context": "compact",
+            "goals": [
+                {
+                    "key": "planned",
+                    "objective": "compact after planned goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("created plan id should be returned"))?;
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_plan_context_action(thread_id, plan_id)
+            .await?
+    );
+    assert_eq!(
+        Some(codex_state::PostGoalContextAction::Compact),
+        runtime
+            .thread_goals()
+            .thread_goal_plan_completion_context_action(thread_id, plan_id)
+            .await?
+    );
     Ok(())
 }
 
@@ -245,6 +365,178 @@ async fn create_goal_plan_appends_followup_nodes_to_active_plan() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn update_goal_does_not_schedule_context_lifecycle_for_blocked_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "do not compact blocked goal",
+                "post_goal_context": "compact",
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-block-goal",
+        json!({ "status": "blocked" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(serde_json::Value::Null, result["contextLifecycleReport"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_plan_context_lifecycle_skips_auto_advance_and_schedules_completion()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan",
+            json!({
+                "post_goal_context": "compact",
+                "post_goal_plan_context": "compact",
+                "goals": [
+                    {
+                        "key": "first",
+                        "objective": "complete first without compacting"
+                    },
+                    {
+                        "key": "second",
+                        "objective": "compact after final completion",
+                        "depends_on": ["first"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-first-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "compact after final completion"
+    );
+    assert_eq!(serde_json::Value::Null, result["contextLifecycleReport"]);
+
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-second-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goalPlans"][0]["status"], "complete");
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_plan_context_lifecycle_schedules_when_no_next_goal_activates() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "post_goal_context": "compact",
+            "post_goal_plan_context": "keep",
+            "goals": [
+                {
+                    "key": "manual",
+                    "objective": "compact after manual node completion"
+                },
+                {
+                    "key": "later",
+                    "objective": "remain ready after manual node completion",
+                    "depends_on": ["manual"]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let first_node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("first node id should be returned"))?;
+
+    let activate_tool = tool_by_name(&tools, "activate_goal_plan_node");
+    activate_tool
+        .handle(tool_call(
+            "activate_goal_plan_node",
+            "call-activate-first-node",
+            json!({ "node_id": first_node_id }),
+        ))
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-manual-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(serde_json::Value::Null, result["activatedGoal"]);
+    assert_eq!(result["goalPlans"][0]["status"], "active");
+    assert_eq!(
+        result["contextLifecycleReport"],
+        "Scheduled native context compaction after the thread becomes idle."
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -253,10 +545,9 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
         runtime,
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
             max_auto_goals_per_plan: 24,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -310,6 +601,123 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
 }
 
 #[tokio::test]
+async fn create_goal_plan_rejects_model_supplied_assigned_thread_id() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime, thread_id).await;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-delegated-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "delegate",
+                        "objective": "Try to delegate through the model-facing tool",
+                        "assigned_thread_id": "22222222-2222-4222-8222-222222222222"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("model-supplied assigned_thread_id should fail"),
+        Err(err) => err,
+    };
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-visible validation error");
+    };
+    assert!(message.contains("assigned_thread_id"));
+    assert!(message.contains("unknown field"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn delegated_goal_plan_response_hides_unassigned_nodes_and_includes_ready_node()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let owner_thread_id = test_thread_id()?;
+    let delegate_thread_id = ThreadId::from_string("22222222-2222-4222-8222-222222222222")
+        .map_err(anyhow::Error::msg)?;
+    seed_thread_metadata(runtime.as_ref(), owner_thread_id).await?;
+    seed_thread_metadata(runtime.as_ref(), delegate_thread_id).await?;
+    let mut nodes = (0..20)
+        .map(|idx| codex_state::ThreadGoalPlanNodeCreateParams {
+            key: format!("owner-{idx}"),
+            objective: format!("Owner-only secret objective {idx}."),
+            assigned_thread_id: None,
+            title: None,
+            priority: 0,
+            token_budget: None,
+            depends_on: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    nodes.push(codex_state::ThreadGoalPlanNodeCreateParams {
+        key: "delegate".to_string(),
+        objective: "Visible delegated objective.".to_string(),
+        assigned_thread_id: Some(delegate_thread_id),
+        title: None,
+        priority: 0,
+        token_budget: None,
+        depends_on: Vec::new(),
+    });
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id: owner_thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_tokens: None,
+            nodes,
+        })
+        .await?;
+    let delegated_node_id = created
+        .snapshot
+        .nodes
+        .iter()
+        .find(|node| node.assigned_thread_id == delegate_thread_id)
+        .map(|node| node.node_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("delegated node should exist"))?;
+
+    let delegate_tools = installed_tools(runtime.clone(), delegate_thread_id).await;
+    let get_plan_tool = tool_by_name(&delegate_tools, "get_goal_plan");
+    let get_plan = tool_call("get_goal_plan", "call-get-delegate-plan", json!({}));
+    let output = get_plan_tool.handle(get_plan.clone()).await?;
+    let result = output.code_mode_result(&get_plan.payload);
+    let plan = &result["goalPlans"][0];
+    let visible_nodes = plan["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+    assert_eq!(1, plan["readyNodeCount"]);
+    assert_eq!(1, visible_nodes.len());
+    assert_eq!(delegated_node_id, visible_nodes[0]["nodeId"]);
+    assert_eq!(
+        "Visible delegated objective.",
+        visible_nodes[0]["objective"]
+    );
+    assert_eq!(
+        delegate_thread_id.to_string(),
+        visible_nodes[0]["assignedThreadId"]
+    );
+    assert!(!result.to_string().contains("Owner-only secret objective"));
+
+    let activate_tool = tool_by_name(&delegate_tools, "activate_goal_plan_node");
+    let activate = tool_call(
+        "activate_goal_plan_node",
+        "call-activate-delegated-plan",
+        json!({ "node_id": delegated_node_id }),
+    );
+    let output = activate_tool.handle(activate.clone()).await?;
+    let result = output.code_mode_result(&activate.payload);
+    assert_eq!(result["goal"]["threadId"], delegate_thread_id.to_string());
+    assert_eq!(result["goal"]["objective"], "Visible delegated objective.");
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_with_auto_off_clears_replaced_goal_without_activation()
 -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
@@ -319,10 +727,8 @@ async fn create_goal_plan_with_auto_off_clears_replaced_goal_without_activation(
         runtime.clone(),
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -373,10 +779,8 @@ async fn activate_goal_plan_node_allows_explicit_activation_when_auto_off() -> a
         runtime,
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -426,10 +830,8 @@ async fn update_goal_uses_current_auto_execute_config_after_mid_turn_change() ->
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let initial_config = GoalExtensionConfig {
-        enabled: true,
         auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
-        max_auto_goals_per_plan: 12,
-        max_tokens_per_goal_plan: None,
+        ..test_goal_extension_config()
     };
     let harness =
         GoalExtensionHarness::new_with_config(runtime.clone(), thread_id, initial_config.clone())
@@ -505,89 +907,6 @@ async fn update_goal_uses_current_auto_execute_config_after_mid_turn_change() ->
 }
 
 #[tokio::test]
-async fn update_goal_can_defer_and_activate_independent_ready_goal() -> anyhow::Result<()> {
-    let runtime = test_runtime().await?;
-    let thread_id = test_thread_id()?;
-    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
-    let harness = GoalExtensionHarness::new_with_config(
-        runtime.clone(),
-        thread_id,
-        GoalExtensionConfig {
-            enabled: true,
-            auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
-        },
-    )
-    .await?;
-    harness.start_turn("turn-1", &TokenUsage::default()).await;
-    let tools = harness.tools();
-
-    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
-    create_plan_tool
-        .handle(tool_call(
-            "create_goal_plan",
-            "call-create-deferred-goal-plan",
-            json!({
-                "goals": [
-                    {
-                        "key": "investigate",
-                        "objective": "Investigate deferred branch",
-                        "priority": 10
-                    },
-                    {
-                        "key": "dependent",
-                        "objective": "Run only after deferred work completes",
-                        "priority": 5,
-                        "depends_on": ["investigate"]
-                    },
-                    {
-                        "key": "independent",
-                        "objective": "Run independent goal after deferral",
-                        "priority": 0
-                    }
-                ]
-            }),
-        ))
-        .await?;
-
-    let update_tool = tool_by_name(&tools, "update_goal");
-    let invocation = tool_call(
-        "update_goal",
-        "call-defer-first-goal",
-        json!({ "status": "deferred" }),
-    );
-    let output = update_tool.handle(invocation.clone()).await?;
-    let result = output.code_mode_result(&invocation.payload);
-
-    assert_eq!(result["goal"]["status"], "deferred");
-    assert_eq!(
-        result["activatedGoal"]["objective"],
-        "Run independent goal after deferral"
-    );
-    assert_eq!(result["goalPlans"][0]["status"], "active");
-    assert_eq!(result["goalPlans"][0]["deferredNodeCount"], 1);
-    assert_eq!(
-        vec!["deferred", "pending", "active"],
-        result["goalPlans"][0]["nodes"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
-            .iter()
-            .map(|node| node["status"].as_str().unwrap_or_default())
-            .collect::<Vec<_>>()
-    );
-
-    let goal = runtime
-        .thread_goals()
-        .get_thread_goal(thread_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("independent goal should be active"))?;
-    assert_eq!("Run independent goal after deferral", goal.objective);
-    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
-    Ok(())
-}
-
-#[tokio::test]
 async fn update_goal_can_complete_auto_activated_next_goal_in_same_turn() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -596,10 +915,8 @@ async fn update_goal_can_complete_auto_activated_next_goal_in_same_turn() -> any
         runtime.clone(),
         thread_id,
         GoalExtensionConfig {
-            enabled: true,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
-            max_auto_goals_per_plan: 12,
-            max_tokens_per_goal_plan: None,
+            ..test_goal_extension_config()
         },
     )
     .await?;
@@ -702,6 +1019,71 @@ async fn create_goal_plan_rejects_invalid_node_keys() -> anyhow::Result<()> {
             "goal plan node key `invalid key` must contain only ASCII letters, numbers, underscores, or hyphens"
                 .to_string()
         )
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_rejects_invalid_title_before_clearing_existing_goal() -> anyhow::Result<()>
+{
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "existing active goal",
+                "title": "Existing active goal",
+            }),
+        ))
+        .await?;
+    let original_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("existing goal should be present"))?;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan-invalid-title",
+            json!({
+                "clear_existing_goal": true,
+                "goals": [
+                    {
+                        "key": "followup",
+                        "objective": "Replace existing goal only after validation",
+                        "title": "one two three four five six"
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("invalid goal plan title should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("goal title must be at most 5 words".to_string())
+    );
+    assert_eq!(
+        Some(original_goal),
+        runtime.thread_goals().get_thread_goal(thread_id).await?
     );
     assert_eq!(
         Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
@@ -1721,6 +2103,7 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
                 "goalId": result["goal"]["goalId"],
                 "threadId": thread_id,
                 "objective": "ship goal extension backend",
+                "title": "ship goal extension backend",
                 "status": "blocked",
                 "tokensUsed": 23,
                 "timeUsedSeconds": 0,
@@ -2223,6 +2606,7 @@ async fn goal_service_external_set_active_resets_baseline_without_live_thread() 
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("new objective"),
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2272,6 +2656,8 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                 codex_state::ThreadGoalPlanNodeCreateParams {
                     key: "first".to_string(),
                     objective: "Finish first external goal".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: Vec::new(),
@@ -2279,6 +2665,8 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
                 codex_state::ThreadGoalPlanNodeCreateParams {
                     key: "second".to_string(),
                     objective: "Continue with second external goal".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
                     priority: 0,
                     token_budget: None,
                     depends_on: vec!["first".to_string()],
@@ -2300,6 +2688,7 @@ async fn goal_service_external_complete_advances_ready_plan_node_without_live_th
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Keep,
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Complete),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2359,6 +2748,8 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
             nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
                 key: "blocked".to_string(),
                 objective: "Wait for coordinator input".to_string(),
+                assigned_thread_id: None,
+                title: None,
                 priority: 0,
                 token_budget: None,
                 depends_on: Vec::new(),
@@ -2374,6 +2765,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
         GoalSetRequest {
             thread_id,
             objective: GoalObjectiveUpdate::Keep,
+            title: GoalTitleUpdate::Keep,
             status: Some(ThreadGoalStatus::Blocked),
             token_budget: GoalTokenBudgetUpdate::Keep,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2413,6 +2805,7 @@ async fn goal_service_external_resume_reactivates_blocked_plan_without_live_thre
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Keep,
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Active),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2460,6 +2853,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("wait for coordinator"),
+                title: GoalTitleUpdate::Keep,
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2488,6 +2882,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
                 GoalSetRequest {
                     thread_id,
                     objective: GoalObjectiveUpdate::Keep,
+                    title: GoalTitleUpdate::Keep,
                     status: Some(status),
                     token_budget: GoalTokenBudgetUpdate::Keep,
                     auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2517,6 +2912,7 @@ async fn goal_service_external_wait_statuses_record_and_clear_pending_interactio
                 GoalSetRequest {
                     thread_id,
                     objective: GoalObjectiveUpdate::Keep,
+                    title: GoalTitleUpdate::Keep,
                     status: Some(ThreadGoalStatus::Active),
                     token_budget: GoalTokenBudgetUpdate::Keep,
                     auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2546,6 +2942,7 @@ async fn goal_service_clear_thread_goal_clears_pending_interactions_without_live
         GoalSetRequest {
             thread_id,
             objective: GoalObjectiveUpdate::Set("wait for external unblock"),
+            title: GoalTitleUpdate::Keep,
             status: Some(ThreadGoalStatus::Blocked),
             token_budget: GoalTokenBudgetUpdate::Keep,
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2563,7 +2960,11 @@ async fn goal_service_clear_thread_goal_clears_pending_interactions_without_live
         .len()
     );
 
-    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     assert_eq!(
         Vec::<codex_state::PendingInteraction>::new(),
         pending_interactions_for_kind(
@@ -2589,6 +2990,7 @@ async fn create_goal_clear_existing_goal_clears_pending_interactions() -> anyhow
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set("blocked goal to replace"),
+                title: GoalTitleUpdate::Keep,
                 status: Some(ThreadGoalStatus::Blocked),
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2668,6 +3070,7 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
             .goal_service
             .clear_thread_goal(runtime.as_ref(), thread_id)
             .await?
+            .cleared
     );
     assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
     Ok(())
@@ -2732,6 +3135,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
             GoalSetRequest {
                 thread_id,
                 objective: GoalObjectiveUpdate::Set(" ship goal API ownership "),
+                title: GoalTitleUpdate::Keep,
                 status: None,
                 token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
@@ -2753,12 +3157,20 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     assert_eq!(Some(123), get.token_budget);
     assert_eq!(Some("ship goal API ownership"), metadata.preview.as_deref());
 
-    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     assert_eq!(
         None,
         api.get_thread_goal(runtime.as_ref(), thread_id).await?
     );
-    assert!(!api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        !api.clear_thread_goal(runtime.as_ref(), thread_id)
+            .await?
+            .cleared
+    );
     Ok(())
 }
 
@@ -2823,6 +3235,8 @@ fn test_goal_extension_config() -> GoalExtensionConfig {
         auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
         max_auto_goals_per_plan: 12,
         max_tokens_per_goal_plan: None,
+        post_goal_context: codex_state::PostGoalContextAction::Keep,
+        post_goal_plan_context: codex_state::PostGoalContextAction::Keep,
     }
 }
 

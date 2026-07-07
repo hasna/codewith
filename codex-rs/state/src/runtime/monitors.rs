@@ -427,6 +427,15 @@ LIMIT ? OFFSET ?
         .await?;
         rows.iter().map(thread_monitor_event_from_row).collect()
     }
+
+    pub async fn count_thread_monitor_events(&self, monitor_id: &str) -> anyhow::Result<usize> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_monitor_events WHERE monitor_id = ?")
+                .bind(monitor_id)
+                .fetch_one(self.pool.as_ref())
+                .await?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+    }
 }
 
 fn thread_monitor_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<crate::ThreadMonitor> {

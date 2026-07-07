@@ -1,3 +1,4 @@
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 
@@ -25,6 +26,9 @@ const QWEN_BASE_URL: &str =
 const XAI_BASE_URL: &str = "https://api.x.ai/v1";
 const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+pub(crate) const DEFAULT_INPUT_MODALITIES: &[InputModality] =
+    &[InputModality::Text, InputModality::Image];
+pub(crate) const TEXT_INPUT_MODALITIES: &[InputModality] = &[InputModality::Text];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KnownProviderModelMetadata {
@@ -34,6 +38,7 @@ pub struct KnownProviderModelMetadata {
     pub supports_parallel_tool_calls: bool,
     pub supports_reasoning: bool,
     pub supports_search_tool: bool,
+    pub input_modalities: &'static [InputModality],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +91,26 @@ impl KnownProviderModelMetadata {
         supports_reasoning: bool,
         supports_search_tool: bool,
     ) -> Self {
+        Self::with_search_tool_and_input_modalities(
+            display_name,
+            context_window,
+            supports_tools,
+            supports_parallel_tool_calls,
+            supports_reasoning,
+            supports_search_tool,
+            DEFAULT_INPUT_MODALITIES,
+        )
+    }
+
+    pub(crate) const fn with_search_tool_and_input_modalities(
+        display_name: &'static str,
+        context_window: i64,
+        supports_tools: bool,
+        supports_parallel_tool_calls: bool,
+        supports_reasoning: bool,
+        supports_search_tool: bool,
+        input_modalities: &'static [InputModality],
+    ) -> Self {
         Self {
             display_name,
             context_window,
@@ -93,6 +118,7 @@ impl KnownProviderModelMetadata {
             supports_parallel_tool_calls,
             supports_reasoning,
             supports_search_tool,
+            input_modalities,
         }
     }
 }
@@ -206,6 +232,7 @@ pub fn provider_supports_reasoning_effort(provider_id: Option<&str>) -> bool {
         || provider_id_matches(provider_id, "cerebras")
         || provider_id_matches(provider_id, "google")
         || provider_id_matches(provider_id, "minimax")
+        || provider_id_matches(provider_id, "openrouter")
         || provider_id_matches(provider_id, "zai")
 }
 
@@ -222,6 +249,12 @@ pub fn openai_compatible_provider_supports_reasoning_effort(
         )
         || provider_matches(provider_id, provider_base_url, "google", GOOGLE_BASE_URL)
         || provider_matches(provider_id, provider_base_url, "minimax", MINIMAX_BASE_URL)
+        || provider_matches(
+            provider_id,
+            provider_base_url,
+            "openrouter",
+            OPENROUTER_BASE_URL,
+        )
         || provider_matches(provider_id, provider_base_url, "zai", ZAI_BASE_URL)
 }
 
@@ -299,7 +332,7 @@ pub fn reasoning_levels_for_local_fallback(
             minimax::reasoning_levels(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "openrouter") => {
-            no_reasoning_levels()
+            openrouter::reasoning_levels(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), "xiaomi") => {
             no_reasoning_levels()
@@ -435,8 +468,194 @@ mod tests {
         assert_eq!(models[0].id, "claude-fable-5");
         assert!(models[0].is_default);
         assert_eq!(models[1].id, "claude-opus-4-8");
-        assert_eq!(models[2].id, "claude-sonnet-4-6");
-        assert_eq!(models[3].id, "claude-haiku-4-5-20251001");
+        assert_eq!(models[2].id, "claude-sonnet-5");
+        assert_eq!(models[3].id, "claude-sonnet-4-6");
+        assert_eq!(models[4].id, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn anthropic_exposes_claude_sonnet_5_metadata() {
+        assert_eq!(
+            metadata_for_local_fallback(Some("anthropic"), "claude-sonnet-5"),
+            Some(KnownProviderModelMetadata::new(
+                "Claude Sonnet 5",
+                /*context_window*/ 1_000_000,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ true,
+                /*supports_reasoning*/ true,
+            ))
+        );
+    }
+
+    #[test]
+    fn deepseek_v4_models_advertise_reasoning_without_effort_presets() {
+        for slug in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+            let metadata = metadata_for_local_fallback(Some("deepseek"), slug)
+                .expect("deepseek metadata should exist");
+            assert!(
+                metadata.supports_reasoning,
+                "{slug} should advertise reasoning (thinking mode)"
+            );
+            assert!(metadata.supports_tools, "{slug} should support tools");
+        }
+
+        // DeepSeek toggles thinking with a provider-specific parameter, not the
+        // OpenAI-style reasoning-effort scale, so no effort presets are exposed.
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("deepseek"), "deepseek-v4-pro"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn cerebras_exposes_gemma_4_31b_preview_fallback() {
+        let models = fallback_models_for_provider("cerebras");
+
+        assert_eq!(models[0].id, "gpt-oss-120b");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "gemma-4-31b" && !model.is_default)
+        );
+        assert_eq!(
+            metadata_for_local_fallback(Some("cerebras"), "gemma-4-31b"),
+            Some(KnownProviderModelMetadata::new(
+                "Gemma 4 31B",
+                /*context_window*/ 131_072,
+                /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ false,
+                /*supports_reasoning*/ false,
+            ))
+        );
+    }
+
+    #[test]
+    fn qwen_fallback_models_expose_qwen36_flash() {
+        let models = fallback_models_for_provider("qwen");
+
+        assert_eq!(models[0].id, "qwen3.5-flash");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "qwen3.6-flash" && !model.is_default)
+        );
+        // The orphaned metadata entry is now reachable from the fallback list.
+        assert!(
+            metadata_for_local_fallback(Some("qwen"), "qwen3.6-flash")
+                .expect("qwen3.6-flash metadata should exist")
+                .supports_search_tool
+        );
+    }
+
+    #[test]
+    fn nvidia_deepseek_v4_models_support_tools() {
+        for slug in [
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+        ] {
+            assert!(
+                metadata_for_local_fallback(Some("nvidia"), slug)
+                    .expect("nvidia deepseek metadata should exist")
+                    .supports_tools,
+                "{slug} should support tools like the direct and OpenRouter catalogs"
+            );
+        }
+    }
+
+    #[test]
+    fn openrouter_exposes_anthropic_claude_metadata() {
+        let expected = Some(KnownProviderModelMetadata::new(
+            "Claude Sonnet 5",
+            /*context_window*/ 1_000_000,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        ));
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-sonnet-5"),
+            expected
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                Some("openrouter"),
+                None,
+                None,
+                "anthropic/claude-sonnet-5",
+            ),
+            expected
+        );
+        assert!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-fable-5").is_some()
+        );
+        assert!(
+            metadata_for_local_fallback(Some("openrouter"), "anthropic/claude-opus-4-8").is_some()
+        );
+    }
+
+    #[test]
+    fn openrouter_glm52_metadata_matches_models_api() {
+        let expected_metadata = Some(KnownProviderModelMetadata::new(
+            "Z.ai GLM 5.2",
+            /*context_window*/ 1_048_576,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ true,
+        ));
+
+        assert_eq!(
+            metadata_for_local_fallback(Some("openrouter"), "z-ai/glm-5.2"),
+            expected_metadata
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                Some("openrouter"),
+                None,
+                None,
+                "z-ai/glm-5.2-20260616",
+            ),
+            expected_metadata
+        );
+
+        assert!(provider_supports_reasoning_effort(Some("openrouter")));
+        assert!(openai_compatible_provider_supports_reasoning_effort(
+            Some("openrouter"),
+            None
+        ));
+
+        let (default_reasoning, presets) = reasoning_levels_for_openai_compatible_response(
+            Some("openrouter"),
+            None,
+            None,
+            "z-ai/glm-5.2",
+        );
+        assert_eq!(default_reasoning, Some(ReasoningEffort::High));
+        assert_eq!(
+            presets,
+            vec![
+                reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                reasoning_preset(ReasoningEffort::XHigh, "Extra high reasoning"),
+            ]
+        );
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("openrouter"), "z-ai/glm-5.2"),
+            (default_reasoning, presets)
+        );
+    }
+
+    #[test]
+    fn openrouter_fallback_models_keep_default_and_include_glm52() {
+        let models = fallback_models_for_provider("openrouter");
+
+        assert_eq!(models[0].id, "z-ai/glm-5.2");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "openai/gpt-oss-120b" && !model.is_default)
+        );
     }
 
     #[test]
@@ -447,11 +666,11 @@ mod tests {
             ("deepseek", "deepseek-v4-flash"),
             ("google", "gemini-3.5-flash"),
             ("minimax", "MiniMax-M3"),
-            ("nvidia", "openai/gpt-oss-120b"),
-            ("openrouter", "openai/gpt-oss-120b"),
+            ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+            ("openrouter", "z-ai/glm-5.2"),
             ("qwen", "qwen3.5-flash"),
             ("xai", "grok-4.3"),
-            ("xiaomi", "mimo-v2.5-pro-ultraspeed"),
+            ("xiaomi", "mimo-v2.5-pro"),
             ("zai", "glm-5.2"),
         ];
 
@@ -490,19 +709,65 @@ mod tests {
                 .supports_search_tool
         );
         assert!(
-            !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro-ultraspeed")
+            !metadata_for_local_fallback(Some("xiaomi"), "mimo-v2.5-pro")
                 .expect("xiaomi metadata should exist")
                 .supports_search_tool
         );
     }
 
     #[test]
+    fn zai_glm_5_2_metadata_matches_documented_capabilities() {
+        assert_eq!(
+            metadata_for_local_fallback(Some("zai"), "glm-5.2"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "GLM-5.2",
+                    /*context_window*/ 1_000_000,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ false,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ true,
+                    TEXT_INPUT_MODALITIES,
+                )
+            )
+        );
+        assert_eq!(
+            metadata_for_local_fallback(Some("zai"), "glm-5.2[1m]"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "GLM-5.2 1M",
+                    /*context_window*/ 1_000_000,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ false,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ true,
+                    TEXT_INPUT_MODALITIES,
+                )
+            )
+        );
+
+        let (default_effort, presets) = reasoning_levels_for_local_fallback(Some("zai"), "glm-5.2");
+        assert_eq!(
+            (default_effort, presets),
+            (
+                Some(ReasoningEffort::Custom("max".to_string())),
+                vec![
+                    reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
+                    reasoning_preset(ReasoningEffort::High, "High reasoning"),
+                    reasoning_preset(ReasoningEffort::Custom("max".to_string()), "Max reasoning"),
+                ],
+            )
+        );
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some("zai"), "glm-5.1"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
     fn provider_for_fallback_model_finds_unique_configured_provider() {
         assert_eq!(
-            provider_for_fallback_model(
-                "mimo-v2.5-pro-ultraspeed",
-                ["openai", "xiaomi", "anthropic"]
-            ),
+            provider_for_fallback_model("mimo-v2.5-pro", ["openai", "xiaomi", "anthropic"]),
             Some("xiaomi")
         );
     }
@@ -510,7 +775,7 @@ mod tests {
     #[test]
     fn provider_for_fallback_model_ignores_unconfigured_provider() {
         assert_eq!(
-            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["openai", "anthropic"]),
+            provider_for_fallback_model("mimo-v2.5-pro", ["openai", "anthropic"]),
             None
         );
     }
@@ -518,7 +783,7 @@ mod tests {
     #[test]
     fn provider_for_fallback_model_requires_unique_match() {
         assert_eq!(
-            provider_for_fallback_model("mimo-v2.5-pro-ultraspeed", ["xiaomi", "xiaomi"]),
+            provider_for_fallback_model("mimo-v2.5-pro", ["xiaomi", "xiaomi"]),
             None
         );
     }

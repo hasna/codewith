@@ -1645,11 +1645,8 @@ async fn send_request_for_turn(
     turn_id: &str,
     payload: ServerRequestPayload,
 ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
-    let fail_unattended_scheduled_request = !outgoing.has_connections()
-        && thread_state
-            .lock()
-            .await
-            .has_scheduled_run_or_pending_submission(turn_id);
+    let fail_unattended_scheduled_request =
+        !outgoing.has_connections() && thread_state.lock().await.has_scheduled_run(turn_id);
     let (request_id, rx) = outgoing.send_request(payload).await;
     if fail_unattended_scheduled_request {
         outgoing
@@ -2869,49 +2866,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn unattended_scheduled_submission_request_fails_before_turn_is_tracked() -> Result<()> {
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(CHANNEL_CAPACITY);
-        let outgoing = Arc::new(OutgoingMessageSender::new(
-            outgoing_tx,
-            codex_analytics::AnalyticsEventsClient::disabled(),
-        ));
-        let thread_id = ThreadId::new();
-        let thread_outgoing =
-            ThreadScopedOutgoingMessageSender::new(outgoing.clone(), Vec::new(), thread_id);
-        let thread_state = new_thread_state();
-        thread_state.lock().await.begin_scheduled_run_submission();
-
-        let (_request_id, rx) = send_request_for_turn(
-            &thread_outgoing,
-            &thread_state,
-            "turn-before-track",
-            ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
-                thread_id: thread_id.to_string(),
-                turn_id: "turn-before-track".to_string(),
-                item_id: "call-1".to_string(),
-                questions: Vec::new(),
-            }),
-        )
-        .await;
-
-        let error = rx
-            .await
-            .expect("callback should resolve")
-            .expect_err("request should fail without waiting for a client");
-        assert_eq!(
-            error.message,
-            "scheduled loop cannot wait for a client response without an attached client"
-        );
-        assert!(
-            outgoing
-                .pending_requests_for_thread(thread_id)
-                .await
-                .is_empty()
-        );
-        Ok(())
-    }
-
     #[test]
     fn rollback_response_rebuilds_pathless_thread_from_stored_history() -> Result<()> {
         let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000789")?;
@@ -2952,6 +2906,7 @@ mod tests {
             agent_role: None,
             agent_path: None,
             git_info: None,
+            auth_profile: None,
             approval_mode: AskForApproval::OnRequest,
             permission_profile: PermissionProfile::read_only(),
             token_usage: None,

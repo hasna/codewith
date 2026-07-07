@@ -10,6 +10,8 @@ use crate::goal_display::GOAL_USAGE;
 use crate::goal_display::goal_status_label;
 use crate::goal_display::goal_usage_summary;
 use codex_app_server_protocol::ThreadGoal;
+use codex_app_server_protocol::ThreadGoalPlanAddGoalResponse;
+use codex_app_server_protocol::ThreadGoalPlanNodeStatus;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_protocol::ThreadId;
 
@@ -121,7 +123,30 @@ impl App {
         objective: String,
         mode: ThreadGoalSetMode,
     ) {
-        let mode = if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
+        let mode = if matches!(mode, ThreadGoalSetMode::QueueIfExists) {
+            let result = app_server
+                .thread_goal_plan_add_goal(thread_id, objective)
+                .await;
+            if self.current_displayed_thread_id() != Some(thread_id) {
+                return;
+            }
+            match result {
+                Ok(response) => {
+                    self.chat_widget
+                        .on_thread_goal_plan_updated(response.plan.clone());
+                    self.chat_widget.add_info_message(
+                        goal_plan_add_title(&response),
+                        Some(goal_plan_add_summary(&response)),
+                    );
+                    return;
+                }
+                Err(err) => {
+                    self.chat_widget
+                        .add_error_message(thread_goal_error_message("queue", &err));
+                    return;
+                }
+            }
+        } else if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
             let result = app_server.thread_goal_get(thread_id).await;
             if self.current_displayed_thread_id() != Some(thread_id) {
                 return;
@@ -164,6 +189,7 @@ impl App {
             ThreadGoalSetMode::ConfirmIfExists | ThreadGoalSetMode::ReplaceExisting => {
                 (ThreadGoalStatus::Active, None)
             }
+            ThreadGoalSetMode::QueueIfExists => (ThreadGoalStatus::Active, None),
             ThreadGoalSetMode::UpdateExisting {
                 status,
                 token_budget,
@@ -171,7 +197,13 @@ impl App {
         };
 
         let result = app_server
-            .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
+            .thread_goal_set(
+                thread_id,
+                Some(objective),
+                /*title*/ Some(None),
+                Some(status),
+                token_budget,
+            )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -200,6 +232,7 @@ impl App {
             .thread_goal_set(
                 thread_id,
                 /*objective*/ None,
+                /*title*/ None,
                 Some(status),
                 /*token_budget*/ None,
             )
@@ -325,6 +358,28 @@ fn thread_goal_error_message(action: &str, err: &color_eyre::Report) -> String {
     }
 }
 
+fn goal_plan_add_title(response: &ThreadGoalPlanAddGoalResponse) -> String {
+    if response.added_node.status == ThreadGoalPlanNodeStatus::Active {
+        "Goal active".to_string()
+    } else {
+        "Goal queued".to_string()
+    }
+}
+
+fn goal_plan_add_summary(response: &ThreadGoalPlanAddGoalResponse) -> String {
+    let action = if response.added_node.status == ThreadGoalPlanNodeStatus::Active {
+        "Created a goal plan and started"
+    } else if response.created_plan {
+        "Created a goal plan and preserved the current goal"
+    } else {
+        "Added to the current goal plan"
+    };
+    format!(
+        "{action} as node `{}`. Plan now has {} goals.",
+        response.added_node.key, response.plan.node_count
+    )
+}
+
 fn is_ephemeral_thread_goal_error(err: &color_eyre::Report) -> bool {
     err.chain().any(|cause| {
         let message = cause.to_string();
@@ -435,6 +490,7 @@ mod tests {
             thread_id: ThreadId::new().to_string(),
             goal_id: "goal-test".to_string(),
             objective: "Finish the thing.".to_string(),
+            title: None,
             status,
             token_budget: None,
             tokens_used: 0,
