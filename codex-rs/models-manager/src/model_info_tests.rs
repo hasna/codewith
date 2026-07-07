@@ -3,7 +3,7 @@ use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
-const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 
 fn assert_effort_estimate_guidance(text: &str, label: &str) {
     for expected in [
@@ -524,7 +524,7 @@ fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
     model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
     let config = ModelsManagerConfig {
         model_provider_id: Some("openai".to_string()),
-        model_context_window: Some(500_000),
+        model_context_window: Some(GPT_5_5_CONTEXT_WINDOW + 1),
         ..Default::default()
     };
 
