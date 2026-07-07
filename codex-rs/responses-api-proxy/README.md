@@ -79,14 +79,21 @@ codex-responses-api-proxy [--port <PORT>] [--server-info <FILE>] [--http-shutdow
 - `--dump-dir <DIR>`: If set, writes one request JSON file and one response JSON file per accepted proxy call under this directory. Filenames use a shared sequence/timestamp prefix so each pair is easy to correlate.
 - Authentication is fixed to `Authorization: Bearer <key>` to match Codewith expectations.
 
-For Azure, for example (ensure your deployment accepts `Authorization: Bearer <key>`):
+For Azure OpenAI, point `--upstream-url` at the current v1 Responses endpoint. Microsoft's v1 API uses `https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/responses` and no longer requires a dated `api-version` query parameter:
 
 ```shell
 printenv AZURE_OPENAI_API_KEY | env -u AZURE_OPENAI_API_KEY codex-responses-api-proxy \
   --http-shutdown \
   --server-info /tmp/server-info.json \
-  --upstream-url "https://YOUR_PROJECT_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/responses?api-version=2025-04-01-preview"
+  --upstream-url "https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/responses"
 ```
+
+Because the proxy always injects a fixed `Authorization: Bearer <key>` header (see the CLI note above), the value you pipe on `stdin` must be something Azure accepts as a bearer token:
+
+- **API key:** Azure's v1 API accepts the resource API key as a bearer token — this is how the standard `OpenAI()` client authenticates against Azure with key-based auth — so piping `AZURE_OPENAI_API_KEY` works directly. The alternative Azure `api-key: <key>` header form is not produced by this proxy.
+- **Microsoft Entra ID (recommended):** pipe a valid Entra ID access token (for example from `az account get-access-token --resource https://ai.azure.com` or a `DefaultAzureCredential` token provider) instead of the API key. Entra tokens are short-lived, so restart the proxy once the token expires.
+
+The incoming proxy request must still be `POST /v1/responses` with no query string, but `--upstream-url` accepts a full URL. A legacy dated endpoint such as `https://YOUR_PROJECT_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/responses?api-version=2025-04-01-preview` therefore keeps working if your resource has not migrated to the v1 path. The same applies to custom `model_providers` entries that set `query_params = { api-version = "..." }`; those dated configurations remain supported.
 
 ## Notes
 

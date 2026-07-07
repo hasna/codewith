@@ -70,6 +70,41 @@ query_params = { api-version = "2025-04-01-preview" }
 }
 
 #[test]
+fn test_deserialize_azure_v1_model_provider_toml() {
+    // Azure's v1 API uses the `/openai/v1` base path and no longer needs a
+    // dated `api-version` query parameter. This must deserialize without any
+    // `query_params` while leaving the legacy dated form (asserted in
+    // `test_deserialize_azure_model_provider_toml`) intact.
+    let azure_provider_toml = r#"
+name = "Azure v1"
+base_url = "https://xxxxx.openai.azure.com/openai/v1"
+env_key = "AZURE_OPENAI_API_KEY"
+        "#;
+    let expected_provider = ModelProviderInfo {
+        name: "Azure v1".into(),
+        base_url: Some("https://xxxxx.openai.azure.com/openai/v1".into()),
+        env_key: Some("AZURE_OPENAI_API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
+    assert_eq!(expected_provider, provider);
+}
+
+#[test]
 fn test_deserialize_example_model_provider_toml() {
     let azure_provider_toml = r#"
 name = "Example"
