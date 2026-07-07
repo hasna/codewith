@@ -124,6 +124,13 @@ fn validate_and_map_additional_context(
         total_bytes = total_bytes
             .saturating_add(key.len())
             .saturating_add(value_bytes);
+        if let Some(source) = &entry.source {
+            total_bytes = total_bytes
+                .saturating_add(source.namespace.len())
+                .saturating_add(source.id.len())
+                .saturating_add(source.record_type.as_deref().map(str::len).unwrap_or(0))
+                .saturating_add(source.label.as_deref().map(str::len).unwrap_or(0));
+        }
     }
 
     if total_bytes > MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES {

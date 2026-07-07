@@ -20,6 +20,7 @@ use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::AdditionalContextSource;
 use codex_app_server_protocol::ByteRange;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::CollabAgentStatus;
@@ -716,6 +717,39 @@ async fn turn_start_additional_context_rejects_application_and_limits() -> Resul
         expect_turn_start_additional_context_error(&mut mcp, &thread_id, aggregate_context).await?;
     let data = assert_additional_context_too_large_error(
         aggregate_err,
+        &format!(
+            "additionalContext must not exceed \
+             {MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES} aggregate bytes."
+        ),
+        "max_total_bytes",
+    );
+    assert_eq!(data["max_bytes"], MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES);
+    assert!(
+        data["actual_bytes"]
+            .as_u64()
+            .is_some_and(|actual| actual > MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES as u64)
+    );
+
+    let source_metadata_err = expect_turn_start_additional_context_error(
+        &mut mcp,
+        &thread_id,
+        HashMap::from([(
+            "source".to_string(),
+            AdditionalContextEntry {
+                value: "value".to_string(),
+                kind: AdditionalContextKind::Untrusted,
+                source: Some(AdditionalContextSource {
+                    namespace: "open-todos".to_string(),
+                    id: "task".to_string(),
+                    record_type: Some("task".to_string()),
+                    label: Some("x".repeat(MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES)),
+                }),
+            },
+        )]),
+    )
+    .await?;
+    let data = assert_additional_context_too_large_error(
+        source_metadata_err,
         &format!(
             "additionalContext must not exceed \
              {MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES} aggregate bytes."

@@ -1327,7 +1327,7 @@ Use experimental `additionalContext` when a host app wants Codewith to see local
 
 The request is rejected with `invalid params` before model submission if
 `additionalContext` exceeds 16 entries, a key exceeds 128 characters, a value exceeds 65,536
-bytes, or all keys plus values exceed 131,072 bytes. Limit errors include
+bytes, or all keys, values, and source metadata exceed 131,072 bytes. Limit errors include
 `input_error_code: "input_too_large"` in the JSON-RPC error data.
 
 ```json
