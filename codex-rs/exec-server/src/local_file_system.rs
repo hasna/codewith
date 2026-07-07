@@ -534,6 +534,7 @@ fn reject_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Res
     Ok(())
 }
 
+#[cfg(unix)]
 fn reject_non_regular_or_symlink(metadata: &std::fs::Metadata) -> io::Result<()> {
     if metadata.file_type().is_symlink() {
         return Err(symlinked_file_error());
@@ -579,6 +580,7 @@ impl PathSnapshot {
 struct PathSnapshot {
     identity: WindowsFileIdentity,
     file_attributes: u32,
+    reparse_tag: Option<u32>,
 }
 
 #[cfg(windows)]
@@ -590,9 +592,8 @@ async fn path_snapshot_without_following_symlinks(path: &Path) -> io::Result<Pat
 impl PathSnapshot {
     fn reject_non_regular_or_symlink(&self) -> io::Result<()> {
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-        if self.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        if self.reparse_tag.is_some_and(is_name_surrogate_reparse_tag) {
             return Err(symlinked_file_error());
         }
         if self.file_attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -693,6 +694,7 @@ struct WindowsFileIdentity {
 struct WindowsFileInformation {
     identity: WindowsFileIdentity,
     file_attributes: u32,
+    reparse_tag: Option<u32>,
 }
 
 /// Query the volume serial number and file index for an open handle via
@@ -711,6 +713,7 @@ fn windows_file_information(
 ) -> io::Result<WindowsFileInformation> {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
     // SAFETY: `handle` is a live file handle borrowed from an open `File`, and
@@ -721,13 +724,55 @@ fn windows_file_information(
         return Err(io::Error::last_os_error());
     }
 
+    let reparse_tag = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        Some(windows_file_reparse_tag(handle)?)
+    } else {
+        None
+    };
+
     Ok(WindowsFileInformation {
         identity: WindowsFileIdentity {
             volume_serial_number: info.dwVolumeSerialNumber,
             file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
         },
         file_attributes: info.dwFileAttributes,
+        reparse_tag,
     })
+}
+
+#[cfg(windows)]
+fn windows_file_reparse_tag(handle: std::os::windows::io::RawHandle) -> io::Result<u32> {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_TAG_INFO;
+    use windows_sys::Win32::Storage::FileSystem::FileAttributeTagInfo;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
+
+    // SAFETY: `handle` is a live file handle borrowed from an open `File`, and
+    // `tag_info` is owned, correctly aligned, writable storage for the call.
+    let mut tag_info: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
+    let buffer_size = u32::try_from(std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
+        .expect("FILE_ATTRIBUTE_TAG_INFO size fits in u32");
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle as HANDLE,
+            FileAttributeTagInfo,
+            &raw mut tag_info as *mut c_void,
+            buffer_size,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(tag_info.ReparseTag)
+}
+
+#[cfg(windows)]
+fn is_name_surrogate_reparse_tag(reparse_tag: u32) -> bool {
+    const IO_REPARSE_TAG_NAME_SURROGATE: u32 = 0x2000_0000;
+
+    reparse_tag & IO_REPARSE_TAG_NAME_SURROGATE != 0
 }
 
 /// Open `path` for attribute queries only, without following the final reparse
@@ -749,14 +794,37 @@ fn windows_path_snapshot(path: &Path) -> io::Result<PathSnapshot> {
         .open(path)?;
 
     let info = windows_file_information(file.as_raw_handle())?;
-    Ok(PathSnapshot {
+    let mut snapshot = PathSnapshot {
         identity: info.identity,
         file_attributes: info.file_attributes,
-    })
+        reparse_tag: info.reparse_tag,
+    };
+
+    #[cfg(all(test, windows))]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        if let Some((test_path, reparse_tag)) = PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
+            .lock()
+            .map_err(|_| io::Error::other("test reparse tag hook poisoned"))?
+            .as_ref()
+            .map(|(test_path, reparse_tag)| (test_path.clone(), *reparse_tag))
+            && path == test_path
+        {
+            snapshot.file_attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
+            snapshot.reparse_tag = Some(reparse_tag);
+        }
+    }
+
+    Ok(snapshot)
 }
 
 #[cfg(all(test, windows))]
 static REPLACE_REGULAR_FILE_BEFORE_OPEN_FOR_TEST: std::sync::Mutex<Option<PathBuf>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(all(test, windows))]
+static PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST: std::sync::Mutex<Option<(PathBuf, u32)>> =
     std::sync::Mutex::new(None);
 
 #[cfg(all(test, windows))]
@@ -922,6 +990,10 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    const IO_REPARSE_TAG_MOUNT_POINT_FOR_TEST: u32 = 0xA000_0003;
+    const IO_REPARSE_TAG_SYMLINK_FOR_TEST: u32 = 0xA000_000C;
+    const IO_REPARSE_TAG_WOF_FOR_TEST: u32 = 0x8000_0017;
+
     #[test]
     fn symlink_points_to_directory_handles_dangling_directory_symlinks() -> io::Result<()> {
         use std::os::windows::fs::symlink_dir;
@@ -939,6 +1011,17 @@ mod tests {
 
         assert_eq!(symlink_points_to_directory(&link_path)?, true);
         Ok(())
+    }
+
+    #[test]
+    fn name_surrogate_reparse_tags_are_classified_as_symlinks() {
+        assert!(is_name_surrogate_reparse_tag(
+            IO_REPARSE_TAG_SYMLINK_FOR_TEST
+        ));
+        assert!(is_name_surrogate_reparse_tag(
+            IO_REPARSE_TAG_MOUNT_POINT_FOR_TEST
+        ));
+        assert!(!is_name_surrogate_reparse_tag(IO_REPARSE_TAG_WOF_FOR_TEST));
     }
 
     #[tokio::test]
@@ -961,6 +1044,55 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(error.to_string(), FILE_CHANGED_DURING_OPEN_ERROR);
         assert_eq!(std::fs::read(file_path)?, b"replacement contents");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_without_following_symlinks_allows_regular_file_reparse_tags() -> io::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let file_path = temp_dir.path().join("note.txt");
+        std::fs::write(&file_path, b"cloud-backed contents")?;
+        let absolute_path =
+            AbsolutePathBuf::try_from(file_path.clone()).expect("temp file path is absolute");
+
+        *PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
+            .lock()
+            .expect("test reparse tag hook should not be poisoned") =
+            Some((file_path, IO_REPARSE_TAG_WOF_FOR_TEST));
+        let read_result = LocalFileSystem::unsandboxed()
+            .read_file_without_following_symlinks(&absolute_path, /*sandbox*/ None)
+            .await;
+        *PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
+            .lock()
+            .expect("test reparse tag hook should not be poisoned") = None;
+
+        assert_eq!(read_result?, b"cloud-backed contents");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_without_following_symlinks_rejects_name_surrogate_reparse_tags() -> io::Result<()>
+    {
+        let temp_dir = tempfile::TempDir::new()?;
+        let file_path = temp_dir.path().join("note.txt");
+        std::fs::write(&file_path, b"link contents")?;
+        let absolute_path =
+            AbsolutePathBuf::try_from(file_path.clone()).expect("temp file path is absolute");
+
+        *PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
+            .lock()
+            .expect("test reparse tag hook should not be poisoned") =
+            Some((file_path, IO_REPARSE_TAG_SYMLINK_FOR_TEST));
+        let read_result = LocalFileSystem::unsandboxed()
+            .read_file_without_following_symlinks(&absolute_path, /*sandbox*/ None)
+            .await;
+        *PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
+            .lock()
+            .expect("test reparse tag hook should not be poisoned") = None;
+        let error = read_result.expect_err("name surrogate reparse tags must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), SYMLINKED_FILE_ERROR);
         Ok(())
     }
 }
