@@ -1567,6 +1567,38 @@ async fn auto_switch_skips_known_exhausted_profile_for_unknown_candidate() {
 }
 
 #[tokio::test]
+async fn auto_switch_skips_recently_failed_profile_for_unknown_candidate() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // "personal" just failed a usage heartbeat, so it must not be chosen even though it is
+    // earlier in the configured order and otherwise Unknown; "backup" (also Unknown) wins.
+    chat.record_auth_profile_usage_heartbeat_failure(Some("personal".to_string()));
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile.as_deref(), Some("backup"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn cached_exhausted_limit_auto_switches_before_next_prompt_after_being_enabled() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");

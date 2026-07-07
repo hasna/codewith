@@ -132,6 +132,7 @@ impl ChatWidget {
             auth_profile_rate_limit_snapshots_by_profile: BTreeMap::new(),
             auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap::new(),
             auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap::new(),
+            auth_profile_usage_exhausted_reset_at_by_profile: BTreeMap::new(),
             rate_limit_poller: None,
             auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap::new(),
             refreshing_status_outputs: Vec::new(),

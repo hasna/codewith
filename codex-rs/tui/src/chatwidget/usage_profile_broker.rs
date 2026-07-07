@@ -49,6 +49,17 @@ pub(super) fn exhausted_auto_switch_window_for_snapshot(
     .map(tui_auto_switch_window)
 }
 
+pub(super) fn earliest_exhausted_reset_at(
+    snapshot: &RateLimitSnapshot,
+    is_codex_limit: bool,
+    now_unix_secs: i64,
+) -> Option<i64> {
+    usage_profile_health::earliest_exhausted_reset_at(
+        &app_server_rate_limit_snapshot(snapshot, is_codex_limit),
+        now_unix_secs,
+    )
+}
+
 pub(super) fn auto_switch_trigger_key(
     limit_id: &str,
     window: &UsageProfileAutoSwitchWindow,
@@ -68,6 +79,7 @@ pub(super) fn auth_profile_auto_switch_target(
         Option<String>,
         BTreeMap<String, RateLimitSnapshotDisplay>,
     >,
+    recently_failed_profiles: &HashSet<String>,
     limit_id: &str,
     window: &UsageProfileAutoSwitchWindow,
 ) -> Option<UsageProfileSwitchTarget> {
@@ -78,6 +90,7 @@ pub(super) fn auth_profile_auto_switch_target(
         | AuthProfileAutoSwitchStrategy::Ordered => healthiest_auth_profile_for_auto_switch(
             config,
             cached_snapshots_by_profile,
+            recently_failed_profiles,
             &candidates,
             window,
         ),
@@ -143,6 +156,7 @@ fn healthiest_auth_profile_for_auto_switch(
         Option<String>,
         BTreeMap<String, RateLimitSnapshotDisplay>,
     >,
+    recently_failed_profiles: &HashSet<String>,
     candidates: &[String],
     window: &UsageProfileAutoSwitchWindow,
 ) -> Option<String> {
@@ -152,10 +166,18 @@ fn healthiest_auth_profile_for_auto_switch(
     for profile in candidates {
         let profile_key = Some(profile.clone());
         let snapshots = cached_snapshots_by_profile.get(&profile_key);
-        health_by_profile.insert(
-            profile.clone(),
-            auth_profile_usage_health_for_auto_switch(snapshots, window, config, freshness),
-        );
+        let mut health =
+            auth_profile_usage_health_for_auto_switch(snapshots, window, config, freshness);
+        // Do not optimistically switch onto a profile whose most recent usage heartbeat
+        // failed: we could not confirm it is available, so treat an otherwise-Unknown
+        // profile as unavailable rather than a switch target. The failure backoff clears
+        // this after a short window, so the profile is reconsidered once it recovers.
+        if recently_failed_profiles.contains(profile)
+            && matches!(health, UsageProfileHealth::Unknown)
+        {
+            health = UsageProfileHealth::Exhausted { retry_at: None };
+        }
+        health_by_profile.insert(profile.clone(), health);
     }
 
     choose_profile_for_auto_switch(config, candidates, &health_by_profile).selected_profile
