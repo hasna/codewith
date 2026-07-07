@@ -2,6 +2,11 @@ use super::*;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
 
+const MAX_ADDITIONAL_CONTEXT_ENTRIES: usize = 16;
+const MAX_ADDITIONAL_CONTEXT_KEY_CHARS: usize = 128;
+const MAX_ADDITIONAL_CONTEXT_VALUE_BYTES: usize = 64 * 1024;
+const MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES: usize = 128 * 1024;
+
 #[derive(Clone)]
 pub(crate) struct TurnRequestProcessor {
     auth_manager: Arc<AuthManager>,
@@ -20,32 +25,135 @@ pub(crate) struct TurnRequestProcessor {
     local_active_owner_id: String,
 }
 
-fn map_additional_context(
+fn additional_context_input_too_large_error(
+    message: String,
+    data: serde_json::Value,
+) -> JSONRPCErrorError {
+    let mut error = invalid_params(message);
+    error.data = Some(data);
+    error
+}
+
+fn reject_application_additional_context_error() -> JSONRPCErrorError {
+    invalid_params(
+        "additionalContext kind `application` is reserved for trusted server-owned context and \
+         cannot be supplied by turn/start or turn/steer clients",
+    )
+}
+
+fn additional_context_error_type(error: &JSONRPCErrorError) -> Option<AnalyticsJsonRpcError> {
+    let is_too_large = error.data.as_ref().is_some_and(|data| {
+        data.get("input_error_code")
+            .and_then(serde_json::Value::as_str)
+            == Some(INPUT_TOO_LARGE_ERROR_CODE)
+    });
+    if is_too_large {
+        Some(AnalyticsJsonRpcError::Input(InputError::TooLarge))
+    } else {
+        None
+    }
+}
+
+fn validate_and_map_additional_context(
     additional_context: Option<HashMap<String, AdditionalContextEntry>>,
-) -> BTreeMap<String, CoreAdditionalContextEntry> {
-    additional_context
-        .unwrap_or_default()
+) -> Result<BTreeMap<String, CoreAdditionalContextEntry>, JSONRPCErrorError> {
+    let Some(additional_context) = additional_context else {
+        return Ok(BTreeMap::new());
+    };
+
+    let entry_count = additional_context.len();
+    if entry_count > MAX_ADDITIONAL_CONTEXT_ENTRIES {
+        return Err(additional_context_input_too_large_error(
+            format!(
+                "additionalContext must not contain more than \
+                 {MAX_ADDITIONAL_CONTEXT_ENTRIES} entries."
+            ),
+            serde_json::json!({
+                "input_error_code": INPUT_TOO_LARGE_ERROR_CODE,
+                "input_field": "additionalContext",
+                "limit_name": "max_entries",
+                "max_entries": MAX_ADDITIONAL_CONTEXT_ENTRIES,
+                "actual_entries": entry_count,
+            }),
+        ));
+    }
+
+    if additional_context
+        .values()
+        .any(|entry| matches!(entry.kind, AdditionalContextKind::Application))
+    {
+        return Err(reject_application_additional_context_error());
+    }
+
+    let mut total_bytes = 0usize;
+    for (key, entry) in &additional_context {
+        let key_chars = key.chars().count();
+        if key_chars > MAX_ADDITIONAL_CONTEXT_KEY_CHARS {
+            return Err(additional_context_input_too_large_error(
+                format!(
+                    "additionalContext keys must not exceed \
+                     {MAX_ADDITIONAL_CONTEXT_KEY_CHARS} characters."
+                ),
+                serde_json::json!({
+                    "input_error_code": INPUT_TOO_LARGE_ERROR_CODE,
+                    "input_field": "additionalContext",
+                    "limit_name": "max_key_chars",
+                    "max_chars": MAX_ADDITIONAL_CONTEXT_KEY_CHARS,
+                    "actual_chars": key_chars,
+                }),
+            ));
+        }
+
+        let value_bytes = entry.value.len();
+        if value_bytes > MAX_ADDITIONAL_CONTEXT_VALUE_BYTES {
+            return Err(additional_context_input_too_large_error(
+                format!(
+                    "additionalContext values must not exceed \
+                     {MAX_ADDITIONAL_CONTEXT_VALUE_BYTES} bytes."
+                ),
+                serde_json::json!({
+                    "input_error_code": INPUT_TOO_LARGE_ERROR_CODE,
+                    "input_field": "additionalContext",
+                    "limit_name": "max_value_bytes",
+                    "max_bytes": MAX_ADDITIONAL_CONTEXT_VALUE_BYTES,
+                    "actual_bytes": value_bytes,
+                }),
+            ));
+        }
+
+        total_bytes = total_bytes
+            .saturating_add(key.len())
+            .saturating_add(value_bytes);
+    }
+
+    if total_bytes > MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES {
+        return Err(additional_context_input_too_large_error(
+            format!(
+                "additionalContext must not exceed \
+                 {MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES} aggregate bytes."
+            ),
+            serde_json::json!({
+                "input_error_code": INPUT_TOO_LARGE_ERROR_CODE,
+                "input_field": "additionalContext",
+                "limit_name": "max_total_bytes",
+                "max_bytes": MAX_ADDITIONAL_CONTEXT_TOTAL_BYTES,
+                "actual_bytes": total_bytes,
+            }),
+        ));
+    }
+
+    Ok(additional_context
         .into_iter()
         .map(|(key, entry)| {
-            let AdditionalContextEntry {
-                value,
-                kind,
-                source: _,
-            } = entry;
             (
                 key,
                 CoreAdditionalContextEntry {
-                    value,
-                    kind: match kind {
-                        AdditionalContextKind::Untrusted => CoreAdditionalContextKind::Untrusted,
-                        AdditionalContextKind::Application => {
-                            CoreAdditionalContextKind::Application
-                        }
-                    },
+                    value: entry.value,
+                    kind: CoreAdditionalContextKind::Untrusted,
                 },
             )
         })
-        .collect()
+        .collect())
 }
 
 fn existing_dir_is_inside(path: &Path, root: &Path) -> std::io::Result<bool> {
@@ -430,7 +538,18 @@ impl TurnRequestProcessor {
             .map(V2UserInput::into_core)
             .collect();
         let client_user_message_id = params.client_user_message_id;
-        let additional_context = map_additional_context(params.additional_context);
+        let additional_context =
+            match validate_and_map_additional_context(params.additional_context) {
+                Ok(additional_context) => additional_context,
+                Err(error) => {
+                    self.track_error_response(
+                        &request_id,
+                        &error,
+                        additional_context_error_type(&error),
+                    );
+                    return Err(error);
+                }
+            };
         let turn_has_input = !mapped_items.is_empty();
         let cwd = resolve_request_cwd(params.cwd)?;
         let thread_settings = self
@@ -872,7 +991,18 @@ impl TurnRequestProcessor {
             .into_iter()
             .map(V2UserInput::into_core)
             .collect();
-        let additional_context = map_additional_context(params.additional_context);
+        let additional_context =
+            match validate_and_map_additional_context(params.additional_context) {
+                Ok(additional_context) => additional_context,
+                Err(error) => {
+                    self.track_error_response(
+                        request_id,
+                        &error,
+                        additional_context_error_type(&error),
+                    );
+                    return Err(error);
+                }
+            };
 
         let turn_id = thread
             .steer_input(
