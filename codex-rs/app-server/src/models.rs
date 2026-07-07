@@ -320,6 +320,48 @@ mod tests {
     }
 
     #[test]
+    fn zai_fallback_models_expose_glm_5_2_reasoning_efforts() {
+        let models = fallback_supported_models_for_provider("zai", /*include_hidden*/ false);
+
+        assert_eq!(models[0].model, "glm-5.2");
+        assert_eq!(models[0].display_name, "GLM-5.2");
+        assert!(models[0].is_default);
+        assert!(!models[0].hidden);
+        // Direct Z.ai docs default GLM-5.2 to `reasoning_effort = max`, represented via
+        // `Custom("max")` since the enum has no first-class `Max` variant.
+        assert_eq!(
+            models[0].default_reasoning_effort,
+            ReasoningEffort::Custom("max".to_string())
+        );
+        assert_eq!(
+            models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.reasoning_effort.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::None,
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Custom("max".to_string()),
+            ]
+        );
+
+        // Other GLM fallbacks use Z.ai's provider-specific `thinking` parameter rather than
+        // OpenAI-compatible `reasoning_effort`, so the fallback list should not advertise
+        // selectable reasoning efforts for them.
+        let glm_5_1 = models
+            .iter()
+            .find(|model| model.model == "glm-5.1")
+            .expect("glm-5.1 fallback should exist");
+        assert_eq!(glm_5_1.default_reasoning_effort, ReasoningEffort::None);
+        assert_eq!(glm_5_1.supported_reasoning_efforts, Vec::new());
+    }
+
+    #[test]
     fn xiaomi_fallback_models_include_current_default_and_legacy_alias() {
         let models =
             fallback_supported_models_for_provider("xiaomi", /*include_hidden*/ false);

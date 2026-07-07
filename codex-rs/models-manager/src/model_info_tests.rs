@@ -383,12 +383,28 @@ fn known_zai_model_uses_local_metadata_with_reasoning_and_search_support() {
                 description: "Reasoning disabled".to_string(),
             },
             ReasoningEffortPreset {
+                effort: ReasoningEffort::Minimal,
+                description: "Minimal reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Low,
+                description: "Low reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description: "Moderate reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
                 effort: ReasoningEffort::High,
                 description: "High reasoning".to_string(),
             },
             ReasoningEffortPreset {
+                effort: ReasoningEffort::XHigh,
+                description: "Extended reasoning".to_string(),
+            },
+            ReasoningEffortPreset {
                 effort: ReasoningEffort::Custom("max".to_string()),
-                description: "Max reasoning".to_string(),
+                description: "Maximum reasoning".to_string(),
             },
         ]
     );

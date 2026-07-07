@@ -634,6 +634,36 @@ wire_api = "responses"
         );
         assert!(data.iter().any(|model| model.is_default));
         assert!(next_cursor.is_none());
+
+        if provider_id == "zai" {
+            // Direct Z.ai GLM-5.2 defaults to `reasoning_effort = max` (represented via
+            // `Custom("max")`) and exposes the full granular scale through fallback listing.
+            let glm_5_2 = data
+                .first()
+                .expect("zai fallback listing should include glm-5.2");
+            assert_eq!(
+                glm_5_2.default_reasoning_effort,
+                "max".parse().map_err(Error::msg)?,
+                "zai glm-5.2 should default to max reasoning effort"
+            );
+            assert_eq!(
+                glm_5_2
+                    .supported_reasoning_efforts
+                    .iter()
+                    .map(|effort| effort.reasoning_effort.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "none".parse().map_err(Error::msg)?,
+                    "minimal".parse().map_err(Error::msg)?,
+                    "low".parse().map_err(Error::msg)?,
+                    "medium".parse().map_err(Error::msg)?,
+                    "high".parse().map_err(Error::msg)?,
+                    "xhigh".parse().map_err(Error::msg)?,
+                    "max".parse().map_err(Error::msg)?,
+                ],
+                "zai glm-5.2 should expose the corrected reasoning-effort scale"
+            );
+        }
     }
     Ok(())
 }

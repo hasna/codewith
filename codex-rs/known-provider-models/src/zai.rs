@@ -50,17 +50,31 @@ pub(crate) fn reasoning_levels(
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
     match slug {
+        // Direct Z.ai docs (https://docs.z.ai/guides/llm/glm-5.2 and
+        // https://docs.z.ai/api-reference/llm/chat-completion, accessed 2026-07-09) show that only
+        // GLM-5.2 exposes the granular `reasoning_effort` scale (max, xhigh, high, medium, low,
+        // minimal, none) with a default of `max`. Other GLM models use Z.ai's provider-specific
+        // `thinking` toggle, so Codewith should not expose those as OpenAI-compatible
+        // `reasoning_effort` options.
+        //
+        // Codewith's `ReasoningEffort` enum has no first-class `max` variant, so `max` is
+        // represented via `Custom("max")`, which serializes to the exact wire value `max`. If a
+        // first-class `Max` variant is ever needed, that is a separate protocol follow-up.
         "glm-5.2" | "glm-5.2[1m]" => (
             Some(ReasoningEffort::Custom("max".to_string())),
             vec![
                 reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
+                reasoning_preset(ReasoningEffort::Minimal, "Minimal reasoning"),
+                reasoning_preset(ReasoningEffort::Low, "Low reasoning"),
+                reasoning_preset(ReasoningEffort::Medium, "Moderate reasoning"),
                 reasoning_preset(ReasoningEffort::High, "High reasoning"),
-                reasoning_preset(ReasoningEffort::Custom("max".to_string()), "Max reasoning"),
+                reasoning_preset(ReasoningEffort::XHigh, "Extended reasoning"),
+                reasoning_preset(
+                    ReasoningEffort::Custom("max".to_string()),
+                    "Maximum reasoning",
+                ),
             ],
         ),
-        "glm-5.1" | "glm-5" | "glm-5-turbo" | "glm-4.7" | "glm-4.7-flashx" | "glm-4.7-flash" => {
-            (None, Vec::new())
-        }
         _ => (None, Vec::new()),
     }
 }

@@ -869,24 +869,66 @@ mod tests {
                 )
             )
         );
+    }
 
+    #[test]
+    fn zai_glm_5_2_exposes_source_backed_reasoning_scale() {
+        // Direct Z.ai docs show GLM-5.2 defaults to `reasoning_effort = max` and supports the full
+        // granular scale, unlike the other GLM models which use Z.ai's provider-specific
+        // `thinking` parameter instead of OpenAI-compatible reasoning effort.
         let (default_effort, presets) =
             reasoning_levels_for_local_fallback(Some(ZAI_PROVIDER_ID), "glm-5.2");
+
         assert_eq!(
-            (default_effort, presets),
-            (
-                Some(ReasoningEffort::Custom("max".to_string())),
-                vec![
-                    reasoning_preset(ReasoningEffort::None, "Reasoning disabled"),
-                    reasoning_preset(ReasoningEffort::High, "High reasoning"),
-                    reasoning_preset(ReasoningEffort::Custom("max".to_string()), "Max reasoning"),
-                ],
-            )
+            default_effort,
+            Some(ReasoningEffort::Custom("max".to_string()))
         );
         assert_eq!(
-            reasoning_levels_for_local_fallback(Some(ZAI_PROVIDER_ID), "glm-5.1"),
-            (None, Vec::new())
+            presets
+                .iter()
+                .map(|preset| preset.effort.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::None,
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Custom("max".to_string()),
+            ]
         );
+
+        // The 1M-context variant shares the same direct metadata.
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some(ZAI_PROVIDER_ID), "glm-5.2[1m]"),
+            reasoning_levels_for_local_fallback(Some(ZAI_PROVIDER_ID), "glm-5.2")
+        );
+    }
+
+    #[test]
+    fn zai_non_glm_5_2_models_do_not_expose_reasoning_effort() {
+        for slug in [
+            "glm-5.1",
+            "glm-5",
+            "glm-5-turbo",
+            "glm-4.7",
+            "glm-4.7-flashx",
+            "glm-4.7-flash",
+        ] {
+            let (default_effort, presets) =
+                reasoning_levels_for_local_fallback(Some(ZAI_PROVIDER_ID), slug);
+
+            assert_eq!(
+                default_effort, None,
+                "{slug} should not expose an OpenAI-compatible reasoning default"
+            );
+            assert_eq!(
+                presets,
+                Vec::new(),
+                "{slug} should not expose OpenAI-compatible reasoning presets"
+            );
+        }
     }
 
     #[test]
