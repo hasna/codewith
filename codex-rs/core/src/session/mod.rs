@@ -331,6 +331,7 @@ use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
+use codex_app_server_protocol::AuthMode;
 use codex_core_plugins::PluginsManager;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
@@ -1437,6 +1438,7 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                    let info = Self::token_info_for_current_model(info, &turn_context);
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1455,6 +1457,7 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                    let info = Self::token_info_for_current_model(info, &turn_context);
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1537,6 +1540,23 @@ impl Session {
             RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
             _ => None,
         })
+    }
+
+    fn token_info_for_current_model(
+        mut info: TokenUsageInfo,
+        turn_context: &TurnContext,
+    ) -> TokenUsageInfo {
+        if turn_context
+            .auth_manager
+            .as_deref()
+            .and_then(AuthManager::auth_mode)
+            .is_some_and(AuthMode::has_chatgpt_account)
+        {
+            return info;
+        }
+
+        info.model_context_window = turn_context.model_context_window();
+        info
     }
 
     async fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
