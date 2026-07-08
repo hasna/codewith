@@ -24,6 +24,8 @@ use tempfile::tempdir;
 
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
+const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
+const GPT_5_4_CONTEXT_WINDOW: i64 = 1_050_000;
 
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
@@ -493,6 +495,36 @@ async fn get_model_info_keeps_chatgpt_remote_gpt_5_5_context_window() {
 }
 
 #[tokio::test]
+async fn get_model_info_keeps_chatgpt_remote_gpt_5_4_context_window() {
+    let remote_context_window = 273_000;
+    let remote_max_context_window = 274_000;
+    let mut remote = remote_model(GPT_5_4_MODEL_ID, "GPT-5.4", /*priority*/ 0);
+    remote.context_window = Some(remote_context_window);
+    remote.max_context_window = Some(remote_max_context_window);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![vec![remote]]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    let model_info = manager.get_model_info(GPT_5_4_MODEL_ID, &config).await;
+
+    assert_eq!(model_info.context_window, Some(remote_context_window));
+    assert_eq!(
+        model_info.max_context_window,
+        Some(remote_max_context_window)
+    );
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
 async fn get_model_info_keeps_api_auth_bundled_gpt_5_5_context_window() {
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(Vec::new());
@@ -512,6 +544,29 @@ async fn get_model_info_keeps_api_auth_bundled_gpt_5_5_context_window() {
 
     assert_eq!(model_info.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
     assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn get_model_info_keeps_api_auth_bundled_gpt_5_4_context_window() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests_with_auth(
+        codex_home.path().to_path_buf(),
+        endpoint,
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let model_info = manager.get_model_info(GPT_5_4_MODEL_ID, &config).await;
+
+    assert_eq!(model_info.context_window, Some(GPT_5_4_CONTEXT_WINDOW));
+    assert_eq!(model_info.max_context_window, Some(GPT_5_4_CONTEXT_WINDOW));
     assert!(!model_info.used_fallback_model_metadata);
 }
 
