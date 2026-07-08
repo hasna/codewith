@@ -395,11 +395,41 @@ impl OpenAiModelsManager {
         }
 
         let mut existing_models = load_remote_models_from_file().unwrap_or_default();
-        for model in models {
+        let should_raise_context_to_bundled =
+            !self.auth_manager.as_ref().is_some_and(|auth_manager| {
+                auth_manager
+                    .auth_mode()
+                    .is_some_and(AuthMode::has_chatgpt_account)
+            });
+        for mut model in models {
             if let Some(existing_index) = existing_models
                 .iter()
                 .position(|existing| existing.slug == model.slug)
             {
+                if should_raise_context_to_bundled {
+                    let bundled_context_window = existing_models[existing_index].context_window;
+                    let bundled_max_context_window =
+                        existing_models[existing_index].max_context_window;
+                    model.context_window = match (model.context_window, bundled_context_window) {
+                        (Some(remote), Some(bundled)) => Some(remote.max(bundled)),
+                        (Some(remote), None) => Some(remote),
+                        (None, Some(bundled)) => Some(bundled),
+                        (None, None) => None,
+                    };
+                    model.max_context_window =
+                        match (model.max_context_window, bundled_max_context_window) {
+                            (Some(remote), Some(bundled)) => Some(remote.max(bundled)),
+                            (Some(remote), None) => Some(remote),
+                            (None, Some(bundled)) => Some(bundled),
+                            (None, None) => None,
+                        };
+                    if let (Some(context_window), Some(max_context_window)) =
+                        (model.context_window, model.max_context_window)
+                        && max_context_window < context_window
+                    {
+                        model.max_context_window = Some(context_window);
+                    }
+                }
                 existing_models[existing_index] = model;
             } else {
                 existing_models.push(model);

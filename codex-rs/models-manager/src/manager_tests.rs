@@ -67,6 +67,35 @@ fn remote_model_with_visibility(
         .expect("valid model")
 }
 
+fn stale_openai_gpt_context_models() -> Vec<ModelInfo> {
+    let mut remote_gpt_5_5 = remote_model(GPT_5_5_MODEL_ID, "Remote GPT-5.5", /*priority*/ 0);
+    remote_gpt_5_5.context_window = Some(272_000);
+    remote_gpt_5_5.max_context_window = Some(272_000);
+    let mut remote_gpt_5_4 = remote_model(GPT_5_4_MODEL_ID, "Remote GPT-5.4", /*priority*/ 1);
+    remote_gpt_5_4.context_window = Some(272_000);
+    remote_gpt_5_4.max_context_window = Some(272_000);
+    vec![remote_gpt_5_5, remote_gpt_5_4]
+}
+
+async fn assert_api_gpt_context_windows(manager: &OpenAiModelsManager) {
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    for (slug, expected_context_window) in [
+        (GPT_5_5_MODEL_ID, GPT_5_5_CONTEXT_WINDOW),
+        (GPT_5_4_MODEL_ID, GPT_5_4_CONTEXT_WINDOW),
+    ] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(model_info.context_window, Some(expected_context_window));
+        assert_eq!(model_info.max_context_window, Some(expected_context_window));
+        assert!(
+            !model_info.used_fallback_model_metadata,
+            "{slug} should use refreshed model metadata"
+        );
+    }
+}
+
 fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
     for model in expected {
         assert!(
@@ -568,6 +597,83 @@ async fn get_model_info_keeps_api_auth_bundled_gpt_5_4_context_window() {
     assert_eq!(model_info.context_window, Some(GPT_5_4_CONTEXT_WINDOW));
     assert_eq!(model_info.max_context_window, Some(GPT_5_4_CONTEXT_WINDOW));
     assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn api_auth_refresh_keeps_bundled_gpt_context_window_over_stale_remote_response() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = Arc::new(TestModelsEndpoint {
+        has_provider_auth: true,
+        uses_codex_backend: false,
+        responses: Mutex::new(vec![stale_openai_gpt_context_models()].into()),
+        fetch_count: AtomicUsize::new(0),
+    });
+    let manager = openai_manager_for_tests_with_auth(
+        codex_home.path().to_path_buf(),
+        endpoint,
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    assert_api_gpt_context_windows(&manager).await;
+}
+
+#[tokio::test]
+async fn api_auth_cache_hit_keeps_bundled_gpt_context_window_over_stale_remote_cache() {
+    let codex_home = tempdir().expect("temp dir");
+    let seed_endpoint = Arc::new(TestModelsEndpoint {
+        has_provider_auth: true,
+        uses_codex_backend: false,
+        responses: Mutex::new(vec![stale_openai_gpt_context_models()].into()),
+        fetch_count: AtomicUsize::new(0),
+    });
+    let seed_manager = openai_manager_for_tests_with_auth(
+        codex_home.path().to_path_buf(),
+        seed_endpoint.clone(),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+    seed_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("seed refresh succeeds");
+    assert_eq!(
+        seed_endpoint.fetch_count(),
+        1,
+        "seed manager should write stale remote metadata into the cache"
+    );
+
+    let cache_endpoint = Arc::new(TestModelsEndpoint {
+        has_provider_auth: true,
+        uses_codex_backend: false,
+        responses: Mutex::new(VecDeque::new()),
+        fetch_count: AtomicUsize::new(0),
+    });
+    let cache_manager = openai_manager_for_tests_with_auth(
+        codex_home.path().to_path_buf(),
+        cache_endpoint.clone(),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+    cache_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("cached refresh succeeds");
+
+    assert_eq!(
+        cache_endpoint.fetch_count(),
+        0,
+        "fresh cache should avoid a model fetch"
+    );
+    assert_api_gpt_context_windows(&cache_manager).await;
 }
 
 #[tokio::test]
