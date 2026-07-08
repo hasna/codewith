@@ -42,6 +42,22 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.60] - 2026-07-08
+
+Tag: `rust-v0.1.60`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.60>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.59...rust-v0.1.60>
+
+Hotfix release for restored OpenAI API-key profile status context windows.
+
+### Fixed
+
+- Status: resumed and forked sessions now refresh restored token-usage context
+  windows from the active model metadata for API-key profiles, so `/status`
+  does not continue displaying an old 258K denominator after a GPT model is
+  configured with a 1M-class context window. ChatGPT login profiles preserve
+  their replayed ChatGPT-catalog context behavior.
+
 ## [0.1.59] - 2026-07-08
 
 Tag: `rust-v0.1.59`

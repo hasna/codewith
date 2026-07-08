@@ -2053,7 +2053,64 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
         .await;
 
     let actual = session.state.lock().await.token_info();
-    assert_eq!(actual, Some(info2));
+    let mut expected = info2;
+    expected.model_context_window = Some(997_500);
+    assert_eq!(actual, Some(expected));
+}
+
+#[tokio::test]
+async fn token_info_for_current_model_preserves_chatgpt_replay_window() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    turn_context.auth_manager = Some(AuthManager::from_auth_for_testing(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn_context.model_info.context_window = Some(128_000);
+    turn_context.model_info.effective_context_window_percent = 100;
+
+    let info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 30,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 7,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(2_000),
+    };
+
+    let actual = Session::token_info_for_current_model(info.clone(), &turn_context);
+
+    assert_eq!(actual, info);
+}
+
+#[tokio::test]
+async fn token_info_for_current_model_clears_api_replay_window_without_current_window() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    turn_context.model_info.context_window = None;
+    turn_context.model_info.max_context_window = None;
+
+    let info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 30,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 7,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(258_400),
+    };
+
+    let actual = Session::token_info_for_current_model(info.clone(), &turn_context);
+
+    assert_eq!(
+        actual,
+        TokenUsageInfo {
+            model_context_window: None,
+            ..info
+        }
+    );
 }
 
 #[tokio::test]
