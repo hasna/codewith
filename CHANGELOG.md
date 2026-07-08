@@ -42,6 +42,24 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.59] - 2026-07-08
+
+Tag: `rust-v0.1.59`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.59>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.58...rust-v0.1.59>
+
+Hotfix release for OpenAI API-key profile context-window metadata.
+
+### Fixed
+
+- Provider model metadata: OpenAI API-key and provider-auth profiles now keep
+  the bundled GPT-5.5 and GPT-5.4 1.05M context-window values when stale
+  remote or cached OpenAI model metadata reports a smaller window. This fixes
+  `/status` showing an effective 258K context denominator for API profiles
+  instead of the effective 998K window after the configured 95% cap. ChatGPT
+  login profiles continue to use the remote ChatGPT model catalog as the
+  authoritative source.
+
 ## [0.1.57] - 2026-07-05
 
 Tag: `rust-v0.1.57`
