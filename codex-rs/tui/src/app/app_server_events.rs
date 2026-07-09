@@ -129,10 +129,21 @@ impl App {
                     self.note_session_recap_turn_completed(thread_id, &notification.turn);
                 }
 
-                let result = if self.primary_thread_id == Some(thread_id)
-                    || self.primary_thread_id.is_none()
-                {
-                    self.enqueue_primary_thread_notification(notification).await
+                let result = if self.primary_thread_id == Some(thread_id) {
+                    self.enqueue_thread_notification(thread_id, notification)
+                        .await
+                } else if self.primary_thread_id.is_none() {
+                    // Startup pre-primary window: the primary thread has not
+                    // finished starting yet. Only buffer as a pending primary
+                    // event when the target thread is not already tracked; a
+                    // known loaded/scheduled thread routes to its own channel
+                    // so its events never leak into the primary buffer.
+                    if self.is_tracked_thread(thread_id) {
+                        self.enqueue_thread_notification(thread_id, notification)
+                            .await
+                    } else {
+                        self.enqueue_primary_thread_notification(notification).await
+                    }
                 } else {
                     self.enqueue_thread_notification(thread_id, notification)
                         .await
@@ -204,12 +215,19 @@ impl App {
             return;
         };
 
-        let result =
-            if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
-                self.enqueue_primary_thread_request(request).await
-            } else {
-                self.enqueue_thread_request(thread_id, request).await
-            };
+        let result = if self.primary_thread_id == Some(thread_id) {
+            self.enqueue_thread_request(thread_id, request).await
+        } else if self.primary_thread_id.is_none() {
+            // Startup pre-primary window: route requests to their addressed
+            // thread channel immediately. If this later becomes the primary
+            // thread, startup attaches to the existing channel and preserves
+            // the buffered request. If it is some other top-level thread, the
+            // request must not be parked in the pending-primary queue and then
+            // dropped after already being registered for resolution.
+            self.enqueue_thread_request(thread_id, request).await
+        } else {
+            self.enqueue_thread_request(thread_id, request).await
+        };
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }

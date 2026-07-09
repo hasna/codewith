@@ -334,11 +334,11 @@ fn goal_plan_summary_line(goal_plan: &ThreadGoalPlan) -> Line<'static> {
     .into()
 }
 
-fn public_workflow_display_name(value: &str) -> String {
+pub(super) fn public_workflow_display_name(value: &str) -> String {
     sanitize_metadata_label_with_redaction(value, "[redacted workflow name]")
 }
 
-fn sanitize_metadata_label(value: &str) -> String {
+pub(super) fn sanitize_metadata_label(value: &str) -> String {
     sanitize_metadata_label_with_redaction(value, "[redacted]")
 }
 
@@ -400,7 +400,7 @@ fn truncate_display_name(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn workflow_status_label(status: ThreadWorkflowStatus) -> &'static str {
+pub(super) fn workflow_status_label(status: ThreadWorkflowStatus) -> &'static str {
     match status {
         ThreadWorkflowStatus::Draft => "draft",
         ThreadWorkflowStatus::NeedsClarification => "needs clarification",
@@ -408,7 +408,7 @@ fn workflow_status_label(status: ThreadWorkflowStatus) -> &'static str {
     }
 }
 
-fn workflow_run_status_label(status: ThreadWorkflowRunStatus) -> &'static str {
+pub(super) fn workflow_run_status_label(status: ThreadWorkflowRunStatus) -> &'static str {
     match status {
         ThreadWorkflowRunStatus::Pending => "pending",
         ThreadWorkflowRunStatus::Running => "running",
@@ -463,7 +463,7 @@ fn goal_plan_status_label(status: ThreadGoalPlanStatus) -> &'static str {
     }
 }
 
-fn short_id(value: &str) -> &str {
+pub(super) fn short_id(value: &str) -> &str {
     value
         .char_indices()
         .nth(12)

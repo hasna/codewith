@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/workflow_manager.rs
+expression: "render_bottom_popup(&chat, 105)"
+---
+  Workflows
+  Failed to read workflow specs
+
+› 1. Retry                    Refresh workflow specs and runs
+     Workflow manager unavai… ephemeral thread does not support workflows: thread-1
+
+  Press enter to confirm or esc to go back

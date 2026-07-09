@@ -1,9 +1,11 @@
 //! Rate-limit warning, prompt, and notice surfaces for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::auth_profile_popups::AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF;
 use crate::chatwidget::usage_profile_broker::UsageProfileAutoSwitchWindow;
 use crate::chatwidget::usage_profile_broker::auth_profile_auto_switch_target as broker_auth_profile_auto_switch_target;
 use crate::chatwidget::usage_profile_broker::auto_switch_trigger_key;
+use crate::chatwidget::usage_profile_broker::earliest_exhausted_reset_at;
 use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window;
 use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window_for_snapshot;
 use crate::chatwidget::usage_profile_broker::fallback_limit_label as broker_fallback_limit_label;
@@ -146,7 +148,7 @@ impl ChatWidget {
     ) {
         let captured_at = Local::now();
         let mut displays = BTreeMap::new();
-        for snapshot in snapshots {
+        for snapshot in &snapshots {
             let limit_id = snapshot
                 .limit_id
                 .clone()
@@ -157,9 +159,11 @@ impl ChatWidget {
                 .unwrap_or_else(|| limit_id.clone());
             displays.insert(
                 limit_id,
-                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, captured_at),
+                rate_limit_snapshot_display_for_limit(snapshot, limit_label, captured_at),
             );
         }
+
+        self.update_auth_profile_usage_exhaustion(&profile, &snapshots);
 
         if displays.is_empty() {
             self.auth_profile_rate_limit_snapshots_by_profile
@@ -167,6 +171,37 @@ impl ChatWidget {
         } else {
             self.auth_profile_rate_limit_snapshots_by_profile
                 .insert(profile, displays);
+        }
+    }
+
+    /// Record whether `profile`'s codex usage is exhausted with a future reset so we can
+    /// suppress usage heartbeats for it until it resets (see
+    /// `should_request_auth_profile_usage_heartbeat`).
+    fn update_auth_profile_usage_exhaustion(
+        &mut self,
+        profile: &Option<String>,
+        snapshots: &[RateLimitSnapshot],
+    ) {
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                let is_codex_limit = snapshot
+                    .limit_id
+                    .as_deref()
+                    .is_none_or(|limit_id| limit_id.eq_ignore_ascii_case("codex"));
+                earliest_exhausted_reset_at(snapshot, is_codex_limit, now)
+            })
+            .min();
+        match reset_at {
+            Some(reset_at) => {
+                self.auth_profile_usage_exhausted_reset_at_by_profile
+                    .insert(profile.clone(), reset_at);
+            }
+            None => {
+                self.auth_profile_usage_exhausted_reset_at_by_profile
+                    .remove(profile);
+            }
         }
     }
 
@@ -277,6 +312,13 @@ impl ChatWidget {
             }
 
             self.update_auth_profile_auto_switch_snapshot(&limit_id, &snapshot, is_codex_limit);
+            if is_codex_limit {
+                let selected_profile = self.config.selected_auth_profile.clone();
+                self.update_auth_profile_usage_exhaustion(
+                    &selected_profile,
+                    std::slice::from_ref(&snapshot),
+                );
+            }
             if !self.usage_limit_reset_takes_precedence_for_snapshot(&snapshot) {
                 self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
             }
@@ -302,6 +344,8 @@ impl ChatWidget {
         } else {
             self.rate_limit_snapshots_by_limit_id.clear();
             self.auth_profile_rate_limit_snapshots_by_profile
+                .remove(&self.config.selected_auth_profile);
+            self.auth_profile_usage_exhausted_reset_at_by_profile
                 .remove(&self.config.selected_auth_profile);
             self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
             self.codex_rate_limit_reached_type = None;
@@ -435,6 +479,18 @@ impl ChatWidget {
         self.refresh_pending_input_preview();
     }
 
+    /// Named profiles whose most recent usage heartbeat failed within the failure backoff.
+    /// Used to avoid auto-switching onto a profile we could not confirm is available.
+    fn recently_failed_auth_profile_usage_heartbeats(&self) -> std::collections::HashSet<String> {
+        self.auth_profile_usage_heartbeat_failed_at_by_profile
+            .iter()
+            .filter(|(_, failed_at)| {
+                failed_at.elapsed() < AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF
+            })
+            .filter_map(|(profile, _)| profile.clone())
+            .collect()
+    }
+
     fn auth_profile_auto_switch_target(
         &mut self,
         limit_id: &str,
@@ -459,11 +515,13 @@ impl ChatWidget {
                 return None;
             }
         };
+        let recently_failed = self.recently_failed_auth_profile_usage_heartbeats();
         if let Some(target) = broker_auth_profile_auto_switch_target(
             &self.config.auth_profile_auto_switch,
             self.config.selected_auth_profile.as_deref(),
             &profiles,
             &self.auth_profile_rate_limit_snapshots_by_profile,
+            &recently_failed,
             limit_id,
             window,
         ) {

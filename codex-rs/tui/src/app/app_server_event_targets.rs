@@ -39,6 +39,19 @@ pub(super) enum ServerNotificationThreadTarget {
     Global,
 }
 
+impl ServerNotificationThreadTarget {
+    /// The thread this notification targets, if it is addressed to a specific
+    /// thread. Non-thread targets (app-scoped, global, invalid) return `None`.
+    pub(super) fn thread_id(&self) -> Option<ThreadId> {
+        match self {
+            ServerNotificationThreadTarget::Thread(thread_id) => Some(*thread_id),
+            ServerNotificationThreadTarget::InvalidThreadId(_)
+            | ServerNotificationThreadTarget::AppScoped
+            | ServerNotificationThreadTarget::Global => None,
+        }
+    }
+}
+
 pub(super) fn server_notification_thread_target(
     notification: &ServerNotification,
 ) -> ServerNotificationThreadTarget {

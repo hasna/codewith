@@ -374,6 +374,7 @@ mod mission_control_menu;
 mod monitor_display;
 mod webhook_display;
 mod workflow_display;
+mod workflow_manager;
 mod workflow_slash;
 mod worktree_display;
 use self::ide_context::IdeContextState;
@@ -620,6 +621,10 @@ pub(crate) struct ChatWidget {
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
     auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap<Option<String>, Instant>,
+    /// Earliest known future reset (unix seconds) for a profile whose cached codex usage is
+    /// exhausted. While the reset is in the future we suppress usage heartbeats for that
+    /// profile instead of re-polling a limit we already know is capped.
+    auth_profile_usage_exhausted_reset_at_by_profile: BTreeMap<Option<String>, i64>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,

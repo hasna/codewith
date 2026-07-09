@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/changelog.rs
+expression: "render_lines(&view, 72)"
+---
+
+  Codewith Changelog
+  Select a release to view its changelog bullets.
+
+  Search versions
+› Unreleased         Open Unreleased release notes.
+  0.1.55             2026-07-02
+  0.1.54             2026-07-02
+  0.1.53             2026-07-01
+  0.1.52             2026-07-01
+  0.1.51             2026-06-26
+  0.1.50             2026-06-26
+  0.1.49             2026-06-26

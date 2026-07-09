@@ -59,6 +59,7 @@ pub enum SlashCommand {
         serialize = "missions"
     )]
     MissionControl,
+    #[strum(to_string = "workflow", serialize = "workflows")]
     Workflow,
     Loop,
     Queued,
@@ -826,6 +827,10 @@ mod tests {
     #[test]
     fn workflow_command_is_singular_and_accepts_args() {
         assert_eq!(SlashCommand::Workflow.command(), "workflow");
+        assert_eq!(
+            SlashCommand::from_str("workflows"),
+            Ok(SlashCommand::Workflow)
+        );
         assert_eq!(
             SlashCommand::Workflow.description(),
             "manage workflow specs and runs for this thread"

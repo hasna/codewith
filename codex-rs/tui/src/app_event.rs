@@ -37,6 +37,8 @@ use codex_app_server_protocol::ThreadPendingInteractionTerminalStatus;
 use codex_app_server_protocol::ThreadQueuedMessageMoveDirection;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
 use codex_app_server_protocol::ThreadScheduleSpec;
+use codex_app_server_protocol::ThreadWorkflow;
+use codex_app_server_protocol::ThreadWorkflowRun;
 use codex_app_server_protocol::WebhookEventStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
@@ -436,6 +438,14 @@ pub(crate) enum AppEvent {
         origin: MiniMaxUsageRefreshOrigin,
     },
 
+    /// Open the top-level changelog browser.
+    OpenChangelogBrowser,
+
+    /// Open one release in the changelog browser.
+    OpenChangelogRelease {
+        version: String,
+    },
+
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,
@@ -461,6 +471,26 @@ pub(crate) enum AppEvent {
     ManageThreadWorkflow {
         thread_id: ThreadId,
         action: ThreadWorkflowAction,
+    },
+
+    /// Open the interactive thread workflow manager.
+    OpenThreadWorkflowManager {
+        thread_id: ThreadId,
+    },
+
+    /// Open a prompt that prepares a workflow YAML draft request.
+    OpenThreadWorkflowDraftPrompt,
+
+    /// Open actions for a saved workflow spec.
+    OpenThreadWorkflowActions {
+        thread_id: ThreadId,
+        workflow: ThreadWorkflow,
+    },
+
+    /// Open actions for a workflow run.
+    OpenThreadWorkflowRunActions {
+        thread_id: ThreadId,
+        run: ThreadWorkflowRun,
     },
 
     /// Open details for one durable thread goal plan.

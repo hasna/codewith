@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/workflow_manager.rs
+expression: "render_bottom_popup(&chat, 110)"
+---
+  Run run-complete
+  9 monitor/activity events · 4 verifiers · 9 events · workflow workflow-alp
+
+› 1. Inspect run                Show step, verifier, and event progress
+     Stop (disabled)            Request cancellation for this workflow run (disabled: Completed workflow
+                                runs cannot be stopped)
+     Review approva… (disabled) Workflow-specific approval review is not available yet (disabled: Approval
+                                review uses the existing global approval popups)
+  2. Back to workflows          Return to specs and runs
+
+  Press enter to confirm or esc to go back
