@@ -2,6 +2,7 @@ use super::*;
 use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
+const GPT_5_6_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
@@ -456,6 +457,38 @@ fn bundled_openai_gpt_5_5_uses_upstream_context_window() {
 
     assert_eq!(model.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
     assert_eq!(model.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[test]
+fn bundled_openai_gpt_5_6_preview_models_use_current_metadata() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+
+    for (slug, display_name, default_reasoning_level) in [
+        ("gpt-5.6", "GPT-5.6", ReasoningEffort::High),
+        ("gpt-5.6-sol", "GPT-5.6 Sol", ReasoningEffort::High),
+        ("gpt-5.6-terra", "GPT-5.6 Terra", ReasoningEffort::Medium),
+        ("gpt-5.6-luna", "GPT-5.6 Luna", ReasoningEffort::Medium),
+    ] {
+        let model = response
+            .models
+            .iter()
+            .find(|model| model.slug == slug)
+            .unwrap_or_else(|| panic!("bundled catalog should include {slug}"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(GPT_5_6_CONTEXT_WINDOW));
+        assert_eq!(model.max_context_window, Some(GPT_5_6_CONTEXT_WINDOW));
+        assert_eq!(model.default_reasoning_level, Some(default_reasoning_level));
+        assert!(model.supported_in_api);
+        assert_eq!(model.visibility, ModelVisibility::List);
+        assert!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| preset.effort == ReasoningEffort::Custom("max".to_string())),
+            "{slug} should advertise max reasoning"
+        );
+    }
 }
 
 #[test]
