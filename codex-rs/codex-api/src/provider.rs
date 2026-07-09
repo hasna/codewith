@@ -107,6 +107,10 @@ impl Provider {
             || self.name.eq_ignore_ascii_case("cerebras")
     }
 
+    pub fn is_groq_endpoint(&self) -> bool {
+        self.provider_id.as_deref() == Some("groq") || self.name.eq_ignore_ascii_case("groq")
+    }
+
     pub fn websocket_url_for_path(&self, path: &str) -> Result<Url, url::ParseError> {
         let mut url = Url::parse(&self.url_for_path(path))?;
 
@@ -287,5 +291,6 @@ mod tests {
 
         assert!(provider("nvidia", "NVIDIA Mirror").is_nvidia_endpoint());
         assert!(provider("cerebras", "Cerebras Mirror").is_cerebras_endpoint());
+        assert!(provider("groq", "Groq Mirror").is_groq_endpoint());
     }
 }

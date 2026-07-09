@@ -24,6 +24,9 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GOOGLE_PROVIDER_ID: &str = "google";
 pub const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
+pub const GROQ_PROVIDER_ID: &str = "groq";
+pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
+
 pub const MINIMAX_PROVIDER_ID: &str = "minimax";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 

@@ -12,6 +12,8 @@ use codex_protocol::provider_identity::DEEPSEEK_BASE_URL;
 use codex_protocol::provider_identity::DEEPSEEK_PROVIDER_ID;
 use codex_protocol::provider_identity::GOOGLE_BASE_URL;
 use codex_protocol::provider_identity::GOOGLE_PROVIDER_ID;
+use codex_protocol::provider_identity::GROQ_BASE_URL;
+use codex_protocol::provider_identity::GROQ_PROVIDER_ID;
 use codex_protocol::provider_identity::MINIMAX_BASE_URL;
 use codex_protocol::provider_identity::MINIMAX_PROVIDER_ID;
 use codex_protocol::provider_identity::NVIDIA_BASE_URL;
@@ -31,6 +33,7 @@ mod anthropic;
 mod cerebras;
 mod deepseek;
 mod google;
+mod groq;
 mod minimax;
 mod nvidia;
 mod openrouter;
@@ -185,6 +188,14 @@ pub fn metadata_for_openai_compatible_response(
     if provider_matches(
         provider_id,
         provider_base_url,
+        GROQ_PROVIDER_ID,
+        GROQ_BASE_URL,
+    ) {
+        return groq::metadata(slug);
+    }
+    if provider_matches(
+        provider_id,
+        provider_base_url,
         MINIMAX_PROVIDER_ID,
         MINIMAX_BASE_URL,
     ) {
@@ -258,6 +269,9 @@ pub fn metadata_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), GOOGLE_PROVIDER_ID) => {
             google::metadata(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), GROQ_PROVIDER_ID) => {
+            groq::metadata(slug)
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), MINIMAX_PROVIDER_ID) => {
             minimax::metadata(slug)
         }
@@ -285,6 +299,7 @@ pub fn provider_supports_reasoning_effort(provider_id: Option<&str>) -> bool {
     provider_id_matches(provider_id, NVIDIA_PROVIDER_ID)
         || provider_id_matches(provider_id, CEREBRAS_PROVIDER_ID)
         || provider_id_matches(provider_id, GOOGLE_PROVIDER_ID)
+        || provider_id_matches(provider_id, GROQ_PROVIDER_ID)
         || provider_id_matches(provider_id, MINIMAX_PROVIDER_ID)
         || provider_id_matches(provider_id, OPENROUTER_PROVIDER_ID)
         || provider_id_matches(provider_id, ZAI_PROVIDER_ID)
@@ -309,6 +324,11 @@ pub fn openai_compatible_provider_supports_reasoning_effort(
         provider_base_url,
         GOOGLE_PROVIDER_ID,
         GOOGLE_BASE_URL,
+    ) || provider_matches(
+        provider_id,
+        provider_base_url,
+        GROQ_PROVIDER_ID,
+        GROQ_BASE_URL,
     ) || provider_matches(
         provider_id,
         provider_base_url,
@@ -368,6 +388,14 @@ pub fn reasoning_levels_for_openai_compatible_response(
     if provider_matches(
         provider_id,
         provider_base_url,
+        GROQ_PROVIDER_ID,
+        GROQ_BASE_URL,
+    ) {
+        return groq::reasoning_levels(slug);
+    }
+    if provider_matches(
+        provider_id,
+        provider_base_url,
         MINIMAX_PROVIDER_ID,
         MINIMAX_BASE_URL,
     ) {
@@ -422,6 +450,9 @@ pub fn reasoning_levels_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), GOOGLE_PROVIDER_ID) => {
             google::reasoning_levels(slug)
         }
+        Some(provider_id) if provider_id_matches(Some(provider_id), GROQ_PROVIDER_ID) => {
+            groq::reasoning_levels(slug)
+        }
         Some(provider_id) if provider_id_matches(Some(provider_id), MINIMAX_PROVIDER_ID) => {
             minimax::reasoning_levels(slug)
         }
@@ -451,6 +482,9 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     }
     if provider_id_matches(Some(provider_id), GOOGLE_PROVIDER_ID) {
         return google::FALLBACK_MODELS;
+    }
+    if provider_id_matches(Some(provider_id), GROQ_PROVIDER_ID) {
+        return groq::FALLBACK_MODELS;
     }
     if provider_id_matches(Some(provider_id), MINIMAX_PROVIDER_ID) {
         return minimax::FALLBACK_MODELS;
@@ -644,6 +678,82 @@ mod tests {
     }
 
     #[test]
+    fn groq_fallback_models_use_gpt_oss_120b_default() {
+        let models = fallback_models_for_provider(GROQ_PROVIDER_ID);
+
+        assert_eq!(models[0].id, "openai/gpt-oss-120b");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "openai/gpt-oss-20b" && !model.is_default)
+        );
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "llama-3.3-70b-versatile" && !model.is_default)
+        );
+    }
+
+    #[test]
+    fn groq_gpt_oss_exposes_reasoning_and_llama_does_not() {
+        assert_eq!(
+            metadata_for_local_fallback(Some(GROQ_PROVIDER_ID), "openai/gpt-oss-120b"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "OpenAI GPT OSS 120B",
+                    /*context_window*/ 131_072,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ true,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ false,
+                    TEXT_INPUT_MODALITIES,
+                )
+            )
+        );
+
+        assert!(provider_supports_reasoning_effort(Some(GROQ_PROVIDER_ID)));
+        assert!(openai_compatible_provider_supports_reasoning_effort(
+            Some(GROQ_PROVIDER_ID),
+            None
+        ));
+
+        let (default_effort, presets) =
+            reasoning_levels_for_local_fallback(Some(GROQ_PROVIDER_ID), "openai/gpt-oss-120b");
+        assert_eq!(default_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(
+            presets,
+            vec![
+                reasoning_preset(ReasoningEffort::Low, "Minimal reasoning"),
+                reasoning_preset(ReasoningEffort::Medium, "Moderate reasoning"),
+                reasoning_preset(ReasoningEffort::High, "Extensive reasoning"),
+            ]
+        );
+
+        let llama = metadata_for_local_fallback(Some(GROQ_PROVIDER_ID), "llama-3.3-70b-versatile")
+            .expect("groq llama metadata should exist");
+        assert!(llama.supports_tools);
+        assert!(!llama.supports_reasoning);
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some(GROQ_PROVIDER_ID), "llama-3.3-70b-versatile"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn groq_metadata_resolves_by_base_url() {
+        assert_eq!(
+            metadata_for_openai_compatible_response(
+                None,
+                None,
+                Some(GROQ_BASE_URL),
+                "openai/gpt-oss-120b",
+            ),
+            metadata_for_local_fallback(Some(GROQ_PROVIDER_ID), "openai/gpt-oss-120b"),
+        );
+    }
+
+    #[test]
     fn nvidia_deepseek_v4_models_support_tools() {
         for slug in [
             "deepseek-ai/deepseek-v4-flash",
@@ -789,6 +899,7 @@ mod tests {
             (CEREBRAS_PROVIDER_ID, "gpt-oss-120b"),
             (DEEPSEEK_PROVIDER_ID, "deepseek-v4-flash"),
             (GOOGLE_PROVIDER_ID, "gemini-3.5-flash"),
+            (GROQ_PROVIDER_ID, "openai/gpt-oss-120b"),
             (MINIMAX_PROVIDER_ID, "MiniMax-M3"),
             (NVIDIA_PROVIDER_ID, "nvidia/nemotron-3-ultra-550b-a55b"),
             (OPENROUTER_PROVIDER_ID, "z-ai/glm-5.2"),
@@ -937,6 +1048,8 @@ mod tests {
             GOOGLE_BASE_URL,
             "https://generativelanguage.googleapis.com/v1beta/openai"
         );
+        assert_eq!(GROQ_PROVIDER_ID, "groq");
+        assert_eq!(GROQ_BASE_URL, "https://api.groq.com/openai/v1");
         assert_eq!(MINIMAX_PROVIDER_ID, "minimax");
         assert_eq!(MINIMAX_BASE_URL, "https://api.minimax.io/v1");
         assert_eq!(NVIDIA_PROVIDER_ID, "nvidia");
@@ -966,6 +1079,7 @@ mod tests {
             (ZAI_PROVIDER_ID, ZAI_BASE_URL),
             (ANTHROPIC_PROVIDER_ID, ANTHROPIC_BASE_URL),
             (GOOGLE_PROVIDER_ID, GOOGLE_BASE_URL),
+            (GROQ_PROVIDER_ID, GROQ_BASE_URL),
         ] {
             assert!(
                 provider_matches(Some(provider_id), None, provider_id, base_url),

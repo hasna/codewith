@@ -256,6 +256,34 @@ mod tests {
     }
 
     #[test]
+    fn groq_fallback_models_include_selectable_default() {
+        let models = fallback_supported_models_for_provider("groq", /*include_hidden*/ false);
+
+        assert_eq!(models.len(), 4);
+        assert_eq!(models[0].model, "openai/gpt-oss-120b");
+        assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
+        assert!(models[0].is_default);
+        assert!(!models[0].hidden);
+        assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(
+            models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|effort| effort.reasoning_effort.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+        );
+        assert_eq!(models[2].model, "llama-3.3-70b-versatile");
+        assert!(!models[2].is_default);
+        assert_eq!(models[2].default_reasoning_effort, ReasoningEffort::None);
+        assert!(models[2].supported_reasoning_efforts.is_empty());
+    }
+
+    #[test]
     fn nvidia_fallback_models_include_valid_live_smoke_models() {
         let models =
             fallback_supported_models_for_provider("nvidia", /*include_hidden*/ false);

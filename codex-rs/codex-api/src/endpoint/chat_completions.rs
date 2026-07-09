@@ -158,14 +158,12 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
             compression,
             turn_state,
         } = options;
-        // Some OpenAI-compatible providers (e.g. Cerebras, NVIDIA vLLM) reject
+        // Some OpenAI-compatible providers (e.g. Cerebras, NVIDIA vLLM, Groq) reject
         // `reasoning_effort: "none"` and only accept low/medium/high, which
         // silently breaks tool calling. Map None -> "low" for those providers;
         // OpenAI/OpenRouter tolerate "none" and keep it unchanged.
-        let map_none_reasoning_to_low = {
-            let provider = self.session.provider();
-            provider.is_cerebras_endpoint() || provider.is_nvidia_endpoint()
-        };
+        let map_none_reasoning_to_low =
+            provider_maps_none_reasoning_to_low(self.session.provider());
         let ChatRequestParts {
             body,
             tool_name_map,
@@ -237,6 +235,10 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
             tool_name_map,
         ))
     }
+}
+
+fn provider_maps_none_reasoning_to_low(provider: &Provider) -> bool {
+    provider.is_cerebras_endpoint() || provider.is_nvidia_endpoint() || provider.is_groq_endpoint()
 }
 
 #[derive(Debug)]
@@ -1361,6 +1363,24 @@ mod tests {
         }
     }
 
+    fn provider(provider_id: &str, name: &str) -> Provider {
+        Provider {
+            provider_id: Some(provider_id.to_string()),
+            name: name.to_string(),
+            base_url: "https://provider-mirror.example.test/v1".to_string(),
+            query_params: None,
+            headers: HeaderMap::new(),
+            retry: crate::RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: Duration::from_secs(1),
+        }
+    }
+
     #[test]
     fn chat_reasoning_effort_keeps_none_by_default() {
         // OpenAI/OpenRouter tolerate `reasoning_effort: "none"`.
@@ -1427,6 +1447,40 @@ mod tests {
 
         let ungated = chat_request_from_responses(request, false).expect("request should map");
         assert_eq!(ungated.body["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn chat_request_rewrites_none_reasoning_effort_for_groq_provider() {
+        let provider = provider("groq", "Groq Mirror");
+        let request = ResponsesApiRequest {
+            model: "openai/gpt-oss-120b".to_string(),
+            instructions: "Be terse".to_string(),
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: Vec::new(),
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: true,
+            reasoning: Some(reasoning(ReasoningEffort::None)),
+            store: false,
+            stream: true,
+            include: Vec::new(),
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let parts =
+            chat_request_from_responses(request, provider_maps_none_reasoning_to_low(&provider))
+                .expect("request should map");
+
+        assert_eq!(parts.body["reasoning_effort"], "low");
     }
 
     #[test]

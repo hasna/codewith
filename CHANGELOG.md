@@ -42,6 +42,16 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Added
+
+- Groq is now a built-in OpenAI-compatible model provider (id `groq`, base URL
+  `https://api.groq.com/openai/v1`, `GROQ_API_KEY`). It ships a small static
+  fallback catalog of current production text models (`openai/gpt-oss-120b`
+  default, `openai/gpt-oss-20b`, `llama-3.3-70b-versatile`,
+  `llama-3.1-8b-instant`) used when `/models` discovery is unavailable, with
+  gpt-oss reasoning-effort presets and dynamic `/models` listing handled by the
+  existing OpenAI-compatible client.
+
 ## [0.1.61] - 2026-07-09
 
 Tag: `rust-v0.1.61`

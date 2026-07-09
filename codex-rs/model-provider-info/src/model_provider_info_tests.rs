@@ -331,6 +331,19 @@ fn test_built_in_model_providers_include_cerebras() {
 }
 
 #[test]
+fn test_built_in_model_providers_include_groq() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    let groq = providers
+        .get(GROQ_PROVIDER_ID)
+        .expect("groq provider should be built in");
+    assert_eq!(groq, &ModelProviderInfo::create_groq_provider());
+    assert_eq!(groq.base_url.as_deref(), Some(GROQ_BASE_URL));
+    assert_eq!(groq.env_key.as_deref(), Some("GROQ_API_KEY"));
+    assert_eq!(groq.wire_api, WireApi::Chat);
+}
+
+#[test]
 fn test_built_in_model_providers_include_nvidia() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 

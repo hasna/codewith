@@ -569,6 +569,64 @@ wire_api = "responses"
 }
 
 #[tokio::test]
+async fn list_models_falls_back_for_groq_provider_discovery_failure() -> Result<()> {
+    let provider = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/models$"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("catalog down"))
+        .mount(&provider)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    let provider_uri = provider.uri();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+[model_providers.groq]
+name = "Groq"
+base_url = "{provider_uri}/v1"
+auth = {{ command = "printf", args = ["model-list-fixture"] }}
+wire_api = "chat"
+"#
+        ),
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: None,
+            cursor: None,
+            include_hidden: None,
+            model_provider: Some("groq".to_string()),
+            model_gateway: None,
+            upstream_provider: None,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse { data, next_cursor } = to_response::<ModelListResponse>(response)?;
+    assert_eq!(
+        data.iter()
+            .map(|model| (model.id.as_str(), model.is_default))
+            .collect::<Vec<_>>(),
+        vec![
+            ("openai/gpt-oss-120b", true),
+            ("openai/gpt-oss-20b", false),
+            ("llama-3.3-70b-versatile", false),
+            ("llama-3.1-8b-instant", false),
+        ]
+    );
+    assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> Result<()> {
     let provider = MockServer::start().await;
     Mock::given(method("GET"))
@@ -583,6 +641,7 @@ async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> 
         ("cerebras", "gpt-oss-120b"),
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
+        ("groq", "openai/gpt-oss-120b"),
         ("minimax", "MiniMax-M3"),
         ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
         ("openrouter", "z-ai/glm-5.2"),

@@ -4361,6 +4361,7 @@ async fn session_settings_provider_only_update_uses_fallback_default_for_all_kno
         ("cerebras", "gpt-oss-120b"),
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
+        ("groq", "openai/gpt-oss-120b"),
         ("minimax", "MiniMax-M3"),
         ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
         ("openrouter", "z-ai/glm-5.2"),

@@ -1063,6 +1063,52 @@ mod tests {
     }
 
     #[test]
+    fn dedicated_groq_provider_id_uses_known_metadata() {
+        let models = decode_models_response(
+            serde_json::to_string(&json!({
+                "object": "list",
+                "data": [
+                    {
+                        "id": "openai/gpt-oss-120b",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Groq"
+                    },
+                    {
+                        "id": "llama-3.3-70b-versatile",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "Groq"
+                    }
+                ]
+            }))
+            .unwrap()
+            .as_bytes(),
+            Some("groq"),
+            Some("Groq"),
+            Some("https://api.groq.com/openai/v1"),
+        )
+        .expect("Groq /models response should decode with known metadata");
+
+        let gpt_oss = models
+            .iter()
+            .find(|model| model.slug == "openai/gpt-oss-120b")
+            .expect("gpt-oss-120b should be present");
+        assert_eq!(gpt_oss.display_name, "OpenAI GPT OSS 120B");
+        assert_eq!(gpt_oss.context_window, Some(131_072));
+        assert_eq!(gpt_oss.experimental_supported_tools, vec!["tools"]);
+        assert!(gpt_oss.supports_reasoning_summaries);
+
+        let llama = models
+            .iter()
+            .find(|model| model.slug == "llama-3.3-70b-versatile")
+            .expect("llama-3.3-70b-versatile should be present");
+        assert_eq!(llama.display_name, "Llama 3.3 70B Versatile");
+        assert_eq!(llama.context_window, Some(131_072));
+        assert!(!llama.supports_reasoning_summaries);
+    }
+
+    #[test]
     fn parses_cerebras_authenticated_models_response() {
         let models = decode_models_response(
             serde_json::to_string(&json!({
