@@ -1422,37 +1422,63 @@ mod tests {
 
     #[tokio::test]
     async fn external_agent_host_denies_permission_requests_by_default() {
-        let (tx, _rx) = mpsc::channel(4);
-        let outgoing = Arc::new(OutgoingMessageSender::new(
-            tx,
-            codex_analytics::AnalyticsEventsClient::disabled(),
-        ));
         let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000313")
             .expect("thread id should parse");
-        let host = AppServerExternalAgentHost::new(
-            outgoing,
-            ThreadStateManager::new(),
-            thread_id,
-            "run-1".to_string(),
-            CancellationToken::new(),
+        let (host, mut rx) = subscribed_host(thread_id, "run-1", Duration::from_secs(30)).await;
+        let key = external_agent_permission_key("run-1", "perm-1");
+        let thread_state = host.thread_state_manager.thread_state(thread_id).await;
+
+        let await_host = host.clone();
+        let handle = tokio::spawn(async move {
+            await_host
+                .request_permission(ExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: ExternalAgentActionRequest::WriteFile {
+                        path: PathBuf::from("/repo/file.txt"),
+                        content: "data".to_string(),
+                    },
+                    options: vec![
+                        ExternalAgentPermissionOption::AllowOnce,
+                        ExternalAgentPermissionOption::RejectOnce,
+                    ],
+                })
+                .await
+        });
+
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionRequested {
+                request: ThreadExternalAgentPermissionRequest {
+                    id: "perm-1".to_string(),
+                    action: action_json(&ExternalAgentActionRequest::WriteFile {
+                        path: PathBuf::from("/repo/file.txt"),
+                        content: "data".to_string(),
+                    }),
+                    options: vec![
+                        ThreadExternalAgentPermissionOption::AllowOnce,
+                        ThreadExternalAgentPermissionOption::RejectOnce,
+                    ],
+                },
+            }
+        );
+        assert!(
+            thread_state
+                .lock()
+                .await
+                .take_external_agent_permission(&key)
+                .is_some()
         );
 
-        let decision = host
-            .request_permission(ExternalAgentPermissionRequest {
-                id: "perm-1".to_string(),
-                action: ExternalAgentActionRequest::WriteFile {
-                    path: PathBuf::from("/repo/file.txt"),
-                    content: "data".to_string(),
-                },
-                options: vec![
-                    ExternalAgentPermissionOption::AllowOnce,
-                    ExternalAgentPermissionOption::RejectOnce,
-                ],
-            })
-            .await
-            .expect("permission decision");
-
+        let decision = handle.await.expect("join").expect("permission decision");
         assert_eq!(decision, ExternalAgentPermissionDecision::RejectOnce);
+        assert_eq!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id: "perm-1".to_string(),
+                decision: ThreadExternalAgentPermissionOption::RejectOnce,
+                resolution: ThreadExternalAgentPermissionResolution::DefaultDenied,
+            }
+        );
     }
 
     #[tokio::test]
