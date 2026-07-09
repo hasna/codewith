@@ -587,9 +587,13 @@ async fn thread_external_agent_cancel_clears_active_run_after_terminal_event() -
 
 fn path_with_fake_bin(bin_dir: &Path) -> Result<String> {
     let existing_path = std::env::var("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(bin_dir.to_path_buf()).chain(std::env::split_paths(&existing_path)),
-    )?;
+    let path = std::env::join_paths(std::iter::once(bin_dir.to_path_buf()).chain(
+        std::env::split_paths(&existing_path).filter(|dir| {
+            !["claude", "claude.exe", "claude.cmd", "claude.bat"]
+                .iter()
+                .any(|program| dir.join(program).is_file())
+        }),
+    ))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
