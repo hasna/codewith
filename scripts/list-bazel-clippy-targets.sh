@@ -39,6 +39,11 @@ elif [[ $windows_cross_compile -eq 1 ]]; then
   # the Windows helpers and unit-test helpers, but do not pass the native-only
   # sharded integration helpers as explicit clippy targets.
   manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-test-bin$' || true)"
+  # The TUI unit-test binary is a very large all-in-one test harness. Hosted
+  # Windows rustc/clippy has terminated it with STATUS_STACK_BUFFER_OVERRUN
+  # before emitting a Rust diagnostic, while the library target and non-Windows
+  # unit-test clippy continue to cover the code.
+  manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -x -- '//codex-rs/tui:tui-unit-tests-bin' || true)"
 fi
 
 printf '%s\n' \
