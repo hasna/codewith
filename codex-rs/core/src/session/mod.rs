@@ -1559,6 +1559,23 @@ impl Session {
         info
     }
 
+    pub(crate) async fn refresh_token_context_window_for_profile_switch(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        {
+            let mut state = self.state.lock().await;
+            let info = state.token_info().unwrap_or(TokenUsageInfo {
+                total_token_usage: TokenUsage::default(),
+                last_token_usage: TokenUsage::default(),
+                model_context_window: None,
+            });
+            let info = Self::token_info_for_current_model(info, turn_context);
+            state.set_token_info(Some(info));
+        }
+        self.send_token_count_event(turn_context).await;
+    }
+
     async fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
         let state = self.state.lock().await;
         state.previous_turn_settings()
@@ -3407,10 +3424,12 @@ impl Session {
         token_usage: Option<&TokenUsage>,
     ) {
         if let Some(token_usage) = token_usage {
+            let model_context_window = self
+                .token_usage_context_window_for_current_profile(turn_context)
+                .await;
             let token_info = {
                 let mut state = self.state.lock().await;
-                state
-                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+                state.update_token_info_from_usage(token_usage, model_context_window);
                 if matches!(
                     turn_context.config.model_auto_compact_token_limit_scope,
                     AutoCompactTokenLimitScope::BodyAfterPrefix
@@ -3432,6 +3451,21 @@ impl Session {
                 }
             }
         }
+    }
+
+    async fn token_usage_context_window_for_current_profile(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Option<i64> {
+        let selected_auth_profile = self.selected_auth_profile().await;
+        if selected_auth_profile == turn_context.config.selected_auth_profile {
+            return turn_context.model_context_window();
+        }
+
+        let current_turn_context = self
+            .new_default_turn_with_sub_id(turn_context.sub_id.clone())
+            .await;
+        current_turn_context.model_context_window()
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
