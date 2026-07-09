@@ -137,6 +137,41 @@ pub enum ThreadWorkflowRunStepVerifierStatus {
     Other,
 }
 
+/// A workflow step currently gated behind a pending approval review.
+///
+/// Only carries the author-defined step id and approval-gate label so a
+/// manager can display or link to the approval-review flow. Never contains a
+/// raw approvals payload, prompt, or secret.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowApprovalGate {
+    pub step_id: String,
+    pub gate: String,
+}
+
+/// Workflow-scoped approval-review context for a run.
+///
+/// Lets `/workflows` decide whether to enable its approval affordance and, if
+/// so, surface the pending gates. The manager should keep approval rows
+/// disabled unless `available` is true and keep the approval action disabled
+/// unless `actionable` is true.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadWorkflowApprovalReview {
+    /// The run declares run-level approval gates (`approvals.required_before`).
+    pub has_approval_config: bool,
+    /// Any workflow-scoped approval data is available (config or a pending gate).
+    pub available: bool,
+    /// There is a pending approval to act on.
+    pub actionable: bool,
+    #[ts(type = "number")]
+    pub pending_count: i64,
+    /// Compact, sanitized list of steps awaiting an approval review.
+    pub pending_gates: Vec<ThreadWorkflowApprovalGate>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -172,6 +207,8 @@ pub struct ThreadWorkflowRun {
     pub verifier_count: i64,
     #[ts(type = "number")]
     pub event_count: i64,
+    /// Workflow-scoped approval-review context for this run.
+    pub approval_review: ThreadWorkflowApprovalReview,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number")]

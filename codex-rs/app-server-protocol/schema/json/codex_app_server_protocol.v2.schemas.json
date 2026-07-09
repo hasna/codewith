@@ -22428,11 +22428,71 @@
       ],
       "type": "string"
     },
+    "ThreadWorkflowApprovalGate": {
+      "description": "A workflow step currently gated behind a pending approval review.\n\nOnly carries the author-defined step id and approval-gate label so a manager can display or link to the approval-review flow. Never contains a raw approvals payload, prompt, or secret.",
+      "properties": {
+        "gate": {
+          "type": "string"
+        },
+        "stepId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate",
+        "stepId"
+      ],
+      "type": "object"
+    },
+    "ThreadWorkflowApprovalReview": {
+      "description": "Workflow-scoped approval-review context for a run.\n\nLets `/workflows` decide whether to enable its approval affordance and, if so, surface the pending gates. The manager should keep approval rows disabled unless `available` is true and keep the approval action disabled unless `actionable` is true.",
+      "properties": {
+        "actionable": {
+          "description": "There is a pending approval to act on.",
+          "type": "boolean"
+        },
+        "available": {
+          "description": "Any workflow-scoped approval data is available (config or a pending gate).",
+          "type": "boolean"
+        },
+        "hasApprovalConfig": {
+          "description": "The run declares run-level approval gates (`approvals.required_before`).",
+          "type": "boolean"
+        },
+        "pendingCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pendingGates": {
+          "description": "Compact, sanitized list of steps awaiting an approval review.",
+          "items": {
+            "$ref": "#/definitions/ThreadWorkflowApprovalGate"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "actionable",
+        "available",
+        "hasApprovalConfig",
+        "pendingCount",
+        "pendingGates"
+      ],
+      "type": "object"
+    },
     "ThreadWorkflowRun": {
       "properties": {
         "activeStepCount": {
           "format": "int64",
           "type": "integer"
+        },
+        "approvalReview": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ThreadWorkflowApprovalReview"
+            }
+          ],
+          "description": "Workflow-scoped approval-review context for this run."
         },
         "blockedStepCount": {
           "format": "int64",
@@ -22535,6 +22595,7 @@
       },
       "required": [
         "activeStepCount",
+        "approvalReview",
         "blockedStepCount",
         "createdAt",
         "eventCount",

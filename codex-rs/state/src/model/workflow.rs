@@ -388,6 +388,99 @@ pub struct WorkflowRunSnapshot {
     pub events: Vec<WorkflowRunEvent>,
 }
 
+/// A step currently gated behind a pending approval review.
+///
+/// Carries only the author-defined step id and approval-gate label; never a
+/// raw approvals payload, prompt, or secret. Consumers that render these to a
+/// UI are still expected to sanitize the labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowApprovalGate {
+    pub step_id: String,
+    pub gate: String,
+}
+
+/// A compact, non-secret summary of workflow-scoped approval-review state,
+/// derived from the run-level approvals config and per-step approval gates.
+///
+/// This is the run context that lets a manager surface (or link to) the
+/// existing approval-review flow and decide whether its approval affordance
+/// should be enabled. It intentionally excludes the raw `approvals_json`
+/// payload, step titles, prompts, and any other free-form content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowApprovalReview {
+    /// The run declares run-level approval gates (`approvals.required_before`
+    /// is present and non-empty).
+    pub has_approval_config: bool,
+    /// Steps currently awaiting an approval review before they can be admitted.
+    pub pending: Vec<WorkflowApprovalGate>,
+}
+
+impl WorkflowApprovalReview {
+    /// Number of steps currently awaiting an approval review.
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Whether there is a pending approval to act on. Manager approval
+    /// actions should stay disabled unless this is true.
+    pub fn is_actionable(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Whether any workflow-scoped approval data is available for this run,
+    /// either because approval gates are configured or a gated step is
+    /// currently pending. Approval rows should stay disabled otherwise.
+    pub fn is_available(&self) -> bool {
+        self.has_approval_config || !self.pending.is_empty()
+    }
+}
+
+impl WorkflowRunSnapshot {
+    /// Compute the workflow-scoped approval-review summary for this run.
+    pub fn approval_review(&self) -> WorkflowApprovalReview {
+        let has_approval_config = approvals_config_present(&self.run.approvals_json);
+        let pending = self
+            .steps
+            .iter()
+            .filter_map(|step| {
+                let gate = step.approval_gate.as_deref()?;
+                step_awaiting_approval(&step.status).then(|| WorkflowApprovalGate {
+                    step_id: step.step_id.clone(),
+                    gate: gate.to_string(),
+                })
+            })
+            .collect();
+        WorkflowApprovalReview {
+            has_approval_config,
+            pending,
+        }
+    }
+}
+
+/// True when the run-level approvals config declares at least one required gate.
+///
+/// The stored `approvals_json` is a redaction envelope
+/// (`{"kind": ..., "data": {"required_before": [...]}}`), so the config lives
+/// under `data`. Fall back to the bare value for robustness.
+fn approvals_config_present(approvals_json: &Value) -> bool {
+    let payload = approvals_json.get("data").unwrap_or(approvals_json);
+    payload
+        .get("required_before")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| !entries.is_empty())
+}
+
+/// A gated step is awaiting approval while it has not yet been admitted for
+/// execution (the orchestrator never admits steps with an approval gate set).
+fn step_awaiting_approval(status: &WorkflowRunStepStatus) -> bool {
+    matches!(
+        status,
+        WorkflowRunStepStatus::Pending
+            | WorkflowRunStepStatus::Ready
+            | WorkflowRunStepStatus::Blocked
+    )
+}
+
 pub(crate) struct WorkflowRunRow {
     pub run_id: String,
     pub workflow_record_id: String,
@@ -734,4 +827,167 @@ impl TryFrom<WorkflowRunEventRow> for WorkflowRunEvent {
 
 fn parse_workflow_json(raw: String, field: &str) -> Result<Value> {
     serde_json::from_str(&raw).map_err(|err| anyhow!("invalid workflow JSON in {field}: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    fn timestamp() -> DateTime<Utc> {
+        chrono::Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("timestamp should be valid")
+    }
+
+    /// Wrap an approvals payload in the redaction envelope the runtime stores,
+    /// so tests exercise the real `approvals_json` shape.
+    fn approvals_envelope(data: Value) -> Value {
+        json!({
+            "schemaVersion": "workflow.run_state/v0",
+            "redactionVersion": 1,
+            "kind": "workflow_run_approvals",
+            "data": data,
+        })
+    }
+
+    fn run_with_approvals(approvals_json: Value) -> WorkflowRun {
+        WorkflowRun {
+            run_id: "run-1".to_string(),
+            workflow_record_id: "workflow-1".to_string(),
+            source_thread_id: None,
+            idempotency_key: None,
+            spec_workflow_id: "wf_test".to_string(),
+            schema_version: "1".to_string(),
+            source_yaml_sha256: "sha".to_string(),
+            status: WorkflowRunStatus::Running,
+            status_reason: None,
+            reason_code: None,
+            generation: 1,
+            owner_id: None,
+            lease_expires_at: None,
+            heartbeat_at: None,
+            last_event_seq: 0,
+            agents_json: json!([]),
+            execution_defaults_json: json!({}),
+            limits_json: json!({}),
+            approvals_json,
+            loops_json: None,
+            monitor_links_json: None,
+            artifacts_json: json!({}),
+            cleanup_json: json!({}),
+            created_at: timestamp(),
+            updated_at: timestamp(),
+            started_at: Some(timestamp()),
+            completed_at: None,
+        }
+    }
+
+    fn step(step_id: &str, status: WorkflowRunStepStatus, gate: Option<&str>) -> WorkflowRunStep {
+        WorkflowRunStep {
+            step_run_id: format!("{step_id}-run"),
+            run_id: "run-1".to_string(),
+            step_id: step_id.to_string(),
+            sequence: 1,
+            title: step_id.to_string(),
+            agent_id: "agent".to_string(),
+            status,
+            status_reason: None,
+            reason_code: None,
+            parallel_group: None,
+            approval_gate: gate.map(str::to_string),
+            model_route_json: None,
+            workspace_json: None,
+            background_agent_run_id: None,
+            branch_admission_json: None,
+            completion_model_marked_state: None,
+            attempt: 1,
+            depends_on: Vec::new(),
+            created_at: timestamp(),
+            updated_at: timestamp(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn snapshot(run: WorkflowRun, steps: Vec<WorkflowRunStep>) -> WorkflowRunSnapshot {
+        WorkflowRunSnapshot {
+            run,
+            steps,
+            verifiers: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn approval_review_reports_pending_gates_and_config() {
+        let snapshot = snapshot(
+            run_with_approvals(approvals_envelope(json!({ "required_before": ["deploy"] }))),
+            vec![
+                step("collect", WorkflowRunStepStatus::Succeeded, None),
+                step("deploy", WorkflowRunStepStatus::Ready, Some("deploy")),
+                step("rollout", WorkflowRunStepStatus::Blocked, Some("prod")),
+                // Already admitted/completed gated step is not pending.
+                step("hotfix", WorkflowRunStepStatus::Succeeded, Some("deploy")),
+            ],
+        );
+
+        let review = snapshot.approval_review();
+
+        assert!(review.has_approval_config);
+        assert!(review.is_available());
+        assert!(review.is_actionable());
+        assert_eq!(2, review.pending_count());
+        assert_eq!(
+            vec![
+                WorkflowApprovalGate {
+                    step_id: "deploy".to_string(),
+                    gate: "deploy".to_string(),
+                },
+                WorkflowApprovalGate {
+                    step_id: "rollout".to_string(),
+                    gate: "prod".to_string(),
+                },
+            ],
+            review.pending
+        );
+    }
+
+    #[test]
+    fn approval_review_without_config_or_gates_is_unavailable() {
+        let snapshot = snapshot(
+            run_with_approvals(approvals_envelope(json!({ "required_before": [] }))),
+            vec![step("collect", WorkflowRunStepStatus::Ready, None)],
+        );
+
+        let review = snapshot.approval_review();
+
+        assert!(!review.has_approval_config);
+        assert!(!review.is_available());
+        assert!(!review.is_actionable());
+        assert_eq!(0, review.pending_count());
+        assert!(review.pending.is_empty());
+    }
+
+    #[test]
+    fn approval_review_surfaces_pending_gate_even_without_run_config() {
+        // A gated step is actionable even if the run-level config is absent.
+        let snapshot = snapshot(
+            run_with_approvals(json!({})),
+            vec![step(
+                "deploy",
+                WorkflowRunStepStatus::Pending,
+                Some("deploy"),
+            )],
+        );
+
+        let review = snapshot.approval_review();
+
+        assert!(!review.has_approval_config);
+        assert!(review.is_available());
+        assert!(review.is_actionable());
+        assert_eq!(1, review.pending_count());
+    }
 }

@@ -291,6 +291,15 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
     );
     assert!(!marker.exists());
 
+    // This workflow declares no approval gates, so the approval-review context
+    // is present but disabled (rows/actions must stay off).
+    let approval_review = &started.run.run.approval_review;
+    assert!(!approval_review.has_approval_config);
+    assert!(!approval_review.available);
+    assert!(!approval_review.actionable);
+    assert_eq!(0, approval_review.pending_count);
+    assert!(approval_review.pending_gates.is_empty());
+
     let list_id = mcp
         .send_raw_request(
             "thread/workflow/run/list",
@@ -377,6 +386,72 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
         cancelled.run.as_ref().map(|run| run.run.status)
     );
     assert!(!marker.exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_run_surfaces_pending_approval_review() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow approval review")?;
+    let marker = codex_home.path().join("workflow-approval-command-ran");
+    let yaml = gated_workflow_yaml(&marker, "wf_app_server_approval_review");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "idempotencyKey": "approval-review",
+            })),
+        )
+        .await?;
+    let start_resp = read_response(&mut mcp, start_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&start_resp.result)?)?;
+    let started = to_response::<ThreadWorkflowRunStartResponse>(start_resp)?;
+
+    // The gated step surfaces a pending approval review that /workflows can act on.
+    let approval_review = &started.run.run.approval_review;
+    assert!(approval_review.has_approval_config);
+    assert!(approval_review.available);
+    assert!(approval_review.actionable);
+    assert_eq!(1, approval_review.pending_count);
+    assert_eq!(1, approval_review.pending_gates.len());
+    let gate = &approval_review.pending_gates[0];
+    assert_eq!("design", gate.step_id);
+    assert_eq!("[redacted]", gate.gate);
+    assert!(!marker.exists());
+
+    // The list endpoint carries the same run-scoped approval-review context.
+    let list_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/list",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "limit": 5,
+            })),
+        )
+        .await?;
+    let list_resp = read_response(&mut mcp, list_id).await?;
+    let list = to_response::<ThreadWorkflowRunListResponse>(list_resp)?;
+    assert_eq!(1, list.data.len());
+    assert!(list.data[0].approval_review.actionable);
+    assert_eq!(1, list.data[0].approval_review.pending_count);
+    assert_eq!(
+        "[redacted]",
+        list.data[0].approval_review.pending_gates[0].gate
+    );
 
     Ok(())
 }
@@ -718,6 +793,21 @@ cleanup:
   on_complete: []
 "#
     )
+}
+
+/// A copy of [`valid_workflow_yaml`] with a run-level approval gate declared
+/// and attached to the first step, used to exercise the pending approval-review
+/// surface end-to-end.
+fn gated_workflow_yaml(marker: &Path, workflow_id: &str) -> String {
+    valid_workflow_yaml(marker, workflow_id)
+        .replace(
+            "approvals:\n  required_before: []",
+            "approvals:\n  required_before:\n    - \"before_launch_SECRET_should_not_leak\"",
+        )
+        .replace(
+            "    depends_on: []\n    outputs:\n      - \"design.md\"",
+            "    depends_on: []\n    approval_gate: \"before_launch_SECRET_should_not_leak\"\n    outputs:\n      - \"design.md\"",
+        )
 }
 
 fn yaml_single_quoted(value: &str) -> String {

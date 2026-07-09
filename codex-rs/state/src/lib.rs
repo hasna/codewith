@@ -132,6 +132,8 @@ pub use model::ThreadsPage;
 pub use model::WebhookEvent;
 pub use model::WebhookEventStatus;
 pub use model::WebhookPayloadRedaction;
+pub use model::WorkflowApprovalGate;
+pub use model::WorkflowApprovalReview;
 pub use model::WorkflowRun;
 pub use model::WorkflowRunEvent;
 pub use model::WorkflowRunSnapshot;

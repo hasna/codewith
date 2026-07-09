@@ -221,6 +221,13 @@ fn thread_workflow_run_snapshot_round_trips_nullable_numbers_and_cancel_status()
             skipped_step_count: 1,
             verifier_count: 1,
             event_count: 0,
+            approval_review: ThreadWorkflowApprovalReview {
+                has_approval_config: false,
+                available: false,
+                actionable: false,
+                pending_count: 0,
+                pending_gates: Vec::new(),
+            },
             created_at: 1_776_272_400,
             updated_at: 1_776_272_401,
             started_at: None,

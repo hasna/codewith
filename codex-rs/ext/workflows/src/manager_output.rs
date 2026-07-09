@@ -31,6 +31,7 @@ pub(crate) fn run_summary_json(snapshot: &codex_state::WorkflowRunSnapshot) -> V
             .filter(|step| step.status == status)
             .count() as i64
     };
+    let approval_review = snapshot.approval_review();
     json!({
         "threadId": snapshot.run.source_thread_id.map(|thread_id| thread_id.to_string()),
         "runId": snapshot.run.run_id,
@@ -52,6 +53,8 @@ pub(crate) fn run_summary_json(snapshot: &codex_state::WorkflowRunSnapshot) -> V
         "skippedStepCount": count_steps(codex_state::WorkflowRunStepStatus::Skipped),
         "verifierCount": snapshot.verifiers.len() as i64,
         "eventCount": snapshot.events.len() as i64,
+        "hasApprovalConfig": approval_review.has_approval_config,
+        "pendingApprovalCount": approval_review.pending_count() as i64,
         "createdAt": snapshot.run.created_at.timestamp(),
         "updatedAt": snapshot.run.updated_at.timestamp(),
         "startedAt": snapshot.run.started_at.map(|timestamp| timestamp.timestamp()),
@@ -242,5 +245,97 @@ mod tests {
         assert_eq!(6, events[0]["seq"]);
         assert_eq!(25, events[19]["seq"]);
         assert!(!value.to_string().contains("not serialized"));
+        // No approvals configured and no gated steps -> counts-only summary is
+        // false/0 and never carries the raw approvals payload.
+        assert_eq!(false, value["run"]["hasApprovalConfig"]);
+        assert_eq!(0, value["run"]["pendingApprovalCount"]);
+    }
+
+    #[test]
+    fn run_summary_json_surfaces_approval_review_counts_only() {
+        let timestamp = chrono::Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let gated_step = |step_id: &str, status: codex_state::WorkflowRunStepStatus| {
+            codex_state::WorkflowRunStep {
+                step_run_id: format!("{step_id}-run"),
+                run_id: "run-1".to_string(),
+                step_id: step_id.to_string(),
+                sequence: 1,
+                title: "title".to_string(),
+                agent_id: "agent".to_string(),
+                status,
+                status_reason: None,
+                reason_code: None,
+                parallel_group: None,
+                approval_gate: Some("before_deploy_SECRET_should_not_leak".to_string()),
+                model_route_json: None,
+                workspace_json: None,
+                background_agent_run_id: None,
+                branch_admission_json: None,
+                completion_model_marked_state: None,
+                attempt: 1,
+                depends_on: Vec::new(),
+                created_at: timestamp,
+                updated_at: timestamp,
+                started_at: None,
+                completed_at: None,
+            }
+        };
+        let snapshot = codex_state::WorkflowRunSnapshot {
+            run: codex_state::WorkflowRun {
+                run_id: "run-1".to_string(),
+                workflow_record_id: "workflow-1".to_string(),
+                source_thread_id: None,
+                idempotency_key: None,
+                spec_workflow_id: "wf_context_bound".to_string(),
+                schema_version: "1".to_string(),
+                source_yaml_sha256: "sha".to_string(),
+                status: codex_state::WorkflowRunStatus::Running,
+                status_reason: None,
+                reason_code: None,
+                generation: 1,
+                owner_id: None,
+                lease_expires_at: None,
+                heartbeat_at: None,
+                last_event_seq: 0,
+                agents_json: json!([]),
+                execution_defaults_json: json!({}),
+                limits_json: json!({}),
+                approvals_json: json!({
+                    "schemaVersion": "workflow.run_state/v0",
+                    "redactionVersion": 1,
+                    "kind": "workflow_run_approvals",
+                    "data": { "required_before": ["before_deploy_SECRET_should_not_leak"] },
+                }),
+                loops_json: None,
+                monitor_links_json: None,
+                artifacts_json: json!({}),
+                cleanup_json: json!({}),
+                created_at: timestamp,
+                updated_at: timestamp,
+                started_at: Some(timestamp),
+                completed_at: None,
+            },
+            steps: vec![
+                gated_step("deploy", codex_state::WorkflowRunStepStatus::Ready),
+                gated_step("rollout", codex_state::WorkflowRunStepStatus::Succeeded),
+            ],
+            verifiers: Vec::new(),
+            events: Vec::new(),
+        };
+
+        let value = run_summary_json(&snapshot);
+
+        assert_eq!(true, value["hasApprovalConfig"]);
+        assert_eq!(1, value["pendingApprovalCount"]);
+        // The model-context summary carries counts only, never the raw gate
+        // labels or approvals payload.
+        assert!(
+            !value
+                .to_string()
+                .contains("before_deploy_SECRET_should_not_leak")
+        );
     }
 }

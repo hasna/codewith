@@ -158,6 +158,7 @@ pub(crate) fn thread_workflow_run_summary_lines(runs: &[ThreadWorkflowRun]) -> V
     for run in runs {
         lines.push(run_header_line(run));
         lines.push(run_counts_line(run).dim().into());
+        lines.push(run_approval_line(run));
         lines.push(
             format!(
                 "  run {} | workflow {} | yaml sha256 {} | updated {}",
@@ -227,6 +228,7 @@ fn thread_workflow_run_snapshot_lines(snapshot: &ThreadWorkflowRunSnapshot) -> V
     vec![
         run_header_line(&snapshot.run),
         run_counts_line(&snapshot.run).dim().into(),
+        run_approval_line(&snapshot.run),
         format!(
             "  run {} | workflow {} | yaml sha256 {} | updated {}",
             short_id(&snapshot.run.run_id),
@@ -290,6 +292,36 @@ fn run_counts_line(run: &ThreadWorkflowRun) -> String {
         run.verifier_count,
         run.event_count
     )
+}
+
+/// Render the workflow-scoped approval-review affordance for a run.
+///
+/// The pending-review row is only shown when there is a pending approval to act
+/// on. Otherwise the row stays present but disabled — either "no pending
+/// review" when approval gates are configured, or "not configured" when the run
+/// declares none. Gate labels are sanitized so a crafted spec cannot leak
+/// content here.
+fn run_approval_line(run: &ThreadWorkflowRun) -> Line<'static> {
+    let review = &run.approval_review;
+    if review.actionable {
+        let gates = review
+            .pending_gates
+            .iter()
+            .map(|gate| sanitize_metadata_label(&gate.gate))
+            .collect::<Vec<_>>()
+            .join(", ");
+        vec![
+            "  approvals ".into(),
+            format!("{} pending review", review.pending_count).bold(),
+            " · review in /workflows".into(),
+            format!(" · gates {gates}").dim(),
+        ]
+        .into()
+    } else if review.has_approval_config {
+        "  approvals · no pending review".dim().into()
+    } else {
+        "  approvals · not configured".dim().into()
+    }
 }
 
 fn step_line(step: &ThreadWorkflowRunStep) -> Line<'static> {
@@ -484,6 +516,8 @@ fn push_remaining_count_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::ThreadWorkflowApprovalGate;
+    use codex_app_server_protocol::ThreadWorkflowApprovalReview;
     use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -589,6 +623,13 @@ mod tests {
                 skipped_step_count: 0,
                 verifier_count: 1,
                 event_count: 2,
+                approval_review: ThreadWorkflowApprovalReview {
+                    has_approval_config: false,
+                    available: false,
+                    actionable: false,
+                    pending_count: 0,
+                    pending_gates: Vec::new(),
+                },
                 created_at: 1_800_000_000,
                 updated_at: 1_800_000_123,
                 started_at: None,
@@ -673,6 +714,7 @@ mod tests {
 Workflow run detail
 • wf_dentist_lead_saas  paused  run-12345678
   steps pending 1, succeeded 1 | verifiers 1 | events 2
+  approvals · not configured
   run run-12345678 | workflow workflow-rec | yaml sha256 0123456789ab | updated 1800000123
 Steps
   1. Collect lead requirements  succeeded  collect_leads
@@ -686,6 +728,116 @@ Recent events
         );
         assert!(!rendered.contains("source_prompt"));
         assert!(!rendered.contains("secret command"));
+    }
+
+    fn run_with_approval_review(review: ThreadWorkflowApprovalReview) -> ThreadWorkflowRun {
+        ThreadWorkflowRun {
+            thread_id: Some("thread-1".to_string()),
+            run_id: "run-123456789abcdef".to_string(),
+            workflow_record_id: "workflow-record-123456789".to_string(),
+            spec_workflow_id: "wf_dentist_lead_saas".to_string(),
+            schema_version: "workflow.codex.codewith/v0".to_string(),
+            source_yaml_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            status: ThreadWorkflowRunStatus::Running,
+            status_reason: None,
+            reason_code: None,
+            generation: 1,
+            pending_step_count: 1,
+            ready_step_count: 1,
+            active_step_count: 0,
+            waiting_verifier_step_count: 0,
+            blocked_step_count: 0,
+            failed_step_count: 0,
+            succeeded_step_count: 0,
+            skipped_step_count: 0,
+            verifier_count: 0,
+            event_count: 0,
+            approval_review: review,
+            created_at: 1_800_000_000,
+            updated_at: 1_800_000_123,
+            started_at: Some(1_800_000_001),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn workflow_run_summary_renders_enabled_pending_approval_review() {
+        let run = run_with_approval_review(ThreadWorkflowApprovalReview {
+            has_approval_config: true,
+            available: true,
+            actionable: true,
+            pending_count: 2,
+            pending_gates: vec![
+                ThreadWorkflowApprovalGate {
+                    step_id: "deploy".to_string(),
+                    gate: "before_deploy".to_string(),
+                },
+                ThreadWorkflowApprovalGate {
+                    step_id: "rollout".to_string(),
+                    // A crafted gate label must never leak here.
+                    gate: "source_prompt RAW_WORKFLOW_SECRET_SHOULD_NOT_LEAK".to_string(),
+                },
+            ],
+        });
+        let rendered = render_lines(&thread_workflow_run_summary_lines(std::slice::from_ref(
+            &run,
+        )));
+
+        insta::assert_snapshot!(
+            rendered,
+            @r###"
+Workflow runs
+• wf_dentist_lead_saas  running  run-12345678
+  steps pending 1, ready 1 | verifiers 0 | events 0
+  approvals 2 pending review · review in /workflows · gates before_deploy, [redacted]
+  run run-12345678 | workflow workflow-rec | yaml sha256 0123456789ab | updated 1800000123
+"###
+        );
+        assert!(!rendered.contains("/workflow approve"));
+        assert!(rendered.contains("review in /workflows"));
+        assert!(!rendered.contains("source_prompt"));
+        assert!(!rendered.contains("RAW_WORKFLOW_SECRET_SHOULD_NOT_LEAK"));
+    }
+
+    #[test]
+    fn workflow_run_summary_disables_approval_row_without_pending_review() {
+        let configured_no_pending = run_with_approval_review(ThreadWorkflowApprovalReview {
+            has_approval_config: true,
+            available: true,
+            actionable: false,
+            pending_count: 0,
+            pending_gates: Vec::new(),
+        });
+        let not_configured = run_with_approval_review(ThreadWorkflowApprovalReview {
+            has_approval_config: false,
+            available: false,
+            actionable: false,
+            pending_count: 0,
+            pending_gates: Vec::new(),
+        });
+        let rendered = render_lines(&thread_workflow_run_summary_lines(&[
+            configured_no_pending,
+            not_configured,
+        ]));
+
+        insta::assert_snapshot!(
+            rendered,
+            @r###"
+Workflow runs
+• wf_dentist_lead_saas  running  run-12345678
+  steps pending 1, ready 1 | verifiers 0 | events 0
+  approvals · no pending review
+  run run-12345678 | workflow workflow-rec | yaml sha256 0123456789ab | updated 1800000123
+• wf_dentist_lead_saas  running  run-12345678
+  steps pending 1, ready 1 | verifiers 0 | events 0
+  approvals · not configured
+  run run-12345678 | workflow workflow-rec | yaml sha256 0123456789ab | updated 1800000123
+"###
+        );
+        // No enabled approval action is offered when there is nothing to act on.
+        assert!(!rendered.contains("/workflow approve"));
+        assert!(!rendered.contains("pending review · review"));
     }
 
     fn render_lines(lines: &[Line<'static>]) -> String {

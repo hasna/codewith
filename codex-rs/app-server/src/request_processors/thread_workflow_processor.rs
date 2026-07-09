@@ -303,11 +303,12 @@ impl ThreadWorkflowRequestProcessor {
                 .and_then(normalize_optional_string)
                 .unwrap_or_else(|| "user requested pause".to_string()),
         };
-        let run = state_db
-            .pause_workflow_run(pause_params)
-            .await
-            .map_err(|err| internal_error(format!("failed to pause thread workflow run: {err}")))?
-            .map(api_thread_workflow_run_snapshot_from_state);
+        let run = retry_transient_sqlite_busy("pause thread workflow run", || {
+            state_db.pause_workflow_run(pause_params.clone())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to pause thread workflow run: {err}")))?
+        .map(api_thread_workflow_run_snapshot_from_state);
         Ok(ThreadWorkflowRunPauseResponse { run })
     }
 
@@ -324,11 +325,12 @@ impl ThreadWorkflowRequestProcessor {
         let resume_params = codex_state::WorkflowRunResumeParams {
             run_id: params.run_id,
         };
-        let run = state_db
-            .resume_workflow_run(resume_params)
-            .await
-            .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
-            .map(api_thread_workflow_run_snapshot_from_state);
+        let run = retry_transient_sqlite_busy("resume thread workflow run", || {
+            state_db.resume_workflow_run(resume_params.clone())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
+        .map(api_thread_workflow_run_snapshot_from_state);
         Ok(ThreadWorkflowRunResumeResponse { run })
     }
 
@@ -349,11 +351,12 @@ impl ThreadWorkflowRequestProcessor {
                 .and_then(normalize_optional_string)
                 .unwrap_or_else(|| "user requested cancellation".to_string()),
         };
-        let run = state_db
-            .request_workflow_run_cancel(cancel_params)
-            .await
-            .map_err(|err| internal_error(format!("failed to cancel thread workflow run: {err}")))?
-            .map(api_thread_workflow_run_snapshot_from_state);
+        let run = retry_transient_sqlite_busy("cancel thread workflow run", || {
+            state_db.request_workflow_run_cancel(cancel_params.clone())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to cancel thread workflow run: {err}")))?
+        .map(api_thread_workflow_run_snapshot_from_state);
         Ok(ThreadWorkflowRunCancelResponse { run })
     }
 
@@ -497,6 +500,7 @@ fn api_thread_workflow_run_from_state(
         skipped_step_count: count_steps(codex_state::WorkflowRunStepStatus::Skipped),
         verifier_count: snapshot.verifiers.len() as i64,
         event_count: snapshot.events.len() as i64,
+        approval_review: api_thread_workflow_approval_review_from_state(snapshot.approval_review()),
         created_at: snapshot.run.created_at.timestamp(),
         updated_at: snapshot.run.updated_at.timestamp(),
         started_at: snapshot
@@ -508,6 +512,86 @@ fn api_thread_workflow_run_from_state(
             .completed_at
             .map(|timestamp| timestamp.timestamp()),
     }
+}
+
+fn api_thread_workflow_approval_review_from_state(
+    review: codex_state::WorkflowApprovalReview,
+) -> ThreadWorkflowApprovalReview {
+    let available = review.is_available();
+    let actionable = review.is_actionable();
+    let pending_count = review.pending_count() as i64;
+    ThreadWorkflowApprovalReview {
+        has_approval_config: review.has_approval_config,
+        available,
+        actionable,
+        pending_count,
+        pending_gates: review
+            .pending
+            .into_iter()
+            .map(|gate| ThreadWorkflowApprovalGate {
+                step_id: sanitize_workflow_metadata_label(&gate.step_id),
+                gate: sanitize_workflow_metadata_label(&gate.gate),
+            })
+            .collect(),
+    }
+}
+
+fn sanitize_workflow_metadata_label(value: &str) -> String {
+    let mut cleaned = String::new();
+    let mut last_was_space = false;
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if character.is_whitespace() {
+            if !last_was_space {
+                cleaned.push(' ');
+            }
+            last_was_space = true;
+        } else {
+            cleaned.push(character);
+            last_was_space = false;
+        }
+    }
+
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return "[unnamed]".to_string();
+    }
+    if workflow_metadata_label_looks_sensitive(cleaned) {
+        return "[redacted]".to_string();
+    }
+    truncate_workflow_metadata_label(cleaned, /*max_chars*/ 80)
+}
+
+fn workflow_metadata_label_looks_sensitive(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "source_prompt",
+        "sourceprompt",
+        "raw yaml",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+        "token",
+        "bearer ",
+        "sk-",
+    ]
+    .into_iter()
+    .any(|pattern| value.contains(pattern))
+}
+
+fn truncate_workflow_metadata_label(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn api_thread_workflow_run_step_from_state(

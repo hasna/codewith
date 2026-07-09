@@ -581,6 +581,8 @@ export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotificatio
 export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
 export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
 export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";
+export type { ThreadWorkflowApprovalGate } from "./ThreadWorkflowApprovalGate";
+export type { ThreadWorkflowApprovalReview } from "./ThreadWorkflowApprovalReview";
 export type { ThreadWorkflowRun } from "./ThreadWorkflowRun";
 export type { ThreadWorkflowRunEvent } from "./ThreadWorkflowRunEvent";
 export type { ThreadWorkflowRunSnapshot } from "./ThreadWorkflowRunSnapshot";

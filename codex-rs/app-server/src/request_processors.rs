@@ -362,6 +362,8 @@ use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::ThreadWorkflow;
+use codex_app_server_protocol::ThreadWorkflowApprovalGate;
+use codex_app_server_protocol::ThreadWorkflowApprovalReview;
 use codex_app_server_protocol::ThreadWorkflowCreateParams;
 use codex_app_server_protocol::ThreadWorkflowCreateResponse;
 use codex_app_server_protocol::ThreadWorkflowGetParams;

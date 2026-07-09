@@ -120,6 +120,8 @@ pub use thread_schedule::ThreadScheduleStatus;
 pub use webhook::WebhookEvent;
 pub use webhook::WebhookEventStatus;
 pub use webhook::WebhookPayloadRedaction;
+pub use workflow::WorkflowApprovalGate;
+pub use workflow::WorkflowApprovalReview;
 pub use workflow::WorkflowRun;
 pub use workflow::WorkflowRunEvent;
 pub use workflow::WorkflowRunSnapshot;
