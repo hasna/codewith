@@ -279,9 +279,7 @@ mod tests {
         sqlx::query("CREATE TABLE busy_probe (id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
             .execute(&mut holder)
             .await?;
-        sqlx::query("BEGIN IMMEDIATE")
-            .execute(&mut holder)
-            .await?;
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await?;
         sqlx::query("INSERT INTO busy_probe (v) VALUES ('held')")
             .execute(&mut holder)
             .await?;

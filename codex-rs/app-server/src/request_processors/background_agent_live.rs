@@ -4289,7 +4289,8 @@ fn tolerate_transient_busy<T>(
         Err(err) if is_transient_sqlite_busy(&err) => {
             warn!(
                 run_id,
-                what, "skipping best-effort background agent bookkeeping write after persistent SQLite busy: {err}"
+                what,
+                "skipping best-effort background agent bookkeeping write after persistent SQLite busy: {err}"
             );
             Ok(())
         }
