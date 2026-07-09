@@ -352,8 +352,10 @@ impl ChatWidget {
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        let retry_delay = self
-            .maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::TransientAvailability);
+        let retry_delay = self.maybe_schedule_usage_self_heal_retry(
+            UsageSelfHealErrorKind::TransientAvailability,
+            /*error_message*/ None,
+        );
         self.finalize_turn();
 
         let message = if message.trim().is_empty() {
@@ -441,7 +443,12 @@ impl ChatWidget {
                     | None
             );
         let retry_delay = should_retry
-            .then(|| self.maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::UsageLimit))
+            .then(|| {
+                self.maybe_schedule_usage_self_heal_retry(
+                    UsageSelfHealErrorKind::UsageLimit,
+                    Some(message.as_str()),
+                )
+            })
             .flatten();
 
         match rate_limit_reached_type {

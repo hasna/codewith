@@ -1,6 +1,11 @@
 //! Automatic retry scheduling for recoverable usage-limit and availability failures.
 
 use super::*;
+use chrono::DateTime;
+use chrono::Local;
+use chrono::NaiveDateTime;
+use chrono::NaiveTime;
+use chrono::TimeZone;
 use chrono::Utc;
 
 #[derive(Debug, Clone, Default)]
@@ -50,6 +55,7 @@ impl ChatWidget {
     pub(super) fn maybe_schedule_usage_self_heal_retry(
         &mut self,
         kind: UsageSelfHealErrorKind,
+        error_message: Option<&str>,
     ) -> Option<Duration> {
         let config = &self.config.usage_self_heal;
         if !config.enabled || config.max_retries == 0 {
@@ -67,7 +73,7 @@ impl ChatWidget {
         let retry_number = self.usage_self_heal.consecutive_retries + 1;
         let delay = match kind {
             UsageSelfHealErrorKind::UsageLimit => self
-                .usage_self_heal_reset_retry_delay()
+                .usage_self_heal_reset_retry_delay(error_message)
                 .unwrap_or_else(|| self.usage_self_heal_backoff_delay(retry_number)),
             UsageSelfHealErrorKind::TransientAvailability => {
                 self.usage_self_heal_backoff_delay(retry_number)
@@ -150,22 +156,129 @@ impl ChatWidget {
         Duration::from_secs(seconds)
     }
 
-    fn usage_self_heal_reset_retry_delay(&self) -> Option<Duration> {
+    fn usage_self_heal_reset_retry_delay(&self, error_message: Option<&str>) -> Option<Duration> {
         let config = &self.config.usage_self_heal;
         let now = Utc::now().timestamp();
-        let reset_at = self
-            .auth_profile_auto_switch_snapshots_by_limit_id
-            .values()
-            .flat_map(|snapshot| [snapshot.secondary.as_ref(), snapshot.primary.as_ref()])
-            .flatten()
-            .filter(|window| window.used_percent >= 100)
-            .filter_map(|window| window.resets_at)
-            .filter(|reset_at| *reset_at > now)
-            .min()?;
+        let reset_at = error_message
+            .and_then(parse_usage_limit_reset_timestamp)
+            .map(|dt| dt.timestamp())
+            .or_else(|| {
+                self.auth_profile_auto_switch_snapshots_by_limit_id
+                    .values()
+                    .flat_map(|snapshot| [snapshot.secondary.as_ref(), snapshot.primary.as_ref()])
+                    .flatten()
+                    .filter(|window| window.used_percent >= 100)
+                    .filter_map(|window| window.resets_at)
+                    .filter(|reset_at| *reset_at > now)
+                    .min()
+            })?;
         let delay_secs = reset_at
             .saturating_sub(now)
             .saturating_add(i64::try_from(config.reset_retry_buffer_secs).unwrap_or(i64::MAX));
         let delay_secs = u64::try_from(delay_secs).ok()?;
         (delay_secs <= config.max_reset_retry_delay_secs).then(|| Duration::from_secs(delay_secs))
+    }
+}
+
+fn parse_usage_limit_reset_timestamp(message: &str) -> Option<DateTime<Utc>> {
+    let marker = "try again at ";
+    let start = message.to_ascii_lowercase().find(marker)? + marker.len();
+    let candidate = message.get(start..)?.trim_start();
+    let mut parts = Vec::new();
+    for part in candidate.split_whitespace() {
+        let trimmed = part
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '.' | ';' | ')' | ']' | '}'));
+        if trimmed.is_empty() {
+            continue;
+        }
+        parts.push(strip_ordinal_day_suffix(trimmed));
+        if matches!(trimmed.to_ascii_uppercase().as_str(), "AM" | "PM") {
+            break;
+        }
+    }
+    let date_text = parts.join(" ");
+    let naive = if let Ok(naive) = NaiveDateTime::parse_from_str(&date_text, "%b %d, %Y %I:%M %p") {
+        naive
+    } else if let Ok(naive) = NaiveDateTime::parse_from_str(&date_text, "%b %d %Y %I:%M %p") {
+        naive
+    } else if let Ok(time) = NaiveTime::parse_from_str(&date_text, "%I:%M %p") {
+        let today = Local::now().date_naive();
+        let candidate = today.and_time(time);
+        let local_candidate = resolve_local_datetime(candidate)?;
+        if local_candidate < Local::now() {
+            today.succ_opt()?.and_time(time)
+        } else {
+            candidate
+        }
+    } else {
+        return None;
+    };
+    resolve_local_datetime(naive).map(|dt| dt.with_timezone(&Utc))
+}
+
+fn resolve_local_datetime(naive: NaiveDateTime) -> Option<DateTime<Local>> {
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .or_else(|| Local.from_local_datetime(&naive).earliest())
+}
+
+fn strip_ordinal_day_suffix(value: &str) -> String {
+    let (stem, comma) = value
+        .strip_suffix(',')
+        .map_or((value, false), |stem| (stem, true));
+    let bytes = stem.as_bytes();
+    if bytes.len() >= 3
+        && bytes[bytes.len() - 3].is_ascii_digit()
+        && matches!(
+            (bytes[bytes.len() - 2], bytes[bytes.len() - 1]),
+            (b's', b't') | (b'n', b'd') | (b'r', b'd') | (b't', b'h')
+        )
+    {
+        let mut stripped = stem[..stem.len() - 2].to_string();
+        if comma {
+            stripped.push(',');
+        }
+        stripped
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Datelike;
+    use chrono::Timelike;
+
+    #[test]
+    fn parses_usage_limit_reset_timestamp_in_local_timezone() {
+        let reset_at = parse_usage_limit_reset_timestamp(
+            "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 10th, 2026 4:53 PM.",
+        )
+        .expect("reset timestamp should parse")
+        .with_timezone(&Local);
+
+        assert_eq!(reset_at.year(), 2026);
+        assert_eq!(reset_at.month(), 7);
+        assert_eq!(reset_at.day(), 10);
+        assert_eq!(reset_at.hour(), 16);
+        assert_eq!(reset_at.minute(), 53);
+    }
+
+    #[test]
+    fn returns_none_when_usage_limit_message_has_no_reset_timestamp() {
+        assert!(parse_usage_limit_reset_timestamp("You've hit your usage limit.").is_none());
+    }
+
+    #[test]
+    fn parses_same_day_usage_limit_reset_timestamp_in_local_timezone() {
+        let reset_at =
+            parse_usage_limit_reset_timestamp("Usage limit reached; try again at 4:53 PM")
+                .expect("reset timestamp should parse")
+                .with_timezone(&Local);
+
+        assert_eq!(reset_at.hour(), 16);
+        assert_eq!(reset_at.minute(), 53);
     }
 }
