@@ -42,6 +42,26 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.61] - 2026-07-09
+
+Tag: `rust-v0.1.61`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.61>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.60...rust-v0.1.61>
+
+Hotfix release for auth-profile switch status context windows.
+
+### Fixed
+
+- Status: sessions opened under a non-API/ChatGPT profile now refresh
+  token-count context windows immediately after switching to an OpenAI API-key
+  profile, so `/status` stops showing the prior 258K denominator and reflects
+  the API model's 1M-class window without waiting for a new session.
+
+### Security
+
+- Dependencies: updated `crossbeam-epoch` to `0.9.20` to resolve
+  `RUSTSEC-2026-0204` from the release gate.
+
 ## [0.1.60] - 2026-07-08
 
 Tag: `rust-v0.1.60`
