@@ -1023,14 +1023,8 @@ fn local_session_json(
 
 fn schedule_json(schedule: codex_state::ThreadSchedule) -> Value {
     let prompt_char_count = schedule.prompt.chars().count();
-    let prompt_preview_chars =
-        MISSION_CONTROL_PREVIEW_CHARS.min(prompt_char_count.saturating_sub(1));
-    let prompt_preview = schedule
-        .prompt
-        .chars()
-        .take(prompt_preview_chars)
-        .collect::<String>();
-    let prompt_preview_truncated = prompt_preview_chars < prompt_char_count;
+    let (prompt_preview, prompt_preview_truncated) =
+        truncate_preview_with_truncation(schedule.prompt.as_str());
     let prompt_sha256 = sha256_hex(schedule.prompt.as_bytes());
     json!({
         "threadId": schedule.thread_id.to_string(),
@@ -1421,6 +1415,7 @@ mod tests {
         let raw_schedule_tail = "RAW_SCHEDULE_SENTINEL_DO_NOT_EMIT";
         let omitted_schedule_tail = "OMITTED_SCHEDULE_SENTINEL_DO_NOT_EMIT";
         let short_schedule_prompt = "Short schedule sentinel".to_string();
+        let short_schedule_preview = truncate_preview(short_schedule_prompt.as_str());
         let raw_request_payload = format!(
             "needs user decision {} {raw_request_tail}",
             "x".repeat(MISSION_CONTROL_PREVIEW_CHARS + 16)
@@ -1630,19 +1625,15 @@ mod tests {
             .expect("short schedule should be listed");
         assert!(short_schedule.get("prompt").is_none());
         assert_eq!(short_schedule["promptOmitted"], true);
-        assert_eq!(short_schedule["promptPreviewTruncated"], true);
-        assert!(
-            short_schedule["promptPreview"]
-                .as_str()
-                .expect("short prompt preview should be a string")
-                .chars()
-                .count()
-                < short_schedule_prompt.chars().count()
+        assert_eq!(short_schedule["promptPreviewTruncated"], false);
+        assert_eq!(short_schedule["promptPreview"], short_schedule_preview);
+        assert_eq!(
+            short_schedule["promptLengthChars"].as_u64(),
+            Some(short_schedule_prompt.chars().count() as u64)
         );
         let overview_text = overview.to_string();
         assert!(!overview_text.contains(raw_schedule_tail));
         assert!(!overview_text.contains(omitted_schedule_tail));
-        assert!(!overview_text.contains(short_schedule_prompt.as_str()));
         assert_eq!(overview["capabilities"]["scheduledTasks"], true);
         assert_eq!(overview["capabilities"]["workflowMutation"], false);
 
