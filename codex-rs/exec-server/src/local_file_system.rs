@@ -752,7 +752,7 @@ fn windows_file_reparse_tag(handle: std::os::windows::io::RawHandle) -> io::Resu
     // `tag_info` is owned, correctly aligned, writable storage for the call.
     let mut tag_info: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
     let buffer_size = u32::try_from(std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
-        .expect("FILE_ATTRIBUTE_TAG_INFO size fits in u32");
+        .map_err(|_| io::Error::other("FILE_ATTRIBUTE_TAG_INFO size does not fit in u32"))?;
     let ok = unsafe {
         GetFileInformationByHandleEx(
             handle as HANDLE,
@@ -794,14 +794,15 @@ fn windows_path_snapshot(path: &Path) -> io::Result<PathSnapshot> {
         .open(path)?;
 
     let info = windows_file_information(file.as_raw_handle())?;
-    let mut snapshot = PathSnapshot {
+    let snapshot = PathSnapshot {
         identity: info.identity,
         file_attributes: info.file_attributes,
         reparse_tag: info.reparse_tag,
     };
 
     #[cfg(all(test, windows))]
-    {
+    let snapshot = {
+        let mut snapshot = snapshot;
         use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
         if let Some((test_path, reparse_tag)) = PATH_SNAPSHOT_REPARSE_TAG_FOR_TEST
@@ -814,7 +815,9 @@ fn windows_path_snapshot(path: &Path) -> io::Result<PathSnapshot> {
             snapshot.file_attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
             snapshot.reparse_tag = Some(reparse_tag);
         }
-    }
+
+        snapshot
+    };
 
     Ok(snapshot)
 }
