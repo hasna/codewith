@@ -75,6 +75,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadScheduleRunUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadWorkflowRunUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadMonitorUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
@@ -216,6 +219,9 @@ mod tests {
     use codex_app_server_protocol::ServerNotification;
     use codex_app_server_protocol::ThreadSettings;
     use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
+    use codex_app_server_protocol::ThreadWorkflowRun;
+    use codex_app_server_protocol::ThreadWorkflowRunStatus;
+    use codex_app_server_protocol::ThreadWorkflowRunUpdatedNotification;
     use codex_app_server_protocol::WarningNotification;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
@@ -329,6 +335,45 @@ mod tests {
             ServerNotification::ThreadSettingsUpdated(ThreadSettingsUpdatedNotification {
                 thread_id: thread_id.to_string(),
                 thread_settings: test_thread_settings(),
+            });
+
+        let target = server_notification_thread_target(&notification);
+
+        assert_eq!(target, ServerNotificationThreadTarget::Thread(thread_id));
+    }
+
+    #[test]
+    fn thread_workflow_run_updated_notifications_route_to_threads() {
+        let thread_id = ThreadId::new();
+        let notification =
+            ServerNotification::ThreadWorkflowRunUpdated(ThreadWorkflowRunUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                run: ThreadWorkflowRun {
+                    thread_id: Some(thread_id.to_string()),
+                    run_id: "run-1".to_string(),
+                    workflow_record_id: "workflow-record-1".to_string(),
+                    spec_workflow_id: "workflow-1".to_string(),
+                    schema_version: "1".to_string(),
+                    source_yaml_sha256: "sha256".to_string(),
+                    status: ThreadWorkflowRunStatus::Running,
+                    status_reason: None,
+                    reason_code: None,
+                    generation: 1,
+                    pending_step_count: 0,
+                    ready_step_count: 0,
+                    active_step_count: 1,
+                    waiting_verifier_step_count: 0,
+                    blocked_step_count: 0,
+                    failed_step_count: 0,
+                    succeeded_step_count: 0,
+                    skipped_step_count: 0,
+                    verifier_count: 0,
+                    event_count: 0,
+                    created_at: 1,
+                    updated_at: 2,
+                    started_at: Some(1),
+                    completed_at: None,
+                },
             });
 
         let target = server_notification_thread_target(&notification);
