@@ -74,6 +74,7 @@ use crate::tools::ToolRouter;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::ExecCommandHandler;
+use crate::tools::handlers::ManageAuthProfilesHandler;
 use crate::tools::handlers::RenameSessionHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::ShellCommandHandler;
@@ -2111,6 +2112,191 @@ async fn token_info_for_current_model_clears_api_replay_window_without_current_w
             ..info
         }
     );
+}
+
+#[tokio::test]
+async fn profile_switch_updates_token_context_window_for_api_profile() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "api",
+        &api_key_auth_dot_json_for_tests("api-key"),
+    )?;
+    let (session, _turn_context, rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        codex_home.path(),
+        |config| {
+            config.model = Some("gpt-5.5".to_string());
+        },
+    )
+    .await;
+
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 12_400_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 53_800,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(258_400),
+        }));
+    }
+
+    handlers::update_thread_settings(
+        &session,
+        "switch-profile".to_string(),
+        ThreadSettingsOverrides {
+            auth_profile: Some(Some("api".to_string())),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let mut saw_settings_applied = false;
+    let token_count = loop {
+        let event = tokio::time::timeout(StdDuration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for profile switch events")
+            .expect("event");
+        match event.msg {
+            EventMsg::ThreadSettingsApplied(_) => saw_settings_applied = true,
+            EventMsg::TokenCount(token_count) => break token_count,
+            _ => {}
+        }
+    };
+
+    assert!(saw_settings_applied);
+    let info = token_count.info.expect("token info");
+    assert_eq!(info.model_context_window, Some(997_500));
+    assert_eq!(info.last_token_usage.total_tokens, 53_800);
+    assert_eq!(
+        session
+            .state
+            .lock()
+            .await
+            .token_info()
+            .expect("session token info")
+            .model_context_window,
+        Some(997_500)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn token_usage_recording_uses_current_auth_profile_context_window() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "api",
+        &api_key_auth_dot_json_for_tests("api-key"),
+    )?;
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        codex_home.path(),
+        |config| {
+            config.model = Some("gpt-5.5".to_string());
+        },
+    )
+    .await;
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            auth_profile: Some(Some("api".to_string())),
+            ..Default::default()
+        })
+        .await?;
+
+    session
+        .record_token_usage_info(
+            &turn_context,
+            Some(&TokenUsage {
+                total_tokens: 53_800,
+                ..TokenUsage::default()
+            }),
+        )
+        .await;
+
+    let info = session.state.lock().await.token_info().expect("token info");
+    assert_eq!(info.model_context_window, Some(997_500));
+    assert_eq!(info.last_token_usage.total_tokens, 53_800);
+    Ok(())
+}
+
+#[tokio::test]
+async fn manage_auth_profiles_switch_updates_token_context_window_for_active_turn()
+-> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "api",
+        &api_key_auth_dot_json_for_tests("api-key"),
+    )?;
+    let (session, turn_context, rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        Vec::new(),
+        codex_home.path(),
+        |config| {
+            config.model = Some("gpt-5.5".to_string());
+        },
+    )
+    .await;
+    let turn_sub_id = turn_context.sub_id.clone();
+
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 12_400_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 53_800,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(258_400),
+        }));
+    }
+
+    ManageAuthProfilesHandler
+        .handle(ToolInvocation {
+            session,
+            turn: turn_context,
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-1".to_string(),
+            tool_name: codex_tools::ToolName::plain("manage_auth_profiles"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: json!({
+                    "action": "switch",
+                    "profile": "api",
+                })
+                .to_string(),
+            },
+        })
+        .await?;
+
+    let event = tokio::time::timeout(StdDuration::from_secs(2), rx.recv())
+        .await
+        .expect("timeout waiting for token count")
+        .expect("token count event");
+    assert_eq!(event.id, turn_sub_id);
+    let EventMsg::TokenCount(token_count) = event.msg else {
+        panic!("expected token count event");
+    };
+    let info = token_count.info.expect("token info");
+    assert_eq!(info.model_context_window, Some(997_500));
+    assert_eq!(info.last_token_usage.total_tokens, 53_800);
+    Ok(())
 }
 
 #[tokio::test]
