@@ -734,9 +734,20 @@ pub struct RealtimeAudioToml {
     pub speaker: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolPolicy {
+    #[default]
+    Full,
+    InfinityAgent,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ToolsToml {
+    /// Selects the tool-construction policy. The default preserves the complete
+    /// ordinary Codewith tool surface.
+    pub policy: Option<ToolPolicy>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_web_search_tool_config"

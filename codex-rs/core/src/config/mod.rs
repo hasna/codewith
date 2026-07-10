@@ -24,6 +24,7 @@ use codex_config::ResidencyRequirement;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::ToolPolicy;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
@@ -1037,6 +1038,9 @@ pub struct Config {
 
     /// Warnings collected during config load that should be shown on startup.
     pub startup_warnings: Vec<String>,
+
+    /// Effective tool-construction policy after managed requirements.
+    pub tool_policy: ToolPolicy,
 
     /// Optional override of model selection.
     pub model: Option<String>,
@@ -3129,6 +3133,8 @@ impl Config {
         // Ensure that every field of ConfigRequirements is applied to the final
         // Config.
         let ConfigRequirements {
+            tool_policy: mut constrained_tool_policy,
+            infinity_agent_trust_key: _,
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
             permission_profile: mut constrained_permission_profile,
@@ -3152,6 +3158,24 @@ impl Config {
             .startup_warnings()
             .unwrap_or_default()
             .to_vec();
+        let configured_tool_policy = cfg
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.policy)
+            .unwrap_or_default();
+        apply_requirement_constrained_value(
+            "tools.policy",
+            configured_tool_policy,
+            &mut constrained_tool_policy,
+            &mut startup_warnings,
+        )?;
+        let tool_policy = constrained_tool_policy.value();
+        if tool_policy == ToolPolicy::InfinityAgent {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "`tools.policy = \"infinity-agent\"` requires signed policy verification material",
+            ));
+        }
         let user_instructions = AgentsMdManager::load_global_instructions(
             LOCAL_FS.as_ref(),
             Some(&codex_home),
@@ -4037,6 +4061,7 @@ impl Config {
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let config = Self {
+            tool_policy,
             model,
             service_tier,
             review_model,

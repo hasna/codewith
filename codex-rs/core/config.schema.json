@@ -2900,6 +2900,13 @@
         }
       ]
     },
+    "ToolPolicy": {
+      "enum": [
+        "full",
+        "infinity-agent"
+      ],
+      "type": "string"
+    },
     "ToolSuggestConfig": {
       "additionalProperties": false,
       "properties": {
@@ -2964,6 +2971,14 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolPolicy"
+            }
+          ],
+          "description": "Selects the tool-construction policy. The default preserves the complete ordinary Codewith tool surface."
         },
         "web_search": {
           "allOf": [

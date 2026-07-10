@@ -969,6 +969,13 @@ fn sanitize_project_config(config: &mut TomlValue) -> Vec<String> {
             ignored_keys.push((*key).to_string());
         }
     }
+    if table
+        .get_mut("tools")
+        .and_then(TomlValue::as_table_mut)
+        .is_some_and(|tools| tools.remove("policy").is_some())
+    {
+        ignored_keys.push("tools.policy".to_string());
+    }
 
     ignored_keys
 }
@@ -1419,6 +1426,34 @@ mod unit_tests {
     #[cfg(windows)]
     use std::path::Path;
     use tempfile::tempdir;
+
+    #[test]
+    fn infinity_agent_policy_project_config_cannot_select_tool_policy() -> anyhow::Result<()> {
+        let mut config: TomlValue = toml::from_str(
+            r#"
+[tools]
+policy = "full"
+
+[tools.experimental_request_user_input]
+enabled = false
+"#,
+        )?;
+
+        assert_eq!(
+            sanitize_project_config(&mut config),
+            vec!["tools.policy".to_string()]
+        );
+        assert_eq!(
+            config,
+            toml::from_str::<TomlValue>(
+                r#"
+[tools.experimental_request_user_input]
+enabled = false
+"#,
+            )?
+        );
+        Ok(())
+    }
 
     #[test]
     fn ensure_resolve_relative_paths_in_config_toml_preserves_all_fields() -> anyhow::Result<()> {

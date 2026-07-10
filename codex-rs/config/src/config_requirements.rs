@@ -18,6 +18,7 @@ use super::requirements_exec_policy::RequirementsExecPolicyToml;
 use crate::Constrained;
 use crate::ConstraintError;
 use crate::ManagedHooksRequirementsToml;
+use crate::config_toml::ToolPolicy;
 use crate::mcp_types::AppToolApproval;
 use crate::permissions_toml::PermissionProfileToml;
 use crate::types::WindowsSandboxModeToml;
@@ -142,6 +143,8 @@ impl<T> std::ops::DerefMut for ConstrainedWithSource<T> {
 /// normalization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigRequirements {
+    pub tool_policy: ConstrainedWithSource<ToolPolicy>,
+    pub infinity_agent_trust_key: Option<Sourced<AbsolutePathBuf>>,
     pub approval_policy: ConstrainedWithSource<AskForApproval>,
     pub approvals_reviewer: ConstrainedWithSource<ApprovalsReviewer>,
     pub permission_profile: ConstrainedWithSource<PermissionProfile>,
@@ -167,6 +170,11 @@ pub struct ConfigRequirements {
 impl Default for ConfigRequirements {
     fn default() -> Self {
         Self {
+            tool_policy: ConstrainedWithSource::new(
+                Constrained::allow_any_from_default(),
+                /*source*/ None,
+            ),
+            infinity_agent_trust_key: None,
             approval_policy: ConstrainedWithSource::new(
                 Constrained::allow_any_from_default(),
                 /*source*/ None,
@@ -819,6 +827,8 @@ pub(crate) fn merge_app_requirements_descending(
 /// Base config deserialized from system `requirements.toml` or MDM.
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ConfigRequirementsToml {
+    pub allowed_tool_policies: Option<Vec<ToolPolicy>>,
+    pub infinity_agent_trust_key: Option<String>,
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
     pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxModeRequirement>>,
@@ -874,6 +884,8 @@ impl<T> std::ops::Deref for Sourced<T> {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConfigRequirementsWithSources {
+    pub allowed_tool_policies: Option<Sourced<Vec<ToolPolicy>>>,
+    pub infinity_agent_trust_key: Option<Sourced<String>>,
     pub allowed_approval_policies: Option<Sourced<Vec<AskForApproval>>>,
     pub allowed_approvals_reviewers: Option<Sourced<Vec<ApprovalsReviewer>>>,
     pub allowed_sandbox_modes: Option<Sourced<Vec<SandboxModeRequirement>>>,
@@ -915,6 +927,8 @@ impl ConfigRequirementsWithSources {
         // Destructure without `..` so adding fields to `ConfigRequirementsToml`
         // forces this merge logic to be updated.
         let ConfigRequirementsToml {
+            allowed_tool_policies: _,
+            infinity_agent_trust_key: _,
             allowed_approval_policies: _,
             allowed_approvals_reviewers: _,
             allowed_sandbox_modes: _,
@@ -951,6 +965,8 @@ impl ConfigRequirementsWithSources {
             other,
             source,
             {
+                allowed_tool_policies,
+                infinity_agent_trust_key,
                 allowed_approval_policies,
                 allowed_approvals_reviewers,
                 allowed_sandbox_modes,
@@ -984,6 +1000,8 @@ impl ConfigRequirementsWithSources {
 
     pub fn into_toml(self) -> ConfigRequirementsToml {
         let ConfigRequirementsWithSources {
+            allowed_tool_policies,
+            infinity_agent_trust_key,
             allowed_approval_policies,
             allowed_approvals_reviewers,
             allowed_sandbox_modes,
@@ -1006,6 +1024,8 @@ impl ConfigRequirementsWithSources {
             guardian_policy_config,
         } = self;
         ConfigRequirementsToml {
+            allowed_tool_policies: allowed_tool_policies.map(|sourced| sourced.value),
+            infinity_agent_trust_key: infinity_agent_trust_key.map(|sourced| sourced.value),
             allowed_approval_policies: allowed_approval_policies.map(|sourced| sourced.value),
             allowed_approvals_reviewers: allowed_approvals_reviewers.map(|sourced| sourced.value),
             allowed_sandbox_modes: allowed_sandbox_modes.map(|sourced| sourced.value),
@@ -1095,7 +1115,9 @@ impl ConfigRequirementsToml {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.allowed_approval_policies.is_none()
+        self.allowed_tool_policies.is_none()
+            && self.infinity_agent_trust_key.is_none()
+            && self.allowed_approval_policies.is_none()
             && self.allowed_approvals_reviewers.is_none()
             && self.allowed_sandbox_modes.is_none()
             && self.allowed_permission_profiles.is_none()
@@ -1148,6 +1170,8 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
         // config loading and requirements API projection. The normalized
         // constraints below only need the compiled PermissionProfile envelope.
         let ConfigRequirementsWithSources {
+            allowed_tool_policies,
+            infinity_agent_trust_key,
             allowed_approval_policies,
             allowed_approvals_reviewers,
             allowed_sandbox_modes,
@@ -1169,6 +1193,58 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
             permissions,
             guardian_policy_config,
         } = toml;
+
+        let tool_policy = match allowed_tool_policies {
+            Some(Sourced {
+                value: policies,
+                source: requirement_source,
+            }) => {
+                let Some(initial_value) = policies.first().copied() else {
+                    return Err(ConstraintError::empty_field("allowed_tool_policies"));
+                };
+
+                let requirement_source_for_error = requirement_source.clone();
+                let constrained = Constrained::new(initial_value, move |candidate| {
+                    if policies.contains(candidate) {
+                        Ok(())
+                    } else {
+                        Err(ConstraintError::InvalidValue {
+                            field_name: "tools.policy",
+                            candidate: format!("{candidate:?}"),
+                            allowed: format!("{policies:?}"),
+                            requirement_source: requirement_source_for_error.clone(),
+                        })
+                    }
+                })?;
+                ConstrainedWithSource::new(constrained, Some(requirement_source))
+            }
+            None => ConstrainedWithSource::new(
+                Constrained::allow_any_from_default(),
+                /*source*/ None,
+            ),
+        };
+        let infinity_agent_trust_key = infinity_agent_trust_key
+            .map(|sourced| {
+                let Sourced { value, source } = sourced;
+                if !matches!(&source, RequirementSource::SystemRequirementsToml { .. }) {
+                    return Err(ConstraintError::InvalidValue {
+                        field_name: "infinity_agent_trust_key",
+                        candidate: "non-system requirements source".to_string(),
+                        allowed: "the system requirements file".to_string(),
+                        requirement_source: source,
+                    });
+                }
+                let path = AbsolutePathBuf::from_absolute_path(value).map_err(|_| {
+                    ConstraintError::InvalidValue {
+                        field_name: "infinity_agent_trust_key",
+                        candidate: "non-absolute path".to_string(),
+                        allowed: "an absolute path".to_string(),
+                        requirement_source: source.clone(),
+                    }
+                })?;
+                Ok(Sourced::new(path, source))
+            })
+            .transpose()?;
 
         let approval_policy = match allowed_approval_policies {
             Some(Sourced {
@@ -1427,6 +1503,8 @@ impl TryFrom<ConfigRequirementsWithSources> for ConfigRequirements {
         });
         let guardian_policy_config_source = guardian_policy_config.map(|sourced| sourced.source);
         Ok(ConfigRequirements {
+            tool_policy,
+            infinity_agent_trust_key,
             approval_policy,
             approvals_reviewer,
             permission_profile,
@@ -1475,6 +1553,8 @@ pub fn sandbox_mode_requirement_for_permission_profile(
 mod tests {
     use super::*;
     use crate::HookEventsToml;
+    use crate::config_toml::ToolPolicy;
+    use crate::config_toml::ToolsToml;
     use anyhow::Result;
     use codex_execpolicy::Decision;
     use codex_execpolicy::Evaluation;
@@ -1483,6 +1563,7 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use codex_utils_absolute_path::AbsolutePathBufGuard;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
     use toml::from_str;
 
     fn tokens(cmd: &[&str]) -> Vec<String> {
@@ -1516,6 +1597,8 @@ mod tests {
 
     fn with_unknown_source(toml: ConfigRequirementsToml) -> ConfigRequirementsWithSources {
         let ConfigRequirementsToml {
+            allowed_tool_policies,
+            infinity_agent_trust_key,
             allowed_approval_policies,
             allowed_approvals_reviewers,
             allowed_sandbox_modes,
@@ -1539,6 +1622,10 @@ mod tests {
             guardian_policy_config,
         } = toml;
         ConfigRequirementsWithSources {
+            allowed_tool_policies: allowed_tool_policies
+                .map(|value| Sourced::new(value, RequirementSource::Unknown)),
+            infinity_agent_trust_key: infinity_agent_trust_key
+                .map(|value| Sourced::new(value, RequirementSource::Unknown)),
             allowed_approval_policies: allowed_approval_policies
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
             allowed_approvals_reviewers: allowed_approvals_reviewers
@@ -1571,6 +1658,101 @@ mod tests {
             guardian_policy_config: guardian_policy_config
                 .map(|value| Sourced::new(value, RequirementSource::Unknown)),
         }
+    }
+
+    #[test]
+    fn infinity_agent_policy_defaults_to_full() {
+        assert_eq!(
+            ToolsToml::default().policy.unwrap_or_default(),
+            ToolPolicy::Full
+        );
+    }
+
+    #[test]
+    fn infinity_agent_policy_requirements_are_fail_closed() -> Result<()> {
+        let config: ConfigRequirementsToml = from_str(
+            r#"
+                allowed_tool_policies = ["infinity-agent"]
+                infinity_agent_trust_key = "/etc/codewith/infinity-agent-ed25519.pub"
+            "#,
+        )?;
+        let mut sourced = with_unknown_source(config);
+        let system_source = RequirementSource::SystemRequirementsToml {
+            file: system_requirements_toml_file_for_test()?,
+        };
+        sourced
+            .infinity_agent_trust_key
+            .as_mut()
+            .expect("trust key is present")
+            .source = system_source.clone();
+        let requirements: ConfigRequirements = sourced.try_into()?;
+
+        assert_eq!(requirements.tool_policy.value(), ToolPolicy::InfinityAgent);
+        assert!(
+            requirements
+                .tool_policy
+                .can_set(&ToolPolicy::InfinityAgent)
+                .is_ok()
+        );
+        assert_eq!(
+            requirements.tool_policy.can_set(&ToolPolicy::Full),
+            Err(ConstraintError::InvalidValue {
+                field_name: "tools.policy",
+                candidate: "Full".to_string(),
+                allowed: "[InfinityAgent]".to_string(),
+                requirement_source: RequirementSource::Unknown,
+            })
+        );
+        assert_eq!(
+            requirements
+                .infinity_agent_trust_key
+                .as_ref()
+                .map(|path| path.value.as_path()),
+            Some(Path::new("/etc/codewith/infinity-agent-ed25519.pub"))
+        );
+        assert_eq!(
+            requirements
+                .infinity_agent_trust_key
+                .as_ref()
+                .map(|key| &key.source),
+            Some(&system_source)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn infinity_agent_policy_rejects_non_system_trust_key_source() -> Result<()> {
+        let config: ConfigRequirementsToml = from_str(
+            r#"
+                infinity_agent_trust_key = "/tmp/untrusted.pub"
+            "#,
+        )?;
+
+        assert!(matches!(
+            ConfigRequirements::try_from(with_unknown_source(config)),
+            Err(ConstraintError::InvalidValue {
+                field_name: "infinity_agent_trust_key",
+                candidate,
+                allowed,
+                requirement_source: RequirementSource::Unknown,
+            }) if candidate == "non-system requirements source"
+                && allowed == "the system requirements file"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn infinity_agent_policy_rejects_an_empty_allowed_set() -> Result<()> {
+        let config: ConfigRequirementsToml = from_str("allowed_tool_policies = []")?;
+
+        assert_eq!(
+            ConfigRequirements::try_from(with_unknown_source(config)),
+            Err(ConstraintError::empty_field("allowed_tool_policies"))
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1732,10 +1914,14 @@ mod tests {
         let enforce_residency = ResidencyRequirement::Us;
         let enforce_source = source.clone();
         let guardian_policy_config = "Use the company-managed guardian policy.".to_string();
+        let allowed_tool_policies = vec![ToolPolicy::InfinityAgent];
+        let infinity_agent_trust_key = "/etc/codewith/infinity-agent-ed25519.pub".to_string();
 
         // Intentionally constructed without `..Default::default()` so adding a new field to
         // `ConfigRequirementsToml` forces this test to be updated.
         let other = ConfigRequirementsToml {
+            allowed_tool_policies: Some(allowed_tool_policies.clone()),
+            infinity_agent_trust_key: Some(infinity_agent_trust_key.clone()),
             allowed_approval_policies: Some(allowed_approval_policies.clone()),
             allowed_approvals_reviewers: Some(allowed_approvals_reviewers.clone()),
             allowed_sandbox_modes: Some(allowed_sandbox_modes.clone()),
@@ -1764,6 +1950,11 @@ mod tests {
         assert_eq!(
             target,
             ConfigRequirementsWithSources {
+                allowed_tool_policies: Some(Sourced::new(allowed_tool_policies, source.clone(),)),
+                infinity_agent_trust_key: Some(Sourced::new(
+                    infinity_agent_trust_key,
+                    source.clone(),
+                )),
                 allowed_approval_policies: Some(Sourced::new(
                     allowed_approval_policies,
                     source.clone()
@@ -1824,6 +2015,8 @@ mod tests {
         assert_eq!(
             empty_target,
             ConfigRequirementsWithSources {
+                allowed_tool_policies: None,
+                infinity_agent_trust_key: None,
                 allowed_approval_policies: Some(Sourced::new(
                     vec![AskForApproval::OnRequest],
                     source_location,
@@ -1877,6 +2070,8 @@ mod tests {
         assert_eq!(
             populated_target,
             ConfigRequirementsWithSources {
+                allowed_tool_policies: None,
+                infinity_agent_trust_key: None,
                 allowed_approval_policies: Some(Sourced::new(
                     vec![AskForApproval::Never],
                     existing_source,

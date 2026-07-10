@@ -7,6 +7,7 @@ use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
 use crate::RequirementSource;
 use crate::Sourced;
+use crate::config_toml::ToolPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -226,6 +227,115 @@ allow_managed_hooks_only = true
                 name: "Security baseline".to_string(),
             },
         ))
+    );
+}
+
+#[test]
+fn infinity_agent_policy_requirements_keep_system_source() {
+    let system_file = if cfg!(windows) {
+        "C:\\requirements.toml"
+    } else {
+        "/etc/codewith/requirements.toml"
+    };
+    let source = RequirementSource::SystemRequirementsToml {
+        file: AbsolutePathBuf::from_absolute_path(system_file).expect("absolute path"),
+    };
+    let composed = compose_requirements_for_hostname(
+        vec![RequirementsLayerEntry::from_toml(
+            source.clone(),
+            r#"
+allowed_tool_policies = ["infinity-agent"]
+infinity_agent_trust_key = "/etc/codewith/infinity-agent-ed25519.pub"
+"#,
+        )],
+        /*hostname*/ None,
+    )
+    .expect("compose requirements")
+    .expect("requirements present");
+
+    assert_eq!(
+        composed.allowed_tool_policies,
+        Some(Sourced::new(
+            vec![ToolPolicy::InfinityAgent],
+            source.clone()
+        ))
+    );
+    assert_eq!(
+        composed.infinity_agent_trust_key,
+        Some(Sourced::new(
+            "/etc/codewith/infinity-agent-ed25519.pub".to_string(),
+            source,
+        ))
+    );
+}
+
+#[test]
+fn infinity_agent_policy_cannot_be_widened_by_a_higher_requirements_layer() {
+    let system_file = if cfg!(windows) {
+        "C:\\requirements.toml"
+    } else {
+        "/etc/codewith/requirements.toml"
+    };
+    let system_source = RequirementSource::SystemRequirementsToml {
+        file: AbsolutePathBuf::from_absolute_path(system_file).expect("absolute path"),
+    };
+    let higher_source = RequirementSource::EnterpriseManaged {
+        id: "req_policy_override".to_string(),
+        name: "Unsafe override".to_string(),
+    };
+
+    let error = compose_requirements_for_hostname(
+        vec![
+            RequirementsLayerEntry::from_toml(
+                system_source.clone(),
+                r#"allowed_tool_policies = ["infinity-agent"]"#,
+            ),
+            RequirementsLayerEntry::from_toml(
+                higher_source.clone(),
+                r#"allowed_tool_policies = ["full"]"#,
+            ),
+        ],
+        /*hostname*/ None,
+    )
+    .expect_err("a higher layer must not widen the system policy");
+
+    assert_eq!(
+        error,
+        RequirementsCompositionError::Conflict {
+            field: "allowed_tool_policies".to_string(),
+            existing_source: system_source,
+            incoming_source: higher_source,
+            message: "the restrictive intersection is empty".to_string(),
+        }
+    );
+}
+
+#[test]
+fn infinity_agent_policy_rejects_non_system_trust_key_layer() {
+    let source = RequirementSource::EnterpriseManaged {
+        id: "req_untrusted_key".to_string(),
+        name: "Unsafe trust key".to_string(),
+    };
+
+    let error = compose_requirements_for_hostname(
+        vec![RequirementsLayerEntry::from_toml(
+            source.clone(),
+            r#"infinity_agent_trust_key = "/tmp/untrusted.pub""#,
+        )],
+        /*hostname*/ None,
+    )
+    .expect_err("a non-system layer must not supply a trust key");
+
+    assert_eq!(
+        error,
+        RequirementsCompositionError::Conflict {
+            field: "infinity_agent_trust_key".to_string(),
+            existing_source: RequirementSource::Unknown,
+            incoming_source: source,
+            message:
+                "the Infinity Agent trust key is accepted only from the system requirements file"
+                    .to_string(),
+        }
     );
 }
 

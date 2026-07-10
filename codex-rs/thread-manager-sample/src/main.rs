@@ -47,6 +47,7 @@ use codex_core_api::SessionSource;
 use codex_core_api::TerminalResizeReflowConfig;
 use codex_core_api::ThreadManager;
 use codex_core_api::ThreadStoreConfig;
+use codex_core_api::ToolPolicy;
 use codex_core_api::ToolSuggestConfig;
 use codex_core_api::TuiKeymap;
 use codex_core_api::TuiNotificationSettings;
@@ -166,6 +167,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
     let mut config = Config {
         config_layer_stack: ConfigLayerStack::default(),
         startup_warnings: Vec::new(),
+        tool_policy: ToolPolicy::Full,
         bypass_hook_trust: false,
         model,
         service_tier: None,

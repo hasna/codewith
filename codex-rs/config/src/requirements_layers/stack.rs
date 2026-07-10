@@ -17,6 +17,7 @@ use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
 use crate::RequirementSource;
 use crate::Sourced;
+use crate::ToolPolicy;
 use crate::merge::merge_toml_values;
 use std::io;
 use thiserror::Error;
@@ -115,6 +116,9 @@ impl RequirementsLayerStack {
             hook_directory_field,
         } = self;
 
+        let allowed_tool_policies = compose_allowed_tool_policies(&layers)?;
+        let infinity_agent_trust_key = compose_infinity_agent_trust_key(&layers)?;
+
         let mut merged_toml = TomlValue::Table(toml::map::Map::new());
         for layer in &layers {
             merge_toml_values(&mut merged_toml, &layer.regular_toml);
@@ -128,6 +132,8 @@ impl RequirementsLayerStack {
             })?;
         let mut output = ConfigRequirementsWithSources::default();
         populate_merged_regular_fields_with_sources(&mut output, requirements, &layers);
+        output.allowed_tool_policies = allowed_tool_policies;
+        output.infinity_agent_trust_key = infinity_agent_trust_key;
         let mut rules = None;
         let mut hooks = HookMergeState::new(hook_directory_field);
         let mut hooks_output = None;
@@ -154,6 +160,93 @@ impl RequirementsLayerStack {
     }
 }
 
+fn compose_allowed_tool_policies(
+    layers: &[ComposableRequirementsLayer],
+) -> Result<Option<Sourced<Vec<ToolPolicy>>>, RequirementsCompositionError> {
+    let mut merged: Option<Sourced<Vec<ToolPolicy>>> = None;
+
+    for layer in layers {
+        let Some(value) = top_level_value_for_keys(&layer.regular_toml, &["allowed_tool_policies"])
+        else {
+            continue;
+        };
+        let incoming: Vec<ToolPolicy> =
+            value.clone().try_into().map_err(|err: toml::de::Error| {
+                RequirementsCompositionError::Parse {
+                    layer_source: layer.source.clone(),
+                    message: err.to_string(),
+                }
+            })?;
+
+        if let Some(existing) = &mut merged {
+            existing.value.retain(|policy| incoming.contains(policy));
+            if existing.value.is_empty() {
+                return Err(composition_conflict(
+                    "allowed_tool_policies".to_string(),
+                    existing.source.clone(),
+                    layer.source.clone(),
+                    "the restrictive intersection is empty",
+                ));
+            }
+            existing.source =
+                RequirementSource::composite([layer.source.clone(), existing.source.clone()]);
+        } else {
+            merged = Some(Sourced::new(incoming, layer.source.clone()));
+        }
+    }
+
+    Ok(merged)
+}
+
+fn compose_infinity_agent_trust_key(
+    layers: &[ComposableRequirementsLayer],
+) -> Result<Option<Sourced<String>>, RequirementsCompositionError> {
+    let mut trusted_key = None;
+
+    for layer in layers {
+        let Some(value) =
+            top_level_value_for_keys(&layer.regular_toml, &["infinity_agent_trust_key"])
+        else {
+            continue;
+        };
+        if !matches!(
+            &layer.source,
+            RequirementSource::SystemRequirementsToml { .. }
+        ) {
+            return Err(composition_conflict(
+                "infinity_agent_trust_key".to_string(),
+                trusted_key
+                    .as_ref()
+                    .map(|value: &Sourced<String>| value.source.clone())
+                    .unwrap_or(RequirementSource::Unknown),
+                layer.source.clone(),
+                "the Infinity Agent trust key is accepted only from the system requirements file",
+            ));
+        }
+
+        let incoming: String = value.clone().try_into().map_err(|err: toml::de::Error| {
+            RequirementsCompositionError::Parse {
+                layer_source: layer.source.clone(),
+                message: err.to_string(),
+            }
+        })?;
+        match &trusted_key {
+            Some(existing) if existing.value != incoming => {
+                return Err(composition_conflict(
+                    "infinity_agent_trust_key".to_string(),
+                    existing.source.clone(),
+                    layer.source.clone(),
+                    "multiple system requirements layers specify different trust keys",
+                ));
+            }
+            Some(_) => {}
+            None => trusted_key = Some(Sourced::new(incoming, layer.source.clone())),
+        }
+    }
+
+    Ok(trusted_key)
+}
+
 fn populate_merged_regular_fields_with_sources(
     output: &mut ConfigRequirementsWithSources,
     requirements: ConfigRequirementsToml,
@@ -173,6 +266,8 @@ fn populate_merged_regular_fields_with_sources(
     // Destructure without `..` so every new requirements field must choose
     // whether it belongs in the regular TOML merge path or in a special merger.
     let ConfigRequirementsToml {
+        allowed_tool_policies,
+        infinity_agent_trust_key,
         allowed_approval_policies,
         allowed_approvals_reviewers,
         allowed_sandbox_modes,
@@ -196,6 +291,8 @@ fn populate_merged_regular_fields_with_sources(
         guardian_policy_config,
     } = requirements;
 
+    set_sourced!(allowed_tool_policies, &["allowed_tool_policies"]);
+    set_sourced!(infinity_agent_trust_key, &["infinity_agent_trust_key"]);
     set_sourced!(allowed_approval_policies, &["allowed_approval_policies"]);
     set_sourced!(
         allowed_approvals_reviewers,

@@ -19,6 +19,7 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_config::config_toml::ToolPolicy;
 use codex_config::config_toml::ToolsToml;
 use codex_config::loader::project_trust_key;
 use codex_config::permissions_toml::FilesystemPermissionToml;
@@ -442,10 +443,46 @@ web_search = true
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
+            policy: None,
             web_search: None,
             experimental_request_user_input: None,
         })
     );
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_full_is_the_default() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.tool_policy, ToolPolicy::Full);
+    Ok(())
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_never_starts_without_verified_material() {
+    let codex_home = tempdir().expect("tempdir");
+    let error = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            tools: Some(ToolsToml {
+                policy: Some(ToolPolicy::InfinityAgent),
+                ..ToolsToml::default()
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("unsigned infinity-agent policy must fail closed");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("signed policy verification"));
 }
 
 #[test]
@@ -461,6 +498,7 @@ web_search = false
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
+            policy: None,
             web_search: None,
             experimental_request_user_input: None,
         })
@@ -479,6 +517,7 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
+            policy: None,
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
         })
@@ -498,6 +537,7 @@ enabled = false
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
+            policy: None,
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
         })
@@ -510,6 +550,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml {
             tools: Some(ToolsToml {
+                policy: None,
                 web_search: None,
                 experimental_request_user_input: Some(ExperimentalRequestUserInput {
                     enabled: false,
@@ -9113,6 +9154,8 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
     let fixture = create_test_fixture()?;
 
     let requirements_toml = codex_config::ConfigRequirementsToml {
+        allowed_tool_policies: None,
+        infinity_agent_trust_key: None,
         allowed_approval_policies: None,
         allowed_approvals_reviewers: None,
         allowed_sandbox_modes: None,
