@@ -249,6 +249,10 @@ mod thread_processor_behavior_tests {
                 }),
             ),
             (
+                "approvalPolicy",
+                Box::new(|params| params.approval_policy = None),
+            ),
+            (
                 "ephemeral",
                 Box::new(|params| params.ephemeral = Some(false)),
             ),

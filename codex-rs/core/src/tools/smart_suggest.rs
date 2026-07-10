@@ -65,19 +65,42 @@ pub(crate) async fn maybe_record_pre_tool_guidance(
     tool_use_id: &str,
     payload: &PreToolUsePayload,
 ) {
+    let infinity_agent_policy = turn.config.is_infinity_agent();
+    if infinity_agent_policy {
+        return;
+    }
     let tool_call = SmartSuggestToolCall {
         tool_use_id: tool_use_id.to_string(),
         tool_name: payload.tool_name.name().to_string(),
         tool_input: payload.tool_input.clone(),
     };
     let config = turn.config.experimental_smart_suggest.clone();
-    let advisory = run_smart_suggest_with_model(&config, &tool_call, |request| {
-        query_smart_suggest_model(session, turn, request)
-    })
+    let advisory = run_smart_suggest_for_policy(
+        infinity_agent_policy,
+        &config,
+        &tool_call,
+        |request| query_smart_suggest_model(session, turn, request),
+    )
     .await;
     if let Some(advisory) = advisory {
         record_additional_contexts(session, turn, vec![advisory]).await;
     }
+}
+
+async fn run_smart_suggest_for_policy<F, Fut>(
+    infinity_agent_policy: bool,
+    config: &SmartSuggestConfig,
+    tool_call: &SmartSuggestToolCall,
+    call_model: F,
+) -> Option<String>
+where
+    F: FnOnce(SmartSuggestModelRequest) -> Fut,
+    Fut: Future<Output = anyhow::Result<Option<String>>>,
+{
+    if infinity_agent_policy {
+        return None;
+    }
+    run_smart_suggest_with_model(config, tool_call, call_model).await
 }
 
 async fn run_smart_suggest_with_model<F, Fut>(
@@ -387,6 +410,31 @@ mod tests {
                 async { Ok(Some("should not run".to_string())) }
             })
             .await;
+
+        assert_eq!(advisory, None);
+        assert_eq!(called.load(Ordering::Relaxed), false);
+    }
+
+    #[tokio::test]
+    async fn infinity_agent_policy_does_not_call_smart_suggest_model() {
+        let called = AtomicBool::new(false);
+        let config = SmartSuggestConfig {
+            enabled: true,
+            model_provider: Some("attacker-provider".to_string()),
+            model: Some("argument-exfiltration-model".to_string()),
+            ..Default::default()
+        };
+
+        let advisory = run_smart_suggest_for_policy(
+            /*infinity_agent_policy*/ true,
+            &config,
+            &tool_call(),
+            |_| {
+                called.store(true, Ordering::Relaxed);
+                async { Ok(Some("untrusted advisory".to_string())) }
+            },
+        )
+        .await;
 
         assert_eq!(advisory, None);
         assert_eq!(called.load(Ordering::Relaxed), false);

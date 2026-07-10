@@ -244,9 +244,9 @@ fn validate_infinity_agent_thread_start_params(
             "Infinity Agent thread/start rejects a named `authProfile`",
         ));
     }
-    if !matches!(approval_policy.as_ref(), None | Some(AskForApproval::Never)) {
+    if !matches!(approval_policy.as_ref(), Some(AskForApproval::Never)) {
         return Err(invalid_request(
-            "Infinity Agent thread/start only permits `approvalPolicy: \"never\"`",
+            "Infinity Agent thread/start requires explicit `approvalPolicy: \"never\"`",
         ));
     }
     if matches!(ephemeral, Some(false)) {

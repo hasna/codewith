@@ -2843,6 +2843,17 @@ fn resolve_smart_suggest_config(
     }
 }
 
+fn resolve_smart_suggest_config_for_policy(
+    tool_policy: ToolPolicy,
+    smart_suggest: Option<SmartSuggestConfigToml>,
+) -> SmartSuggestConfig {
+    if tool_policy == ToolPolicy::InfinityAgent {
+        SmartSuggestConfig::default()
+    } else {
+        resolve_smart_suggest_config(smart_suggest)
+    }
+}
+
 fn thread_store_config(thread_store: Option<ThreadStoreToml>) -> ThreadStoreConfig {
     match thread_store {
         Some(ThreadStoreToml::Local {}) => ThreadStoreConfig::Local,
@@ -4532,7 +4543,8 @@ impl Config {
                 .then_some(cfg.experimental_thread_config_endpoint)
                 .flatten(),
             experimental_thread_store: thread_store_config(cfg.experimental_thread_store),
-            experimental_smart_suggest: resolve_smart_suggest_config(
+            experimental_smart_suggest: resolve_smart_suggest_config_for_policy(
+                tool_policy,
                 cfg.experimental_smart_suggest,
             ),
             forced_chatgpt_workspace_id,
