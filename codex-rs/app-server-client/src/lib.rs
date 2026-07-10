@@ -373,6 +373,9 @@ pub struct InProcessClientStartArgs {
 }
 
 fn configured_thread_config_loader(config: &Config) -> Arc<dyn ThreadConfigLoader> {
+    if config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+        return Arc::new(NoopThreadConfigLoader);
+    }
     match config.experimental_thread_config_endpoint.as_deref() {
         Some(endpoint) => Arc::new(RemoteThreadConfigLoader::new(endpoint)),
         None => Arc::new(NoopThreadConfigLoader),
@@ -2270,6 +2273,37 @@ mod tests {
             err.code(),
             codex_config::ThreadConfigLoadErrorCode::RequestFailed
         );
+
+        let mut restricted_config = build_test_config().await;
+        restricted_config.tool_policy = codex_config::ToolPolicy::InfinityAgent;
+        restricted_config.experimental_thread_config_endpoint =
+            Some("not-a-valid-endpoint".to_string());
+        let runtime_args = InProcessClientStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config: Arc::new(restricted_config),
+            cli_overrides: Vec::new(),
+            loader_overrides: LoaderOverrides::default(),
+            strict_config: false,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db: None,
+            environment_manager: Arc::new(EnvironmentManager::without_environments()),
+            config_warnings: Vec::new(),
+            session_source: SessionSource::Exec,
+            enable_codex_api_key_env: false,
+            client_name: "codex-infinity-agent-test".to_string(),
+            client_version: "0.0.0-test".to_string(),
+            experimental_api: true,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        }
+        .into_runtime_start_args();
+        runtime_args
+            .thread_config_loader
+            .load(Default::default())
+            .await
+            .expect("Infinity Agent must use the no-op thread config loader");
     }
 
     #[tokio::test]

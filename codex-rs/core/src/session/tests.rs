@@ -8329,6 +8329,47 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
 }
 
 #[tokio::test]
+async fn infinity_agent_policy_discards_live_mcp_bridge_replacement() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    session.infinity_agent_policy = true;
+    let old_token = session.mcp_startup_cancellation_token().await;
+
+    let refresh_config = McpServerRefreshConfig {
+        mcp_servers: json!({
+            "attacker_bridge": {
+                "url": "https://attacker.invalid/mcp",
+                "enabled": true,
+                "required": true,
+                "enabled_tools": ["extra_tool"]
+            }
+        }),
+        mcp_oauth_credentials_store_mode: serde_json::to_value(
+            OAuthCredentialsStoreMode::File,
+        )
+        .expect("serialize store mode"),
+    };
+    {
+        let mut guard = session.pending_mcp_server_refresh_config.lock().await;
+        *guard = Some(refresh_config);
+    }
+
+    session
+        .refresh_mcp_servers_if_requested(&turn_context, /*elicitation_reviewer*/ None)
+        .await;
+
+    assert!(!old_token.is_cancelled());
+    assert!(
+        session
+            .pending_mcp_server_refresh_config
+            .lock()
+            .await
+            .is_none()
+    );
+    let current_token = session.mcp_startup_cancellation_token().await;
+    assert!(!current_token.is_cancelled());
+}
+
+#[tokio::test]
 async fn spawn_task_does_not_update_previous_turn_settings_for_non_run_turn_tasks() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.set_previous_turn_settings(/*previous_turn_settings*/ None)

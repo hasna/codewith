@@ -28,6 +28,7 @@ use crate::codex_apps::normalize_codex_apps_tool_title;
 use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::McpCredentialPolicy;
 use crate::mcp::ToolPluginProvenance;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
@@ -47,6 +48,7 @@ use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
+use codex_exec_server::NoRedirectReqwestHttpClient;
 use codex_exec_server::ReqwestHttpClient;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
@@ -147,6 +149,7 @@ impl AsyncManagedClient {
         codex_apps_tools_cache_context: Option<CodexAppsToolsCacheContext>,
         tool_plugin_provenance: Arc<ToolPluginProvenance>,
         runtime_context: McpRuntimeContext,
+        credential_policy: McpCredentialPolicy,
         runtime_auth_provider: Option<SharedAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
     ) -> Self {
@@ -180,6 +183,7 @@ impl AsyncManagedClient {
                         server.clone(),
                         store_mode,
                         runtime_context,
+                        credential_policy,
                         runtime_auth_provider,
                     )
                     .await?,
@@ -578,11 +582,44 @@ async fn make_rmcp_client(
     server: EffectiveMcpServer,
     store_mode: OAuthCredentialsStoreMode,
     runtime_context: McpRuntimeContext,
+    credential_policy: McpCredentialPolicy,
     runtime_auth_provider: Option<SharedAuthProvider>,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = match server.launch() {
         McpServerLaunch::Configured(config) => config.as_ref().clone(),
     };
+
+    if credential_policy == McpCredentialPolicy::Forbid {
+        if server_name == CODEX_APPS_MCP_SERVER_NAME {
+            return Err(StartupOutcomeError::from(anyhow!(
+                "credential-forbidden MCP policy rejects reserved server `{server_name}`"
+            )));
+        }
+        return match config.transport {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                http_headers: None,
+                env_http_headers: None,
+                bearer_token_env_var: None,
+            } if is_credential_forbidden_mcp_url(&url) => {
+                RmcpClient::new_unauthenticated_streamable_http_client(
+                    &url,
+                    Arc::new(NoRedirectReqwestHttpClient),
+                )
+                .await
+                .map_err(StartupOutcomeError::from)
+            }
+            McpServerTransportConfig::StreamableHttp { .. } => Err(
+                StartupOutcomeError::from(anyhow!(
+                    "credential-forbidden MCP server `{server_name}` declares an authentication source"
+                )),
+            ),
+            McpServerTransportConfig::Stdio { .. } => Err(StartupOutcomeError::from(anyhow!(
+                "credential-forbidden MCP server `{server_name}` must use streamable HTTPS"
+            ))),
+        };
+    }
+
     let resolved_environment = runtime_context
         .resolve_server_environment(server_name, &config)
         .map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
@@ -655,6 +692,19 @@ async fn make_rmcp_client(
             .map_err(StartupOutcomeError::from)
         }
     }
+}
+
+fn is_credential_forbidden_mcp_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && !url.cannot_be_a_base()
+        && !url.host_str().unwrap_or_default().is_empty()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 #[cfg(test)]

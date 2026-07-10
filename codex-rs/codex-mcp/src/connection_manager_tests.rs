@@ -1179,6 +1179,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
             Arc::new(EnvironmentManager::without_environments()),
             PathBuf::from("/tmp"),
         ),
+        crate::McpCredentialPolicy::AllowConfigured,
         codex_home.path().to_path_buf(),
         CodexAppsToolsCacheKey {
             account_id: None,
@@ -1210,6 +1211,77 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         failures[0].error,
         "local stdio MCP server `stdio` requires a local environment"
     );
+    cancel_token.cancel();
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_reserved_codex_apps_before_network() {
+    let approval_policy = Constrained::allow_any(AskForApproval::Never);
+    let (tx_event, rx_event) = async_channel::unbounded();
+    drop(rx_event);
+    let codex_home = tempdir().expect("tempdir");
+    let server_name = CODEX_APPS_MCP_SERVER_NAME.to_string();
+    let mcp_servers = HashMap::from([(
+        server_name.clone(),
+        EffectiveMcpServer::configured(McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://127.0.0.1:1/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: true,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        }),
+    )]);
+    let auth = codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing();
+
+    let (manager, cancel_token) = McpConnectionManager::new(
+        &mcp_servers,
+        OAuthCredentialsStoreMode::File,
+        HashMap::new(),
+        &approval_policy,
+        String::new(),
+        tx_event,
+        PermissionProfile::default(),
+        McpRuntimeContext::new(
+            Arc::new(EnvironmentManager::without_environments()),
+            PathBuf::from("/tmp"),
+        ),
+        crate::McpCredentialPolicy::Forbid,
+        codex_home.path().to_path_buf(),
+        CodexAppsToolsCacheKey {
+            account_id: Some("root-account-must-not-be-used".to_string()),
+            chatgpt_user_id: Some("root-user-must-not-be-used".to_string()),
+            is_workspace_account: true,
+        },
+        /*host_owned_codex_apps_enabled*/ true,
+        /*prefix_mcp_tool_names*/ true,
+        ElicitationCapability::default(),
+        ToolPluginProvenance::default(),
+        Some(&auth),
+        /*elicitation_reviewer*/ None,
+    )
+    .await;
+
+    assert!(!manager.is_host_owned_codex_apps_server(&server_name));
+    let failures = manager
+        .required_startup_failures(std::slice::from_ref(&server_name))
+        .await;
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].error.contains("rejects reserved server"));
     cancel_token.cancel();
 }
 
@@ -1337,7 +1409,12 @@ fn mcp_init_error_display_prompts_for_github_pat() {
     };
     let err: StartupOutcomeError = anyhow::anyhow!("OAuth is unsupported").into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     let expected = format!(
         "GitHub MCP does not support OAuth. Log in by adding a personal access token (https://github.com/settings/personal-access-tokens) to your environment and config.toml:\n[mcp_servers.{server_name}]\nbearer_token_env_var = CODEWITH_GITHUB_PERSONAL_ACCESS_TOKEN"
@@ -1351,7 +1428,12 @@ fn mcp_init_error_display_prompts_for_login_when_auth_required() {
     let server_name = "example";
     let err: StartupOutcomeError = anyhow::anyhow!("Auth required for server").into();
 
-    let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
+    let display = mcp_init_error_display(
+        server_name,
+        /*entry*/ None,
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     let expected = format!(
         "The {server_name} MCP server is not logged in. Run `codewith mcp login {server_name}`."
@@ -1392,7 +1474,12 @@ fn mcp_init_error_display_explains_missing_bearer_token_env_var() {
         anyhow::anyhow!("Environment variable GITHUB_TOKEN for MCP server 'issues' is not set")
             .into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     assert_eq!(
         "MCP server `issues` needs environment variable `GITHUB_TOKEN` for its bearer token, but `GITHUB_TOKEN` is not set. Set it before starting Codewith or disable this MCP server:\n[mcp_servers.issues]\nenabled = false",
@@ -1431,7 +1518,12 @@ fn mcp_init_error_display_explains_missing_stdio_command() {
     };
     let err: StartupOutcomeError = anyhow::anyhow!("No such file or directory (os error 2)").into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     assert_eq!(
         "MCP server `docs` could not start command `docs-server` because it was not found. Install the command, update `[mcp_servers.docs].command`, or disable this MCP server:\n[mcp_servers.docs]\nenabled = false",
@@ -1470,7 +1562,12 @@ fn mcp_init_error_display_explains_stdio_cwd_or_command_failure() {
     };
     let err: StartupOutcomeError = anyhow::anyhow!("No such file or directory (os error 2)").into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     assert_eq!(
         "MCP server `docs` could not start command `docs-server` from cwd `/missing/cwd`. Verify the cwd exists and the command is installed, update `[mcp_servers.docs]`, or disable this MCP server:\n[mcp_servers.docs]\nenabled = false",
@@ -1511,7 +1608,12 @@ fn mcp_init_error_display_explains_non_mcp_http_response() {
     )
     .into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     assert_eq!(
         "MCP server `github` at `https://example.com/mcp` did not return an MCP Streamable HTTP response during startup. The server returned `text/html`. Verify `[mcp_servers.github].url` points to an MCP endpoint or disable this MCP server:\n[mcp_servers.github]\nenabled = false",
@@ -1549,7 +1651,12 @@ fn mcp_init_error_display_reports_generic_errors() {
     };
     let err: StartupOutcomeError = anyhow::anyhow!("boom").into();
 
-    let display = mcp_init_error_display(server_name, Some(&entry), &err);
+    let display = mcp_init_error_display(
+        server_name,
+        Some(&entry),
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     let expected = format!("MCP client for `{server_name}` failed to start: {err:#}");
 
@@ -1561,7 +1668,12 @@ fn mcp_init_error_display_includes_startup_timeout_hint() {
     let server_name = "slow";
     let err: StartupOutcomeError = anyhow::anyhow!("request timed out").into();
 
-    let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
+    let display = mcp_init_error_display(
+        server_name,
+        /*entry*/ None,
+        &err,
+        McpCredentialPolicy::AllowConfigured,
+    );
 
     assert_eq!(
         "MCP client for `slow` timed out after 30 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",

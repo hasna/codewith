@@ -3142,6 +3142,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-utils-plugins",
  "futures",
+ "oauth2",
  "pretty_assertions",
  "regex-lite",
  "rmcp",
@@ -3154,6 +3155,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]

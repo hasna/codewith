@@ -21,6 +21,7 @@ pub(crate) mod response_body_stream;
 mod rpc_http_client;
 
 pub(crate) use reqwest_http_client::PendingReqwestHttpBodyStream;
+pub use reqwest_http_client::NoRedirectReqwestHttpClient;
 pub use reqwest_http_client::ReqwestHttpClient;
 pub(crate) use reqwest_http_client::ReqwestHttpRequestRunner;
 pub use response_body_stream::HttpResponseBodyStream;

@@ -10,6 +10,7 @@ pub use tools::ToolInfo;
 
 pub use mcp::CODEX_APPS_MCP_SERVER_NAME;
 pub use mcp::McpConfig;
+pub use mcp::McpCredentialPolicy;
 pub use mcp::ToolPluginProvenance;
 pub use server::EffectiveMcpServer;
 

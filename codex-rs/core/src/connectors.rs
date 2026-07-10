@@ -264,6 +264,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_environment_manager(
         mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
         auth.as_ref(),
+        config.mcp_credential_policy(),
     )
     .await;
 
@@ -281,6 +282,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_environment_manager(
         // Connector discovery is threadless. Use an actually configured env if
         // one exists, but do not reintroduce the old hidden-local fallback.
         McpRuntimeContext::new(environment_manager, config.cwd.to_path_buf()),
+        config.mcp_credential_policy(),
         config.codex_home.to_path_buf(),
         codex_apps_tools_cache_key(auth.as_ref()),
         host_owned_codex_apps_enabled,

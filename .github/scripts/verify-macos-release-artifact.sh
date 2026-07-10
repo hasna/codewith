@@ -55,4 +55,12 @@ codesign --verify --strict --verbose=4 -R="$designated_requirement" "$artifact"
 # For standalone Mach-O binaries, an accepted notarization ticket is normally
 # looked up online rather than stapled. Gatekeeper assessment is therefore the
 # release gate; DMGs retain their separate stapler validation.
-spctl --assess --type execute --verbose=4 "$artifact"
+assessment="$(spctl --assess --type execute --verbose=4 "$artifact" 2>&1)" || {
+  printf '%s\n' "$assessment" >&2
+  exit 1
+}
+printf '%s\n' "$assessment"
+grep -Fq 'source=Notarized Developer ID' <<<"$assessment" || {
+  echo "Gatekeeper assessment did not prove Notarized Developer ID provenance" >&2
+  exit 1
+}

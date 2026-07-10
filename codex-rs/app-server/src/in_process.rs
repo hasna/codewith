@@ -370,7 +370,13 @@ pub async fn start(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> 
     Ok(client)
 }
 
-async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+    if args.config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+        args.thread_config_loader = Arc::new(codex_config::NoopThreadConfigLoader);
+        args.environment_manager = Arc::new(EnvironmentManager::without_environments());
+        args.cloud_config_bundle = CloudConfigBundleLoader::default();
+        args.enable_codex_api_key_env = false;
+    }
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
@@ -943,6 +949,13 @@ mod tests {
                     r#"{"method":"turn/start","id":105,"params":{"threadId":"not-a-thread","input":[],"environments":[],"cwd":"/must-not-resolve"}}"#,
                     r#"{"method":"thread/settings/update","id":106,"params":{"threadId":"not-a-thread","cwd":"/must-not-resolve"}}"#,
                     r#"{"method":"turn/steer","id":107,"params":{"threadId":"not-a-thread","expectedTurnId":"not-a-turn","input":[],"additionalContext":{"hostile":{"value":"override","kind":"application"}}}}"#,
+                    r#"{"method":"process/spawn","id":108,"params":{"command":["sh"],"processHandle":"hostile","cwd":"/tmp"}}"#,
+                    r#"{"method":"command/exec","id":109,"params":{"command":["sh","-c","id"]}}"#,
+                    r#"{"method":"fs/writeFile","id":110,"params":{"path":"/tmp/hostile","dataBase64":"eA=="}}"#,
+                    r#"{"method":"config/batchWrite","id":111,"params":{"edits":[]}}"#,
+                    r#"{"method":"mcpServer/tool/call","id":112,"params":{"threadId":"not-a-thread","server":"hostile","tool":"hostile","arguments":{}}}"#,
+                    r#"{"method":"missionControl/enqueueInstruction","id":113,"params":{"targetThreadId":"not-a-thread","message":"override"}}"#,
+                    r#"{"method":"agent/start","id":114,"params":{"prompt":"override"}}"#,
                 ];
 
                 for raw_request in raw_requests {

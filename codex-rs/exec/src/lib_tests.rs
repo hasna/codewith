@@ -567,7 +567,7 @@ async fn thread_start_params_include_user_thread_source() {
 }
 
 #[tokio::test]
-async fn infinity_agent_exec_emits_only_the_closed_safe_thread_start_shape() {
+async fn infinity_agent_policy_exec_emits_only_the_closed_safe_thread_start_shape() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");
     let mut config = ConfigBuilder::default()

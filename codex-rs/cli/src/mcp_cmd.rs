@@ -444,6 +444,9 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
+    if config.mcp_credential_policy() == codex_mcp::McpCredentialPolicy::Forbid {
+        bail!("Infinity Agent policy forbids MCP OAuth login");
+    }
     let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
         config.codex_home.to_path_buf(),
     )));
@@ -498,6 +501,9 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     let config = Config::load_with_cli_overrides(overrides)
         .await
         .context("failed to load configuration")?;
+    if config.mcp_credential_policy() == codex_mcp::McpCredentialPolicy::Forbid {
+        bail!("Infinity Agent policy forbids MCP OAuth logout");
+    }
     let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
         config.codex_home.to_path_buf(),
     )));
@@ -542,6 +548,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
         effective_mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
         /*auth*/ None,
+        config.mcp_credential_policy(),
     )
     .await;
 

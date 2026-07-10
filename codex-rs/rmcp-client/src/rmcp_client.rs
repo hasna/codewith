@@ -110,6 +110,10 @@ enum TransportRecipe {
         command: StdioServerCommand,
         launcher: Arc<dyn StdioServerLauncher>,
     },
+    UnauthenticatedStreamableHttp {
+        url: String,
+        http_client: Arc<dyn HttpClient>,
+    },
     StreamableHttp {
         server_name: String,
         url: String,
@@ -357,6 +361,31 @@ impl RmcpClient {
             store_mode,
             http_client,
             auth_provider,
+        };
+        let transport = Self::create_pending_transport(&transport_recipe).await?;
+        Ok(Self {
+            state: Mutex::new(ClientState::Connecting {
+                transport: Some(transport),
+            }),
+            stdio_process: None,
+            transport_recipe,
+            initialize_context: Mutex::new(None),
+            session_recovery_lock: Semaphore::new(/*permits*/ 1),
+            elicitation_pause_state: ElicitationPauseState::new(),
+        })
+    }
+
+    /// Builds a streamable HTTP transport that cannot consult or attach any
+    /// authentication source. In particular, this path never reads persisted
+    /// OAuth state and accepts no bearer, header, environment, or runtime auth
+    /// provider inputs.
+    pub async fn new_unauthenticated_streamable_http_client(
+        url: &str,
+        http_client: Arc<dyn HttpClient>,
+    ) -> Result<Self> {
+        let transport_recipe = TransportRecipe::UnauthenticatedStreamableHttp {
+            url: url.to_string(),
+            http_client,
         };
         let transport = Self::create_pending_transport(&transport_recipe).await?;
         Ok(Self {
@@ -719,6 +748,18 @@ impl RmcpClient {
             TransportRecipe::Stdio { command, launcher } => {
                 let transport = launcher.launch(command.clone()).await?;
                 Ok(PendingTransport::Stdio { transport })
+            }
+            TransportRecipe::UnauthenticatedStreamableHttp { url, http_client } => {
+                let http_config = StreamableHttpClientTransportConfig::with_uri(url.clone());
+                let transport = StreamableHttpClientTransport::with_client(
+                    StreamableHttpClientAdapter::new(
+                        Arc::clone(http_client),
+                        HeaderMap::new(),
+                        /*auth_provider*/ None,
+                    ),
+                    http_config,
+                );
+                Ok(PendingTransport::StreamableHttp { transport })
             }
             TransportRecipe::StreamableHttp {
                 server_name,

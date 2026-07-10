@@ -351,7 +351,14 @@ pub(crate) fn apply_runtime_feature_enablement(
     runtime_feature_enablement: &BTreeMap<String, bool>,
 ) {
     if config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
-        config.features.disable_all();
+        let mut restricted_features = config.features.get().clone();
+        restricted_features.disable_all();
+        if let Err(err) = config.features.set(restricted_features) {
+            warn!(
+                error = %err,
+                "failed to preserve disabled features under Infinity Agent policy"
+            );
+        }
         return;
     }
     let protected_features = protected_feature_keys(&config.config_layer_stack);

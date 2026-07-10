@@ -20,6 +20,7 @@ exit "${FAKE_CODESIGN_STATUS:-0}"
 EOF
 cat >"$tmp/bin/spctl" <<'EOF'
 #!/usr/bin/env bash
+echo "source=${FAKE_SPCTL_SOURCE:-Notarized Developer ID}" >&2
 exit "${FAKE_SPCTL_STATUS:-0}"
 EOF
 chmod +x "$tmp/bin/codesign" "$tmp/bin/spctl"
@@ -51,10 +52,10 @@ if "$verifier" "$tmp/codewith" codewith ABCDEFGHIJ 'Developer ID Application: Ha
 fi
 
 FAKE_AUTHORITY='Developer ID Application: Hasna (ABCDEFGHIJ)'
-FAKE_SPCTL_STATUS=1
-export FAKE_AUTHORITY FAKE_SPCTL_STATUS
+FAKE_SPCTL_SOURCE='Developer ID'
+export FAKE_AUTHORITY FAKE_SPCTL_SOURCE
 if "$verifier" "$tmp/codewith" codewith ABCDEFGHIJ 'Developer ID Application: Hasna (ABCDEFGHIJ)'; then
-  echo "failed notarization assessment unexpectedly passed" >&2
+  echo "non-notarized Gatekeeper source unexpectedly passed" >&2
   exit 1
 fi
 

@@ -20,6 +20,7 @@ fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         apps_mcp_product_sku: None,
         codex_home,
         mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode::default(),
+        credential_policy: McpCredentialPolicy::AllowConfigured,
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         skill_mcp_dependency_install_enabled: true,

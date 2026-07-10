@@ -606,6 +606,10 @@ pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: Dy
 }
 
 pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerRefreshConfig) {
+    if sess.infinity_agent_policy {
+        warn!("Infinity Agent policy rejected MCP server refresh submission");
+        return;
+    }
     let mut guard = sess.pending_mcp_server_refresh_config.lock().await;
     *guard = Some(refresh_config);
 }

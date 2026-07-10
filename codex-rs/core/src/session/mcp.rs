@@ -309,6 +309,10 @@ impl Session {
         store_mode: OAuthCredentialsStoreMode,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        if self.infinity_agent_policy {
+            warn!("Infinity Agent policy rejected live MCP server refresh");
+            return;
+        }
         let auth = self.services.auth_manager.auth().await;
         let config = self.get_config().await;
         let mcp_config = config
@@ -323,8 +327,14 @@ impl Session {
             effective_mcp_servers_from_configured(mcp_servers, &mcp_config, auth.as_ref());
         let host_owned_codex_apps_enabled =
             host_owned_codex_apps_enabled(&mcp_config, auth.as_ref());
-        let auth_statuses =
-            compute_auth_statuses(mcp_servers.iter(), store_mode, auth.as_ref()).await;
+        let credential_policy = config.mcp_credential_policy();
+        let auth_statuses = compute_auth_statuses(
+            mcp_servers.iter(),
+            store_mode,
+            auth.as_ref(),
+            credential_policy,
+        )
+        .await;
         let mcp_runtime_context = match turn_context.environments.primary() {
             Some(turn_environment) => McpRuntimeContext::new(
                 Arc::clone(&self.services.environment_manager),
@@ -350,6 +360,7 @@ impl Session {
             self.get_tx_event(),
             turn_context.permission_profile(),
             mcp_runtime_context,
+            credential_policy,
             config.codex_home.to_path_buf(),
             codex_apps_tools_cache_key(auth.as_ref()),
             host_owned_codex_apps_enabled,
@@ -385,6 +396,12 @@ impl Session {
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
         let refresh_config = { self.pending_mcp_server_refresh_config.lock().await.take() };
+        if self.infinity_agent_policy {
+            if refresh_config.is_some() {
+                warn!("Infinity Agent policy discarded a requested MCP server refresh");
+            }
+            return;
+        }
         let Some(refresh_config) = refresh_config else {
             return;
         };
@@ -423,6 +440,10 @@ impl Session {
         store_mode: OAuthCredentialsStoreMode,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
+        if self.infinity_agent_policy {
+            warn!("Infinity Agent policy rejected immediate MCP server refresh");
+            return;
+        }
         self.refresh_mcp_servers_inner(turn_context, mcp_servers, store_mode, elicitation_reviewer)
             .await;
     }

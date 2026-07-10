@@ -36,6 +36,12 @@ use crate::rpc::invalid_params;
 #[derive(Clone, Default)]
 pub struct ReqwestHttpClient;
 
+/// Local HTTP client that returns redirects to the caller instead of following
+/// them. Security-sensitive pinned transports use this to prevent a configured
+/// endpoint from redirecting requests to a different authority.
+#[derive(Clone, Default)]
+pub struct NoRedirectReqwestHttpClient;
+
 /// Streaming response state held between the initial HTTP response and
 /// downstream body-delta forwarding.
 pub(crate) struct PendingReqwestHttpBodyStream {
@@ -50,13 +56,23 @@ pub(crate) struct ReqwestHttpRequestRunner {
 }
 
 impl ReqwestHttpClient {
-    fn build_client(timeout_ms: Option<u64>) -> Result<reqwest::Client, ExecServerError> {
+    fn build_client(
+        timeout_ms: Option<u64>,
+        follow_redirects: bool,
+    ) -> Result<reqwest::Client, ExecServerError> {
         let builder = match timeout_ms {
             None => reqwest::Client::builder(),
             Some(timeout_ms) => {
                 reqwest::Client::builder().timeout(Duration::from_millis(timeout_ms))
             }
         };
+        if !follow_redirects {
+            return builder
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .map_err(|error| ExecServerError::HttpRequest(error.to_string()));
+        }
         build_reqwest_client_with_custom_ca(builder)
             .map_err(|error| ExecServerError::HttpRequest(error.to_string()))
     }
@@ -110,9 +126,65 @@ impl HttpClient for ReqwestHttpClient {
     }
 }
 
+impl HttpClient for NoRedirectReqwestHttpClient {
+    fn http_request(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
+        async move {
+            let runner = ReqwestHttpRequestRunner::new_without_redirects(params.timeout_ms)
+                .map_err(|error| ExecServerError::HttpRequest(error.message))?;
+            let (response, _) = runner
+                .run(HttpRequestParams {
+                    stream_response: false,
+                    ..params
+                })
+                .await
+                .map_err(|error| ExecServerError::HttpRequest(error.message))?;
+            Ok(response)
+        }
+        .boxed()
+    }
+
+    fn http_request_stream(
+        &self,
+        params: HttpRequestParams,
+    ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>> {
+        async move {
+            let runner = ReqwestHttpRequestRunner::new_without_redirects(params.timeout_ms)
+                .map_err(|error| ExecServerError::HttpRequest(error.message))?;
+            let (response, pending_stream) = runner
+                .run(HttpRequestParams {
+                    stream_response: true,
+                    ..params
+                })
+                .await
+                .map_err(|error| ExecServerError::HttpRequest(error.message))?;
+            let pending_stream = pending_stream.ok_or_else(|| {
+                ExecServerError::Protocol(
+                    "http request stream did not return a response body stream".to_string(),
+                )
+            })?;
+            Ok((
+                response,
+                HttpResponseBodyStream::local(pending_stream.response),
+            ))
+        }
+        .boxed()
+    }
+}
+
 impl ReqwestHttpRequestRunner {
     pub(crate) fn new(timeout_ms: Option<u64>) -> Result<Self, JSONRPCErrorError> {
-        let client = ReqwestHttpClient::build_client(timeout_ms)
+        let client = ReqwestHttpClient::build_client(timeout_ms, /*follow_redirects*/ true)
+            .map_err(|error| internal_error(error.to_string()))?;
+        Ok(Self { client })
+    }
+
+    pub(crate) fn new_without_redirects(
+        timeout_ms: Option<u64>,
+    ) -> Result<Self, JSONRPCErrorError> {
+        let client = ReqwestHttpClient::build_client(timeout_ms, /*follow_redirects*/ false)
             .map_err(|error| internal_error(error.to_string()))?;
         Ok(Self { client })
     }

@@ -30,9 +30,10 @@ pub(crate) fn validate_infinity_agent_app_server_request(
         ClientRequest::TurnSteer { params, .. } => {
             validate_infinity_agent_turn_steer_params(params)
         }
-        ClientRequest::ThreadSettingsUpdate { params, .. } => {
-            validate_infinity_agent_thread_settings_params(params)
-        }
+        ClientRequest::TurnInterrupt { .. } | ClientRequest::ThreadUnsubscribe { .. } => Ok(()),
+        ClientRequest::ThreadSettingsUpdate { .. } => Err(invalid_request(
+            "Infinity Agent rejects thread/settings/update",
+        )),
         ClientRequest::ThreadInjectItems { .. }
         | ClientRequest::ThreadCompactStart { .. }
         | ClientRequest::ThreadRecap { .. }
@@ -47,7 +48,10 @@ pub(crate) fn validate_infinity_agent_app_server_request(
         ClientRequest::ExperimentalFeatureEnablementSet { .. } => Err(invalid_request(
             "Infinity Agent rejects runtime feature enablement",
         )),
-        _ => Ok(()),
+        _ => Err(invalid_request(format!(
+            "method `{}` is not available under the Infinity Agent process policy",
+            request.method()
+        ))),
     }
 }
 
@@ -130,52 +134,6 @@ fn validate_infinity_agent_turn_start_params(
         return Err(invalid_request(
             "Infinity Agent turn/start requires explicit `environments: []`",
         ));
-    }
-    Ok(())
-}
-
-fn validate_infinity_agent_thread_settings_params(
-    params: &ThreadSettingsUpdateParams,
-) -> Result<(), JSONRPCErrorError> {
-    let ThreadSettingsUpdateParams {
-        thread_id: _,
-        cwd,
-        approval_policy,
-        approvals_reviewer,
-        sandbox_policy,
-        permissions,
-        auth_profile,
-        model,
-        model_provider,
-        service_tier,
-        effort,
-        summary,
-        collaboration_mode,
-        personality,
-        session_prompt,
-        worktree_mode,
-    } = params;
-    let forbidden = [
-        ("cwd", cwd.is_some()),
-        ("approvalPolicy", approval_policy.is_some()),
-        ("approvalsReviewer", approvals_reviewer.is_some()),
-        ("sandboxPolicy", sandbox_policy.is_some()),
-        ("permissions", permissions.is_some()),
-        ("authProfile", auth_profile.is_some()),
-        ("model", model.is_some()),
-        ("modelProvider", model_provider.is_some()),
-        ("serviceTier", service_tier.is_some()),
-        ("effort", effort.is_some()),
-        ("summary", summary.is_some()),
-        ("collaborationMode", collaboration_mode.is_some()),
-        ("personality", personality.is_some()),
-        ("sessionPrompt", session_prompt.is_some()),
-        ("worktreeMode", worktree_mode.is_some()),
-    ];
-    if let Some((field, _)) = forbidden.into_iter().find(|(_, present)| *present) {
-        return Err(invalid_request(format!(
-            "Infinity Agent thread/settings/update rejects caller-controlled `{field}`"
-        )));
     }
     Ok(())
 }
@@ -884,6 +842,10 @@ pub(crate) struct ThreadRequestProcessor {
 }
 
 impl ThreadRequestProcessor {
+    pub(crate) fn config(&self) -> &Config {
+        self.config.as_ref()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,

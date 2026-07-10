@@ -569,16 +569,23 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             range: None,
         })
         .collect();
-    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
-        arg0_paths.codex_self_exe.clone(),
-        arg0_paths.codex_linux_sandbox_exe.clone(),
-    )?;
     let state_db = codex_core::init_state_db(&config).await;
-    let environment_manager = if run_loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await?
+    let environment_manager = if config.tool_policy == ToolPolicy::InfinityAgent {
+        EnvironmentManager::without_environments()
     } else {
-        EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(local_runtime_paths))
+        let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+            arg0_paths.codex_self_exe.clone(),
+            arg0_paths.codex_linux_sandbox_exe.clone(),
+        )?;
+        if run_loader_overrides.ignore_user_config {
+            EnvironmentManager::from_env(Some(local_runtime_paths)).await?
+        } else {
+            EnvironmentManager::from_codex_home(
+                config.codex_home.clone(),
+                Some(local_runtime_paths),
+            )
             .await?
+        }
     };
     let in_process_start_args = InProcessClientStartArgs {
         arg0_paths,
@@ -593,7 +600,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         environment_manager: std::sync::Arc::new(environment_manager),
         config_warnings,
         session_source: SessionSource::Exec,
-        enable_codex_api_key_env: true,
+        enable_codex_api_key_env: config.tool_policy != ToolPolicy::InfinityAgent,
         client_name: "codex_exec".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,

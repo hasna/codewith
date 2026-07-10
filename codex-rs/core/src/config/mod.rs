@@ -95,6 +95,8 @@ use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
 use codex_login::load_auth_profile_metadata;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
+use codex_mcp::McpCredentialPolicy;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -1818,6 +1820,14 @@ impl Config {
         self.tool_policy == ToolPolicy::InfinityAgent
     }
 
+    pub fn mcp_credential_policy(&self) -> McpCredentialPolicy {
+        if self.is_infinity_agent() {
+            McpCredentialPolicy::Forbid
+        } else {
+            McpCredentialPolicy::AllowConfigured
+        }
+    }
+
     pub(crate) fn multi_agent_version_from_features(&self) -> MultiAgentVersion {
         if self.features.enabled(Feature::MultiAgentV2) {
             MultiAgentVersion::V2
@@ -1945,6 +1955,7 @@ impl Config {
             apps_mcp_product_sku: self.apps_mcp_product_sku.clone(),
             codex_home: self.codex_home.to_path_buf(),
             mcp_oauth_credentials_store_mode: self.mcp_oauth_credentials_store_mode,
+            credential_policy: self.mcp_credential_policy(),
             mcp_oauth_callback_port: self.mcp_oauth_callback_port,
             mcp_oauth_callback_url: self.mcp_oauth_callback_url.clone(),
             skill_mcp_dependency_install_enabled: self
@@ -2461,6 +2472,14 @@ fn constrain_infinity_agent_mcp_servers(
 
     let mut filtered = HashMap::new();
     for source_id in &expected_sources {
+        if source_id == CODEX_APPS_MCP_SERVER_NAME {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "MCP bridge `{source_id}` uses the reserved host-authenticated Codewith apps source id"
+                ),
+            ));
+        }
         let requirement = requirements.value.get(source_id).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

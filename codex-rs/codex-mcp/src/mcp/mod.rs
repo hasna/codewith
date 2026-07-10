@@ -46,6 +46,17 @@ const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
 const CODEX_CONNECTORS_TOKEN_ENV_VAR: &str = "CODEX_CONNECTORS_TOKEN";
 
+/// Controls whether an MCP connection may consult or attach credentials.
+///
+/// Infinity Agent bridges use [`Self::Forbid`] so transport construction cannot
+/// read persisted OAuth state, resolve bearer tokens from the environment, or
+/// attach the root Codewith auth provider.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpCredentialPolicy {
+    AllowConfigured,
+    Forbid,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum McpSnapshotDetail {
     #[default]
@@ -114,6 +125,8 @@ pub struct McpConfig {
     pub codex_home: PathBuf,
     /// Preferred credential store for MCP OAuth tokens.
     pub mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode,
+    /// Whether MCP startup may consult or attach any credential source.
+    pub credential_policy: McpCredentialPolicy,
     /// Optional fixed localhost callback port for MCP OAuth login.
     pub mcp_oauth_callback_port: Option<u16>,
     /// Optional OAuth redirect URI override for MCP login.
@@ -274,6 +287,7 @@ pub async fn read_mcp_resource(
         mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
         auth,
+        config.credential_policy,
     )
     .await;
     let (tx_event, rx_event) = unbounded();
@@ -287,6 +301,7 @@ pub async fn read_mcp_resource(
         tx_event,
         PermissionProfile::default(),
         runtime_context,
+        config.credential_policy,
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
         host_owned_codex_apps_enabled,
@@ -340,6 +355,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
         auth,
+        config.credential_policy,
     )
     .await;
 
@@ -357,6 +373,7 @@ pub async fn collect_mcp_server_status_snapshot_with_detail(
         tx_event,
         PermissionProfile::default(),
         runtime_context,
+        config.credential_policy,
         config.codex_home.clone(),
         codex_apps_tools_cache_key(auth),
         host_owned_codex_apps_enabled,

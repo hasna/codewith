@@ -5,12 +5,10 @@
 # git push origin rust-v0.1.0
 # ```
 #
-# To use external macOS signing, manually dispatch `release_mode=build_unsigned`,
-# sign the unsigned macOS artifacts in a secure enclave, upload the signed handoff
-# archive as a GitHub Release asset, then manually dispatch
-# `release_mode=promote_signed` with `unsigned_run_id` and `signed_macos_asset`.
-# The signed handoff archive should contain target or artifact directories such
-# as `aarch64-apple-darwin/` with signed binaries.
+# External `promote_signed` publication is intentionally disabled until its
+# handoff carries a reviewed provenance attestation binding every signed output
+# to the exact unsigned run, commit, target, input digest, signer, and notary
+# submission. Canonical releases currently use only the in-job signed tag path.
 
 name: rust-release
 on:
@@ -88,30 +86,8 @@ jobs:
               fi
               ;;
             promote_signed)
-              if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
-                echo "❌  release_mode=promote_signed is only valid for manual runs"
-                exit 1
-              fi
-              if [[ ! "${UNSIGNED_RUN_ID}" =~ ^[0-9]+$ ]]; then
-                echo "❌  release_mode=promote_signed requires unsigned_run_id to be a workflow run id"
-                exit 1
-              fi
-              if [[ -z "${SIGNED_MACOS_ASSET}" ]]; then
-                echo "❌  release_mode=promote_signed requires signed_macos_asset"
-                exit 1
-              fi
-              if [[ ! "${SIGNED_MACOS_SHA256}" =~ ^[0-9A-Fa-f]{64}$ ]]; then
-                echo "❌  release_mode=promote_signed requires a 64-hex signed_macos_sha256"
-                exit 1
-              fi
-              if [[ "${SIGNED_MACOS_ASSET}" == */* || "${SIGNED_MACOS_ASSET}" == *"*"* || "${SIGNED_MACOS_ASSET}" == *"?"* || "${SIGNED_MACOS_ASSET}" == *"["* ]]; then
-                echo "❌  signed_macos_asset must be an exact release asset name, not a path or glob"
-                exit 1
-              fi
-              if [[ "${UNSIGNED_RUN_ID}" == "${GITHUB_RUN_ID}" ]]; then
-                echo "❌  unsigned_run_id must refer to the earlier build_unsigned run, not this run"
-                exit 1
-              fi
+              echo "❌  release_mode=promote_signed is disabled until a reviewed digest-bound provenance attestation is enforced"
+              exit 1
               ;;
             *)
               echo "❌  Unknown release_mode '${RELEASE_MODE}'"
@@ -618,7 +594,9 @@ jobs:
             codex-rs/dist/${{ matrix.target }}/*
 
   stage-signed-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_mode == 'promote_signed' }}
+    # Defense in depth: tag-check also rejects promote_signed. Keep this job
+    # unreachable until its handoff provenance protocol is implemented.
+    if: ${{ false }}
     needs: tag-check
     name: Stage signed macOS handoff - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: ${{ matrix.runner }}

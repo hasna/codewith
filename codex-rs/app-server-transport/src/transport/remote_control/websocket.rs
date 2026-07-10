@@ -1669,7 +1669,7 @@ mod tests {
     const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
     #[test]
-    fn unsegmented_remote_control_ingress_rejects_nested_duplicate_keys() {
+    fn infinity_agent_policy_unsegmented_remote_control_ingress_rejects_nested_duplicate_keys() {
         let raw = r#"{"type":"client_message","client_id":"client-1","stream_id":"stream-1","message":{"id":1,"method":"thread/start","params":{"dynamicTools":[{"name":"infinity_run_get","inputSchema":{"type":"object","type":"array"}}]}}}"#;
 
         let error = decode_client_envelope(raw)

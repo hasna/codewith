@@ -451,17 +451,7 @@ pub async fn run_main_with_transport_options(
         )
     })?;
     let codex_home = find_codex_home()?;
-    let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
-        arg0_paths.codex_self_exe.clone(),
-        arg0_paths.codex_linux_sandbox_exe.clone(),
-    )?;
-    let environment_manager = if loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await
-    } else {
-        EnvironmentManager::from_codex_home(codex_home.clone(), Some(local_runtime_paths)).await
-    }
-    .map(Arc::new)
-    .map_err(std::io::Error::other)?;
+    let ignore_user_config = loader_overrides.ignore_user_config;
     let config_manager = ConfigManager::new(
         codex_home.to_path_buf(),
         cli_kv_overrides.clone(),
@@ -549,7 +539,9 @@ pub async fn run_main_with_transport_options(
         }
     };
 
-    if should_run_personality_migration {
+    if should_run_personality_migration
+        && config.tool_policy != codex_config::ToolPolicy::InfinityAgent
+    {
         let effective_toml = config.config_layer_stack.effective_config();
         match effective_toml.try_into() {
             Ok(config_toml) => {
@@ -588,6 +580,22 @@ pub async fn run_main_with_transport_options(
             }
         }
     }
+
+    let environment_manager = if config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+        Arc::new(EnvironmentManager::without_environments())
+    } else {
+        let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+            arg0_paths.codex_self_exe.clone(),
+            arg0_paths.codex_linux_sandbox_exe.clone(),
+        )?;
+        if ignore_user_config {
+            EnvironmentManager::from_env(Some(local_runtime_paths)).await
+        } else {
+            EnvironmentManager::from_codex_home(codex_home.clone(), Some(local_runtime_paths)).await
+        }
+        .map(Arc::new)
+        .map_err(std::io::Error::other)?
+    };
 
     if let Ok(Some(err)) = check_execpolicy_for_warnings(&config.config_layer_stack).await {
         let (path, range) = exec_policy_warning_location(&err);

@@ -20,6 +20,7 @@ use crate::codex_apps::write_cached_codex_apps_tools_if_needed;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationReviewerHandle;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::McpCredentialPolicy;
 use crate::mcp::ToolPluginProvenance;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
@@ -106,6 +107,7 @@ pub struct McpConnectionManager {
     clients: HashMap<String, AsyncManagedClient>,
     server_metadata: HashMap<String, McpServerMetadata>,
     auth_entries: HashMap<String, McpAuthStatusEntry>,
+    credential_policy: McpCredentialPolicy,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
     host_owned_codex_apps_enabled: bool,
     prefix_mcp_tool_names: bool,
@@ -135,6 +137,7 @@ impl McpConnectionManager {
             clients: HashMap::new(),
             server_metadata: HashMap::new(),
             auth_entries: HashMap::new(),
+            credential_policy: McpCredentialPolicy::AllowConfigured,
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             host_owned_codex_apps_enabled: false,
             prefix_mcp_tool_names,
@@ -221,6 +224,7 @@ impl McpConnectionManager {
         tx_event: Sender<Event>,
         initial_permission_profile: PermissionProfile,
         runtime_context: McpRuntimeContext,
+        credential_policy: McpCredentialPolicy,
         codex_home: PathBuf,
         codex_apps_tools_cache_key: CodexAppsToolsCacheKey,
         host_owned_codex_apps_enabled: bool,
@@ -241,9 +245,14 @@ impl McpConnectionManager {
         );
         let tool_plugin_provenance = Arc::new(tool_plugin_provenance);
         let startup_submit_id = submit_id.clone();
-        let codex_apps_auth_provider = auth
-            .filter(|auth| auth.uses_codex_backend())
-            .map(codex_model_provider::auth_provider_from_auth);
+        let codex_apps_auth_provider = if credential_policy
+            == McpCredentialPolicy::AllowConfigured
+        {
+            auth.filter(|auth| auth.uses_codex_backend())
+                .map(codex_model_provider::auth_provider_from_auth)
+        } else {
+            None
+        };
         let mcp_servers = mcp_servers.clone();
         for (server_name, server) in mcp_servers
             .into_iter()
@@ -260,7 +269,10 @@ impl McpConnectionManager {
                 },
             )
             .await;
-            let codex_apps_tools_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME {
+            let codex_apps_tools_cache_context = if credential_policy
+                == McpCredentialPolicy::AllowConfigured
+                && server_name == CODEX_APPS_MCP_SERVER_NAME
+            {
                 Some(CodexAppsToolsCacheContext {
                     codex_home: codex_home.clone(),
                     user_key: codex_apps_tools_cache_key.clone(),
@@ -294,6 +306,7 @@ impl McpConnectionManager {
                 codex_apps_tools_cache_context,
                 Arc::clone(&tool_plugin_provenance),
                 runtime_context.clone(),
+                credential_policy,
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
             );
@@ -314,6 +327,7 @@ impl McpConnectionManager {
                             server_name.as_str(),
                             auth_entry.as_ref(),
                             error,
+                            credential_policy,
                         );
                         McpStartupStatus::Failed { error: error_str }
                     }
@@ -336,8 +350,10 @@ impl McpConnectionManager {
             clients,
             server_metadata,
             auth_entries,
+            credential_policy,
             tool_plugin_provenance,
-            host_owned_codex_apps_enabled,
+            host_owned_codex_apps_enabled: host_owned_codex_apps_enabled
+                && credential_policy == McpCredentialPolicy::AllowConfigured,
             prefix_mcp_tool_names,
             elicitation_requests: elicitation_requests.clone(),
             startup_cancellation_token: cancel_token.clone(),
@@ -354,6 +370,7 @@ impl McpConnectionManager {
                             server_name.as_str(),
                             auth_entry.as_ref(),
                             &error,
+                            credential_policy,
                         ),
                         server: server_name,
                     }),
@@ -412,6 +429,7 @@ impl McpConnectionManager {
                         server_name,
                         self.auth_entries.get(server_name),
                         &error,
+                        self.credential_policy,
                     ),
                     server: server_name.clone(),
                 }),
@@ -821,7 +839,11 @@ fn mcp_init_error_display(
     server_name: &str,
     entry: Option<&McpAuthStatusEntry>,
     err: &StartupOutcomeError,
+    credential_policy: McpCredentialPolicy,
 ) -> String {
+    if credential_policy == McpCredentialPolicy::Forbid {
+        return err.to_string();
+    }
     let transport = entry.and_then(|entry| entry.config.as_ref().map(|config| &config.transport));
     if let Some(McpServerTransportConfig::StreamableHttp {
         url,

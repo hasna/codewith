@@ -15,6 +15,7 @@ use tracing::warn;
 use crate::server::EffectiveMcpServer;
 
 use super::CODEX_APPS_MCP_SERVER_NAME;
+use super::McpCredentialPolicy;
 
 #[derive(Debug, Clone)]
 pub struct McpOAuthLoginConfig {
@@ -131,10 +132,27 @@ pub async fn compute_auth_statuses<'a, I>(
     servers: I,
     store_mode: OAuthCredentialsStoreMode,
     auth: Option<&CodexAuth>,
+    credential_policy: McpCredentialPolicy,
 ) -> HashMap<String, McpAuthStatusEntry>
 where
     I: IntoIterator<Item = (&'a String, &'a EffectiveMcpServer)>,
 {
+    let servers = servers.into_iter().collect::<Vec<_>>();
+    if credential_policy == McpCredentialPolicy::Forbid {
+        return servers
+            .into_iter()
+            .map(|(name, server)| {
+                (
+                    name.clone(),
+                    McpAuthStatusEntry {
+                        config: server.configured_config().cloned(),
+                        auth_status: McpAuthStatus::Unsupported,
+                    },
+                )
+            })
+            .collect();
+    }
+
     let futures = servers.into_iter().map(|(name, server)| {
         let name = name.clone();
         let config = server.configured_config().cloned();

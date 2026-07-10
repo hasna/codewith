@@ -820,6 +820,7 @@ impl Session {
                 mcp_servers.iter(),
                 config_for_mcp.mcp_oauth_credentials_store_mode,
                 auth.as_ref(),
+                config_for_mcp.mcp_credential_policy(),
             )
             .await;
             (auth, mcp_servers, auth_statuses)
@@ -1378,6 +1379,7 @@ impl Session {
                 tx_event.clone(),
                 session_configuration.permission_profile(),
                 mcp_runtime_context,
+                config.mcp_credential_policy(),
                 config.codex_home.to_path_buf(),
                 codex_apps_tools_cache_key(auth),
                 host_owned_codex_apps_enabled,
