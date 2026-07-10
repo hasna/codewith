@@ -30,8 +30,49 @@ permissions:
   contents: read
 
 jobs:
+  check-linux:
+    name: Compile-check Codewith Linux CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      BUILD_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'debug' }}
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+
+      - name: Compile-check Codewith native CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_args=(check --locked -p codex-cli --bin codewith)
+          if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            cargo_args+=(--release)
+          fi
+          timeout --signal=TERM --kill-after=30s 25m \
+            cargo "${cargo_args[@]}"
+
   build-linux:
     name: Build Codewith Linux CLI
+    needs: check-linux
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
@@ -39,6 +80,7 @@ jobs:
         working-directory: codex-rs
     env:
       BUILD_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'debug' }}
+      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,7 +107,7 @@ jobs:
           if [[ "${BUILD_PROFILE}" == "release" ]]; then
             cargo_args+=(--release)
           fi
-          cargo "${cargo_args[@]}"
+          timeout --signal=TERM --kill-after=30s 75m cargo "${cargo_args[@]}"
 
       - name: Stage Codewith artifact
         id: stage
