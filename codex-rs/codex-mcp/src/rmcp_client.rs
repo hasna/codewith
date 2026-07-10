@@ -609,11 +609,11 @@ async fn make_rmcp_client(
                 .await
                 .map_err(StartupOutcomeError::from)
             }
-            McpServerTransportConfig::StreamableHttp { .. } => Err(
-                StartupOutcomeError::from(anyhow!(
+            McpServerTransportConfig::StreamableHttp { .. } => {
+                Err(StartupOutcomeError::from(anyhow!(
                     "credential-forbidden MCP server `{server_name}` declares an authentication source"
-                )),
-            ),
+                )))
+            }
             McpServerTransportConfig::Stdio { .. } => Err(StartupOutcomeError::from(anyhow!(
                 "credential-forbidden MCP server `{server_name}` must use streamable HTTPS"
             ))),

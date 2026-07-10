@@ -161,8 +161,8 @@ async fn oauth_startup_child() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn infinity_agent_policy_no_auth_transport_ignores_stored_oauth_proxy_and_custom_ca(
-) -> anyhow::Result<()> {
+async fn infinity_agent_policy_no_auth_transport_ignores_stored_oauth_proxy_and_custom_ca()
+-> anyhow::Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(500))
@@ -202,9 +202,16 @@ async fn infinity_agent_policy_no_auth_transport_ignores_stored_oauth_proxy_and_
     let codex_home = TempDir::new()?;
     let server_url = format!("{}/mcp", server.uri());
     let missing_ca = codex_home.path().join("ambient-ca-must-not-be-read.pem");
-    let missing_ssl_ca = codex_home.path().join("ambient-ssl-ca-must-not-be-read.pem");
+    let missing_ssl_ca = codex_home
+        .path()
+        .join("ambient-ssl-ca-must-not-be-read.pem");
     let status = Command::new(std::env::current_exe()?)
-        .args(["no_auth_startup_child", "--exact", "--ignored", "--nocapture"])
+        .args([
+            "no_auth_startup_child",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ])
         .env("CODEX_HOME", codex_home.path())
         .env(NO_AUTH_CHILD_SERVER_URL_ENV, server_url)
         .env("HTTP_PROXY", proxy.uri())
@@ -228,7 +235,11 @@ async fn infinity_agent_policy_no_auth_transport_ignores_stored_oauth_proxy_and_
         "credential-forbidden transport must not use ambient proxies"
     );
     let requests = server.received_requests().await.unwrap_or_default();
-    assert_eq!(requests.len(), 2, "only MCP initialization may hit the bridge");
+    assert_eq!(
+        requests.len(),
+        2,
+        "only MCP initialization may hit the bridge"
+    );
     for request in requests {
         assert_eq!(request.url.path(), "/mcp");
         for forbidden_header in [
@@ -307,7 +318,11 @@ async fn infinity_agent_policy_no_auth_transport_does_not_follow_redirects() -> 
     assert!(status.success(), "no-auth redirect child failed: {status}");
     redirector.verify().await;
     assert!(
-        target.received_requests().await.unwrap_or_default().is_empty(),
+        target
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
         "credential-forbidden transport followed a redirect"
     );
     Ok(())

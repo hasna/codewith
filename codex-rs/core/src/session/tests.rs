@@ -8343,10 +8343,8 @@ async fn infinity_agent_policy_discards_live_mcp_bridge_replacement() {
                 "enabled_tools": ["extra_tool"]
             }
         }),
-        mcp_oauth_credentials_store_mode: serde_json::to_value(
-            OAuthCredentialsStoreMode::File,
-        )
-        .expect("serialize store mode"),
+        mcp_oauth_credentials_store_mode: serde_json::to_value(OAuthCredentialsStoreMode::File)
+            .expect("serialize store mode"),
     };
     {
         let mut guard = session.pending_mcp_server_refresh_config.lock().await;

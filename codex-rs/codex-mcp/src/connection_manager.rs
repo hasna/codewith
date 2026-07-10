@@ -245,8 +245,7 @@ impl McpConnectionManager {
         );
         let tool_plugin_provenance = Arc::new(tool_plugin_provenance);
         let startup_submit_id = submit_id.clone();
-        let codex_apps_auth_provider = if credential_policy
-            == McpCredentialPolicy::AllowConfigured
+        let codex_apps_auth_provider = if credential_policy == McpCredentialPolicy::AllowConfigured
         {
             auth.filter(|auth| auth.uses_codex_backend())
                 .map(codex_model_provider::auth_provider_from_auth)

@@ -53,7 +53,13 @@ async fn infinity_agent_policy_auth_status_skips_stored_tokens_and_discovery() -
         .status()?;
     assert!(status.success(), "auth-status child failed: {status}");
     server.verify().await;
-    assert!(server.received_requests().await.unwrap_or_default().is_empty());
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+    );
     Ok(())
 }
 
