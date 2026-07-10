@@ -106,6 +106,44 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
     }
 }
 
+fn required_bundled_remote_gap_models(required_models: &[ModelInfo]) -> Vec<ModelInfo> {
+    let hidden_required = required_models
+        .first()
+        .expect("bundled registry should mark at least one required local model");
+    vec![
+        remote_model_with_visibility(
+            &hidden_required.slug,
+            &hidden_required.display_name,
+            /*priority*/ 0,
+            "hide",
+        ),
+        remote_model(
+            "chatgpt-authoritative-model-info",
+            "ChatGPT Model Info",
+            /*priority*/ 10,
+        ),
+    ]
+}
+
+fn assert_required_bundled_models_available_once(
+    actual_models: &[ModelInfo],
+    expected_required: &[ModelInfo],
+) {
+    for expected in expected_required {
+        let matches = actual_models
+            .iter()
+            .filter(|model| model.slug == expected.slug)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "required model {} should appear exactly once",
+            expected.slug
+        );
+        assert_eq!(matches[0], expected);
+    }
+}
+
 #[derive(Debug)]
 struct TestModelsEndpoint {
     has_provider_auth: bool,
@@ -769,6 +807,58 @@ async fn refresh_available_models_keeps_codex_spark_when_chatgpt_remote_omits_it
     assert_eq!(spark.input_modalities, vec![InputModality::Text]);
     assert_eq!(spark.default_reasoning_level, Some(ReasoningEffort::High));
     assert!(!spark.supported_in_api);
+}
+
+#[tokio::test]
+async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_remote() {
+    let required_models = crate::model_info::required_bundled_model_infos();
+    let remote_models = required_bundled_remote_gap_models(&required_models);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let models = manager.get_remote_models().await;
+    assert_models_contain(&models, &remote_models);
+    assert_required_bundled_models_available_once(&models, &required_models);
+}
+
+#[tokio::test]
+async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_cache() {
+    let required_models = crate::model_info::required_bundled_model_infos();
+    let remote_models = required_bundled_remote_gap_models(&required_models);
+    let codex_home = tempdir().expect("temp dir");
+    let fetch_endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
+    let fetch_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), fetch_endpoint.clone());
+
+    fetch_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    let cache_endpoint = TestModelsEndpoint::new(Vec::new());
+    let cache_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+
+    cache_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("cached refresh succeeds");
+
+    assert_eq!(
+        cache_endpoint.fetch_count(),
+        0,
+        "fresh cache should avoid a model fetch"
+    );
+
+    let models = cache_manager.get_remote_models().await;
+    assert_models_contain(&models, &remote_models);
+    assert_required_bundled_models_available_once(&models, &required_models);
 }
 
 #[tokio::test]

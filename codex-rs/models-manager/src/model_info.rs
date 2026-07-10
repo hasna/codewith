@@ -13,6 +13,7 @@ use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use serde::Deserialize;
 
 use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -25,6 +26,27 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 pub const GPT_5_3_CODEX_SPARK: &str = "gpt-5.3-codex-spark";
+
+#[derive(Debug, Deserialize)]
+struct BundledModelCatalog {
+    models: Vec<BundledModelCatalogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundledModelCatalogEntry {
+    #[serde(flatten)]
+    model: ModelInfo,
+    #[serde(default)]
+    local_catalog: LocalCatalogPolicy,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum LocalCatalogPolicy {
+    #[default]
+    Default,
+    Required,
+}
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries
@@ -176,8 +198,49 @@ pub(crate) fn model_info_from_slug_for_provider(
 }
 
 pub fn ensure_required_local_models(models: &mut Vec<ModelInfo>) {
-    if !models.iter().any(|model| model.slug == GPT_5_3_CODEX_SPARK) {
-        models.push(codex_spark_model_info());
+    if !models
+        .iter()
+        .any(|model| model.slug == GPT_5_3_CODEX_SPARK && model.visibility == ModelVisibility::List)
+    {
+        upsert_model(models, codex_spark_model_info());
+    }
+    for model in required_bundled_model_infos() {
+        ensure_required_bundled_model(models, model);
+    }
+}
+
+fn ensure_required_bundled_model(models: &mut Vec<ModelInfo>, model_info: ModelInfo) {
+    if models
+        .iter()
+        .any(|model| model.slug == model_info.slug && model.visibility == ModelVisibility::List)
+    {
+        return;
+    }
+    upsert_model(models, model_info);
+}
+
+pub(crate) fn required_bundled_model_infos() -> Vec<ModelInfo> {
+    serde_json::from_str::<BundledModelCatalog>(include_str!("../models.json"))
+        .ok()
+        .map(|catalog| {
+            catalog
+                .models
+                .into_iter()
+                .filter(|entry| entry.local_catalog == LocalCatalogPolicy::Required)
+                .map(|entry| entry.model)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn upsert_model(models: &mut Vec<ModelInfo>, model_info: ModelInfo) {
+    if let Some(index) = models
+        .iter()
+        .position(|model| model.slug == model_info.slug)
+    {
+        models[index] = model_info;
+    } else {
+        models.push(model_info);
     }
 }
 
