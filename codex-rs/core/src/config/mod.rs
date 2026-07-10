@@ -97,6 +97,7 @@ use codex_login::validate_auth_profile_name;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpConfig;
 use codex_mcp::McpCredentialPolicy;
+use codex_mcp::is_credential_forbidden_mcp_url;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -2364,19 +2365,6 @@ fn mcp_server_matches_requirement(
     }
 }
 
-fn is_no_secret_https_mcp_url(value: &str) -> bool {
-    let Ok(url) = url::Url::parse(value) else {
-        return false;
-    };
-    url.scheme() == "https"
-        && !url.cannot_be_a_base()
-        && !url.host_str().unwrap_or_default().is_empty()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-}
-
 fn require_canonical_system_requirements_source(source: &RequirementSource) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -2503,10 +2491,7 @@ fn constrain_infinity_agent_mcp_servers(
             || server.environment_id != codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
             || !mcp_server_matches_requirement(requirement, server)
             || configured_raw_tools.as_ref() != Some(&expected_raw_tools)
-            || server
-                .disabled_tools
-                .as_ref()
-                .is_some_and(|tools| !tools.is_empty())
+            || server.disabled_tools.is_some()
             || server.default_tools_approval_mode.is_some()
             || !server.tools.is_empty()
             || server.scopes.is_some()
@@ -2527,7 +2512,7 @@ fn constrain_infinity_agent_mcp_servers(
                 http_headers,
                 env_http_headers,
                 ..
-            } if is_no_secret_https_mcp_url(url)
+            } if is_credential_forbidden_mcp_url(url)
                 && bearer_token_env_var.is_none()
                 && http_headers.is_none()
                 && env_http_headers.is_none() => {}

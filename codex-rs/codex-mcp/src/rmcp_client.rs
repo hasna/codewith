@@ -694,13 +694,19 @@ async fn make_rmcp_client(
     }
 }
 
-fn is_credential_forbidden_mcp_url(value: &str) -> bool {
+pub fn is_credential_forbidden_mcp_url(value: &str) -> bool {
     let Ok(url) = url::Url::parse(value) else {
         return false;
     };
+    let raw_authority_is_safe = value
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+        .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
+        .is_some_and(|authority| !authority.is_empty() && !authority.contains('@'));
     url.scheme() == "https"
         && !url.cannot_be_a_base()
         && !url.host_str().unwrap_or_default().is_empty()
+        && raw_authority_is_safe
         && url.username().is_empty()
         && url.password().is_none()
         && url.query().is_none()
@@ -712,6 +718,35 @@ mod tests {
     use super::*;
     use rmcp::model::JsonObject;
     use rmcp::model::Meta;
+
+    #[test]
+    fn infinity_agent_policy_mcp_url_requires_closed_https_shape() {
+        for accepted in [
+            "https://bridge.example/mcp",
+            "HTTPS://bridge.example/path@segment",
+        ] {
+            assert!(
+                is_credential_forbidden_mcp_url(accepted),
+                "expected accepted URL: {accepted}"
+            );
+        }
+
+        for rejected in [
+            "http://bridge.example/mcp",
+            "https://user@bridge.example/mcp",
+            "https://@bridge.example/mcp",
+            "https://user:secret@bridge.example/mcp",
+            "https:////bridge.example/mcp",
+            "https:\\\\@bridge.example\\mcp",
+            "https://bridge.example/mcp?token=secret",
+            "https://bridge.example/mcp#secret",
+        ] {
+            assert!(
+                !is_credential_forbidden_mcp_url(rejected),
+                "expected rejected URL: {rejected}"
+            );
+        }
+    }
 
     fn tool_with_connector_meta() -> RmcpTool {
         RmcpTool::new(

@@ -436,6 +436,38 @@ pub(crate) fn test_dynamic_policy(tools: &[DynamicToolSpec]) -> Arc<VerifiedTool
     })
 }
 
+#[cfg(test)]
+pub(crate) fn test_mcp_policy(
+    source_id: &str,
+    raw_tool_names: &[&str],
+) -> Arc<VerifiedToolPolicy> {
+    let entries = raw_tool_names
+        .iter()
+        .map(|raw_tool_name| {
+            (
+                ToolName::new(
+                    Some(source_id.to_string()),
+                    (*raw_tool_name).to_string(),
+                ),
+                VerifiedPolicyEntry {
+                    source: PolicySource::Mcp,
+                    source_id: source_id.to_string(),
+                    raw_tool_name: (*raw_tool_name).to_string(),
+                    input_schema_sha256: sha256_claim(b"test-input-schema"),
+                    tool_description_sha256: sha256_claim(b"test-tool-description"),
+                    namespace_description_sha256: sha256_claim(b"test-namespace-description"),
+                },
+            )
+        })
+        .collect();
+    Arc::new(VerifiedToolPolicy {
+        digest: sha256_claim(b"test-infinity-agent-mcp-policy"),
+        mode: PolicyMode::McpOnly,
+        expires_at: Utc::now() + chrono::Duration::hours(1),
+        entries,
+    })
+}
+
 pub(crate) fn load_process_policy(
     trust_key_path: &Path,
 ) -> Result<Arc<VerifiedToolPolicy>, PolicyError> {

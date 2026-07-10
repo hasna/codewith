@@ -204,6 +204,340 @@ fn http_mcp(url: &str) -> McpServerConfig {
     }
 }
 
+#[cfg(unix)]
+const INFINITY_TEST_MCP_SOURCE: &str = "infinity_bridge";
+#[cfg(unix)]
+const INFINITY_TEST_MCP_URL: &str = "https://bridge.example/mcp";
+#[cfg(unix)]
+const INFINITY_TEST_MCP_TOOL: &str = "infinity_run_submit";
+
+#[cfg(unix)]
+fn infinity_agent_mcp_server() -> McpServerConfig {
+    let mut server = http_mcp(INFINITY_TEST_MCP_URL);
+    server.required = true;
+    server.enabled_tools = Some(vec![INFINITY_TEST_MCP_TOOL.to_string()]);
+    server
+}
+
+#[cfg(unix)]
+fn infinity_agent_mcp_requirements(
+    source_id: &str,
+    server: &McpServerConfig,
+) -> Sourced<BTreeMap<String, McpServerRequirement>> {
+    let identity = match &server.transport {
+        McpServerTransportConfig::Stdio { command, .. } => McpServerIdentity::Command {
+            command: command.clone(),
+        },
+        McpServerTransportConfig::StreamableHttp { url, .. } => {
+            McpServerIdentity::Url { url: url.clone() }
+        }
+    };
+    Sourced::new(
+        BTreeMap::from([(source_id.to_string(), McpServerRequirement { identity })]),
+        RequirementSource::SystemRequirementsToml {
+            file: AbsolutePathBuf::from_absolute_path("/etc/codewith/requirements.toml")
+                .expect("absolute system requirements path"),
+        },
+    )
+}
+
+#[cfg(unix)]
+fn assert_infinity_agent_mcp_server_rejected(label: &str, server: McpServerConfig) {
+    let requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    let policy = crate::tools::policy::test_mcp_policy(
+        INFINITY_TEST_MCP_SOURCE,
+        &[INFINITY_TEST_MCP_TOOL],
+    );
+    let error = constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::from([(
+            INFINITY_TEST_MCP_SOURCE.to_string(),
+            server,
+        )])),
+        Some(&requirements),
+        &policy,
+    )
+    .expect_err(label);
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{label}");
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_accepts_only_exact_protected_bridge() {
+    let server = infinity_agent_mcp_server();
+    let requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    let policy = crate::tools::policy::test_mcp_policy(
+        INFINITY_TEST_MCP_SOURCE,
+        &[INFINITY_TEST_MCP_TOOL],
+    );
+    let extra_server = http_mcp("https://untrusted.example/mcp");
+
+    let constrained = constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::from([
+            (INFINITY_TEST_MCP_SOURCE.to_string(), server.clone()),
+            ("untrusted_extra".to_string(), extra_server),
+        ])),
+        Some(&requirements),
+        &policy,
+    )
+    .expect("exact system-pinned no-credential bridge should pass");
+
+    assert_eq!(
+        constrained.get(),
+        &HashMap::from([(INFINITY_TEST_MCP_SOURCE.to_string(), server)])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_rejects_reserved_host_apps_source() {
+    let server = infinity_agent_mcp_server();
+    let requirements = infinity_agent_mcp_requirements(CODEX_APPS_MCP_SERVER_NAME, &server);
+    let policy = crate::tools::policy::test_mcp_policy(
+        CODEX_APPS_MCP_SERVER_NAME,
+        &[INFINITY_TEST_MCP_TOOL],
+    );
+
+    let error = constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::from([(
+            CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            server,
+        )])),
+        Some(&requirements),
+        &policy,
+    )
+    .expect_err("reserved host-authenticated apps source must fail closed");
+
+    assert!(error.to_string().contains("reserved"));
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_rejects_missing_or_non_system_requirement() {
+    let server = infinity_agent_mcp_server();
+    let policy = crate::tools::policy::test_mcp_policy(
+        INFINITY_TEST_MCP_SOURCE,
+        &[INFINITY_TEST_MCP_TOOL],
+    );
+    let servers = || {
+        Constrained::allow_any(HashMap::from([(
+            INFINITY_TEST_MCP_SOURCE.to_string(),
+            server.clone(),
+        )]))
+    };
+
+    constrain_infinity_agent_mcp_servers(servers(), None, &policy)
+        .expect_err("missing system requirement must fail closed");
+
+    let mut requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    requirements.source = RequirementSource::Unknown;
+    constrain_infinity_agent_mcp_servers(servers(), Some(&requirements), &policy)
+        .expect_err("non-system requirement source must fail closed");
+
+    let mut requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    requirements.value.clear();
+    constrain_infinity_agent_mcp_servers(servers(), Some(&requirements), &policy)
+        .expect_err("missing protected source pin must fail closed");
+
+    let requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::new()),
+        Some(&requirements),
+        &policy,
+    )
+    .expect_err("missing protected server config must fail closed");
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_rejects_requirement_identity_mismatch() {
+    let server = infinity_agent_mcp_server();
+    let mut requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
+    let requirement = requirements
+        .value
+        .get_mut(INFINITY_TEST_MCP_SOURCE)
+        .expect("protected source requirement");
+    requirement.identity = McpServerIdentity::Url {
+        url: "https://different.example/mcp".to_string(),
+    };
+    let policy = crate::tools::policy::test_mcp_policy(
+        INFINITY_TEST_MCP_SOURCE,
+        &[INFINITY_TEST_MCP_TOOL],
+    );
+
+    constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::from([(
+            INFINITY_TEST_MCP_SOURCE.to_string(),
+            server,
+        )])),
+        Some(&requirements),
+        &policy,
+    )
+    .expect_err("system-pinned URL mismatch must fail closed");
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_rejects_non_https_and_userinfo_urls() {
+    for (label, url) in [
+        ("http", "http://bridge.example/mcp"),
+        ("username", "https://user@bridge.example/mcp"),
+        ("empty userinfo", "https://@bridge.example/mcp"),
+        ("password", "https://user:secret@bridge.example/mcp"),
+        ("noncanonical authority slashes", "https:////bridge.example/mcp"),
+        ("backslash authority", "https:\\\\@bridge.example/mcp"),
+        ("query", "https://bridge.example/mcp?token=secret"),
+        ("fragment", "https://bridge.example/mcp#secret"),
+    ] {
+        let mut server = infinity_agent_mcp_server();
+        let McpServerTransportConfig::StreamableHttp {
+            url: server_url, ..
+        } = &mut server.transport
+        else {
+            unreachable!("test server is HTTP");
+        };
+        *server_url = url.to_string();
+        assert_infinity_agent_mcp_server_rejected(label, server);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn infinity_agent_policy_mcp_config_rejects_credentials_and_overlays() {
+    type Mutation = Box<dyn Fn(&mut McpServerConfig)>;
+    let cases: Vec<(&str, Mutation)> = vec![
+        (
+            "stdio child process",
+            Box::new(|server| server.transport = stdio_mcp("untrusted-child").transport),
+        ),
+        (
+            "bearer token environment variable",
+            Box::new(|server| {
+                let McpServerTransportConfig::StreamableHttp {
+                    bearer_token_env_var,
+                    ..
+                } = &mut server.transport
+                else {
+                    unreachable!("test server is HTTP");
+                };
+                *bearer_token_env_var = Some("TOKEN".to_string());
+            }),
+        ),
+        (
+            "static headers",
+            Box::new(|server| {
+                let McpServerTransportConfig::StreamableHttp { http_headers, .. } =
+                    &mut server.transport
+                else {
+                    unreachable!("test server is HTTP");
+                };
+                *http_headers = Some(HashMap::new());
+            }),
+        ),
+        (
+            "environment headers",
+            Box::new(|server| {
+                let McpServerTransportConfig::StreamableHttp {
+                    env_http_headers, ..
+                } = &mut server.transport
+                else {
+                    unreachable!("test server is HTTP");
+                };
+                *env_http_headers = Some(HashMap::new());
+            }),
+        ),
+        (
+            "OAuth scopes",
+            Box::new(|server| server.scopes = Some(Vec::new())),
+        ),
+        (
+            "OAuth client",
+            Box::new(|server| {
+                server.oauth = Some(McpServerOAuthConfig { client_id: None })
+            }),
+        ),
+        (
+            "OAuth resource",
+            Box::new(|server| server.oauth_resource = Some("resource".to_string())),
+        ),
+        (
+            "nonlocal environment",
+            Box::new(|server| server.environment_id = "remote".to_string()),
+        ),
+        (
+            "optional server",
+            Box::new(|server| server.required = false),
+        ),
+        (
+            "parallel tool calls",
+            Box::new(|server| server.supports_parallel_tool_calls = true),
+        ),
+        (
+            "disabled server",
+            Box::new(|server| server.enabled = false),
+        ),
+        (
+            "missing raw-tool allowlist",
+            Box::new(|server| server.enabled_tools = None),
+        ),
+        (
+            "mismatched raw-tool allowlist",
+            Box::new(|server| server.enabled_tools = Some(vec!["other_tool".to_string()])),
+        ),
+        (
+            "extra raw tool",
+            Box::new(|server| {
+                server.enabled_tools = Some(vec![
+                    INFINITY_TEST_MCP_TOOL.to_string(),
+                    "other_tool".to_string(),
+                ])
+            }),
+        ),
+        (
+            "empty disabled-tools overlay",
+            Box::new(|server| server.disabled_tools = Some(Vec::new())),
+        ),
+        (
+            "disabled tool",
+            Box::new(|server| server.disabled_tools = Some(vec!["other_tool".to_string()])),
+        ),
+        (
+            "default approval mode",
+            Box::new(|server| server.default_tools_approval_mode = Some(AppToolApproval::Auto)),
+        ),
+        (
+            "per-tool settings",
+            Box::new(|server| {
+                server.tools.insert(
+                    INFINITY_TEST_MCP_TOOL.to_string(),
+                    McpServerToolConfig::default(),
+                );
+            }),
+        ),
+    ];
+
+    for (label, mutate) in cases {
+        let mut server = infinity_agent_mcp_server();
+        mutate(&mut server);
+        assert_infinity_agent_mcp_server_rejected(label, server);
+    }
+}
+
+#[test]
+fn infinity_agent_policy_dynamic_cli_mode_clears_all_mcp_servers() {
+    let policy = crate::tools::policy::test_dynamic_policy(&[]);
+    let constrained = constrain_infinity_agent_mcp_servers(
+        Constrained::allow_any(HashMap::from([(
+            "untrusted".to_string(),
+            stdio_mcp("untrusted-child"),
+        )])),
+        None,
+        &policy,
+    )
+    .expect("dynamic-only policy must clear MCP configuration");
+
+    assert!(constrained.get().is_empty());
+}
+
 async fn derive_legacy_sandbox_policy_for_test(
     cfg: &ConfigToml,
     sandbox_mode_override: Option<SandboxMode>,
