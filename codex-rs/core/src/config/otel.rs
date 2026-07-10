@@ -36,6 +36,34 @@ pub(crate) fn resolve_config(
     }
 }
 
+pub(crate) fn infinity_agent_disabled_config() -> OtelConfig {
+    OtelConfig {
+        log_user_prompt: false,
+        environment: DEFAULT_OTEL_ENVIRONMENT.to_string(),
+        exporter: OtelExporterKind::None,
+        trace_exporter: OtelExporterKind::None,
+        metrics_exporter: OtelExporterKind::None,
+        span_attributes: BTreeMap::new(),
+        tracestate: BTreeMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod infinity_agent_tests {
+    use super::*;
+
+    #[test]
+    fn infinity_agent_policy_disables_every_telemetry_export_path() {
+        let config = infinity_agent_disabled_config();
+        assert!(!config.log_user_prompt);
+        assert_eq!(config.exporter, OtelExporterKind::None);
+        assert_eq!(config.trace_exporter, OtelExporterKind::None);
+        assert_eq!(config.metrics_exporter, OtelExporterKind::None);
+        assert!(config.span_attributes.is_empty());
+        assert!(config.tracestate.is_empty());
+    }
+}
+
 fn resolve_span_attributes(
     span_attributes: Option<BTreeMap<String, String>>,
     startup_warnings: &mut Vec<String>,

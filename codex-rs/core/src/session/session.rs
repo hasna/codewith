@@ -37,6 +37,9 @@ pub(crate) struct Session {
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
+    /// Immutable process policy marker used to short-circuit every extension
+    /// lifecycle path even if a registry is accidentally populated later.
+    pub(crate) infinity_agent_policy: bool,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
@@ -578,6 +581,34 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) app_server_client_version: Option<String>,
 }
 
+impl SessionSettingsUpdate {
+    pub(crate) fn has_infinity_agent_authority_override(&self) -> bool {
+        self.cwd.is_some()
+            || self.workspace_roots.is_some()
+            || self.profile_workspace_roots.is_some()
+            || self.approval_policy.is_some()
+            || self.approvals_reviewer.is_some()
+            || self.sandbox_policy.is_some()
+            || self.permission_profile.is_some()
+            || self.active_permission_profile.is_some()
+            || self.auth_profile.is_some()
+            || self.windows_sandbox_level.is_some()
+            || self.model_provider_id.is_some()
+            || self.collaboration_mode.is_some()
+            || self.worktree_mode.is_some()
+            || self.session_prompt.is_some()
+            || self
+                .final_output_json_schema
+                .as_ref()
+                .is_some_and(Option::is_some)
+            || self
+                .environments
+                .as_ref()
+                .is_some_and(|environments| !environments.is_empty())
+            || self.personality.is_some()
+    }
+}
+
 pub(crate) struct AppServerClientMetadata {
     pub(crate) client_name: Option<String>,
     pub(crate) client_version: Option<String>,
@@ -590,6 +621,9 @@ async fn warm_plugins_and_skills_for_session_init(
     skills_manager: Arc<SkillsManager>,
     environments: Vec<TurnEnvironmentSelection>,
 ) -> Vec<SkillError> {
+    if config.is_infinity_agent() {
+        return Vec::new();
+    }
     let fs = crate::environment_selection::resolve_environment_selections(
         environment_manager.as_ref(),
         &environments,
@@ -651,6 +685,12 @@ impl Session {
             session_configuration.collaboration_mode.model(),
             session_configuration.provider
         );
+        let extensions = if config.is_infinity_agent() {
+            session_configuration.environments.clear();
+            codex_extension_api::empty_extension_registry()
+        } else {
+            extensions
+        };
         let forked_from_id = session_configuration
             .forked_from_thread_id
             .or_else(|| initial_history.forked_from_id());
@@ -995,7 +1035,9 @@ impl Session {
                 shell::default_user_shell()
             };
             // Create the mutable state for the Session.
-            let shell_snapshot_tx = if config.features.enabled(Feature::ShellSnapshot) {
+            let shell_snapshot_tx = if !config.is_infinity_agent()
+                && config.features.enabled(Feature::ShellSnapshot)
+            {
                 if let Some(snapshot) = session_configuration.inherited_shell_snapshot.clone() {
                     let (tx, rx) = watch::channel(Some(snapshot));
                     default_shell.shell_snapshot = rx;
@@ -1113,14 +1155,16 @@ impl Session {
                 codex_extension_api::ExtensionData::new(session_id.to_string());
             let thread_extension_data =
                 codex_extension_api::ExtensionData::new(thread_id.to_string());
-            for contributor in extensions.thread_lifecycle_contributors() {
-                contributor.on_thread_start(codex_extension_api::ThreadStartInput {
-                    config: config.as_ref(),
-                    session_source: &session_configuration.session_source,
-                    persistent_thread_state_available: state_db_ctx.is_some(),
-                    session_store: &session_extension_data,
-                    thread_store: &thread_extension_data,
-                }).await;
+            if !config.is_infinity_agent() {
+                for contributor in extensions.thread_lifecycle_contributors() {
+                    contributor.on_thread_start(codex_extension_api::ThreadStartInput {
+                        config: config.as_ref(),
+                        session_source: &session_configuration.session_source,
+                        persistent_thread_state_available: state_db_ctx.is_some(),
+                        session_store: &session_extension_data,
+                        thread_store: &thread_extension_data,
+                    }).await;
+                }
             }
             let models_manager_cache_key = model_cache_key_for_configured_provider(
                 &config.model_provider_id,
@@ -1223,6 +1267,7 @@ impl Session {
                 state: Mutex::new(state),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
+                infinity_agent_policy: config.is_infinity_agent(),
                 multi_agent_version,
                 pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),

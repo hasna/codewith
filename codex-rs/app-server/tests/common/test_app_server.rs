@@ -1174,6 +1174,18 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         self.send_request(method, params).await
     }
+
+    /// Write one pre-serialized JSON-RPC line without constructing a
+    /// `serde_json::Value`, for duplicate-key ingress tests.
+    pub async fn send_raw_jsonrpc_line(&mut self, payload: &str) -> anyhow::Result<()> {
+        let Some(stdin) = self.stdin.as_mut() else {
+            anyhow::bail!("mcp stdin closed");
+        };
+        stdin.write_all(payload.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
+        Ok(())
+    }
     /// Send a `collaborationMode/list` JSON-RPC request.
     pub async fn send_list_collaboration_modes_request(
         &mut self,

@@ -274,6 +274,20 @@ pub(super) async fn user_input_or_turn_inner(
     else {
         unreachable!();
     };
+    if sess.infinity_agent_policy
+        && (!additional_context.is_empty() || responsesapi_client_metadata.is_some())
+    {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(ErrorEvent {
+                message: "Infinity Agent rejects additional context and client metadata"
+                    .to_string(),
+                codex_error_info: Some(CodexErrorInfo::BadRequest),
+            }),
+        })
+        .await;
+        return;
+    }
     let emit_thread_settings_applied = thread_settings != ThreadSettingsOverrides::default();
     let mut updates = if emit_thread_settings_applied {
         thread_settings_update(sess, thread_settings).await
@@ -765,6 +779,9 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
 }
 
 async fn emit_thread_stop_lifecycle(sess: &Session) {
+    if sess.infinity_agent_policy {
+        return;
+    }
     for contributor in sess.services.extensions.thread_lifecycle_contributors() {
         contributor
             .on_thread_stop(codex_extension_api::ThreadStopInput {

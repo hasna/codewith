@@ -56,6 +56,7 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
 use codex_config::ConfigLoadOptions;
 use codex_config::LoaderOverrides;
+use codex_config::ToolPolicy;
 use codex_config::format_config_error_with_source;
 use codex_core::StateDbHandle;
 use codex_core::check_execpolicy_for_warnings;
@@ -1090,6 +1091,19 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 }
 
 fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
+    if config.tool_policy == ToolPolicy::InfinityAgent {
+        return ThreadStartParams {
+            model: None,
+            model_provider: None,
+            auth_profile: Some(None),
+            approval_policy: Some(AskForApproval::Never.into()),
+            config: None,
+            ephemeral: Some(true),
+            thread_source: Some(ThreadSource::User),
+            environments: Some(Vec::new()),
+            ..ThreadStartParams::default()
+        };
+    }
     let permissions = permissions_selection_from_config(config);
     let sandbox = permissions.is_none().then(|| {
         sandbox_mode_from_permission_profile(
@@ -1122,6 +1136,30 @@ fn turn_start_params_from_config(
     resumed_existing_thread: bool,
     resume_overrides: &ResumeOverrideSelection,
 ) -> TurnStartParams {
+    if config.tool_policy == ToolPolicy::InfinityAgent {
+        return TurnStartParams {
+            thread_id,
+            client_user_message_id: None,
+            input,
+            responsesapi_client_metadata: None,
+            additional_context: None,
+            environments: Some(Vec::new()),
+            cwd: None,
+            runtime_workspace_roots: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox_policy: None,
+            permissions: None,
+            model: None,
+            model_provider: None,
+            service_tier: None,
+            effort: None,
+            summary: None,
+            personality: None,
+            output_schema,
+            collaboration_mode: None,
+        };
+    }
     let explicit_permissions = resumed_existing_thread && resume_overrides.permissions;
     let permissions = explicit_permissions
         .then(|| permissions_selection_from_config(config))

@@ -320,6 +320,9 @@ impl CodexThread {
     }
 
     pub(crate) async fn emit_thread_resume_lifecycle(&self) {
+        if self.codex.session.infinity_agent_policy {
+            return;
+        }
         for contributor in self
             .codex
             .session

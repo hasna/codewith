@@ -7,6 +7,7 @@ use crate::session::session::SessionSettingsUpdate;
 use crate::session::tests::make_session_and_context;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
+use codex_config::ToolPolicy;
 use codex_extension_api::empty_extension_registry;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::models::ContentItem;
@@ -18,6 +19,158 @@ use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::SessionSource;
+
+#[test]
+fn infinity_agent_policy_rejects_initial_environment_and_history_before_resolution() {
+    let cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(std::path::Path::new(
+        "/tmp",
+    ))
+    .expect("absolute test cwd");
+    let environments = vec![TurnEnvironmentSelection {
+        environment_id: "local".to_string(),
+        cwd,
+    }];
+
+    let environment_error = validate_infinity_agent_thread_start(
+        true,
+        &InitialHistory::New,
+        &SessionSource::Exec,
+        None,
+        None,
+        &environments,
+    )
+    .expect_err("restricted thread must reject environment before lookup");
+    assert!(environment_error.to_string().contains("empty environment"));
+
+    let history_error = validate_infinity_agent_thread_start(
+        true,
+        &InitialHistory::Forked(Vec::new()),
+        &SessionSource::Exec,
+        None,
+        None,
+        &[],
+    )
+    .expect_err("restricted thread must reject fork history before reconstruction");
+    assert!(history_error.to_string().contains("resumed or forked"));
+
+    assert!(
+        validate_infinity_agent_thread_start(
+            false,
+            &InitialHistory::New,
+            &SessionSource::Exec,
+            None,
+            None,
+            &environments,
+        )
+        .is_ok()
+    );
+
+    let parent_thread_id = ThreadId::new();
+    let subagent_error = validate_infinity_agent_thread_start(
+        true,
+        &InitialHistory::New,
+        &SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        Some(parent_thread_id),
+        None,
+        &[],
+    )
+    .expect_err("restricted thread must reject a subagent source before parent lookup");
+    assert!(subagent_error.to_string().contains("subagent"));
+}
+
+#[tokio::test]
+async fn infinity_agent_history_operations_reject_before_store_or_parent_lookup() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    config.tool_policy = ToolPolicy::InfinityAgent;
+    config.experimental_thread_store = ThreadStoreConfig::InMemory {
+        id: format!("infinity-thread-manager-{}", uuid::Uuid::new_v4()),
+    };
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let state_db = init_state_db(&config).await;
+    let thread_store = thread_store_from_config(&config, state_db.clone());
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager.clone(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        /*analytics_events_client*/ None,
+        thread_store,
+        state_db,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+    );
+
+    let missing_rollout = temp_dir.path().join("must-not-be-read.jsonl");
+    let resume_error = match manager
+        .resume_thread_from_rollout(
+            config.clone(),
+            missing_rollout,
+            auth_manager,
+            /*parent_trace*/ None,
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("Infinity Agent resume must fail before reading the rollout"),
+    };
+    assert!(resume_error.to_string().contains("Infinity Agent"));
+    assert!(!resume_error.to_string().contains("must-not-be-read"));
+
+    let missing_parent = ThreadId::new();
+    let subagent_error = match manager
+        .spawn_subagent(
+            missing_parent,
+            StartThreadOptions {
+                config: config.clone(),
+                initial_history: InitialHistory::New,
+                session_source: None,
+                thread_source: Some(ThreadSource::Subagent),
+                dynamic_tools: Vec::new(),
+                metrics_service_name: None,
+                parent_trace: None,
+                environments: Vec::new(),
+            },
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("Infinity Agent subagent must fail before looking up its parent"),
+    };
+    assert!(subagent_error.to_string().contains("Infinity Agent"));
+    assert!(
+        !subagent_error
+            .to_string()
+            .contains(&missing_parent.to_string())
+    );
+
+    let fork_error = match manager
+        .fork_thread_from_history(
+            ForkSnapshot::Interrupted,
+            config,
+            InitialHistory::Forked(Vec::new()),
+            Some(ThreadSource::User),
+            /*parent_trace*/ None,
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("Infinity Agent fork must fail before materializing history"),
+    };
+    assert!(fork_error.to_string().contains("Infinity Agent"));
+}
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnStartedEvent;

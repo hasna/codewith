@@ -10,6 +10,9 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 
 pub(crate) async fn notify_tool_start(invocation: &ToolInvocation) {
+    if invocation.session.infinity_agent_policy {
+        return;
+    }
     for contributor in invocation
         .session
         .services
@@ -68,6 +71,9 @@ async fn notify_tool_finish_parts(
     source: ToolCallSource,
     outcome: ToolCallOutcome,
 ) {
+    if session.infinity_agent_policy {
+        return;
+    }
     for contributor in session.services.extensions.tool_lifecycle_contributors() {
         contributor
             .on_tool_finish(ToolFinishInput {

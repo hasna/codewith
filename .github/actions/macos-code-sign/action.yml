@@ -30,6 +30,12 @@ inputs:
   apple-notarization-issuer-id:
     description: Apple notarization issuer ID.
     required: true
+  expected-team-id:
+    description: Pinned Apple Developer TeamIdentifier for release artifacts.
+    required: true
+  expected-authority:
+    description: Pinned leaf Developer ID Application authority.
+    required: true
 runs:
   using: composite
   steps:
@@ -189,6 +195,24 @@ runs:
 
         for binary in ${BINARIES}; do
           notarize_binary "${binary}"
+        done
+
+    - name: Verify macOS binary identity and notarization
+      if: ${{ inputs.sign-binaries == 'true' }}
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        BINARIES: ${{ inputs.binaries }}
+        EXPECTED_TEAM_ID: ${{ inputs.expected-team-id }}
+        EXPECTED_AUTHORITY: ${{ inputs.expected-authority }}
+      run: |
+        set -euo pipefail
+        for binary in ${BINARIES}; do
+          "$GITHUB_WORKSPACE/.github/scripts/verify-macos-release-artifact.sh" \
+            "codex-rs/target/${TARGET}/release/${binary}" \
+            "$binary" \
+            "$EXPECTED_TEAM_ID" \
+            "$EXPECTED_AUTHORITY"
         done
 
     - name: Sign and notarize macOS dmg

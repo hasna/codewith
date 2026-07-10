@@ -63,6 +63,7 @@ mod thread_processor_behavior_tests {
     use codex_config::StaticThreadConfigLoader;
     use codex_config::ThreadConfigSource;
     use codex_core::QueuedMailboxMessage;
+    use codex_core::config::ConfigBuilder;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
     use codex_protocol::AgentPath;
@@ -97,9 +98,214 @@ mod thread_processor_behavior_tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn safe_infinity_thread_start_params() -> ThreadStartParams {
+        ThreadStartParams {
+            auth_profile: Some(None),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            ephemeral: Some(true),
+            environments: Some(Vec::new()),
+            thread_source: Some(codex_app_server_protocol::ThreadSource::User),
+            ..ThreadStartParams::default()
+        }
+    }
+
+    async fn infinity_validation_config() -> Config {
+        let codex_home = TempDir::new().expect("codex home");
+        let cwd = TempDir::new().expect("cwd");
+        let mut config = ConfigBuilder::default()
+            .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(cwd.path().to_path_buf()))
+            .build()
+            .await
+            .expect("build validation config");
+        config.tool_policy = codex_config::ToolPolicy::InfinityAgent;
+        config
+    }
+
+    #[tokio::test]
+    async fn infinity_agent_thread_start_guard_is_closed_and_field_complete() {
+        let config = infinity_validation_config().await;
+        let safe = safe_infinity_thread_start_params();
+        let safe_request = ClientRequest::ThreadStart {
+            request_id: RequestId::Integer(1),
+            params: safe.clone(),
+        };
+        validate_infinity_agent_app_server_request(&config, &safe_request)
+            .expect("closed safe shape should pass the entry guard");
+
+        let mut empty_config = safe.clone();
+        empty_config.config = Some(HashMap::new());
+        validate_infinity_agent_app_server_request(
+            &config,
+            &ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(2),
+                params: empty_config,
+            },
+        )
+        .expect("an explicitly empty config map is a no-op");
+
+        type Mutation = Box<dyn Fn(&mut ThreadStartParams)>;
+        let cases: Vec<(&str, Mutation)> = vec![
+            (
+                "modelProvider",
+                Box::new(|params| params.model_provider = Some("attacker".to_string())),
+            ),
+            (
+                "model",
+                Box::new(|params| params.model = Some("attacker/model".to_string())),
+            ),
+            (
+                "cwd",
+                Box::new(|params| params.cwd = Some("/tmp/attacker".to_string())),
+            ),
+            (
+                "runtimeWorkspaceRoots",
+                Box::new(|params| {
+                    params.runtime_workspace_roots = Some(vec![
+                        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(Path::new(
+                            "/tmp/attacker",
+                        ))
+                        .expect("absolute path"),
+                    ])
+                }),
+            ),
+            (
+                "approvalsReviewer",
+                Box::new(|params| {
+                    params.approvals_reviewer =
+                        Some(codex_app_server_protocol::ApprovalsReviewer::User)
+                }),
+            ),
+            (
+                "sandbox",
+                Box::new(|params| {
+                    params.sandbox = Some(codex_app_server_protocol::SandboxMode::DangerFullAccess)
+                }),
+            ),
+            (
+                "permissions",
+                Box::new(|params| params.permissions = Some("danger-full-access".to_string())),
+            ),
+            (
+                "config",
+                Box::new(|params| {
+                    params.config = Some(HashMap::from([(
+                        "openai_base_url".to_string(),
+                        json!("https://attacker.invalid"),
+                    )]))
+                }),
+            ),
+            (
+                "baseInstructions",
+                Box::new(|params| params.base_instructions = Some("attacker".to_string())),
+            ),
+            (
+                "developerInstructions",
+                Box::new(|params| params.developer_instructions = Some("attacker".to_string())),
+            ),
+            (
+                "personality",
+                Box::new(|params| {
+                    params.personality = Some(codex_protocol::config_types::Personality::Friendly)
+                }),
+            ),
+            (
+                "parentThreadId",
+                Box::new(|params| params.parent_thread_id = Some(ThreadId::new().to_string())),
+            ),
+            (
+                "threadSource",
+                Box::new(|params| {
+                    params.thread_source = Some(codex_app_server_protocol::ThreadSource::Subagent)
+                }),
+            ),
+            (
+                "serviceName",
+                Box::new(|params| params.service_name = Some("attacker".to_string())),
+            ),
+            (
+                "mockExperimentalField",
+                Box::new(|params| params.mock_experimental_field = Some("attacker".to_string())),
+            ),
+            (
+                "experimentalRawEvents",
+                Box::new(|params| params.experimental_raw_events = true),
+            ),
+            (
+                "authProfile",
+                Box::new(|params| params.auth_profile = Some(Some("attacker".to_string()))),
+            ),
+            (
+                "approvalPolicy",
+                Box::new(|params| {
+                    params.approval_policy =
+                        Some(codex_app_server_protocol::AskForApproval::OnRequest)
+                }),
+            ),
+            (
+                "ephemeral",
+                Box::new(|params| params.ephemeral = Some(false)),
+            ),
+            (
+                "environments",
+                Box::new(|params| {
+                    params.environments = Some(vec![TurnEnvironmentParams {
+                        environment_id: "missing".to_string(),
+                        cwd: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+                            Path::new("/tmp/attacker"),
+                        )
+                        .expect("absolute path"),
+                    }])
+                }),
+            ),
+        ];
+
+        for (expected_field, mutate) in cases {
+            let mut params = safe.clone();
+            mutate(&mut params);
+            let error = validate_infinity_agent_app_server_request(
+                &config,
+                &ClientRequest::ThreadStart {
+                    request_id: RequestId::Integer(3),
+                    params,
+                },
+            )
+            .expect_err(expected_field);
+            assert!(
+                error.message.contains(expected_field),
+                "expected {expected_field} rejection, got {}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn infinity_agent_entry_guard_rejects_resume_and_fork_before_lookup() {
+        let config = infinity_validation_config().await;
+        let raw_resume = serde_json::from_str::<ClientRequest>(
+            r#"{"method":"thread/resume","id":41,"params":{"threadId":"not-a-thread","path":"/must-not-be-read"}}"#,
+        )
+        .expect("raw resume request");
+        let resume_error = validate_infinity_agent_app_server_request(&config, &raw_resume)
+            .expect_err("resume must fail at policy entry");
+        assert!(resume_error.message.contains("thread/resume"));
+        assert!(resume_error.message.contains("before persisted history"));
+
+        let raw_fork = serde_json::from_str::<ClientRequest>(
+            r#"{"method":"thread/fork","id":42,"params":{"threadId":"not-a-thread","path":"/must-not-be-read"}}"#,
+        )
+        .expect("raw fork request");
+        let fork_error = validate_infinity_agent_app_server_request(&config, &raw_fork)
+            .expect_err("fork must fail at policy entry");
+        assert!(fork_error.message.contains("thread/fork"));
+        assert!(fork_error.message.contains("before persisted history"));
+    }
 
     #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {

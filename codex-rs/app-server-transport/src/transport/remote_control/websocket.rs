@@ -1038,7 +1038,7 @@ impl RemoteControlWebsocket {
             let (client_envelope, wire_size_bytes) = match incoming_message {
                 Ok(tungstenite::Message::Text(text)) => {
                     let wire_size_bytes = text.len();
-                    match serde_json::from_str::<ClientEnvelope>(&text) {
+                    match decode_client_envelope(&text) {
                         Ok(client_envelope) => (client_envelope, wire_size_bytes),
                         Err(err) => {
                             warn!("failed to deserialize remote-control client event: {err}");
@@ -1620,6 +1620,10 @@ fn format_remote_control_websocket_connect_error(
     message
 }
 
+fn decode_client_envelope(text: &str) -> Result<ClientEnvelope, serde_json::Error> {
+    codex_protocol::strict_json::from_slice_no_duplicates(text.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1663,6 +1667,15 @@ mod tests {
     #[cfg(not(windows))]
     const TEST_HTTP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(5);
     const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn unsegmented_remote_control_ingress_rejects_nested_duplicate_keys() {
+        let raw = r#"{"type":"client_message","client_id":"client-1","stream_id":"stream-1","message":{"id":1,"method":"thread/start","params":{"dynamicTools":[{"name":"infinity_run_get","inputSchema":{"type":"object","type":"array"}}]}}}"#;
+
+        let error = decode_client_envelope(raw)
+            .expect_err("nested duplicate schema keys must fail at websocket ingress");
+        assert!(error.to_string().contains("duplicate object key \"type\""));
+    }
     const TEST_REMOTE_CONTROL_SERVER_TOKEN: &str = "Remote Control Token";
 
     fn remote_control_enrollment(remote_control_token: Option<&str>) -> RemoteControlEnrollment {

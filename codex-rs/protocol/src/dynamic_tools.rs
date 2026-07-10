@@ -53,6 +53,7 @@ struct DynamicToolSpecDe {
     namespace: Option<String>,
     name: String,
     description: String,
+    #[serde(deserialize_with = "crate::strict_json::deserialize_value_no_duplicates")]
     input_schema: JsonValue,
     defer_loading: Option<bool>,
     expose_to_context: Option<bool>,
@@ -120,6 +121,16 @@ mod tests {
                 defer_loading: true,
             }
         );
+    }
+
+    #[test]
+    fn infinity_agent_policy_dynamic_schema_rejects_duplicate_keys_at_ingress() {
+        let error = serde_json::from_str::<DynamicToolSpec>(
+            r#"{"name":"lookup_ticket","description":"Fetch","inputSchema":{"type":"object","properties":{"id":{"type":"string","type":"number"}}}}"#,
+        )
+        .expect_err("duplicate schema key must fail before JsonValue construction");
+
+        assert!(error.to_string().contains("duplicate object key \"type\""));
     }
 
     #[test]

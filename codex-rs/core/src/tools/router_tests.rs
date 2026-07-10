@@ -24,6 +24,20 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+#[test]
+fn infinity_agent_policy_rejects_duplicate_tool_arguments_before_dispatch() {
+    let error =
+        super::validate_infinity_agent_arguments(r#"{"run_spec":{"revision":1,"revision":2}}"#)
+            .expect_err("duplicate arguments must fail before handler parsing");
+
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate object key \"revision\"")
+    );
+    assert!(super::validate_infinity_agent_arguments(r#"{"run_spec":{"revision":1}}"#).is_ok());
+}
+
 use super::ToolCall;
 use super::ToolCallSource;
 use super::ToolRouter;

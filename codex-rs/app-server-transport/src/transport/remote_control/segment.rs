@@ -176,7 +176,10 @@ impl ClientSegmentReassembler {
                             );
                             AssemblyUpdate::Drop
                         } else {
-                            match serde_json::from_slice::<JSONRPCMessage>(&assembly.raw) {
+                            match codex_protocol::strict_json::from_slice_no_duplicates::<
+                                JSONRPCMessage,
+                            >(&assembly.raw)
+                            {
                                 Ok(message) => AssemblyUpdate::Complete(message),
                                 Err(err) => {
                                     warn!(

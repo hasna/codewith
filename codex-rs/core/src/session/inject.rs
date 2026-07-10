@@ -149,6 +149,13 @@ impl Session {
         additional_context: BTreeMap<String, AdditionalContextEntry>,
         updates: SessionSettingsUpdate,
     ) -> Result<String, TryStartUserInputTurnIfIdleError> {
+        if self.infinity_agent_policy && !additional_context.is_empty() {
+            return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(
+                codex_protocol::error::CodexErr::InvalidRequest(
+                    "Infinity Agent rejects additional context".to_string(),
+                ),
+            ));
+        }
         if input.is_empty() {
             return Err(TryStartUserInputTurnIfIdleError::EmptyInput);
         }

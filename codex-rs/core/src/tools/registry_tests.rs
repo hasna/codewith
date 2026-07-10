@@ -445,6 +445,42 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn infinity_agent_policy_dispatch_skips_tool_lifecycle_contributors() -> anyhow::Result<()> {
+    let (mut session, turn) = crate::session::tests::make_session_and_context().await;
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+    builder.tool_lifecycle_contributor(Arc::new(ToolLifecycleRecorder {
+        records: Arc::clone(&records),
+    }));
+    session.services.extensions = Arc::new(builder.build());
+    session.infinity_agent_policy = true;
+
+    let tool_name = codex_tools::ToolName::plain("signed_tool");
+    let handler = Arc::new(LifecycleTestHandler {
+        tool_name: tool_name.clone(),
+        result: LifecycleTestResult::Ok { success: true },
+    }) as Arc<dyn CoreToolRuntime>;
+    let registry = ToolRegistry::new(HashMap::from([(tool_name.clone(), handler)]));
+
+    registry
+        .dispatch_any(test_invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "signed-call",
+            tool_name,
+        ))
+        .await?;
+
+    assert!(
+        records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+    Ok(())
+}
+
 fn test_invocation(
     session: Arc<crate::session::session::Session>,
     turn: Arc<crate::session::turn_context::TurnContext>,

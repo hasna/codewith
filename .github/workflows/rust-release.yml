@@ -41,7 +41,7 @@ on:
         required: false
         type: string
       signed_macos_sha256:
-        description: "For promote_signed: optional SHA-256 of signed_macos_asset."
+        description: "For promote_signed: required SHA-256 of signed_macos_asset."
         required: false
         type: string
 
@@ -68,6 +68,7 @@ jobs:
           RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_mode || 'signed' }}
           REQUESTED_SIGN_MACOS: ${{ inputs.sign_macos }}
           SIGNED_MACOS_ASSET: ${{ inputs.signed_macos_asset }}
+          SIGNED_MACOS_SHA256: ${{ inputs.signed_macos_sha256 }}
           UNSIGNED_RUN_ID: ${{ inputs.unsigned_run_id }}
         run: |
           set -euo pipefail
@@ -97,6 +98,10 @@ jobs:
               fi
               if [[ -z "${SIGNED_MACOS_ASSET}" ]]; then
                 echo "❌  release_mode=promote_signed requires signed_macos_asset"
+                exit 1
+              fi
+              if [[ ! "${SIGNED_MACOS_SHA256}" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+                echo "❌  release_mode=promote_signed requires a 64-hex signed_macos_sha256"
                 exit 1
               fi
               if [[ "${SIGNED_MACOS_ASSET}" == */* || "${SIGNED_MACOS_ASSET}" == *"*"* || "${SIGNED_MACOS_ASSET}" == *"?"* || "${SIGNED_MACOS_ASSET}" == *"["* ]]; then
@@ -171,7 +176,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SIGN_MACOS: ${{ github.event_name != 'workflow_dispatch' }}
-      MACOS_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
+      MACOS_SIGNING_AVAILABLE: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' && vars.APPLE_CODESIGN_EXPECTED_TEAM_ID != '' && vars.APPLE_CODESIGN_EXPECTED_AUTHORITY != '' }}
 
     strategy:
       fail-fast: false
@@ -231,6 +236,15 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS == 'true' }}
+        name: Require complete macOS signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${MACOS_SIGNING_AVAILABLE}" != "true" ]]; then
+            echo "::error title=macOS signing unavailable::Canonical tag releases require signing credentials plus pinned TeamIdentifier and Developer ID authority."
+            exit 1
+          fi
       - name: Print runner specs (Linux)
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -396,12 +410,6 @@ jobs:
           path: codex-rs/target/**/cargo-timings/cargo-timing.html
           if-no-files-found: warn
 
-      - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE != 'true' }}
-        name: Report skipped macOS signing
-        shell: bash
-        run: |
-          echo "::warning title=macOS signing skipped::Apple signing secrets are not configured; publishing unsigned macOS release binaries."
-
       - if: ${{ runner.os == 'macOS' && env.SIGN_MACOS != 'true' }}
         name: Stage unsigned macOS artifacts
         shell: bash
@@ -456,6 +464,8 @@ jobs:
           apple-notarization-key-p8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
           apple-notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           apple-notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          expected-team-id: ${{ vars.APPLE_CODESIGN_EXPECTED_TEAM_ID }}
+          expected-authority: ${{ vars.APPLE_CODESIGN_EXPECTED_AUTHORITY }}
 
       - if: ${{ runner.os == 'macOS' && matrix.build_dmg == 'true' && env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true' }}
         name: Build macOS dmg
@@ -509,9 +519,11 @@ jobs:
           apple-notarization-key-p8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
           apple-notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           apple-notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          expected-team-id: ${{ vars.APPLE_CODESIGN_EXPECTED_TEAM_ID }}
+          expected-authority: ${{ vars.APPLE_CODESIGN_EXPECTED_AUTHORITY }}
 
       - name: Stage artifacts
-        if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
+        if: ${{ runner.os != 'macOS' || (env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true') }}
         shell: bash
         run: |
           dest="dist/${{ matrix.target }}"
@@ -546,7 +558,7 @@ jobs:
           fi
 
       - name: Build Codex package archive
-        if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
+        if: ${{ runner.os != 'macOS' || (env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true') }}
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -560,7 +572,7 @@ jobs:
             --archive-dir "dist/${TARGET}"
 
       - name: Compress artifacts
-        if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
+        if: ${{ runner.os != 'macOS' || (env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true') }}
         shell: bash
         run: |
           # Path that contains the uncompressed binaries for the current
@@ -597,7 +609,7 @@ jobs:
           done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ runner.os != 'macOS' || env.SIGN_MACOS == 'true' }}
+        if: ${{ runner.os != 'macOS' || (env.SIGN_MACOS == 'true' && env.MACOS_SIGNING_AVAILABLE == 'true') }}
         with:
           name: ${{ matrix.artifact_name }}
           # Upload the per-binary .zst files, .tar.gz equivalents, and any
@@ -678,15 +690,17 @@ jobs:
           fi
 
           asset_path="$(find "$download_dir" -maxdepth 1 -type f -print -quit)"
-          if [[ -n "${SIGNED_MACOS_SHA256}" ]]; then
-            expected_sha="$(printf '%s' "$SIGNED_MACOS_SHA256" | tr '[:upper:]' '[:lower:]')"
-            actual_sha="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
-            if [[ "$actual_sha" != "$expected_sha" ]]; then
-              echo "signed_macos_sha256 mismatch for ${SIGNED_MACOS_ASSET}"
-              echo "expected: ${expected_sha}"
-              echo "actual:   ${actual_sha}"
-              exit 1
-            fi
+          if [[ ! "${SIGNED_MACOS_SHA256}" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+            echo "signed_macos_sha256 must be exactly 64 hexadecimal characters"
+            exit 1
+          fi
+          expected_sha="$(printf '%s' "$SIGNED_MACOS_SHA256" | tr '[:upper:]' '[:lower:]')"
+          actual_sha="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "signed_macos_sha256 mismatch for ${SIGNED_MACOS_ASSET}"
+            echo "expected: ${expected_sha}"
+            echo "actual:   ${actual_sha}"
+            exit 1
           fi
 
           asset_name="$(basename "$asset_path")"
@@ -710,6 +724,9 @@ jobs:
 
       - name: Stage signed macOS artifacts
         shell: bash
+        env:
+          EXPECTED_TEAM_ID: ${{ vars.APPLE_CODESIGN_EXPECTED_TEAM_ID }}
+          EXPECTED_AUTHORITY: ${{ vars.APPLE_CODESIGN_EXPECTED_AUTHORITY }}
         run: |
           set -euo pipefail
 
@@ -752,7 +769,11 @@ jobs:
             release_path="${dest}/${binary}-${target}"
             ditto "$source_path" "$release_path"
             chmod 0755 "$release_path"
-            codesign --verify --strict --verbose=2 "$release_path"
+            "${GITHUB_WORKSPACE}/.github/scripts/verify-macos-release-artifact.sh" \
+              "$release_path" \
+              "$binary" \
+              "$EXPECTED_TEAM_ID" \
+              "$EXPECTED_AUTHORITY"
           done
 
           # DMG staging is disabled for signed promotion because we no longer

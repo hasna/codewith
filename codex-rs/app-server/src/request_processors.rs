@@ -703,6 +703,7 @@ pub(crate) use thread_mailbox_dispatcher_runtime::ThreadMailboxDispatcherRuntime
 pub(crate) use thread_monitor_processor::ThreadMonitorRequestProcessor;
 pub(crate) use thread_monitor_runtime::ThreadMonitorRuntime;
 pub(crate) use thread_processor::ThreadRequestProcessor;
+pub(crate) use thread_processor::validate_infinity_agent_app_server_request;
 pub(crate) use thread_schedule_processor::ThreadScheduleRequestProcessor;
 pub(crate) use thread_schedule_runtime::ThreadScheduleRuntime;
 pub(crate) use thread_workflow_processor::ThreadWorkflowRequestProcessor;

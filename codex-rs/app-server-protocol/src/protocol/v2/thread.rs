@@ -71,6 +71,7 @@ struct DynamicToolSpecDe {
     namespace: Option<String>,
     name: String,
     description: String,
+    #[serde(deserialize_with = "codex_protocol::strict_json::deserialize_value_no_duplicates")]
     input_schema: JsonValue,
     defer_loading: Option<bool>,
     expose_to_context: Option<bool>,

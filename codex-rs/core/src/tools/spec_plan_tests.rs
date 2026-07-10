@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use codex_config::ToolPolicy;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -41,6 +42,7 @@ use serde_json::json;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::policy::test_dynamic_policy;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 
@@ -269,6 +271,16 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
     turn.config = Arc::new(config);
 }
 
+fn set_infinity_agent_policy(
+    turn: &mut TurnContext,
+    policy: Arc<crate::tools::policy::VerifiedToolPolicy>,
+) {
+    update_config(turn, |config| {
+        config.tool_policy = ToolPolicy::InfinityAgent;
+        config.infinity_agent_policy = Some(policy);
+    });
+}
+
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
     update_config(turn, |config| {
         config
@@ -455,6 +467,82 @@ fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
         .expect("tool spec should serialize")
         .pointer(&format!("/parameters/properties/{parameter_name}"))
         .is_some()
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_builds_only_the_exact_signed_dynamic_manifest() {
+    let tools = vec![
+        dynamic_tool(Some("infinity_cli"), "infinity_run_get", false),
+        dynamic_tool(Some("infinity_cli"), "infinity_result_get", false),
+    ];
+    let policy = test_dynamic_policy(&tools);
+    let plan = probe_with(
+        move |turn| set_infinity_agent_policy(turn, policy),
+        ToolPlanInputs {
+            dynamic_tools: tools,
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    assert_eq!(plan.visible_names, vec!["infinity_cli"]);
+    assert_eq!(
+        plan.namespace_function_names("infinity_cli"),
+        &[
+            "infinity_result_get".to_string(),
+            "infinity_run_get".to_string()
+        ]
+    );
+    assert_eq!(
+        plan.registered_names,
+        vec![
+            ToolName::namespaced("infinity_cli", "infinity_run_get").to_string(),
+            ToolName::namespaced("infinity_cli", "infinity_result_get").to_string(),
+        ]
+    );
+    plan.assert_registered_lacks(&[
+        "exec_command",
+        "shell_command",
+        "apply_patch",
+        "view_image",
+        "manage_auth_profiles",
+        "get_usage",
+        "tool_search",
+    ]);
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
+    let tools = vec![dynamic_tool(
+        Some("infinity_cli"),
+        "infinity_run_get",
+        false,
+    )];
+    let policy = test_dynamic_policy(&tools);
+    let (_session, mut turn) = make_session_and_context().await;
+    set_infinity_agent_policy(&mut turn, policy);
+    use_provider_with_id(
+        &mut turn,
+        XAI_PROVIDER_ID,
+        ModelProviderInfo::create_xai_provider(),
+    );
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            mcp_tools: None,
+            deferred_mcp_tools: None,
+            discoverable_tools: None,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: &tools,
+        },
+    );
+
+    let error = router
+        .ensure_policy_ready()
+        .expect_err("provider without namespace support must fail before model request");
+    assert!(error.contains("namespace-tool support"));
+    assert!(router.model_visible_specs().is_empty());
+    assert!(router.registered_tool_names_for_test().is_empty());
 }
 
 fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {

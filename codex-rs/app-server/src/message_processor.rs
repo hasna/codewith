@@ -1016,6 +1016,12 @@ impl MessageProcessor {
         {
             return Err(invalid_request(experimental_required_message(reason)));
         }
+        if self.config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+            crate::request_processors::validate_infinity_agent_app_server_request(
+                &self.config,
+                &codex_request,
+            )?;
+        }
         let connection_id = connection_request_id.connection_id;
         self.initialize_processor.track_initialized_request(
             connection_id,

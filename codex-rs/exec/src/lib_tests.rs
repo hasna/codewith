@@ -567,6 +567,64 @@ async fn thread_start_params_include_user_thread_source() {
 }
 
 #[tokio::test]
+async fn infinity_agent_exec_emits_only_the_closed_safe_thread_start_shape() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    let mut config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config");
+    config.tool_policy = ToolPolicy::InfinityAgent;
+
+    let params = thread_start_params_from_config(&config);
+
+    assert_eq!(params.model, None);
+    assert_eq!(params.model_provider, None);
+    assert_eq!(params.auth_profile, Some(None));
+    assert_eq!(params.cwd, None);
+    assert_eq!(params.runtime_workspace_roots, None);
+    assert_eq!(
+        params.approval_policy,
+        Some(codex_app_server_protocol::AskForApproval::Never)
+    );
+    assert_eq!(params.approvals_reviewer, None);
+    assert_eq!(params.sandbox, None);
+    assert_eq!(params.permissions, None);
+    assert_eq!(params.config, None);
+    assert_eq!(params.base_instructions, None);
+    assert_eq!(params.developer_instructions, None);
+    assert_eq!(params.personality, None);
+    assert_eq!(params.ephemeral, Some(true));
+    assert_eq!(params.thread_source, Some(ThreadSource::User));
+    assert_eq!(params.parent_thread_id, None);
+    assert_eq!(params.environments, Some(Vec::new()));
+    assert!(!params.experimental_raw_events);
+
+    let turn_params = turn_start_params_from_config(
+        &config,
+        "thread-id".to_string(),
+        Vec::new(),
+        None,
+        /*resumed_existing_thread*/ false,
+        &ResumeOverrideSelection::default(),
+    );
+    assert_eq!(turn_params.thread_id, "thread-id");
+    assert_eq!(turn_params.environments, Some(Vec::new()));
+    assert_eq!(turn_params.cwd, None);
+    assert_eq!(turn_params.runtime_workspace_roots, None);
+    assert_eq!(turn_params.approval_policy, None);
+    assert_eq!(turn_params.approvals_reviewer, None);
+    assert_eq!(turn_params.sandbox_policy, None);
+    assert_eq!(turn_params.permissions, None);
+    assert_eq!(turn_params.model, None);
+    assert_eq!(turn_params.model_provider, None);
+    assert_eq!(turn_params.output_schema, None);
+    assert_eq!(turn_params.collaboration_mode, None);
+}
+
+#[tokio::test]
 async fn thread_start_params_are_persistent_for_default_headless_exec() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");

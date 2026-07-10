@@ -596,10 +596,14 @@ impl ThreadManager {
         config: Config,
         dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> CodexResult<NewThread> {
-        let environments = default_thread_environment_selections(
-            self.state.environment_manager.as_ref(),
-            &config.cwd,
-        );
+        let environments = if config.is_infinity_agent() {
+            Vec::new()
+        } else {
+            default_thread_environment_selections(
+                self.state.environment_manager.as_ref(),
+                &config.cwd,
+            )
+        };
         Box::pin(self.start_thread_with_options(StartThreadOptions {
             config,
             initial_history: InitialHistory::New,
@@ -626,6 +630,18 @@ impl ThreadManager {
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
+        let requested_session_source = options
+            .session_source
+            .as_ref()
+            .unwrap_or(&self.state.session_source);
+        validate_infinity_agent_thread_start(
+            options.config.is_infinity_agent(),
+            &options.initial_history,
+            requested_session_source,
+            requested_session_source.parent_thread_id(),
+            forked_from_thread_id,
+            &options.environments,
+        )?;
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
             .get_resumed_session_sources()
@@ -659,6 +675,7 @@ impl ThreadManager {
         forked_from_thread_id: ThreadId,
         mut options: StartThreadOptions,
     ) -> CodexResult<NewThread> {
+        reject_infinity_agent_history_operation(&options.config, "subagent creation")?;
         let fork_source = self.get_thread(forked_from_thread_id).await?;
         // Persist queued rollout updates before reading the fork snapshot.
         fork_source.ensure_rollout_materialized().await;
@@ -696,6 +713,7 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        reject_infinity_agent_history_operation(&config, "rollout resume")?;
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
         Box::pin(self.resume_thread_with_history(
             config,
@@ -713,10 +731,15 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
-        let environments = default_thread_environment_selections(
-            self.state.environment_manager.as_ref(),
-            &config.cwd,
-        );
+        reject_infinity_agent_history_operation(&config, "history resume")?;
+        let environments = if config.is_infinity_agent() {
+            Vec::new()
+        } else {
+            default_thread_environment_selections(
+                self.state.environment_manager.as_ref(),
+                &config.cwd,
+            )
+        };
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
@@ -773,6 +796,7 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         user_shell_override: crate::shell::Shell,
     ) -> CodexResult<NewThread> {
+        reject_infinity_agent_history_operation(&config, "rollout resume")?;
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -910,6 +934,7 @@ impl ThreadManager {
     where
         S: Into<ForkSnapshot>,
     {
+        reject_infinity_agent_history_operation(&config, "history fork")?;
         self.fork_thread_with_initial_history(
             snapshot.into(),
             config,
@@ -928,6 +953,7 @@ impl ThreadManager {
         thread_source: Option<ThreadSource>,
         parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread> {
+        reject_infinity_agent_history_operation(&config, "history fork")?;
         // `forked_from_id()` describes this history's existing lineage. When
         // forking a resumed thread, the child copies the resumed thread itself.
         let forked_from_thread_id = match &history {
@@ -1176,9 +1202,25 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> CodexResult<NewThread> {
-        let environments = environments.unwrap_or_else(|| {
-            default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
-        });
+        let environments = if config.is_infinity_agent() {
+            let environments = environments.unwrap_or_default();
+            validate_infinity_agent_thread_start(
+                true,
+                &InitialHistory::New,
+                &session_source,
+                parent_thread_id,
+                forked_from_thread_id,
+                &environments,
+            )?;
+            environments
+        } else {
+            environments.unwrap_or_else(|| {
+                default_thread_environment_selections(
+                    self.environment_manager.as_ref(),
+                    &config.cwd,
+                )
+            })
+        };
         Box::pin(self.spawn_thread_with_source(
             config,
             InitialHistory::New,
@@ -1212,6 +1254,7 @@ impl ThreadManagerState {
             inherited_shell_snapshot,
             inherited_exec_policy,
         } = options;
+        reject_infinity_agent_history_operation(&config, "history resume")?;
         let environments =
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd);
         let thread_source = initial_history.get_resumed_thread_source();
@@ -1249,6 +1292,7 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> CodexResult<NewThread> {
+        reject_infinity_agent_history_operation(&config, "history fork")?;
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
         });
@@ -1328,6 +1372,14 @@ impl ThreadManagerState {
         environments: Vec<TurnEnvironmentSelection>,
         user_shell_override: Option<crate::shell::Shell>,
     ) -> CodexResult<NewThread> {
+        validate_infinity_agent_thread_start(
+            config.is_infinity_agent(),
+            &initial_history,
+            &session_source,
+            parent_thread_id,
+            forked_from_thread_id,
+            &environments,
+        )?;
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
@@ -1488,6 +1540,50 @@ impl ThreadManagerState {
             .map(|thread| thread.codex.session.services.rollout_thread_trace.clone())
             .unwrap_or_else(codex_rollout_trace::ThreadTraceContext::disabled)
     }
+}
+
+fn validate_infinity_agent_thread_start(
+    infinity_agent: bool,
+    initial_history: &InitialHistory,
+    session_source: &SessionSource,
+    parent_thread_id: Option<ThreadId>,
+    forked_from_thread_id: Option<ThreadId>,
+    environments: &[TurnEnvironmentSelection],
+) -> CodexResult<()> {
+    if !infinity_agent {
+        return Ok(());
+    }
+    if !environments.is_empty() {
+        return Err(CodexErr::InvalidRequest(
+            "Infinity Agent thread start requires an empty environment selection".to_string(),
+        ));
+    }
+    if !matches!(
+        initial_history,
+        InitialHistory::New | InitialHistory::Cleared
+    ) {
+        return Err(CodexErr::InvalidRequest(
+            "Infinity Agent thread start rejects resumed or forked rollout history".to_string(),
+        ));
+    }
+    if matches!(session_source, SessionSource::SubAgent(_))
+        || parent_thread_id.is_some()
+        || forked_from_thread_id.is_some()
+    {
+        return Err(CodexErr::InvalidRequest(
+            "Infinity Agent thread start rejects subagent or parent thread sources".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_infinity_agent_history_operation(config: &Config, operation: &str) -> CodexResult<()> {
+    if config.is_infinity_agent() {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Infinity Agent rejects {operation} before persisted history is read or materialized"
+        )));
+    }
+    Ok(())
 }
 
 fn stored_thread_to_initial_history(

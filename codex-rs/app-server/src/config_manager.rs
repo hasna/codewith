@@ -350,6 +350,10 @@ pub(crate) fn apply_runtime_feature_enablement(
     config: &mut Config,
     runtime_feature_enablement: &BTreeMap<String, bool>,
 ) {
+    if config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+        config.features.disable_all();
+        return;
+    }
     let protected_features = protected_feature_keys(&config.config_layer_stack);
     for (name, enabled) in runtime_feature_enablement {
         if protected_features.contains(name) {

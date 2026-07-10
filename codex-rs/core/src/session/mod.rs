@@ -251,6 +251,7 @@ pub enum SteerInputError {
     ExpectedTurnMismatch { expected: String, actual: String },
     ActiveTurnNotSteerable { turn_kind: NonSteerableTurnKind },
     EmptyInput,
+    InfinityAgentOverride,
 }
 
 impl SteerInputError {
@@ -278,6 +279,11 @@ impl SteerInputError {
             }
             Self::EmptyInput => ErrorEvent {
                 message: "input must not be empty".to_string(),
+                codex_error_info: Some(CodexErrorInfo::BadRequest),
+            },
+            Self::InfinityAgentOverride => ErrorEvent {
+                message: "Infinity Agent rejects additional context and client metadata"
+                    .to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             },
         }
@@ -550,6 +556,18 @@ impl Codex {
             )
         };
 
+        if config.is_infinity_agent()
+            && !matches!(
+                &conversation_history,
+                InitialHistory::New | InitialHistory::Cleared
+            )
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Infinity Agent sessions do not accept resumed or forked rollout history"
+                    .to_string(),
+            ));
+        }
+
         let config = Arc::new(config);
         let refresh_strategy = if session_source.is_non_root_agent() {
             codex_models_manager::manager::RefreshStrategy::Offline
@@ -580,14 +598,20 @@ impl Codex {
         config
             .validate_multi_agent_v2_config()
             .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
-        let base_instructions = config
-            .base_instructions
-            .clone()
-            .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
-            .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
+        let base_instructions = if config.is_infinity_agent() {
+            model_info.get_model_instructions(config.personality)
+        } else {
+            config
+                .base_instructions
+                .clone()
+                .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
+                .unwrap_or_else(|| model_info.get_model_instructions(config.personality))
+        };
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
-        let dynamic_tools = if dynamic_tools.is_empty() {
+        let dynamic_tools = if config.is_infinity_agent() {
+            dynamic_tools
+        } else if dynamic_tools.is_empty() {
             conversation_history.get_dynamic_tools().unwrap_or_default()
         } else {
             dynamic_tools
@@ -1626,6 +1650,14 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
+        if self.infinity_agent_policy && updates.has_infinity_agent_authority_override() {
+            return Err(crate::config::ConstraintError::InvalidValue {
+                field_name: "thread_settings",
+                candidate: "authority- or instruction-bearing override".to_string(),
+                allowed: "no Infinity Agent authority/instruction overrides".to_string(),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        }
         let prepared_auth_profile_switch = if let Some(auth_profile) = updates.auth_profile.clone()
         {
             Some(
@@ -1767,6 +1799,14 @@ impl Session {
         &self,
         updates: &SessionSettingsUpdate,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
+        if self.infinity_agent_policy && updates.has_infinity_agent_authority_override() {
+            return Err(crate::config::ConstraintError::InvalidValue {
+                field_name: "thread_settings",
+                candidate: "authority- or instruction-bearing override".to_string(),
+                allowed: "no Infinity Agent authority/instruction overrides".to_string(),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            });
+        }
         let state = self.state.lock().await;
         state
             .session_configuration
@@ -1847,6 +1887,9 @@ impl Session {
         previous_config: Option<&Config>,
         new_config: Option<&Config>,
     ) {
+        if self.infinity_agent_policy {
+            return;
+        }
         let (Some(previous_config), Some(new_config)) = (previous_config, new_config) else {
             return;
         };
@@ -3626,6 +3669,11 @@ impl Session {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        if self.infinity_agent_policy
+            && (!additional_context.is_empty() || responsesapi_client_metadata.is_some())
+        {
+            return Err(SteerInputError::InfinityAgentOverride);
+        }
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(SteerInputError::NoActiveTurn(input));
@@ -3832,6 +3880,18 @@ async fn build_hooks_for_config(
     plugins_manager: &PluginsManager,
     user_shell: &crate::shell::Shell,
 ) -> Hooks {
+    if config.is_infinity_agent() {
+        return Hooks::new(HooksConfig {
+            legacy_notify_argv: None,
+            feature_enabled: false,
+            bypass_hook_trust: false,
+            config_layer_stack: None,
+            plugin_hook_sources: Vec::new(),
+            plugin_hook_load_warnings: Vec::new(),
+            shell_program: None,
+            shell_args: Vec::new(),
+        });
+    }
     let mut hook_shell_argv = user_shell.derive_exec_args("", /*use_login_shell*/ false);
     let hook_shell_program = hook_shell_argv.remove(0);
     let _ = hook_shell_argv.pop();

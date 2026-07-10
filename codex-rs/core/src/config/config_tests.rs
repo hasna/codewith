@@ -482,7 +482,7 @@ async fn infinity_agent_policy_never_starts_without_verified_material() {
     .expect_err("unsigned infinity-agent policy must fail closed");
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("signed policy verification"));
+    assert!(error.to_string().contains("requires a system trust key"));
 }
 
 #[test]

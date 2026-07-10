@@ -732,6 +732,7 @@ mod tests {
     use super::*;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
+    use codex_app_server_protocol::InitializeCapabilities;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
@@ -826,6 +827,47 @@ mod tests {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
     }
 
+    async fn start_test_infinity_client() -> InProcessClientHandle {
+        let codex_home = TempDir::new().expect("temp dir");
+        let mut config = build_test_config(codex_home.path()).await;
+        config.tool_policy = codex_config::ToolPolicy::InfinityAgent;
+        let config = Arc::new(config);
+        let state_db = codex_rollout::state_db::try_init(config.as_ref())
+            .await
+            .expect("state db should initialize for in-process test");
+        let args = InProcessStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config,
+            cli_overrides: Vec::new(),
+            loader_overrides: LoaderOverrides::default(),
+            strict_config: false,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db: Some(state_db),
+            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+            config_warnings: Vec::new(),
+            session_source: SessionSource::Exec,
+            enable_codex_api_key_env: false,
+            initialize: InitializeParams {
+                client_info: ClientInfo {
+                    name: "codex-infinity-entry-test".to_string(),
+                    title: None,
+                    version: "0.0.0".to_string(),
+                },
+                capabilities: Some(InitializeCapabilities {
+                    experimental_api: true,
+                    ..Default::default()
+                }),
+            },
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        };
+        let mut client = start(args).await.expect("in-process runtime should start");
+        client._test_codex_home = Some(codex_home);
+        client
+    }
+
     #[test]
     fn in_process_start_initializes_and_handles_typed_v2_request() -> IoResult<()> {
         run_in_process_test_with_stack(
@@ -882,6 +924,46 @@ mod tests {
                         .await
                         .expect("in-process runtime should shutdown cleanly");
                 }
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn infinity_agent_in_process_entry_rejects_before_config_or_history_access() -> IoResult<()> {
+        run_in_process_test_with_stack(
+            "infinity_agent_in_process_entry_rejects_before_config_or_history_access",
+            async {
+                let client = start_test_infinity_client().await;
+                let raw_requests = [
+                    r#"{"method":"thread/start","id":101,"params":{"authProfile":null,"approvalPolicy":"never","ephemeral":true,"environments":[],"config":{"openai_base_url":"https://attacker.invalid"}}}"#,
+                    r#"{"method":"thread/start","id":102,"params":{"authProfile":null,"approvalPolicy":"never","ephemeral":true,"environments":[],"parentThreadId":"not-a-thread","threadSource":"subagent"}}"#,
+                    r#"{"method":"thread/resume","id":103,"params":{"threadId":"not-a-thread","path":"/must-not-be-read"}}"#,
+                    r#"{"method":"thread/fork","id":104,"params":{"threadId":"not-a-thread","path":"/must-not-be-read"}}"#,
+                    r#"{"method":"turn/start","id":105,"params":{"threadId":"not-a-thread","input":[],"environments":[],"cwd":"/must-not-resolve"}}"#,
+                    r#"{"method":"thread/settings/update","id":106,"params":{"threadId":"not-a-thread","cwd":"/must-not-resolve"}}"#,
+                    r#"{"method":"turn/steer","id":107,"params":{"threadId":"not-a-thread","expectedTurnId":"not-a-turn","input":[],"additionalContext":{"hostile":{"value":"override","kind":"application"}}}}"#,
+                ];
+
+                for raw_request in raw_requests {
+                    let request: ClientRequest =
+                        serde_json::from_str(raw_request).expect("raw request should decode");
+                    let error = client
+                        .request(request)
+                        .await
+                        .expect("request transport should work")
+                        .expect_err("Infinity Agent entry guard must reject the request");
+                    assert!(
+                        error.message.contains("Infinity Agent"),
+                        "unexpected error: {}",
+                        error.message
+                    );
+                }
+
+                client
+                    .shutdown()
+                    .await
+                    .expect("in-process runtime should shutdown cleanly");
                 Ok(())
             },
         )

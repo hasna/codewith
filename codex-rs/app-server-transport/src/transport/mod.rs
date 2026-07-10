@@ -262,7 +262,9 @@ async fn forward_incoming_message(
     connection_id: ConnectionId,
     payload: &str,
 ) -> bool {
-    match serde_json::from_str::<JSONRPCMessage>(payload) {
+    match codex_protocol::strict_json::from_slice_no_duplicates::<JSONRPCMessage>(
+        payload.as_bytes(),
+    ) {
         Ok(message) => {
             enqueue_incoming_message(transport_event_tx, writer, connection_id, message).await
         }

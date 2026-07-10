@@ -10,6 +10,300 @@ const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
 const MAX_THREAD_QUEUED_MESSAGE_BYTES: usize = 4 * 1024;
 
+pub(crate) fn validate_infinity_agent_app_server_request(
+    config: &Config,
+    request: &ClientRequest,
+) -> Result<(), JSONRPCErrorError> {
+    match request {
+        ClientRequest::ThreadStart { params, .. } => {
+            validate_infinity_agent_thread_start_params(config, params)
+        }
+        ClientRequest::ThreadResume { .. } => Err(invalid_request(
+            "Infinity Agent rejects thread/resume before persisted history is read",
+        )),
+        ClientRequest::ThreadFork { .. } => Err(invalid_request(
+            "Infinity Agent rejects thread/fork before persisted history is read",
+        )),
+        ClientRequest::TurnStart { params, .. } => {
+            validate_infinity_agent_turn_start_params(params)
+        }
+        ClientRequest::TurnSteer { params, .. } => {
+            validate_infinity_agent_turn_steer_params(params)
+        }
+        ClientRequest::ThreadSettingsUpdate { params, .. } => {
+            validate_infinity_agent_thread_settings_params(params)
+        }
+        ClientRequest::ThreadInjectItems { .. }
+        | ClientRequest::ThreadCompactStart { .. }
+        | ClientRequest::ThreadRecap { .. }
+        | ClientRequest::ThreadMemoryModeSet { .. }
+        | ClientRequest::ReviewStart { .. }
+        | ClientRequest::ThreadRealtimeStart { .. }
+        | ClientRequest::ThreadRealtimeAppendAudio { .. }
+        | ClientRequest::ThreadRealtimeAppendText { .. }
+        | ClientRequest::ThreadRealtimeStop { .. } => Err(invalid_request(
+            "Infinity Agent rejects instruction-bearing or alternate model session requests",
+        )),
+        ClientRequest::ExperimentalFeatureEnablementSet { .. } => Err(invalid_request(
+            "Infinity Agent rejects runtime feature enablement",
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_infinity_agent_turn_steer_params(
+    params: &TurnSteerParams,
+) -> Result<(), JSONRPCErrorError> {
+    let TurnSteerParams {
+        thread_id: _,
+        client_user_message_id: _,
+        input: _,
+        responsesapi_client_metadata,
+        additional_context,
+        expected_turn_id: _,
+    } = params;
+    if responsesapi_client_metadata.is_some() {
+        return Err(invalid_request(
+            "Infinity Agent turn/steer rejects `responsesapiClientMetadata`",
+        ));
+    }
+    if additional_context.is_some() {
+        return Err(invalid_request(
+            "Infinity Agent turn/steer rejects caller-controlled `additionalContext`",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_infinity_agent_turn_start_params(
+    params: &TurnStartParams,
+) -> Result<(), JSONRPCErrorError> {
+    let TurnStartParams {
+        thread_id: _,
+        client_user_message_id: _,
+        input: _,
+        responsesapi_client_metadata,
+        additional_context,
+        environments,
+        cwd,
+        runtime_workspace_roots,
+        approval_policy,
+        approvals_reviewer,
+        sandbox_policy,
+        permissions,
+        model,
+        model_provider,
+        service_tier,
+        effort,
+        summary,
+        personality,
+        output_schema,
+        collaboration_mode,
+    } = params;
+    let forbidden = [
+        (
+            "responsesapiClientMetadata",
+            responsesapi_client_metadata.is_some(),
+        ),
+        ("additionalContext", additional_context.is_some()),
+        ("cwd", cwd.is_some()),
+        ("runtimeWorkspaceRoots", runtime_workspace_roots.is_some()),
+        ("approvalPolicy", approval_policy.is_some()),
+        ("approvalsReviewer", approvals_reviewer.is_some()),
+        ("sandboxPolicy", sandbox_policy.is_some()),
+        ("permissions", permissions.is_some()),
+        ("model", model.is_some()),
+        ("modelProvider", model_provider.is_some()),
+        ("serviceTier", service_tier.is_some()),
+        ("effort", effort.is_some()),
+        ("summary", summary.is_some()),
+        ("personality", personality.is_some()),
+        ("outputSchema", output_schema.is_some()),
+        ("collaborationMode", collaboration_mode.is_some()),
+    ];
+    if let Some((field, _)) = forbidden.into_iter().find(|(_, present)| *present) {
+        return Err(invalid_request(format!(
+            "Infinity Agent turn/start rejects caller-controlled `{field}`"
+        )));
+    }
+    if !matches!(environments.as_ref(), Some(environments) if environments.is_empty()) {
+        return Err(invalid_request(
+            "Infinity Agent turn/start requires explicit `environments: []`",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_infinity_agent_thread_settings_params(
+    params: &ThreadSettingsUpdateParams,
+) -> Result<(), JSONRPCErrorError> {
+    let ThreadSettingsUpdateParams {
+        thread_id: _,
+        cwd,
+        approval_policy,
+        approvals_reviewer,
+        sandbox_policy,
+        permissions,
+        auth_profile,
+        model,
+        model_provider,
+        service_tier,
+        effort,
+        summary,
+        collaboration_mode,
+        personality,
+        session_prompt,
+        worktree_mode,
+    } = params;
+    let forbidden = [
+        ("cwd", cwd.is_some()),
+        ("approvalPolicy", approval_policy.is_some()),
+        ("approvalsReviewer", approvals_reviewer.is_some()),
+        ("sandboxPolicy", sandbox_policy.is_some()),
+        ("permissions", permissions.is_some()),
+        ("authProfile", auth_profile.is_some()),
+        ("model", model.is_some()),
+        ("modelProvider", model_provider.is_some()),
+        ("serviceTier", service_tier.is_some()),
+        ("effort", effort.is_some()),
+        ("summary", summary.is_some()),
+        ("collaborationMode", collaboration_mode.is_some()),
+        ("personality", personality.is_some()),
+        ("sessionPrompt", session_prompt.is_some()),
+        ("worktreeMode", worktree_mode.is_some()),
+    ];
+    if let Some((field, _)) = forbidden.into_iter().find(|(_, present)| *present) {
+        return Err(invalid_request(format!(
+            "Infinity Agent thread/settings/update rejects caller-controlled `{field}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_infinity_agent_thread_start_params(
+    config: &Config,
+    params: &ThreadStartParams,
+) -> Result<(), JSONRPCErrorError> {
+    let ThreadStartParams {
+        model,
+        model_provider,
+        service_tier: _,
+        auth_profile,
+        cwd,
+        runtime_workspace_roots,
+        approval_policy,
+        approvals_reviewer,
+        sandbox,
+        permissions,
+        config: request_config,
+        service_name,
+        base_instructions,
+        developer_instructions,
+        dynamic_tools: _,
+        mock_experimental_field,
+        experimental_raw_events,
+        personality,
+        ephemeral,
+        session_start_source: _,
+        thread_source,
+        parent_thread_id,
+        environments,
+    } = params;
+    let reject = |field: &str| {
+        invalid_request(format!(
+            "Infinity Agent thread/start rejects caller-controlled `{field}`"
+        ))
+    };
+
+    if model_provider.is_some() {
+        return Err(reject("modelProvider"));
+    }
+    if let Some(model) = model.as_deref() {
+        if model.contains('/') {
+            return Err(reject("model"));
+        }
+        if infer_model_provider_from_model(
+            Some(model),
+            None,
+            config.model_provider_id.as_str(),
+            config.model_providers.keys().map(String::as_str),
+        )
+        .is_some()
+        {
+            return Err(reject("model"));
+        }
+    }
+    if cwd.is_some() {
+        return Err(reject("cwd"));
+    }
+    if runtime_workspace_roots.is_some() {
+        return Err(reject("runtimeWorkspaceRoots"));
+    }
+    if approvals_reviewer.is_some() {
+        return Err(reject("approvalsReviewer"));
+    }
+    if sandbox.is_some() {
+        return Err(reject("sandbox"));
+    }
+    if permissions.is_some() {
+        return Err(reject("permissions"));
+    }
+    if request_config
+        .as_ref()
+        .is_some_and(|request_config| !request_config.is_empty())
+    {
+        return Err(reject("config"));
+    }
+    if base_instructions.is_some() {
+        return Err(reject("baseInstructions"));
+    }
+    if developer_instructions.is_some() {
+        return Err(reject("developerInstructions"));
+    }
+    if personality.is_some() {
+        return Err(reject("personality"));
+    }
+    if parent_thread_id.is_some() {
+        return Err(reject("parentThreadId"));
+    }
+    if !matches!(
+        thread_source.as_ref(),
+        None | Some(codex_app_server_protocol::ThreadSource::User)
+    ) {
+        return Err(reject("threadSource"));
+    }
+    if service_name.is_some() {
+        return Err(reject("serviceName"));
+    }
+    if mock_experimental_field.is_some() {
+        return Err(reject("mockExperimentalField"));
+    }
+    if *experimental_raw_events {
+        return Err(reject("experimentalRawEvents"));
+    }
+    if matches!(auth_profile.as_ref(), Some(Some(_))) {
+        return Err(invalid_request(
+            "Infinity Agent thread/start rejects a named `authProfile`",
+        ));
+    }
+    if !matches!(approval_policy.as_ref(), None | Some(AskForApproval::Never)) {
+        return Err(invalid_request(
+            "Infinity Agent thread/start only permits `approvalPolicy: \"never\"`",
+        ));
+    }
+    if matches!(ephemeral, Some(false)) {
+        return Err(invalid_request(
+            "Infinity Agent thread/start rejects `ephemeral: false`",
+        ));
+    }
+    if !matches!(environments.as_ref(), Some(environments) if environments.is_empty()) {
+        return Err(invalid_request(
+            "Infinity Agent thread/start requires explicit `environments: []`",
+        ));
+    }
+    Ok(())
+}
+
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -1117,6 +1411,9 @@ impl ThreadRequestProcessor {
         app_server_client_version: Option<String>,
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
+        if self.config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+            validate_infinity_agent_thread_start_params(&self.config, &params)?;
+        }
         let ThreadStartParams {
             model,
             model_provider,
@@ -2854,6 +3151,17 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
+        if self.config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    invalid_request(
+                        "Infinity Agent rejects thread/resume before persisted history is read",
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
                 .pending_thread_unloads
@@ -3620,6 +3928,11 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
+        if self.config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+            return Err(invalid_request(
+                "Infinity Agent rejects thread/fork before persisted history is read",
+            ));
+        }
         let ThreadForkParams {
             thread_id,
             path,

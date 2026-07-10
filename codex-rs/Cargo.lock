@@ -2010,6 +2010,7 @@ dependencies = [
  "codex-core",
  "codex-login",
  "codex-model-provider",
+ "codex-protocol",
  "codex-state",
  "codex-uds",
  "codex-utils-absolute-path",
@@ -2527,6 +2528,7 @@ dependencies = [
  "ctor",
  "dirs",
  "dunce",
+ "ed25519-dalek",
  "eventsource-stream",
  "futures",
  "http 1.4.0",
@@ -2548,8 +2550,10 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "serial_test",
  "sha1 0.11.0",
+ "sha2 0.10.9",
  "shlex",
  "similar",
  "tempfile",
@@ -11618,6 +11622,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd29631678d6fb0903b69223673e122c32e9ae559d0960a38d574695ebc0ea15"
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11982,6 +11992,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -192,8 +192,8 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             }
             Some(content_type) if content_type.starts_with(JSON_MIME_TYPE) => {
                 let body = collect_body(&mut body_stream).await?;
-                let message: ServerJsonRpcMessage =
-                    serde_json::from_slice(&body).map_err(StreamableHttpError::Deserialize)?;
+                let message =
+                    decode_server_jsonrpc(&body).map_err(StreamableHttpError::Deserialize)?;
                 Ok(StreamableHttpPostResponse::Json(message, session_id))
             }
             _ => {
@@ -526,7 +526,25 @@ fn sse_stream_from_body(
             Err(error) => Some((Err(io::Error::other(error)), body_stream)),
         }
     }))
+    .map(|event| event.and_then(validate_sse_message_json))
     .boxed()
+}
+
+fn validate_sse_message_json(event: Sse) -> Result<Sse, sse_stream::Error> {
+    // rmcp's initialization and worker paths attempt JSON deserialization for
+    // every nonempty SSE data payload, not only the default `message` event.
+    // Validate the exact same superset before rmcp can perform lossy parsing.
+    if let Some(data) = event.data.as_deref()
+        && !data.trim().is_empty()
+    {
+        codex_protocol::strict_json::validate_slice_no_duplicates(data.as_bytes())
+            .map_err(|error| sse_stream::Error::Body(Box::new(error)))?;
+    }
+    Ok(event)
+}
+
+fn decode_server_jsonrpc(bytes: &[u8]) -> Result<ServerJsonRpcMessage, serde_json::Error> {
+    codex_protocol::strict_json::from_slice_no_duplicates(bytes)
 }
 
 #[cfg(test)]
@@ -558,5 +576,39 @@ mod tests {
     #[test]
     fn body_preview_marks_empty_after_compaction() {
         assert_eq!(body_preview(" \n\t "), "<empty>");
+    }
+
+    #[test]
+    fn infinity_agent_policy_mcp_sse_rejects_duplicate_schema_keys_at_ingress() {
+        for event_name in [None, Some("message"), Some("endpoint")] {
+            let mut event = Sse::default().data(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"infinity_run_get","inputSchema":{"type":"object","type":"array"}}]}}"#,
+            );
+            if let Some(event_name) = event_name {
+                event = event.event(event_name);
+            }
+
+            let error = validate_sse_message_json(event)
+                .expect_err("duplicate MCP schema key must fail before rmcp deserialization");
+            assert!(error.to_string().contains("duplicate object key \"type\""));
+        }
+    }
+
+    #[test]
+    fn infinity_agent_policy_mcp_sse_accepts_unique_schema_keys() {
+        let event = Sse::default().data(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"infinity_run_get","inputSchema":{"type":"object"}}]}}"#,
+        );
+
+        validate_sse_message_json(event).expect("unique MCP response must pass strict ingress");
+    }
+
+    #[test]
+    fn infinity_agent_policy_mcp_buffered_json_rejects_duplicate_schema_keys_at_ingress() {
+        let error = decode_server_jsonrpc(
+            br#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"infinity_run_get","inputSchema":{"type":"object","type":"array"}}]}}"#,
+        )
+        .expect_err("buffered duplicate MCP schema key must fail before rmcp deserialization");
+        assert!(error.to_string().contains("duplicate object key \"type\""));
     }
 }

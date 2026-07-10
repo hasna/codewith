@@ -122,6 +122,9 @@ enum LogFormat {
 type StderrLogLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
 
 fn configured_thread_config_loader(config: &Config) -> Arc<dyn ThreadConfigLoader> {
+    if config.tool_policy == codex_config::ToolPolicy::InfinityAgent {
+        return Arc::new(NoopThreadConfigLoader);
+    }
     match config.experimental_thread_config_endpoint.as_deref() {
         Some(endpoint) => Arc::new(RemoteThreadConfigLoader::new(endpoint)),
         None => Arc::new(NoopThreadConfigLoader),

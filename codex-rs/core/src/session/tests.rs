@@ -2577,6 +2577,250 @@ async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
 }
 
 #[tokio::test]
+async fn infinity_agent_policy_skips_turn_abort_and_idle_lifecycle_contributors() {
+    struct LifecycleRecorder {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::TurnLifecycleContributor for LifecycleRecorder {
+        async fn on_turn_start(&self, _input: codex_extension_api::TurnStartInput<'_>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        async fn on_turn_stop(&self, _input: codex_extension_api::TurnStopInput<'_>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        async fn on_turn_abort(&self, _input: codex_extension_api::TurnAbortInput<'_>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        async fn on_turn_error(&self, _input: codex_extension_api::TurnErrorInput<'_>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for LifecycleRecorder {
+        async fn on_thread_idle(&self, _input: codex_extension_api::ThreadIdleInput<'_>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    let (mut session, turn_context) = make_session_and_context().await;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorder = Arc::new(LifecycleRecorder {
+        calls: Arc::clone(&calls),
+    });
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+    builder.turn_lifecycle_contributor(recorder.clone());
+    builder.thread_lifecycle_contributor(recorder);
+    session.services.extensions = Arc::new(builder.build());
+    session.infinity_agent_policy = true;
+
+    session
+        .emit_turn_start_lifecycle(&turn_context, &TokenUsage::default())
+        .await;
+    session
+        .emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+        .await;
+    session
+        .emit_turn_abort_lifecycle(
+            TurnAbortReason::Interrupted,
+            turn_context.extension_data.as_ref(),
+        )
+        .await;
+    session
+        .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::Other)
+        .await;
+    session.emit_thread_idle_lifecycle_if_idle().await;
+
+    assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_later_turn_environment_and_identity_overrides() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    session.infinity_agent_policy = true;
+    let selected_environment = {
+        let state = session.state.lock().await;
+        state
+            .session_configuration
+            .environments
+            .first()
+            .cloned()
+            .expect("test session environment")
+    };
+
+    let error = session
+        .new_turn_with_sub_id(
+            "restricted-turn".to_string(),
+            SessionSettingsUpdate {
+                environments: Some(vec![selected_environment]),
+                auth_profile: Some(Some("other-profile".to_string())),
+                ..SessionSettingsUpdate::default()
+            },
+        )
+        .await
+        .expect_err("authority-bearing turn override must fail before resolution");
+
+    assert!(error.to_string().contains("rejects turn settings"));
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_each_persistent_authority_override() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    session.infinity_agent_policy = true;
+    let configuration = {
+        let state = session.state.lock().await;
+        state.session_configuration.clone()
+    };
+    let selected_environment = configuration
+        .environments
+        .first()
+        .cloned()
+        .expect("test session environment");
+    let cases = vec![
+        (
+            "cwd",
+            SessionSettingsUpdate {
+                cwd: Some(configuration.cwd.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            "workspace_roots",
+            SessionSettingsUpdate {
+                workspace_roots: Some(configuration.workspace_roots.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            "profile_workspace_roots",
+            SessionSettingsUpdate {
+                profile_workspace_roots: Some(configuration.profile_workspace_roots().to_vec()),
+                ..Default::default()
+            },
+        ),
+        (
+            "approval_policy",
+            SessionSettingsUpdate {
+                approval_policy: Some(configuration.approval_policy.value()),
+                ..Default::default()
+            },
+        ),
+        (
+            "approvals_reviewer",
+            SessionSettingsUpdate {
+                approvals_reviewer: Some(configuration.approvals_reviewer),
+                ..Default::default()
+            },
+        ),
+        (
+            "sandbox_policy",
+            SessionSettingsUpdate {
+                sandbox_policy: Some(configuration.sandbox_policy()),
+                ..Default::default()
+            },
+        ),
+        (
+            "permission_profile",
+            SessionSettingsUpdate {
+                permission_profile: Some(configuration.permission_profile()),
+                ..Default::default()
+            },
+        ),
+        (
+            "active_permission_profile",
+            SessionSettingsUpdate {
+                active_permission_profile: Some(ActivePermissionProfile::new(":read-only")),
+                ..Default::default()
+            },
+        ),
+        (
+            "auth_profile",
+            SessionSettingsUpdate {
+                auth_profile: Some(None),
+                ..Default::default()
+            },
+        ),
+        (
+            "windows_sandbox_level",
+            SessionSettingsUpdate {
+                windows_sandbox_level: Some(WindowsSandboxLevel::RestrictedToken),
+                ..Default::default()
+            },
+        ),
+        (
+            "model_provider_id",
+            SessionSettingsUpdate {
+                model_provider_id: Some(
+                    configuration
+                        .original_config_do_not_use
+                        .model_provider_id
+                        .clone(),
+                ),
+                ..Default::default()
+            },
+        ),
+        (
+            "collaboration_mode",
+            SessionSettingsUpdate {
+                collaboration_mode: Some(configuration.collaboration_mode.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            "worktree_mode",
+            SessionSettingsUpdate {
+                worktree_mode: Some(configuration.worktree_mode),
+                ..Default::default()
+            },
+        ),
+        (
+            "session_prompt",
+            SessionSettingsUpdate {
+                session_prompt: Some(Some("injected".to_string())),
+                ..Default::default()
+            },
+        ),
+        (
+            "final_output_json_schema",
+            SessionSettingsUpdate {
+                final_output_json_schema: Some(Some(json!({"type": "object"}))),
+                ..Default::default()
+            },
+        ),
+        (
+            "environments",
+            SessionSettingsUpdate {
+                environments: Some(vec![selected_environment]),
+                ..Default::default()
+            },
+        ),
+        (
+            "personality",
+            SessionSettingsUpdate {
+                personality: Some(Personality::Friendly),
+                ..Default::default()
+            },
+        ),
+    ];
+
+    for (name, update) in cases {
+        assert!(
+            update.has_infinity_agent_authority_override(),
+            "predicate must cover {name}"
+        );
+        assert!(
+            session.update_settings(update).await.is_err(),
+            "persistent {name} update must fail closed"
+        );
+    }
+}
+
+#[tokio::test]
 async fn turn_error_lifecycle_exposes_error_and_stores() {
     struct SessionTurnErrorMarker;
     struct ThreadTurnErrorMarker;
@@ -5906,6 +6150,7 @@ async fn make_session_and_context_with_events()
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        infinity_agent_policy: config.is_infinity_agent(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
@@ -8002,6 +8247,7 @@ where
         state: Mutex::new(state),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        infinity_agent_policy: config.is_infinity_agent(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),

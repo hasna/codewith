@@ -7,11 +7,14 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 
 impl Session {
-    pub(super) async fn emit_turn_start_lifecycle(
+    pub(crate) async fn emit_turn_start_lifecycle(
         &self,
         turn_context: &TurnContext,
         token_usage_at_turn_start: &TokenUsage,
     ) {
+        if self.infinity_agent_policy {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_start(codex_extension_api::TurnStartInput {
@@ -26,7 +29,10 @@ impl Session {
         }
     }
 
-    pub(super) async fn emit_turn_stop_lifecycle(&self, turn_store: &ExtensionData) {
+    pub(crate) async fn emit_turn_stop_lifecycle(&self, turn_store: &ExtensionData) {
+        if self.infinity_agent_policy {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_stop(codex_extension_api::TurnStopInput {
@@ -39,6 +45,9 @@ impl Session {
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self) {
+        if self.infinity_agent_policy {
+            return;
+        }
         if self.active_turn.lock().await.is_some()
             || self.input_queue.has_trigger_turn_mailbox_items().await
         {
@@ -55,11 +64,14 @@ impl Session {
         }
     }
 
-    pub(super) async fn emit_turn_abort_lifecycle(
+    pub(crate) async fn emit_turn_abort_lifecycle(
         &self,
         reason: TurnAbortReason,
         turn_store: &ExtensionData,
     ) {
+        if self.infinity_agent_policy {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_abort(codex_extension_api::TurnAbortInput {
@@ -77,6 +89,9 @@ impl Session {
         turn_context: &TurnContext,
         error: CodexErrorInfo,
     ) {
+        if self.infinity_agent_policy {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {

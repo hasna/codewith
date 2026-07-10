@@ -53,6 +53,7 @@ use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
 use crate::tools::hosted_spec::create_web_search_tool;
+use crate::tools::policy::PolicyMode;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -158,8 +159,123 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     params: ToolRouterParams<'_>,
 ) -> ToolRouter {
+    if turn_context.config.is_infinity_agent() {
+        return build_infinity_agent_tool_router(turn_context, params)
+            .unwrap_or_else(ToolRouter::from_policy_error);
+    }
     let (model_visible_specs, registry) = build_tool_specs_and_registry(turn_context, params);
     ToolRouter::from_parts(registry, model_visible_specs)
+}
+
+fn build_infinity_agent_tool_router(
+    turn_context: &TurnContext,
+    params: ToolRouterParams<'_>,
+) -> Result<ToolRouter, String> {
+    let policy = turn_context
+        .config
+        .infinity_agent_policy
+        .as_ref()
+        .ok_or_else(|| "Infinity Agent tool planning has no verified process policy".to_string())?;
+    policy
+        .ensure_active(chrono::Utc::now())
+        .map_err(|error| error.to_string())?;
+    if !namespace_tools_enabled(turn_context) {
+        return Err("Infinity Agent requires a provider with namespace-tool support".to_string());
+    }
+    let ToolRouterParams {
+        mcp_tools,
+        deferred_mcp_tools,
+        discoverable_tools,
+        extension_tool_executors,
+        dynamic_tools,
+    } = params;
+    if discoverable_tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+        || !extension_tool_executors.is_empty()
+    {
+        return Err(
+            "Infinity Agent tool planning received a forbidden extension or discoverable source"
+                .to_string(),
+        );
+    }
+
+    let direct_mcp = mcp_tools.unwrap_or_default();
+    let deferred_mcp = deferred_mcp_tools.unwrap_or_default();
+    let mut planned_tools = PlannedTools::default();
+    match policy.mode() {
+        PolicyMode::DynamicCliOnly => {
+            if !direct_mcp.is_empty() || !deferred_mcp.is_empty() {
+                return Err(
+                    "dynamic-cli-only Infinity Agent policy received an MCP runtime".to_string(),
+                );
+            }
+            policy
+                .validate_dynamic_manifest(dynamic_tools)
+                .map_err(|error| error.to_string())?;
+            for tool in dynamic_tools {
+                let handler = DynamicToolHandler::new(tool).ok_or_else(|| {
+                    format!("failed to construct signed dynamic tool `{}`", tool.name)
+                })?;
+                planned_tools.add(handler);
+            }
+        }
+        PolicyMode::McpOnly => {
+            if !dynamic_tools.is_empty() {
+                return Err("mcp-only Infinity Agent policy received a dynamic runtime".to_string());
+            }
+            let all_mcp = direct_mcp
+                .iter()
+                .chain(deferred_mcp.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            policy
+                .validate_mcp_manifest(&all_mcp)
+                .map_err(|error| error.to_string())?;
+            for tool in all_mcp {
+                let handler = McpHandler::new_infinity_agent_serial(tool).map_err(|error| {
+                    format!("failed to construct signed MCP tool runtime: {error}")
+                })?;
+                // The restricted route has no tool search. A tool that arrived
+                // through an ordinary deferred bucket is deliberately made
+                // direct only after the exact signed manifest check above.
+                planned_tools.add(handler);
+            }
+        }
+    }
+
+    let mut registered_names = planned_tools
+        .runtimes()
+        .iter()
+        .map(|runtime| runtime.tool_name())
+        .collect::<Vec<_>>();
+    registered_names.sort();
+    if registered_names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("Infinity Agent registered duplicate tool names".to_string());
+    }
+    let allowed_names = policy.allowed_tool_names();
+    if registered_names != allowed_names {
+        return Err(
+            "Infinity Agent registered tool names do not equal the signed allowlist".to_string(),
+        );
+    }
+    let (model_visible_specs, registry) =
+        build_model_visible_specs_and_registry(turn_context, planned_tools);
+    let visible_names = policy
+        .validate_model_visible_manifest(&model_visible_specs)
+        .map_err(|error| error.to_string())?;
+    tracing::info!(
+        target: "codex_core::tools::policy",
+        policy_digest = policy.digest(),
+        visible_tools = ?visible_names,
+        registered_tools = ?registered_names,
+        "planned exact Infinity Agent tool allowlist"
+    );
+    Ok(ToolRouter::from_infinity_policy(
+        registry,
+        model_visible_specs,
+        Arc::clone(policy),
+    ))
 }
 
 fn build_tool_specs_and_registry(

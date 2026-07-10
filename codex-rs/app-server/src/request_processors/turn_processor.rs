@@ -938,6 +938,11 @@ impl TurnRequestProcessor {
                         None,
                         Some(AnalyticsJsonRpcError::Input(InputError::Empty)),
                     ),
+                    SteerInputError::InfinityAgentOverride => (
+                        "Infinity Agent rejects additional context and client metadata".to_string(),
+                        None,
+                        None,
+                    ),
                 };
                 let mut error = invalid_request(message);
                 error.data = data;

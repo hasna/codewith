@@ -101,7 +101,9 @@ pub async fn start_stdio_connection(
 }
 
 fn stdio_initialize_client_name(line: &str) -> Option<String> {
-    let message = serde_json::from_str::<JSONRPCMessage>(line).ok()?;
+    let message =
+        codex_protocol::strict_json::from_slice_no_duplicates::<JSONRPCMessage>(line.as_bytes())
+            .ok()?;
     let JSONRPCMessage::Request(JSONRPCRequest { method, params, .. }) = message else {
         return None;
     };

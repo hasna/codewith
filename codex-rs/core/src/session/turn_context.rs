@@ -698,6 +698,20 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
+        if self.infinity_agent_policy && updates.has_infinity_agent_authority_override() {
+            let message =
+                "Infinity Agent rejects turn settings that can reintroduce environment, identity, instruction, or execution authority"
+                    .to_string();
+            self.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: message.clone(),
+                    codex_error_info: Some(CodexErrorInfo::BadRequest),
+                }),
+            })
+            .await;
+            return Err(CodexErr::InvalidRequest(message));
+        }
         let prepared_auth_profile_switch = if let Some(auth_profile) = updates.auth_profile.clone()
         {
             match self
@@ -728,11 +742,15 @@ impl Session {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
                 Ok(next) => {
-                    let mut effective_environments = updates
-                        .environments
-                        .clone()
-                        .unwrap_or_else(|| next.environments.clone());
-                    if updates.environments.is_none() {
+                    let mut effective_environments = if self.infinity_agent_policy {
+                        Vec::new()
+                    } else {
+                        updates
+                            .environments
+                            .clone()
+                            .unwrap_or_else(|| next.environments.clone())
+                    };
+                    if !self.infinity_agent_policy && updates.environments.is_none() {
                         Self::overlay_runtime_cwd_on_primary_environment(
                             &mut effective_environments,
                             &next.cwd,

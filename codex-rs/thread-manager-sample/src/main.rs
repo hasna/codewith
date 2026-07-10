@@ -168,6 +168,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         config_layer_stack: ConfigLayerStack::default(),
         startup_warnings: Vec::new(),
         tool_policy: ToolPolicy::Full,
+        infinity_agent_policy: None,
         bypass_hook_trust: false,
         model,
         service_tier: None,

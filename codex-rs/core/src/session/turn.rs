@@ -618,6 +618,9 @@ async fn build_skills_and_plugins(
     input: &[TurnInput],
     cancellation_token: &CancellationToken,
 ) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
+    if turn_context.config.is_infinity_agent() {
+        return Some((Vec::new(), HashSet::new()));
+    }
     let user_input = input
         .iter()
         .filter_map(|item| match item {
@@ -1295,6 +1298,22 @@ pub(crate) async fn built_tools(
         .or_cancel(cancellation_token)
         .await?;
     drop(mcp_connection_manager);
+    if turn_context.config.is_infinity_agent() {
+        let router = ToolRouter::from_turn_context(
+            turn_context,
+            ToolRouterParams {
+                mcp_tools: (!all_mcp_tools.is_empty()).then_some(all_mcp_tools),
+                deferred_mcp_tools: None,
+                discoverable_tools: None,
+                extension_tool_executors: Vec::new(),
+                dynamic_tools: turn_context.dynamic_tools.as_slice(),
+            },
+        );
+        router
+            .ensure_policy_ready()
+            .map_err(CodexErr::InvalidRequest)?;
+        return Ok(Arc::new(router));
+    }
     let loaded_plugins = sess
         .services
         .plugins_manager

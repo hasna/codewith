@@ -42,6 +42,32 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[tokio::test]
+async fn infinity_agent_policy_rejects_duplicate_dynamic_schema_keys_before_value_parsing()
+-> Result<()> {
+    let server = MockServer::start().await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    mcp.send_raw_jsonrpc_line(
+        r#"{"id":991,"method":"thread/start","params":{"dynamicTools":[{"namespace":"infinity_cli","name":"infinity_run_get","description":"Get","inputSchema":{"type":"object","properties":{"run_id":{"type":"string","type":"number"}},"additionalProperties":false}}]}}"#,
+    )
+    .await?;
+
+    let no_response = timeout(
+        Duration::from_millis(250),
+        mcp.read_stream_until_response_message(RequestId::Integer(991)),
+    )
+    .await;
+    assert!(
+        no_response.is_err(),
+        "duplicate-key request must be dropped by raw transport ingress"
+    );
+    Ok(())
+}
+
 /// Ensures dynamic tool specs are serialized into the model request payload.
 #[tokio::test]
 async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> {
