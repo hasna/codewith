@@ -214,6 +214,32 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_bazel_command_preserves_explicit_startup_option_with_rbe(self) -> None:
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_command(
+                "--noexperimental_remote_repo_contents_cache",
+                "build",
+                "--config=ci-linux",
+                "--",
+                "//tools/remote-build-smoke:remote_execution_smoke",
+                env={
+                    "BUILDBUDDY_API_KEY": "fork-token",
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_REPOSITORY": "hasna/codewith",
+                },
+            ),
+            [
+                "bazel",
+                "--noexperimental_remote_repo_contents_cache",
+                "build",
+                "--config=buildbuddy-generic-rbe",
+                "--remote_header=x-buildbuddy-api-key=fork-token",
+                "--config=ci-linux",
+                "--",
+                "//tools/remote-build-smoke:remote_execution_smoke",
+            ],
+        )
+
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (
             r"--test_env=PATH=C:\Program Files\PowerShell\7;C:\Program Files\Git\bin"

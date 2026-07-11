@@ -40,8 +40,9 @@ The workflows in this directory are split so that pull requests get fast, review
   `BUILDBUDDY_API_KEY`, selects the generic BuildBuddy RBE config through
   `.github/scripts/run_bazel_with_buildbuddy.py`, and fails closed when the
   secret is missing instead of falling back to local compilation.
-- Local `just` recipes for heavy Rust/Bazel validation refuse by default and
-  point agents at `just remote-bazel-validation`. Set
+- Local non-CI `just` recipes for heavy Rust/Bazel validation refuse by default
+  and point agents at `just remote-bazel-validation`. GitHub Actions and other
+  CI runners may still use those recipes remotely. Set
   `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1` only for an intentional local run.
 - Start with `auth-smoke` before broader checks. It builds only
   `//tools/remote-build-smoke:remote_execution_smoke`, which is intended to
