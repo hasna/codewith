@@ -1,0 +1,153 @@
+name: Remote Rust/Bazel Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Remote validation to run.
+        required: true
+        default: auth-smoke
+        type: choice
+        options:
+          - auth-smoke
+          - argument-comment-lint
+          - clippy
+          - test-focused
+      targets:
+        description: Space or newline separated Bazel labels for test-focused mode.
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: remote-rust-bazel::${{ github.ref_name }}::${{ inputs.mode }}
+  cancel-in-progress: true
+
+jobs:
+  remote-bazel:
+    name: Remote Bazel ${{ inputs.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require BuildBuddy secret
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            echo "::error title=Missing BuildBuddy secret::Set the repository secret BUILDBUDDY_API_KEY before running remote Bazel validation."
+            exit 1
+          fi
+          echo "BUILDBUDDY_API_KEY is configured; value is intentionally not printed."
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: remote-rust-bazel-${{ inputs.mode }}
+          install-test-prereqs: ${{ inputs.mode == 'test-focused' && 'true' || 'false' }}
+
+      - name: Run remote Bazel validation
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          VALIDATION_MODE: ${{ inputs.mode }}
+          VALIDATION_TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+
+          bazel_args=()
+          bazel_targets=()
+
+          case "${VALIDATION_MODE}" in
+            auth-smoke)
+              bazel_args=(
+                build
+                --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+                --build_metadata=TAG_workflow=remote-rust-bazel
+                --build_metadata=TAG_mode=auth-smoke
+              )
+              bazel_targets=(//tools/remote-build-smoke:remote_execution_smoke)
+              ;;
+            argument-comment-lint)
+              bazel_args=(
+                build
+                --config=argument-comment-lint
+                --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+                --build_metadata=TAG_workflow=remote-rust-bazel
+                --build_metadata=TAG_mode=argument-comment-lint
+              )
+              while IFS= read -r target; do
+                [[ -n "${target}" ]] && bazel_targets+=("${target}")
+              done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
+              ;;
+            clippy)
+              bazel_args=(
+                build
+                --config=clippy
+                --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+                --build_metadata=TAG_workflow=remote-rust-bazel
+                --build_metadata=TAG_mode=clippy
+              )
+              while IFS= read -r target; do
+                [[ -n "${target}" ]] && bazel_targets+=("${target}")
+              done < <(./scripts/list-bazel-clippy-targets.sh)
+              ;;
+            test-focused)
+              if [[ -z "${VALIDATION_TARGETS//[[:space:]]/}" ]]; then
+                echo "::error title=Missing targets::test-focused mode requires one or more Bazel labels in the targets input."
+                exit 2
+              fi
+              bazel_args=(
+                test
+                --test_tag_filters=-argument-comment-lint
+                --test_verbose_timeout_warnings
+                --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+                --build_metadata=TAG_workflow=remote-rust-bazel
+                --build_metadata=TAG_mode=test-focused
+              )
+              while IFS= read -r target; do
+                [[ -n "${target}" ]] && bazel_targets+=("${target}")
+              done < <(printf '%s\n' "${VALIDATION_TARGETS}" | tr ' ' '\n')
+              ;;
+            *)
+              echo "::error title=Unsupported mode::${VALIDATION_MODE}"
+              exit 2
+              ;;
+          esac
+
+          if [[ ${#bazel_targets[@]} -eq 0 ]]; then
+            echo "::error title=No Bazel targets::No targets were selected for ${VALIDATION_MODE}."
+            exit 2
+          fi
+
+          ./.github/scripts/run_bazel_with_buildbuddy.py \
+            --noexperimental_remote_repo_contents_cache \
+            "${bazel_args[@]}" \
+            --config=ci-linux \
+            -- \
+            "${bazel_targets[@]}"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bazel-execution-logs-remote-rust-bazel-${{ inputs.mode }}
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      - name: Save bazel repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}

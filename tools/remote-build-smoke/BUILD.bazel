@@ -1,0 +1,6 @@
+genrule(
+    name = "remote_execution_smoke",
+    outs = ["remote_execution_smoke.txt"],
+    cmd = "printf 'remote execution smoke\\n' > $@",
+    tags = ["manual"],
+)

@@ -11,6 +11,12 @@ python := if os_family() == "windows" { "python" } else { "python3" }
 help:
     just -l
 
+# Dispatch a GitHub-hosted BuildBuddy/RBE validation instead of compiling on
+# this machine. Use this for agent-driven Bazel checks.
+[no-cd]
+remote-bazel-validation *args:
+    {{ justfile_directory() }}/scripts/remote-bazel-validation.sh "$@"
+
 # `codewith`
 alias c := codewith
 alias cw := codewith
@@ -47,10 +53,10 @@ fmt-check:
     {{ python }} ../scripts/format.py --check
 
 fix *args:
-    cargo clippy --fix --tests --allow-dirty {args}
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo clippy fix" cargo clippy --fix --tests --allow-dirty {args}
 
 clippy *args:
-    cargo clippy --tests {args}
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo clippy" cargo clippy --tests {args}
 
 [unix]
 install:
@@ -77,7 +83,7 @@ install:
 # there should be no need to add `--all-features`.
 [unix]
 test *args:
-    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo tests" env RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 [windows]
 test *args:
@@ -91,27 +97,27 @@ test-github-scripts:
 
 # Run nextest without the workspace benchmark smoke check.
 test-fast *args:
-    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo fast tests" env RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 # Run fast tests using an explicit persistent target directory.
 test-fast-target target_dir *args:
-    CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo fast tests" env CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 # Run a scoped compile-only check.
 check-fast *args:
-    cargo check "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo check" cargo check "$@"
 
 # List nextest test binaries so large integration targets are visible.
 test-binaries *args:
-    cargo nextest list --list-type binaries-only --message-format json "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo test binary listing" cargo nextest list --list-type binaries-only --message-format json "$@"
 
 # Generate a Cargo build timing report.
 build-timings *args:
-    cargo build --timings "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo build timings" cargo build --timings "$@"
 
 # Run explicit workspace benchmark targets.
 bench *args:
-    cargo bench --workspace --bench '*' {args}
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Cargo benchmarks" cargo bench --workspace --bench '*' {args}
 
 # Run benchmark targets once to ensure they start successfully.
 bench-smoke:
@@ -123,7 +129,7 @@ bench-smoke:
 [no-cd]
 [unix]
 bazel-codex *args:
-    bazel run //codex-rs/cli:codewith --run_under="cd $PWD &&" -- "$@"
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel run" bazel run //codex-rs/cli:codewith --run_under="cd $PWD &&" -- "$@"
 
 [windows]
 bazel-codex *args:
@@ -131,32 +137,33 @@ bazel-codex *args:
 
 [no-cd]
 bazel-lock-update:
-    bazel mod deps --lockfile_mode=update
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel lock update" bazel mod deps --lockfile_mode=update
 
 [no-cd]
 [unix]
 bazel-lock-check:
-    {{ justfile_directory() }}/scripts/check-module-bazel-lock.sh
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel lock check" {{ justfile_directory() }}/scripts/check-module-bazel-lock.sh
 
 [windows]
 bazel-lock-check:
     bazel mod deps --lockfile_mode=error; if ($LASTEXITCODE -ne 0) { Write-Error "MODULE.bazel.lock is out of date. Run 'just bazel-lock-update' and commit the updated lockfile."; exit 1 }
 
 bazel-test:
-    bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel tests" bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
 
 [no-cd]
 [unix]
 bazel-clippy:
-    bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && bazel build --config=clippy -- ${bazel_targets}
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel clippy"
+    bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1 {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel clippy" bazel build --config=clippy -- ${bazel_targets}
 
 [no-cd]
 [unix]
 bazel-argument-comment-lint:
-    bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel argument-comment-lint" bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
 
 build-for-release:
-    bazel build //codex-rs/cli:release_binaries
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel release build" bazel build //codex-rs/cli:release_binaries
 
 # Run the MCP server
 mcp-server-run *args:
