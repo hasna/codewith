@@ -10,7 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class RunBazelCiTest(unittest.TestCase):
-    def test_local_fallback_clears_remote_services(self) -> None:
+    def run_with_fake_bazel(
+        self,
+        *,
+        env_updates: dict[str, str | None],
+        wrapper_args: list[str] | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             args_path = tmp_path / "bazel-args.txt"
@@ -29,15 +34,19 @@ class RunBazelCiTest(unittest.TestCase):
             )
 
             env = os.environ.copy()
-            env.pop("BUILDBUDDY_API_KEY", None)
+            for key, value in env_updates.items():
+                if value is None:
+                    env.pop(key, None)
+                else:
+                    env[key] = value
             env["FAKE_BAZEL_ARGS"] = str(args_path)
             env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
-            env["RUNNER_OS"] = "Linux"
 
             result = subprocess.run(
                 [
                     "bash",
                     ".github/scripts/run-bazel-ci.sh",
+                    *(wrapper_args or []),
                     "--",
                     "build",
                     "--",
@@ -51,17 +60,130 @@ class RunBazelCiTest(unittest.TestCase):
                 check=False,
             )
 
-            self.assertEqual(
-                result.returncode,
-                0,
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-            )
-            self.assertIn("using local Bazel configuration", result.stdout)
+            bazel_args = []
+            if args_path.exists():
+                bazel_args = args_path.read_text(encoding="utf-8").splitlines()
+            return result, bazel_args
 
-            bazel_args = args_path.read_text(encoding="utf-8").splitlines()
-            self.assertIn("--remote_cache=", bazel_args)
-            self.assertIn("--remote_executor=", bazel_args)
-            self.assertIn("--experimental_remote_downloader=", bazel_args)
+    def test_local_fallback_clears_remote_services(self) -> None:
+        result, bazel_args = self.run_with_fake_bazel(
+            env_updates={
+                "BUILDBUDDY_API_KEY": None,
+                "RUNNER_OS": "Linux",
+            }
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("using local Bazel configuration", result.stdout)
+
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
+
+    def test_keyed_linux_uses_buildbuddy_rbe_configuration(self) -> None:
+        result, bazel_args = self.run_with_fake_bazel(
+            env_updates={
+                "BUILDBUDDY_API_KEY": "fake-token",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+                "RUNNER_OS": "Linux",
+            }
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn(
+            "using buildbuddy-generic-rbe Bazel configuration",
+            result.stdout,
+        )
+
+        self.assertIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
+        self.assertIn("--config=ci-linux", bazel_args)
+
+        remote_idx = bazel_args.index("--config=buildbuddy-generic-rbe")
+        ci_idx = bazel_args.index("--config=ci-linux")
+        self.assertLess(remote_idx, ci_idx)
+
+    def test_keyed_windows_cross_uses_rbe_before_rbe_host_platform(self) -> None:
+        result, bazel_args = self.run_with_fake_bazel(
+            env_updates={
+                "BAZEL_REPO_CONTENTS_CACHE": None,
+                "BAZEL_REPOSITORY_CACHE": None,
+                "BUILDBUDDY_API_KEY": "fake-token",
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\tools\bin",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+                "RUNNER_OS": "Windows",
+            },
+            wrapper_args=["--windows-cross-compile"],
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn(
+            "using buildbuddy-generic-rbe Bazel configuration",
+            result.stdout,
+        )
+
+        self.assertIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
+        self.assertIn("--config=ci-windows-cross", bazel_args)
+        self.assertIn("--host_platform=//:rbe", bazel_args)
+        self.assertIn("--shell_executable=/bin/bash", bazel_args)
+        self.assertIn("--action_env=PATH=/usr/bin:/bin", bazel_args)
+        self.assertIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
+        self.assertNotIn("--host_platform=//:local_windows_msvc", bazel_args)
+        self.assertNotIn("--jobs=8", bazel_args)
+
+        remote_idx = bazel_args.index("--config=buildbuddy-generic-rbe")
+        ci_idx = bazel_args.index("--config=ci-windows-cross")
+        host_idx = bazel_args.index("--host_platform=//:rbe")
+        self.assertLess(remote_idx, ci_idx)
+        self.assertLess(ci_idx, host_idx)
+
+    def test_keyless_windows_cross_uses_local_msvc_fallback(self) -> None:
+        result, bazel_args = self.run_with_fake_bazel(
+            env_updates={
+                "BAZEL_REPO_CONTENTS_CACHE": None,
+                "BAZEL_REPOSITORY_CACHE": None,
+                "BUILDBUDDY_API_KEY": None,
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\tools\bin",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+                "RUNNER_OS": "Windows",
+            },
+            wrapper_args=["--windows-cross-compile"],
+        )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("using local Bazel configuration", result.stdout)
+
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
+        self.assertIn("--host_platform=//:local_windows_msvc", bazel_args)
+        self.assertIn("--jobs=8", bazel_args)
+        self.assertNotIn("--config=ci-windows-cross", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertNotIn("--host_platform=//:rbe", bazel_args)
+        self.assertNotIn("--shell_executable=/bin/bash", bazel_args)
 
 
 if __name__ == "__main__":

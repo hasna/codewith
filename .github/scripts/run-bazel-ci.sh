@@ -8,6 +8,34 @@ remote_download_toplevel=0
 windows_msvc_host_platform=0
 windows_cross_compile=0
 
+is_trusted_openai_run() {
+  if [[ "${GITHUB_ACTIONS:-}" != "true" || "${GITHUB_REPOSITORY:-}" != "openai/codex" ]]; then
+    return 1
+  fi
+
+  if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${GITHUB_EVENT_PATH:-}" ]]; then
+    return 1
+  fi
+
+  python3 - "$GITHUB_EVENT_PATH" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        event = json.load(f)
+    fork = event["pull_request"]["head"]["repo"]["fork"]
+except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    raise SystemExit(1)
+
+raise SystemExit(0 if fork is False else 1)
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --print-failed-test-logs)
@@ -74,6 +102,23 @@ case "${RUNNER_OS:-}" in
     ;;
 esac
 
+buildbuddy_config=buildbuddy-generic
+buildbuddy_uses_rbe=0
+case "$ci_config" in
+  ci-linux | ci-macos | ci-v8 | ci-windows-cross)
+    buildbuddy_uses_rbe=1
+    ;;
+esac
+
+if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if is_trusted_openai_run; then
+    buildbuddy_config=buildbuddy-openai
+  fi
+  if [[ $buildbuddy_uses_rbe -eq 1 ]]; then
+    buildbuddy_config="${buildbuddy_config}-rbe"
+  fi
+fi
+
 print_bazel_test_log_tails() {
   local console_log="$1"
   local testlogs_dir
@@ -90,8 +135,9 @@ print_bazel_test_log_tails() {
   # MSVC host platform under `local_windows_msvc-fastbuild`.
   if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     bazel_info_args+=(
-      "--config=${ci_config}"
+      "--config=${buildbuddy_config}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+      "--config=${ci_config}"
     )
   fi
   # Only pass flags that affect Bazel's output-root selection or repository
@@ -383,15 +429,16 @@ if (( ${#bazel_startup_args[@]} > 0 )); then
 fi
 
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-  echo "BuildBuddy API key is available; using remote Bazel configuration."
+  echo "BuildBuddy API key is available; using ${buildbuddy_config} Bazel configuration."
   # Work around Bazel 9 remote repo contents cache / overlay materialization failures
   # seen in CI (for example "is not a symlink" or permission errors while
   # materializing external repos such as rules_perl). We still use BuildBuddy for
   # remote execution/cache; this only disables the startup-level repo contents cache.
   bazel_run_args=(
     "${bazel_args[@]}"
-    "--config=${ci_config}"
+    "--config=${buildbuddy_config}"
     "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+    "--config=${ci_config}"
   )
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")
