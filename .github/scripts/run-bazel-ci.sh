@@ -103,19 +103,21 @@ case "${RUNNER_OS:-}" in
 esac
 
 buildbuddy_config=buildbuddy-generic
+ci_config_requires_rbe=0
 buildbuddy_uses_rbe=0
 case "$ci_config" in
   ci-linux | ci-macos | ci-v8 | ci-windows-cross)
-    buildbuddy_uses_rbe=1
+    ci_config_requires_rbe=1
     ;;
 esac
 
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   if is_trusted_openai_run; then
     buildbuddy_config=buildbuddy-openai
-  fi
-  if [[ $buildbuddy_uses_rbe -eq 1 ]]; then
-    buildbuddy_config="${buildbuddy_config}-rbe"
+    if [[ $ci_config_requires_rbe -eq 1 ]]; then
+      buildbuddy_config="${buildbuddy_config}-rbe"
+      buildbuddy_uses_rbe=1
+    fi
   fi
 fi
 
@@ -137,8 +139,10 @@ print_bazel_test_log_tails() {
     bazel_info_args+=(
       "--config=${buildbuddy_config}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
-      "--config=${ci_config}"
     )
+    if [[ $use_ci_config -eq 1 ]]; then
+      bazel_info_args+=("--config=${ci_config}")
+    fi
   fi
   # Only pass flags that affect Bazel's output-root selection or repository
   # lookup. Test/build-only flags such as execution logs or remote download
@@ -299,10 +303,14 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+use_ci_config=1
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $buildbuddy_uses_rbe -eq 0 ]]; then
   # Fork PRs do not receive the BuildBuddy secret needed for the remote
-  # cross-compile config. Preserve the previous local Windows build shape.
+  # cross-compile config, and the generic BuildBuddy account currently has no
+  # executors. Preserve the previous local Windows build shape unless this is a
+  # trusted OpenAI run that can use the OpenAI RBE tenant.
   windows_msvc_host_platform=1
+  use_ci_config=0
 fi
 
 post_config_bazel_args=()
@@ -330,7 +338,7 @@ if [[ $remote_download_toplevel -eq 1 ]]; then
   post_config_bazel_args+=(--remote_download_toplevel)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $buildbuddy_uses_rbe -eq 1 ]]; then
   # `--enable_platform_specific_config` expands `common:windows` on Windows
   # hosts after ordinary rc configs, which can override `ci-windows-cross`'s
   # RBE host platform. Repeat the host platform on the command line so V8 and
@@ -342,11 +350,30 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
   post_config_bazel_args+=(--host_platform=//:rbe --shell_executable=/bin/bash)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $buildbuddy_uses_rbe -eq 0 ]]; then
   # The Windows cross-compile config depends on remote execution. Fork PRs do
-  # not receive the BuildBuddy secret, so fall back to the existing local build
-  # shape and keep its lower concurrency cap.
+  # not receive the BuildBuddy secret, and generic BuildBuddy currently has no
+  # executors, so fall back to the existing local build shape and keep its
+  # lower concurrency cap.
   post_config_bazel_args+=(--jobs=8)
+
+  has_clippy_config=0
+  has_skip_incompatible_explicit_targets=0
+  for arg in "${bazel_args[@]}"; do
+    case "$arg" in
+      --config=clippy)
+        has_clippy_config=1
+        ;;
+      --skip_incompatible_explicit_targets)
+        has_skip_incompatible_explicit_targets=1
+        ;;
+    esac
+  done
+  if [[ $has_clippy_config -eq 1 && $has_skip_incompatible_explicit_targets -eq 0 ]]; then
+    # Match the keyless workflow fallback: the Windows-cross clippy target list
+    # can contain explicit targets incompatible with the local MSVC host.
+    post_config_bazel_args+=(--skip_incompatible_explicit_targets)
+  fi
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
@@ -368,7 +395,7 @@ fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   pass_windows_build_env=1
-  if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ $windows_cross_compile -eq 1 && $buildbuddy_uses_rbe -eq 1 ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
     # runner's build environment there makes Bazel genrules try to execute
     # C:\Program Files\Git\usr\bin\bash.exe on Linux.
@@ -408,7 +435,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
       "--action_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}"
       "--host_action_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}"
     )
-  elif [[ $windows_cross_compile -eq 1 ]]; then
+  elif [[ $windows_cross_compile -eq 1 && $buildbuddy_uses_rbe -eq 1 ]]; then
     # Remote build actions run on Linux RBE workers. Give their shell snippets
     # a Linux PATH while preserving CODEX_BAZEL_WINDOWS_PATH below for local
     # Windows test execution.
@@ -433,13 +460,16 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   # Work around Bazel 9 remote repo contents cache / overlay materialization failures
   # seen in CI (for example "is not a symlink" or permission errors while
   # materializing external repos such as rules_perl). We still use BuildBuddy for
-  # remote execution/cache; this only disables the startup-level repo contents cache.
+  # cache/BES and, on trusted OpenAI runs, remote execution; this only disables
+  # the startup-level repo contents cache.
   bazel_run_args=(
     "${bazel_args[@]}"
     "--config=${buildbuddy_config}"
     "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
-    "--config=${ci_config}"
   )
+  if [[ $use_ci_config -eq 1 ]]; then
+    bazel_run_args+=("--config=${ci_config}")
+  fi
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")
   fi
