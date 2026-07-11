@@ -1,9 +1,9 @@
 ---
-name: codewith-remote-build
+name: remote-build
 description: Use remote-first GitHub Actions and BuildBuddy/RBE validation for Codewith Rust/Bazel checks instead of running heavy builds locally on station02.
 ---
 
-# Codewith Remote Build
+# Remote Build
 
 ## Policy
 

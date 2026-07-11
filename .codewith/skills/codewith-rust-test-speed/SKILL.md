@@ -9,7 +9,7 @@ description: Optimize slow Rust test workflows in Codewith codex-rs. Use when te
 
 Reduce feedback-loop time without weakening validation. Prefer changing the remote workflow and test/build shape over waiting longer.
 
-Heavy Rust/Bazel validation is remote-first for Codewith agents. Use `codewith-remote-build` for compile, test, clippy, Bazel, and release validation. Local heavy runs are only for explicit human-approved one-offs or when `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1` is deliberately set.
+Heavy Rust/Bazel validation is remote-first for Codewith agents. Use the repository-local `remote-build` skill for compile, test, clippy, Bazel, and release validation. Local heavy runs are only for explicit human-approved one-offs or when `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1` is deliberately set.
 
 ## Diagnose First
 

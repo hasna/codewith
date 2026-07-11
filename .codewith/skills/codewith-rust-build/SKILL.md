@@ -1,6 +1,6 @@
 ---
 name: codewith-rust-build
-description: Format, inspect, and route validation for Codewith Rust crates in codex-rs, using remote-first heavy Rust/Bazel checks through the codewith-remote-build skill.
+description: Format, inspect, and route validation for Codewith Rust crates in codex-rs, using remote-first heavy Rust/Bazel checks through the repository-local remote-build skill.
 ---
 
 # Codewith Rust Build
@@ -12,7 +12,7 @@ Use this skill for Rust work in `codex-rs`. Always read the root `CODEWITH.md` f
 ## Core Rules
 
 - The product is Codewith, even though crate names remain `codex-*`.
-- Codewith agents no longer run heavy Rust/Bazel builds locally by default. For compile, test, clippy, Bazel, release, or lock validation, use the `codewith-remote-build` skill and `just remote-bazel-validation` unless the human explicitly approves a one-off local run or sets `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`.
+- Codewith agents no longer run heavy Rust/Bazel builds locally by default. For compile, test, clippy, Bazel, release, or lock validation, use the repository-local `remote-build` skill and `just remote-bazel-validation` unless the human explicitly approves a one-off local run or sets `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`.
 - Do not run `cargo test` directly. If local heavy validation is approved, use the repo `just` recipes instead of raw Cargo test commands.
 - Run `just fmt` from `codex-rs` after Rust code changes.
 - Run scoped fixes remotely where possible. Local `just fix -p <project>` is a heavy clippy build and needs the same approval or `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`.
@@ -36,7 +36,7 @@ cd codex-rs
 just fmt
 ```
 
-3. For heavy validation, use `codewith-remote-build`. Start with the remote auth smoke after the workflow exists on the default branch:
+3. For heavy validation, use the repository-local `remote-build` skill. Start with the remote auth smoke after the workflow exists on the default branch:
 
 ```bash
 just remote-bazel-validation --mode auth-smoke --ref <ref>
