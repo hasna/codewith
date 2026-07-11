@@ -320,6 +320,14 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $buildbud
 fi
 
 post_config_bazel_args=()
+if [[ $use_buildbuddy -eq 1 && $buildbuddy_uses_rbe -eq 0 && "${ci_config}" == "ci-linux" ]]; then
+  # Generic BuildBuddy is cache/BES-only in Codewith CI. Keep the regular
+  # shared Bazel CI settings, but avoid `ci-linux` because it selects the RBE
+  # target platform and requires the corresponding test toolchain.
+  ci_config=ci-bazel
+  post_config_bazel_args+=(--build_metadata=TAG_os=linux)
+fi
+
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do

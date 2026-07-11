@@ -111,13 +111,18 @@ class RunBazelCiTest(unittest.TestCase):
 
         self.assertIn("--config=buildbuddy-generic", bazel_args)
         self.assertIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
-        self.assertIn("--config=ci-linux", bazel_args)
+        self.assertIn("--config=ci-bazel", bazel_args)
+        self.assertIn("--build_metadata=TAG_os=linux", bazel_args)
+        self.assertNotIn("--config=ci-linux", bazel_args)
         self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
         self.assertNotIn("--host_platform=//:rbe", bazel_args)
+        self.assertNotIn("--platforms=//:rbe", bazel_args)
 
         remote_idx = bazel_args.index("--config=buildbuddy-generic")
-        ci_idx = bazel_args.index("--config=ci-linux")
+        ci_idx = bazel_args.index("--config=ci-bazel")
+        os_metadata_idx = bazel_args.index("--build_metadata=TAG_os=linux")
         self.assertLess(remote_idx, ci_idx)
+        self.assertLess(ci_idx, os_metadata_idx)
 
     def test_keyed_generic_windows_cross_uses_keyless_local_msvc_fallback(
         self,
