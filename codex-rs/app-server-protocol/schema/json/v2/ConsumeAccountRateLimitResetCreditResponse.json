@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ConsumeAccountRateLimitResetCreditOutcome": {
+      "enum": [
+        "reset",
+        "nothing_to_reset",
+        "no_credit",
+        "already_redeemed",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "outcome": {
+      "$ref": "#/definitions/ConsumeAccountRateLimitResetCreditOutcome"
+    }
+  },
+  "required": [
+    "outcome"
+  ],
+  "title": "ConsumeAccountRateLimitResetCreditResponse",
+  "type": "object"
+}

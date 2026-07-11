@@ -49,10 +49,12 @@ impl ChatWidget {
             return;
         }
 
-        let use_actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+        let auth_profile = Some(self.config.selected_auth_profile.clone());
+        let use_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::ConsumeRateLimitResetCredit {
                 idempotency_key: uuid::Uuid::new_v4().to_string(),
                 credit_id: None,
+                auth_profile: auth_profile.clone(),
                 automatic: false,
             });
         })];
@@ -203,6 +205,7 @@ impl ChatWidget {
             .send(AppEvent::ConsumeRateLimitResetCredit {
                 idempotency_key: uuid::Uuid::new_v4().to_string(),
                 credit_id: None,
+                auth_profile: Some(self.config.selected_auth_profile.clone()),
                 automatic: true,
             });
     }

@@ -2993,6 +2993,30 @@
         {
           "properties": {
             "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/rateLimitResetCredit/consume"
+              ],
+              "title": "Account/rateLimitResetCredit/consumeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ConsumeAccountRateLimitResetCreditParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Account/rateLimitResetCredit/consumeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
@@ -10565,6 +10589,58 @@
         ],
         "type": "object"
       },
+      "ConsumeAccountRateLimitResetCreditOutcome": {
+        "enum": [
+          "reset",
+          "nothing_to_reset",
+          "no_credit",
+          "already_redeemed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ConsumeAccountRateLimitResetCreditParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "idempotencyKey": {
+            "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
+            "type": "string"
+          },
+          "creditId": {
+            "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile used for this reset. `null` selects the default root auth; omission leaves the app-server's selected auth profile unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "idempotencyKey"
+        ],
+        "title": "ConsumeAccountRateLimitResetCreditParams",
+        "type": "object"
+      },
+      "ConsumeAccountRateLimitResetCreditResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "outcome": {
+            "$ref": "#/definitions/v2/ConsumeAccountRateLimitResetCreditOutcome"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ConsumeAccountRateLimitResetCreditResponse",
+        "type": "object"
+      },
       "ContentItem": {
         "oneOf": [
           {
@@ -11954,13 +12030,106 @@
               "object",
               "null"
             ]
+          },
+          "rateLimitResetCredits": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/RateLimitResetCreditsSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "rateLimits"
         ],
         "title": "GetAccountRateLimitsResponse",
-        "type": "object"
+        "type": "object",
+        "definitions": {
+          "RateLimitResetCreditStatus": {
+            "enum": [
+              "available",
+              "redeeming",
+              "redeemed",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "RateLimitResetType": {
+            "enum": [
+              "codexRateLimits",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "RateLimitResetCredit": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "resetType": {
+                "$ref": "#/definitions/v2/RateLimitResetType"
+              },
+              "status": {
+                "$ref": "#/definitions/v2/RateLimitResetCreditStatus"
+              },
+              "grantedAt": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "expiresAt": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "resetType",
+              "status",
+              "grantedAt"
+            ],
+            "type": "object"
+          },
+          "RateLimitResetCreditsSummary": {
+            "properties": {
+              "availableCount": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "credits": {
+                "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known.",
+                "items": {
+                  "$ref": "#/definitions/v2/RateLimitResetCredit"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "availableCount"
+            ],
+            "type": "object"
+          }
+        }
       },
       "GetAccountResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -16678,6 +16847,87 @@
           "workspace_member_credits_depleted",
           "workspace_owner_usage_limit_reached",
           "workspace_member_usage_limit_reached"
+        ],
+        "type": "string"
+      },
+      "RateLimitResetCredit": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resetType": {
+            "$ref": "#/definitions/v2/RateLimitResetType"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/RateLimitResetCreditStatus"
+          },
+          "grantedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expiresAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "resetType",
+          "status",
+          "grantedAt"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetCreditStatus": {
+        "enum": [
+          "available",
+          "redeeming",
+          "redeemed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "RateLimitResetCreditsSummary": {
+        "properties": {
+          "availableCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "credits": {
+            "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known.",
+            "items": {
+              "$ref": "#/definitions/v2/RateLimitResetCredit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "availableCount"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetType": {
+        "enum": [
+          "codexRateLimits",
+          "unknown"
         ],
         "type": "string"
       },

@@ -386,6 +386,7 @@ pub(crate) enum AppEvent {
     ConsumeRateLimitResetCredit {
         idempotency_key: String,
         credit_id: Option<String>,
+        auth_profile: Option<Option<String>>,
         automatic: bool,
     },
 

@@ -1397,6 +1397,7 @@ impl App {
             AppEvent::ConsumeRateLimitResetCredit {
                 idempotency_key,
                 credit_id,
+                auth_profile,
                 automatic,
             } => {
                 if self.chat_widget.start_rate_limit_reset_consumption(automatic) {
@@ -1404,6 +1405,7 @@ impl App {
                         app_server,
                         idempotency_key,
                         credit_id,
+                        auth_profile,
                         automatic,
                     );
                 }

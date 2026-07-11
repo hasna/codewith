@@ -133,6 +133,7 @@ impl App {
         app_server: &AppServerSession,
         idempotency_key: String,
         credit_id: Option<String>,
+        auth_profile: Option<Option<String>>,
         automatic: bool,
     ) {
         let request_handle = app_server.request_handle();
@@ -142,6 +143,7 @@ impl App {
                 request_handle,
                 idempotency_key.clone(),
                 credit_id,
+                auth_profile,
             )
             .await
             .map_err(|err| err.to_string());
@@ -892,6 +894,7 @@ async fn consume_rate_limit_reset_credit_request(
     request_handle: AppServerRequestHandle,
     idempotency_key: String,
     credit_id: Option<String>,
+    auth_profile: Option<Option<String>>,
 ) -> Result<ConsumeAccountRateLimitResetCreditResponse> {
     let request_id = RequestId::String(format!("rate-limit-reset-{}", Uuid::new_v4()));
     request_handle
@@ -900,6 +903,7 @@ async fn consume_rate_limit_reset_credit_request(
             params: ConsumeAccountRateLimitResetCreditParams {
                 idempotency_key,
                 credit_id,
+                auth_profile,
             },
         })
         .await

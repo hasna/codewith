@@ -4525,6 +4525,16 @@
       },
       "type": "object"
     },
+    "UsageLimitToml": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_reset_enabled": {
+          "description": "When true, Codewith may consume one available reset credit after it confirms the weekly\nusage limit is exhausted.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Verbosity": {
       "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
       "enum": [
@@ -5601,6 +5611,15 @@
       ],
       "default": null,
       "description": "Automatic retry behavior for recoverable usage-limit and availability failures."
+    },
+    "usage_limit": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UsageLimitToml"
+        }
+      ],
+      "default": null,
+      "description": "Usage-limit reset behavior."
     },
     "web_search": {
       "allOf": [

@@ -3,6 +3,9 @@ use super::*;
 // Duration before a browser ChatGPT login attempt is abandoned.
 const LOGIN_CHATGPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ACCOUNT_TOKEN_USAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
+const ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
+const ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT_MS_ENV_VAR: &str =
+    "CODEX_TEST_ACCOUNT_RATE_LIMIT_RESET_TIMEOUT_MS";
 // The override is intentionally available only in debug builds, matching the login path below.
 #[cfg(debug_assertions)]
 const LOGIN_ISSUER_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_ISSUER";
@@ -1023,7 +1026,14 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountRateLimitsParams,
     ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
-        let Some(auth_profile) = params.auth_profile else {
+        self.auth_manager_for_auth_profile(params.auth_profile).await
+    }
+
+    async fn auth_manager_for_auth_profile(
+        &self,
+        auth_profile: Option<Option<String>>,
+    ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
+        let Some(auth_profile) = auth_profile else {
             return Ok(self.auth_manager.clone());
         };
 
@@ -1140,7 +1150,20 @@ impl AccountRequestProcessor {
         &self,
         params: ConsumeAccountRateLimitResetCreditParams,
     ) -> Result<ConsumeAccountRateLimitResetCreditResponse, JSONRPCErrorError> {
-        let Some(auth) = self.auth_manager.auth().await else {
+        let ConsumeAccountRateLimitResetCreditParams {
+            idempotency_key,
+            credit_id,
+            auth_profile,
+        } = params;
+        let idempotency_key =
+            validated_rate_limit_reset_idempotency_key(&idempotency_key)?.to_string();
+        let credit_id =
+            validated_rate_limit_reset_credit_id(credit_id.as_deref())?.map(str::to_string);
+        let auth_manager = self
+            .auth_manager_for_auth_profile(auth_profile)
+            .await?;
+
+        let Some(auth) = auth_manager.auth().await else {
             return Err(invalid_request(
                 "codex account authentication required to reset usage limits",
             ));
@@ -1155,13 +1178,13 @@ impl AccountRequestProcessor {
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
 
-        let response = client
-            .consume_rate_limit_reset_credit(
-                &params.idempotency_key,
-                params.credit_id.as_deref(),
-            )
-            .await
-            .map_err(|err| internal_error(format!("failed to reset usage limits: {err}")))?;
+        let response = tokio::time::timeout(
+            account_rate_limit_reset_consume_timeout(),
+            client.consume_rate_limit_reset_credit(&idempotency_key, credit_id.as_deref()),
+        )
+        .await
+        .map_err(|_| internal_error("usage limit reset request timed out"))?
+        .map_err(|err| internal_error(format!("failed to reset usage limits: {err}")))?;
 
         Ok(ConsumeAccountRateLimitResetCreditResponse {
             outcome: Self::rate_limit_reset_outcome(response.code),
@@ -1276,6 +1299,43 @@ impl AccountRequestProcessor {
             rate_limits.rate_limit_reset_credits,
         ))
     }
+}
+
+fn validated_rate_limit_reset_idempotency_key(
+    value: &str,
+) -> Result<&str, JSONRPCErrorError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(invalid_request(
+            "idempotencyKey is required to reset usage limits",
+        ));
+    }
+    Ok(value)
+}
+
+fn validated_rate_limit_reset_credit_id(
+    value: Option<&str>,
+) -> Result<Option<&str>, JSONRPCErrorError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(invalid_request(
+            "creditId must be non-empty when provided",
+        ));
+    }
+    Ok(Some(value))
+}
+
+fn account_rate_limit_reset_consume_timeout() -> Duration {
+    if let Ok(value) = std::env::var(ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT_MS_ENV_VAR)
+        && let Ok(ms) = value.parse::<u64>()
+        && ms > 0
+    {
+        return Duration::from_millis(ms);
+    }
+    ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT
 }
 
 fn account_auth_storage_home(config: &Config) -> Result<PathBuf, JSONRPCErrorError> {

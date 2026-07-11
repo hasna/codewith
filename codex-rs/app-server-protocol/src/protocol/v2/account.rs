@@ -404,7 +404,7 @@ pub enum RateLimitResetCreditStatus {
     Unknown,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConsumeAccountRateLimitResetCreditParams {
@@ -415,6 +415,38 @@ pub struct ConsumeAccountRateLimitResetCreditParams {
     /// available credit.
     #[ts(optional = nullable)]
     pub credit_id: Option<String>,
+    /// Auth profile used for this reset. `null` selects the default root auth;
+    /// omission leaves the app-server's selected auth profile unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub auth_profile: Option<Option<String>>,
+}
+
+impl Serialize for ConsumeAccountRateLimitResetCreditParams {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = 1;
+        if self.credit_id.is_some() {
+            len += 1;
+        }
+        if self.auth_profile.is_some() {
+            len += 1;
+        }
+        let mut map = serializer.serialize_map(Some(len))?;
+        map.serialize_entry("idempotencyKey", &self.idempotency_key)?;
+        if let Some(credit_id) = &self.credit_id {
+            map.serialize_entry("creditId", credit_id)?;
+        }
+        if let Some(auth_profile) = &self.auth_profile {
+            map.serialize_entry("authProfile", auth_profile)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -425,8 +457,8 @@ pub struct ConsumeAccountRateLimitResetCreditResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/", rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/", rename_all = "snake_case")]
 pub enum ConsumeAccountRateLimitResetCreditOutcome {
     /// A reset credit was consumed and the eligible rate-limit windows were reset.
     Reset,

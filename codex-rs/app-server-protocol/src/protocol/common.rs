@@ -3357,6 +3357,7 @@ mod tests {
             params: v2::ConsumeAccountRateLimitResetCreditParams {
                 idempotency_key: "redeem-123".to_string(),
                 credit_id: None,
+                auth_profile: Some(Some("work".to_string())),
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3367,7 +3368,7 @@ mod tests {
                 "id": 1,
                 "params": {
                     "idempotencyKey": "redeem-123",
-                    "creditId": null,
+                    "authProfile": "work",
                 },
             }),
             serde_json::to_value(&request)?,
