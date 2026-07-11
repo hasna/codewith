@@ -1,0 +1,4 @@
+interface:
+  display_name: "Connectors Development"
+  short_description: "Build and validate Hasna API connectors."
+  default_prompt: "Use $connectors-development to create or update a Hasna API connector with auth and operation schemas."

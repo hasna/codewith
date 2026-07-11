@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree PR Landing"
+  short_description: "Land validated worktree changes through PR"
+  default_prompt: "Use $worktree-pr-landing to turn validated Codewith worktree changes into scoped commits, a PR, review/CI handling, merge, and post-merge verification."

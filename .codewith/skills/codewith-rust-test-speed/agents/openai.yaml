@@ -1,4 +1,4 @@
 interface:
   display_name: "Rust Test Speed"
   short_description: "Reduce slow Codewith Rust test loops."
-  default_prompt: "Diagnose the slow Rust test path, implement a faster local workflow, and verify with focused commands."
+  default_prompt: "Use $codewith-rust-test-speed to diagnose the slow Rust test path, choose a faster local workflow, and verify with focused commands."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewith PR Body"
+  short_description: "Draft and refresh Codewith PR titles and bodies"
+  default_prompt: "Use $codewith-pr-body to update the current PR title and body from the branch changes while preserving important existing content."

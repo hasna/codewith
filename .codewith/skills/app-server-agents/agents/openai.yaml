@@ -1,0 +1,4 @@
+interface:
+  display_name: "App-Server Agents"
+  short_description: "Build app-server agent orchestration safely."
+  default_prompt: "Use $app-server-agents to work on app-server agent orchestration, active sessions, or mission control."

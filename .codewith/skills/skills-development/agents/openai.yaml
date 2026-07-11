@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skills Development"
+  short_description: "Build and validate Codewith skills."
+  default_prompt: "Use $skills-development to create or update a concise repo-local Codewith skill and validate its metadata."

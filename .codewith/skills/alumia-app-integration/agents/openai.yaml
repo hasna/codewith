@@ -1,0 +1,4 @@
+interface:
+  display_name: "Alumia App Integration"
+  short_description: "Integrate Hasna OSS apps into Alumia."
+  default_prompt: "Use $alumia-app-integration to map a Hasna OSS app into Alumia app functionality safely."

@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Run a final code review on a pull request
+description: Run an adversarial final code review on a pull request by using the repo-local code-review-* helper skills. Use when asked to review a PR or branch for regressions, breaking changes, missing tests, context-window risks, or change-size concerns before merge.
 ---
 
 Use subagents to review code using all code-review-* skills in this repository other than this orchestrator. One subagent per skill. Pass full skill path to subagents. Use xhigh reasoning.

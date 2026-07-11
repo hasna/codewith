@@ -53,16 +53,24 @@ git status --short
 git log --oneline --decorate origin/main..HEAD
 ```
 
-6. Push the intended branch or detached-HEAD commit to GitHub:
+6. Push the intended feature branch to GitHub and land through a PR by default. If `git branch --show-current` is empty, create or check out an explicitly named feature branch before pushing:
 
 ```bash
-git push origin HEAD:main
+branch=$(git branch --show-current)
+test -n "$branch"
+git push -u origin "$branch"
 ```
 
-7. Confirm remote state:
+Open or refresh a PR against the confirmed default branch. Direct default-branch pushes are not the default; use one only when the human explicitly authorizes direct default-branch landing and confirms no protected-branch or PR requirement applies. In that exceptional case, use the explicit reviewed default branch name:
 
 ```bash
-git ls-remote origin main
+git push origin HEAD:<default-branch>
+```
+
+7. Confirm remote branch and PR state:
+
+```bash
+git ls-remote --heads origin <feature-branch>
 git log --oneline --decorate -5
 ```
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Config Auth"
+  short_description: "Work on Codewith config and auth safely."
+  default_prompt: "Use $config-auth to change Codewith config or auth behavior without leaking credentials."

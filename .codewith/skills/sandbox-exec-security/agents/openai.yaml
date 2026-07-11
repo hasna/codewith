@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sandbox Exec Security"
+  short_description: "Review sandbox, exec, and approval changes."
+  default_prompt: "Use $sandbox-exec-security to review command execution, sandbox, approval, or exec-policy changes."

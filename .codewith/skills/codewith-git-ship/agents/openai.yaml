@@ -1,4 +1,4 @@
 interface:
   display_name: "Codewith Git Ship"
   short_description: "Split current work into logical commits and push safely."
-  default_prompt: "Review the current Codewith repo changes, create logical commits, and push only the intended work."
+  default_prompt: "Use $codewith-git-ship to review the current Codewith repo changes, create logical commits, and push only the intended work."

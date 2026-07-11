@@ -1,0 +1,4 @@
+interface:
+  display_name: "TUI Development"
+  short_description: "Develop and verify Codewith TUI changes."
+  default_prompt: "Use $tui-development to implement a focused Codewith TUI change and verify snapshots or interactive behavior."

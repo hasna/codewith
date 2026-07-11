@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCP Tools"
+  short_description: "Develop and debug Codewith MCP tool surfaces."
+  default_prompt: "Use $mcp-tools to debug or extend Codewith MCP tools, app tools, or tool_search behavior."

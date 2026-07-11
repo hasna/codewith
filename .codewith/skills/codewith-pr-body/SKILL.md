@@ -1,11 +1,11 @@
 ---
 name: codewith-pr-body
-description: Update the title and body of one or more pull requests.
+description: Update GitHub pull request titles and bodies for Codewith changes. Use when asked to draft, rewrite, or refresh PR descriptions from the current branch, commit stack, or explicit PR number/URL while preserving important existing body content and explaining why the change exists.
 ---
 
 ## Determining the PR(s)
 
-When this skill is invoked, the PR(s) to update may be specified explicitly, but in the common case, the PR(s) to update will be inferred from the branch / commit that the user is currently working on. For ordinary Git usage (i.e., not Sapling as discussed below), you may have to use a combination of `git branch` and `gh pr view <branch> --repo openai/codex --json number --jq '.number'` to determine the PR associated with the current branch / commit.
+When this skill is invoked, the PR(s) to update may be specified explicitly, but in the common case, the PR(s) to update will be inferred from the branch / commit that the user is currently working on. For ordinary Git usage (i.e., not Sapling as discussed below), verify the GitHub repo from `gh repo view --json nameWithOwner` or `git remote -v`, then use a combination of `git branch` and `gh pr view <branch> --repo <owner>/<repo> --json number --jq '.number'` to determine the PR associated with the current branch / commit.
 
 ## PR Body Contents
 
