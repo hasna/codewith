@@ -6,6 +6,7 @@
 use super::resize_reflow::trailing_run_start;
 use super::*;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
+use crate::app_event::RateLimitRefreshData;
 use crate::config_update::format_config_error;
 use crate::style::accent_color;
 #[cfg(target_os = "windows")]
