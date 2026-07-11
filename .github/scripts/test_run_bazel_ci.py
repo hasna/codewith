@@ -119,7 +119,9 @@ class RunBazelCiTest(unittest.TestCase):
         ci_idx = bazel_args.index("--config=ci-linux")
         self.assertLess(remote_idx, ci_idx)
 
-    def test_keyed_generic_windows_cross_uses_local_msvc_fallback(self) -> None:
+    def test_keyed_generic_windows_cross_uses_keyless_local_msvc_fallback(
+        self,
+    ) -> None:
         result, bazel_args = self.run_with_fake_bazel(
             env_updates={
                 "BAZEL_REPO_CONTENTS_CACHE": None,
@@ -139,17 +141,17 @@ class RunBazelCiTest(unittest.TestCase):
             0,
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
-        self.assertIn(
-            "using buildbuddy-generic Bazel configuration",
-            result.stdout,
-        )
+        self.assertIn("using local Bazel configuration", result.stdout)
 
-        self.assertIn("--config=buildbuddy-generic", bazel_args)
-        self.assertIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
         self.assertIn("--host_platform=//:local_windows_msvc", bazel_args)
         self.assertIn("--jobs=8", bazel_args)
         self.assertIn(r"--action_env=PATH=C:\tools\bin", bazel_args)
         self.assertIn(r"--host_action_env=PATH=C:\tools\bin", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic", bazel_args)
+        self.assertNotIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
         self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
         self.assertNotIn("--config=ci-windows-cross", bazel_args)
         self.assertNotIn("--host_platform=//:rbe", bazel_args)
@@ -157,7 +159,7 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertNotIn("--action_env=PATH=/usr/bin:/bin", bazel_args)
         self.assertNotIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
 
-    def test_keyed_generic_windows_cross_clippy_uses_local_skip_fallback(
+    def test_keyed_generic_windows_cross_clippy_uses_keyless_local_skip_fallback(
         self,
     ) -> None:
         result, bazel_args = self.run_with_fake_bazel(
@@ -180,11 +182,15 @@ class RunBazelCiTest(unittest.TestCase):
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
 
-        self.assertIn("--config=buildbuddy-generic", bazel_args)
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
         self.assertIn("--config=clippy", bazel_args)
         self.assertIn("--host_platform=//:local_windows_msvc", bazel_args)
         self.assertIn("--jobs=8", bazel_args)
         self.assertIn("--skip_incompatible_explicit_targets", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic", bazel_args)
+        self.assertNotIn("--remote_header=x-buildbuddy-api-key=fake-token", bazel_args)
         self.assertNotIn("--config=ci-windows-cross", bazel_args)
         self.assertNotIn("--host_platform=//:rbe", bazel_args)
 

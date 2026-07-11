@@ -105,6 +105,7 @@ esac
 buildbuddy_config=buildbuddy-generic
 ci_config_requires_rbe=0
 buildbuddy_uses_rbe=0
+use_buildbuddy=0
 case "$ci_config" in
   ci-linux | ci-macos | ci-v8 | ci-windows-cross)
     ci_config_requires_rbe=1
@@ -112,6 +113,7 @@ case "$ci_config" in
 esac
 
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  use_buildbuddy=1
   if is_trusted_openai_run; then
     buildbuddy_config=buildbuddy-openai
     if [[ $ci_config_requires_rbe -eq 1 ]]; then
@@ -135,7 +137,7 @@ print_bazel_test_log_tails() {
   # platform-specific output roots match. On Windows, omitting `ci-windows`
   # would point at `local_windows-fastbuild` even when the test ran with the
   # MSVC host platform under `local_windows_msvc-fastbuild`.
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ $use_buildbuddy -eq 1 ]]; then
     bazel_info_args+=(
       "--config=${buildbuddy_config}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
@@ -311,6 +313,10 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $buildbud
   # trusted OpenAI run that can use the OpenAI RBE tenant.
   windows_msvc_host_platform=1
   use_ci_config=0
+  # Generic BuildBuddy is cache/BES-only here, not RBE. Keep the local fallback
+  # fully local on Windows because remote cache hits can reference artifacts
+  # that are no longer materializable on the runner.
+  use_buildbuddy=0
 fi
 
 post_config_bazel_args=()
@@ -455,7 +461,7 @@ if (( ${#bazel_startup_args[@]} > 0 )); then
   bazel_cmd+=("${bazel_startup_args[@]}")
 fi
 
-if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ $use_buildbuddy -eq 1 ]]; then
   echo "BuildBuddy API key is available; using ${buildbuddy_config} Bazel configuration."
   # Work around Bazel 9 remote repo contents cache / overlay materialization failures
   # seen in CI (for example "is not a symlink" or permission errors while
@@ -483,7 +489,7 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_status=${PIPESTATUS[0]}
   set -e
 else
-  echo "BuildBuddy API key is not available; using local Bazel configuration."
+  echo "BuildBuddy remote services are disabled; using local Bazel configuration."
   # Keep fork/community PRs on Bazel but disable remote services that are
   # configured in .bazelrc and require auth.
   #
