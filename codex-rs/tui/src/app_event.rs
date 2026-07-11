@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
@@ -23,6 +24,7 @@ use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
@@ -171,6 +173,12 @@ pub(crate) enum RateLimitRefreshTarget {
     Root,
     /// Read limits for a saved named auth profile.
     Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RateLimitRefreshData {
+    pub(crate) snapshots: Vec<RateLimitSnapshot>,
+    pub(crate) reset_credits: Option<RateLimitResetCreditsSummary>,
 }
 
 impl RateLimitRefreshTarget {
@@ -370,6 +378,23 @@ pub(crate) enum AppEvent {
 
     /// Refresh cached usage for every auth profile that needs a heartbeat.
     RefreshAuthProfileUsageHeartbeats,
+
+    /// Open a confirmation prompt before consuming a usage-limit reset.
+    OpenRateLimitResetConfirm,
+
+    /// Consume one available usage-limit reset.
+    ConsumeRateLimitResetCredit {
+        idempotency_key: String,
+        credit_id: Option<String>,
+        automatic: bool,
+    },
+
+    /// Result of consuming one available usage-limit reset.
+    RateLimitResetCreditConsumed {
+        idempotency_key: String,
+        automatic: bool,
+        result: Result<ConsumeAccountRateLimitResetCreditResponse, String>,
+    },
 
     /// Refresh MiniMax Token Plan usage in the background.
     RefreshMiniMaxUsage {
@@ -869,7 +894,7 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<RateLimitRefreshData, String>,
     },
 
     /// Timer fired for a scheduled usage self-heal retry.

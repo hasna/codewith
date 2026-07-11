@@ -9,6 +9,7 @@ use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
 use crate::app_event::McpInventoryTarget;
+use crate::app_event::RateLimitRefreshData;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
@@ -4532,9 +4533,12 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshOrigin::StartupPrefetch,
         RateLimitRefreshTarget::Selected,
         Some("work".to_string()),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4553,9 +4557,12 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshOrigin::StartupPrefetch,
         RateLimitRefreshTarget::Selected,
         Some("personal".to_string()),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4587,7 +4594,10 @@ async fn usage_panel_usage_refresh_completion_requests_frame() {
         RateLimitRefreshOrigin::UsagePanel { request_id },
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
-        Ok(vec![]),
+        Ok(RateLimitRefreshData {
+            snapshots: vec![],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4630,9 +4640,12 @@ async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits
         },
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
     assert_eq!(
         stale_completion,

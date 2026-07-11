@@ -104,6 +104,14 @@ pub(crate) fn common_config_options(config: &Config) -> Vec<CommonConfigOption> 
         ),
         option(
             AccountAutomation,
+            "usage-limit-auto-reset",
+            "Usage limit auto-reset",
+            "Use an available reset after Codewith confirms the weekly limit is exhausted.",
+            "usage_limit.auto_reset_enabled",
+            config.usage_limit.auto_reset_enabled,
+        ),
+        option(
+            AccountAutomation,
             "session-recap",
             "Session recap",
             "Prepare a one-line summary while the terminal is unfocused.",

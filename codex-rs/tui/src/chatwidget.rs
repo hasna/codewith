@@ -457,6 +457,7 @@ mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod usage_panel;
+mod usage_limit_reset;
 mod usage_profile_broker;
 mod usage_self_heal;
 use self::usage_panel::UsagePanelMiniMaxUsageState;
@@ -617,6 +618,10 @@ pub(crate) struct ChatWidget {
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     usage_panel_rate_limit_state: UsagePanelRateLimitState,
     usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
+    rate_limit_reset_available_count: Option<i64>,
+    announced_rate_limit_reset_available_count: Option<i64>,
+    rate_limit_reset_in_flight: bool,
+    usage_limit_auto_reset_key: Option<String>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

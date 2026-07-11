@@ -309,6 +309,9 @@ impl ChatWidget {
             "auth_profile_auto_switch.on_weekly_limit" => {
                 self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
             }
+            "usage_limit.auto_reset_enabled" => {
+                self.config.usage_limit.auto_reset_enabled = enabled;
+            }
             "check_for_update_on_startup" => {
                 self.config.check_for_update_on_startup = false;
             }

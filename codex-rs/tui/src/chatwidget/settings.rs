@@ -344,6 +344,10 @@ impl ChatWidget {
         self.refreshing_minimax_usage_status_outputs.clear();
         self.usage_panel_rate_limit_state = UsagePanelRateLimitState::default();
         self.usage_panel_minimax_usage_state = UsagePanelMiniMaxUsageState::default();
+        self.rate_limit_reset_available_count = None;
+        self.announced_rate_limit_reset_available_count = None;
+        self.rate_limit_reset_in_flight = false;
+        self.usage_limit_auto_reset_key = None;
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();

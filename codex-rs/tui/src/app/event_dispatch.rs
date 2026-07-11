@@ -1391,6 +1391,39 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
+            AppEvent::OpenRateLimitResetConfirm => {
+                self.chat_widget.open_rate_limit_reset_confirm();
+            }
+            AppEvent::ConsumeRateLimitResetCredit {
+                idempotency_key,
+                credit_id,
+                automatic,
+            } => {
+                if self.chat_widget.start_rate_limit_reset_consumption(automatic) {
+                    self.consume_rate_limit_reset_credit(
+                        app_server,
+                        idempotency_key,
+                        credit_id,
+                        automatic,
+                    );
+                }
+            }
+            AppEvent::RateLimitResetCreditConsumed {
+                idempotency_key: _,
+                automatic,
+                result,
+            } => {
+                if self
+                    .chat_widget
+                    .finish_rate_limit_reset_consumption(result, automatic)
+                {
+                    self.refresh_rate_limits(
+                        app_server,
+                        RateLimitRefreshOrigin::StartupPrefetch,
+                        RateLimitRefreshTarget::Selected,
+                    );
+                }
+            }
             AppEvent::RateLimitsLoaded {
                 origin,
                 target,
@@ -3162,7 +3195,7 @@ impl App {
         origin: RateLimitRefreshOrigin,
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<RateLimitRefreshData, String>,
     ) -> RateLimitRefreshCompletion {
         let is_current_profile = auth_profile == self.config.selected_auth_profile;
         let heartbeat_profile = matches!(origin, RateLimitRefreshOrigin::Heartbeat)
@@ -3207,18 +3240,26 @@ impl App {
         }
 
         match result {
-            Ok(snapshots) => {
+            Ok(data) => {
                 if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
                     self.chat_widget
                         .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
                 }
+                let reset_credits = data.reset_credits.clone();
+                let snapshots = data.snapshots;
                 if is_current_profile {
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                     }
+                    self.chat_widget
+                        .on_rate_limit_reset_credits(reset_credits.clone());
                 } else {
                     self.chat_widget
                         .on_auth_profile_rate_limit_snapshots(auth_profile, snapshots);
+                }
+                if is_current_profile {
+                    self.chat_widget
+                        .maybe_start_usage_limit_auto_reset(reset_credits);
                 }
                 match origin {
                     RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {

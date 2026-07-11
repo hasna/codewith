@@ -259,6 +259,7 @@ async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
             .into_iter()
             .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
@@ -347,6 +348,7 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
                 .into_iter()
                 .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
@@ -449,6 +451,7 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
                 .into_iter()
                 .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
