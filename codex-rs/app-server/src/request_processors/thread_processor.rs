@@ -246,7 +246,9 @@ fn permission_profile_from_history(
         InitialHistory::Resumed(resumed) => {
             permission_profile_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => permission_profile_from_items(items, /*thread_id*/ None),
+        InitialHistory::Forked(items) => {
+            permission_profile_from_items(items, /*thread_id*/ None)
+        }
     }
 }
 
@@ -314,7 +316,9 @@ fn approvals_reviewer_from_history(
         InitialHistory::Resumed(resumed) => {
             approvals_reviewer_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, /*thread_id*/ None),
+        InitialHistory::Forked(items) => {
+            approvals_reviewer_from_items(items, /*thread_id*/ None)
+        }
     }
 }
 
