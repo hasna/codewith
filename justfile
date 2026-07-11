@@ -154,8 +154,7 @@ bazel-test:
 [no-cd]
 [unix]
 bazel-clippy:
-    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel clippy"
-    bazel_targets="$({{ justfile_directory() }}/scripts/list-bazel-clippy-targets.sh)" && CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1 {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel clippy" bazel build --config=clippy -- ${bazel_targets}
+    {{ justfile_directory() }}/scripts/guard-heavy-local-build.sh "Bazel clippy" bash -lc 'bazel_targets="$("$1"/scripts/list-bazel-clippy-targets.sh)" && bazel build --config=clippy -- ${bazel_targets}' _ "{{ justfile_directory() }}"
 
 [no-cd]
 [unix]
