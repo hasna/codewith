@@ -4535,7 +4535,8 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         Some("work".to_string()),
         Ok(RateLimitRefreshData {
             snapshots: vec![rate_limit_snapshot_for_window(
-                /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+                /*used_percent*/ 100, /*window_duration_mins*/ 300,
+                /*resets_at*/ 123,
             )],
             reset_credits: None,
         }),
@@ -4559,7 +4560,8 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         Some("personal".to_string()),
         Ok(RateLimitRefreshData {
             snapshots: vec![rate_limit_snapshot_for_window(
-                /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+                /*used_percent*/ 100, /*window_duration_mins*/ 300,
+                /*resets_at*/ 123,
             )],
             reset_credits: None,
         }),

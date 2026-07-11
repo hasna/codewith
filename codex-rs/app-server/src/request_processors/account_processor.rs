@@ -1026,7 +1026,8 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountRateLimitsParams,
     ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
-        self.auth_manager_for_auth_profile(params.auth_profile).await
+        self.auth_manager_for_auth_profile(params.auth_profile)
+            .await
     }
 
     async fn auth_manager_for_auth_profile(
@@ -1159,9 +1160,7 @@ impl AccountRequestProcessor {
             validated_rate_limit_reset_idempotency_key(&idempotency_key)?.to_string();
         let credit_id =
             validated_rate_limit_reset_credit_id(credit_id.as_deref())?.map(str::to_string);
-        let auth_manager = self
-            .auth_manager_for_auth_profile(auth_profile)
-            .await?;
+        let auth_manager = self.auth_manager_for_auth_profile(auth_profile).await?;
 
         let Some(auth) = auth_manager.auth().await else {
             return Err(invalid_request(
@@ -1301,9 +1300,7 @@ impl AccountRequestProcessor {
     }
 }
 
-fn validated_rate_limit_reset_idempotency_key(
-    value: &str,
-) -> Result<&str, JSONRPCErrorError> {
+fn validated_rate_limit_reset_idempotency_key(value: &str) -> Result<&str, JSONRPCErrorError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(invalid_request(
@@ -1321,9 +1318,7 @@ fn validated_rate_limit_reset_credit_id(
     };
     let value = value.trim();
     if value.is_empty() {
-        return Err(invalid_request(
-            "creditId must be non-empty when provided",
-        ));
+        return Err(invalid_request("creditId must be non-empty when provided"));
     }
     Ok(Some(value))
 }

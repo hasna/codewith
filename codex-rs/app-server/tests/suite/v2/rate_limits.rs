@@ -24,8 +24,8 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthProfileMetadata;
 use codex_protocol::account::PlanType as AccountPlanType;
 use pretty_assertions::assert_eq;
-use serial_test::serial;
 use serde_json::json;
+use serial_test::serial;
 use std::ffi::OsString;
 use std::path::Path;
 use tempfile::TempDir;
@@ -636,7 +636,8 @@ async fn consume_rate_limit_reset_credit_rejects_invalid_auth_profile_name() -> 
 #[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
 #[tokio::test]
 #[serial(rate_limit_reset_timeout_env)]
-async fn consume_rate_limit_reset_credit_uses_named_auth_profile_and_selected_credit_id() -> Result<()> {
+async fn consume_rate_limit_reset_credit_uses_named_auth_profile_and_selected_credit_id()
+-> Result<()> {
     let codex_home = TempDir::new()?;
     write_chatgpt_auth(
         codex_home.path(),
@@ -707,7 +708,8 @@ async fn consume_rate_limit_reset_credit_uses_named_auth_profile_and_selected_cr
 #[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
 #[tokio::test]
 #[serial(rate_limit_reset_timeout_env)]
-async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_profile_differs() -> Result<()> {
+async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_profile_differs()
+-> Result<()> {
     let codex_home = TempDir::new()?;
     write_chatgpt_auth(
         codex_home.path(),
@@ -858,10 +860,7 @@ async fn consume_rate_limit_reset_credit_surfaces_backend_failure() -> Result<()
 
     assert_eq!(error.error.code, INTERNAL_ERROR_CODE);
     assert!(
-        error
-            .error
-            .message
-            .contains("failed to reset usage limits"),
+        error.error.message.contains("failed to reset usage limits"),
         "unexpected error message: {}",
         error.error.message
     );

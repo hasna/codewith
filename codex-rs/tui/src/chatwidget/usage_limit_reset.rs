@@ -229,8 +229,7 @@ fn weekly_exhausted_window(snapshot: &RateLimitSnapshot) -> Option<&RateLimitWin
         .into_iter()
         .flatten()
         .find(|window| {
-            window.window_duration_mins == Some(WEEKLY_WINDOW_MINUTES)
-                && window.used_percent >= 100
+            window.window_duration_mins == Some(WEEKLY_WINDOW_MINUTES) && window.used_percent >= 100
         })
 }
 

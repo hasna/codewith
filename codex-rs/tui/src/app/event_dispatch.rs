@@ -1400,7 +1400,10 @@ impl App {
                 auth_profile,
                 automatic,
             } => {
-                if self.chat_widget.start_rate_limit_reset_consumption(automatic) {
+                if self
+                    .chat_widget
+                    .start_rate_limit_reset_consumption(automatic)
+                {
                     self.consume_rate_limit_reset_credit(
                         app_server,
                         idempotency_key,
