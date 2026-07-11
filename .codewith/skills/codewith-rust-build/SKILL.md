@@ -1,6 +1,6 @@
 ---
 name: codewith-rust-build
-description: Build, format, lint, and test Codewith Rust crates in codex-rs. Use when making or verifying Rust changes, resolving Codewith build errors, updating Cargo or Bazel locks, building release binaries, or validating Rust before npm publish.
+description: Format, inspect, and route validation for Codewith Rust crates in codex-rs, using remote-first heavy Rust/Bazel checks through the codewith-remote-build skill.
 ---
 
 # Codewith Rust Build
@@ -12,13 +12,14 @@ Use this skill for Rust work in `codex-rs`. Always read the root `CODEWITH.md` f
 ## Core Rules
 
 - The product is Codewith, even though crate names remain `codex-*`.
-- Do not run `cargo test` directly. Use `just test-fast` for inner-loop runs and `just test` for official package/workspace gates.
+- Codewith agents no longer run heavy Rust/Bazel builds locally by default. For compile, test, clippy, Bazel, release, or lock validation, use the `codewith-remote-build` skill and `just remote-bazel-validation` unless the human explicitly approves a one-off local run or sets `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`.
+- Do not run `cargo test` directly. If local heavy validation is approved, use the repo `just` recipes instead of raw Cargo test commands.
 - Run `just fmt` from `codex-rs` after Rust code changes.
-- Run scoped `just fix -p <project>` before finalizing substantial Rust changes.
+- Run scoped fixes remotely where possible. Local `just fix -p <project>` is a heavy clippy build and needs the same approval or `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`.
 - Be patient with Rust commands and do not kill them by PID.
-- If Rust dependencies change, run `just bazel-lock-update` and `just bazel-lock-check` from the repo root.
+- If Rust dependencies change, lockfile mutation may require an explicitly approved local one-off; route any heavy lock validation through the approved remote path when available.
 - If `ConfigToml` or nested config types change, run `just write-config-schema`.
-- If app-server protocol shapes change, run `just write-app-server-schema` and the app-server protocol tests.
+- If app-server protocol shapes change, run `just write-app-server-schema`, then route app-server protocol test validation through remote focused checks unless local heavy validation was explicitly approved.
 
 ## Standard Verification
 
@@ -35,63 +36,37 @@ cd codex-rs
 just fmt
 ```
 
-3. Run focused tests for changed crates. Use the fast recipe while iterating:
+3. For heavy validation, use `codewith-remote-build`. Start with the remote auth smoke after the workflow exists on the default branch:
 
 ```bash
-cd codex-rs
-just test-fast -p codex-tui
-just test-fast -p codex-core
+just remote-bazel-validation --mode auth-smoke --ref <ref>
 ```
 
-Use the actual changed crates instead of the examples above.
+4. Then dispatch the narrowest relevant remote mode: `argument-comment-lint`, `clippy`, or `test-focused --targets '<labels>'`.
+5. Record the GitHub Actions run URL, status, ref, mode, and targets as verification evidence.
 
-4. For the final package gate when benchmark smoke matters, use `just test -p <crate>`.
+## Local Static Loop
 
-5. Run scoped fixes:
-
-```bash
-cd codex-rs
-just fix -p <changed-crate>
-```
-
-Do not rerun tests after `fmt` or `fix` unless the user asks or the command changed behavior unexpectedly.
-
-## Fast Inner Loop
-
-- Use `just test-fast-target /tmp/codewith-<scope>-target -p <crate>` for repeated focused runs when cold builds or target-lock contention dominate.
-- For integration tests, prefer package and test-binary selection: `just test-fast -p <crate> --test <binary>`.
+- Use `rg`, file inspection, `git diff --check`, schema/frontmatter sanity checks, and targeted non-compiling scripts locally.
+- Do not invoke `just test-fast`, `just test`, `just check-fast`, `just fix`, `cargo build`, `cargo clippy`, or Bazel locally unless the local heavy-build policy is satisfied.
+- For integration tests, prefer package and test-binary selection when choosing remote Bazel labels.
 - If a name-filtered integration run still compiles a huge binary, split the area into a top-level `tests/<area>.rs` target and remove it from the aggregate module so it can build and link independently. For new hot API areas, create that standalone binary from the start.
-- Use `just check-fast -p <crate>` for compile-only API boundary checks, then run the slow integration target only at behavior checkpoints.
-- Use `just build-timings -p <crate>` or `just test-binaries -p <crate>` when diagnosing where build time is going.
 - Keep machine-level acceleration such as `RUSTC_WRAPPER=sccache` or custom linker config in local setup unless this repo installs and validates it consistently.
 
 ## Snapshot Tests
 
 For user-visible TUI changes:
 
-```bash
-cd codex-rs
-just test -p codex-tui
-cargo insta pending-snapshots -p codex-tui
-cargo insta accept -p codex-tui
-```
-
-Only accept snapshots after reading the generated `.snap.new` files or otherwise verifying the visual/text change is intentional.
+- Prefer remote focused TUI validation first.
+- Generating or accepting `.snap.new` files locally may require a heavy local test run. Get explicit approval or use `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1` for that deliberate one-off.
+- Only accept snapshots after reading the generated `.snap.new` files or otherwise verifying the visual/text change is intentional.
 
 ## Release Binary
 
-For npm release smoke tests, build the native release binary:
-
-```bash
-cd codex-rs
-cargo build --release --bin codewith
-./target/release/codewith --version
-```
-
-The canonical package builder may target `aarch64-unknown-linux-musl` or `x86_64-unknown-linux-musl`. If that fails because the host lacks musl tooling, record the exact linker/toolchain error and use the established package layout only when it matches previous published packages for the current platform.
+Release binary builds are heavy. Use a remote runner or the approved release workflow. Only build locally with explicit approval or `CODEWITH_ALLOW_LOCAL_HEAVY_BUILDS=1`, and record the exact command and result.
 
 ## Full Suite
 
-If the user explicitly asks to "test everything", run the full suite with `just test` from `codex-rs` after focused tests. If the full suite fails due host limitations, collect concrete evidence such as AppArmor, Bubblewrap, missing user namespace support, network gating, or toolchain errors, then still run focused changed-path tests so the code changes have direct coverage.
+If the user explicitly asks to "test everything", route the full or broad validation to remote GitHub Actions/BuildBuddy first. If the remote setup is missing or unhealthy, fix or route that setup instead of falling back to local compilation.
 
 Do not describe a full-suite run as passing unless it actually passes.
