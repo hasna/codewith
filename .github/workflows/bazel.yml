@@ -15,6 +15,10 @@ concurrency:
   # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
   group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ github.ref_name == 'main' && format('::{0}', github.run_id) || ''}}
   cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+env:
+  CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE: ${{ vars.CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE }}
+
 jobs:
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
@@ -440,20 +444,34 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_job=clippy
           )
+          # Keep this predicate aligned with run-bazel-ci.sh's effective
+          # BuildBuddy key/RBE decision. On hasna/codewith Actions, a raw
+          # BuildBuddy key does not enable RBE unless explicitly opted in.
+          use_buildbuddy_rbe=0
+          if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+            use_buildbuddy_rbe=1
+          fi
+          if [[ "${GITHUB_ACTIONS:-}" == "true" &&
+            "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
+            "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+            use_buildbuddy_rbe=0
+          fi
+
           bazel_wrapper_args=()
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             # Keep this aligned with the fast Windows Bazel test job: use
             # Linux RBE for clippy build actions while targeting Windows
-            # gnullvm. Fork/community PRs without the BuildBuddy secret fall
-            # back inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # gnullvm when effective BuildBuddy RBE is enabled. Keyless runs
+            # fall back inside `run-bazel-ci.sh` to the previous local Windows
+            # MSVC host-platform shape.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
-            if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-              # The fork fallback can see incompatible explicit Windows-cross
+            if [[ $use_buildbuddy_rbe -eq 0 ]]; then
+              # The local fallback can see incompatible explicit Windows-cross
               # internal test binaries in the generated target list. Preserve
-              # the old local-fallback behavior there.
+              # the old local-fallback behavior there even when a raw key is
+              # present but RBE is disabled.
               bazel_clippy_args+=(--skip_incompatible_explicit_targets)
             fi
           fi
