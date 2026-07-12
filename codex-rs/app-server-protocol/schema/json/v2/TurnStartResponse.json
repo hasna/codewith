@@ -158,6 +158,36 @@
           ],
           "title": "ActiveTurnNotSteerableCodexErrorInfo",
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A privacy-safe model-provider failure. No provider response content or request metadata is included; only this allowlisted classification and an optional numeric HTTP status.",
+          "properties": {
+            "providerFailure": {
+              "properties": {
+                "httpStatusCode": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/definitions/ProviderFailureKind"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "providerFailure"
+          ],
+          "title": "ProviderFailureCodexErrorInfo",
+          "type": "object"
         }
       ]
     },
@@ -604,6 +634,18 @@
           "type": "object"
         }
       ]
+    },
+    "ProviderFailureKind": {
+      "description": "Privacy-safe classification for failures returned by a model provider.",
+      "enum": [
+        "unauthorized",
+        "rateLimit",
+        "server",
+        "stream",
+        "transport",
+        "unknown"
+      ],
+      "type": "string"
     },
     "ReasoningEffort": {
       "description": "A non-empty reasoning effort value advertised by the model.",
