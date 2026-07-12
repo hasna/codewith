@@ -74,13 +74,20 @@ case "${RUNNER_OS:-}" in
     ;;
 esac
 
+buildbuddy_rbe_config=buildbuddy-generic-rbe
+if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "hasna/codewith" ]]; then
+  # The hasna/codewith workflow secret is provisioned for the OpenAI BuildBuddy
+  # tenant. The generic RBE endpoint currently has no registered executors.
+  buildbuddy_rbe_config=buildbuddy-openai-rbe
+fi
+
 buildbuddy_config=()
 case "$ci_config" in
   ci-linux | ci-macos | ci-windows-cross)
     # These CI configs require the endpoint-bearing RBE config, not just an
-    # API-key header. Keep this remote-execution shape aligned with
-    # `.github/scripts/run_bazel_with_buildbuddy.py`.
-    buildbuddy_config=("--config=buildbuddy-generic-rbe")
+    # API-key header. Insert it before the concrete CI config so platform
+    # overrides from ci-linux/ci-macos/ci-windows-cross still win.
+    buildbuddy_config=("--config=${buildbuddy_rbe_config}")
     ;;
 esac
 

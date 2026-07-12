@@ -108,6 +108,22 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
 
+    def test_keyed_hasna_ci_linux_uses_openai_buildbuddy_rbe_config(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            extra_env={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "hasna/codewith"},
+        )
+
+        self.assert_success(result)
+        self.assertIn("using remote Bazel configuration", result.stdout)
+        self.assert_remote_config_before_ci_config(
+            bazel_args,
+            remote_config="--config=buildbuddy-openai-rbe",
+            ci_config="--config=ci-linux",
+        )
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
+
     def test_keyed_windows_cross_uses_buildbuddy_rbe_config(self) -> None:
         result, bazel_args = self.run_wrapper(
             buildbuddy_api_key="test-token",
@@ -129,6 +145,33 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertIn("--shell_executable=/bin/bash", bazel_args)
         self.assertNotIn("--host_platform=//:local_windows_msvc", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
+
+    def test_keyed_hasna_ci_windows_cross_uses_openai_buildbuddy_rbe_config(
+        self,
+    ) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            runner_os="Windows",
+            wrapper_args=("--windows-cross-compile",),
+            bazel_args=("test",),
+            extra_env={
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+            },
+        )
+
+        self.assert_success(result)
+        self.assertIn("using remote Bazel configuration", result.stdout)
+        self.assert_remote_config_before_ci_config(
+            bazel_args,
+            remote_config="--config=buildbuddy-openai-rbe",
+            ci_config="--config=ci-windows-cross",
+        )
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertIn("--host_platform=//:rbe", bazel_args)
+        self.assertIn("--shell_executable=/bin/bash", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
 
     def test_keyed_native_windows_preserves_non_rbe_ci_config(self) -> None:
         result, bazel_args = self.run_wrapper(
