@@ -198,6 +198,11 @@ fn stream_transport_rate_limit_and_auth_carry_provider_failure_metadata() {
             None,
         ),
         (
+            CodexErr::ProviderAuth(std::io::Error::other("external-auth-raw-secret")),
+            ProviderFailureKind::Unauthorized,
+            None,
+        ),
+        (
             CodexErr::RetryLimit(RetryLimitReachedError {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 request_id: Some("retry-request-id-secret".to_string()),
@@ -226,6 +231,23 @@ fn stream_transport_rate_limit_and_auth_carry_provider_failure_metadata() {
         let event = err.to_error_event(/*message_prefix*/ None);
         assert_eq!(event.provider_failure, Some(expected));
     }
+}
+
+#[test]
+fn provider_auth_preserves_transient_io_public_behavior() {
+    let err = CodexErr::ProviderAuth(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "auth refresh request failed",
+    ));
+
+    assert_eq!(err.to_string(), "auth refresh request failed");
+    assert!(err.is_retryable());
+    assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::Other);
+    assert_eq!(err.http_status_code_value(), None);
+    let CodexErr::ProviderAuth(source) = err else {
+        unreachable!();
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::TimedOut);
 }
 
 #[test]

@@ -2347,7 +2347,7 @@ async fn handle_unauthorized(
                     debug.auth_error.as_deref(),
                     debug.auth_error_code.as_deref(),
                 );
-                Err(CodexErr::Io(other))
+                Err(CodexErr::ProviderAuth(other))
             }
         };
     }

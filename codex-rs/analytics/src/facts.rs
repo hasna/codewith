@@ -223,6 +223,7 @@ impl From<&CodexErr> for CodexErrKind {
             CodexErr::ProviderTransport(_) | CodexErr::ProviderRateLimit(..) => {
                 CodexErrKind::Stream
             }
+            CodexErr::ProviderAuth(_) => CodexErrKind::Io,
             CodexErr::ContextWindowExceeded => CodexErrKind::ContextWindowExceeded,
             CodexErr::ThreadNotFound(_) => CodexErrKind::ThreadNotFound,
             CodexErr::AgentLimitReached { .. } => CodexErrKind::AgentLimitReached,

@@ -83,6 +83,8 @@ pub enum CodexErr {
     ProviderTransport(String),
     #[error("stream disconnected before completion: {0}")]
     ProviderRateLimit(String, Option<Duration>),
+    #[error(transparent)]
+    ProviderAuth(io::Error),
     #[error(
         "Codewith ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
     )]
@@ -204,6 +206,7 @@ impl CodexErr {
             CodexErr::Stream(..)
             | CodexErr::ProviderTransport(_)
             | CodexErr::ProviderRateLimit(..)
+            | CodexErr::ProviderAuth(_)
             | CodexErr::Timeout
             | CodexErr::RequestTimeout
             | CodexErr::ResponseStreamFailed(_)
@@ -295,6 +298,7 @@ impl CodexErr {
                 self.http_status_code_value(),
             ),
             CodexErr::RefreshTokenFailed(_) => (ProviderFailureKind::Unauthorized, None),
+            CodexErr::ProviderAuth(_) => (ProviderFailureKind::Unauthorized, None),
             _ => return None,
         };
         Some(ProviderFailureMetadata::new(kind, http_status_code))
