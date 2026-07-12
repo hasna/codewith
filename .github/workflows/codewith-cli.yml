@@ -136,3 +136,77 @@ jobs:
         with:
           name: codewith-linux-x86_64-${{ env.BUILD_PROFILE }}
           path: ${{ steps.stage.outputs.archive }}
+
+  build-linux-arm64:
+    name: Build Codewith Linux arm64 CLI
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      BUILD_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'debug' }}
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify native arm64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "aarch64" ]]
+
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            file \
+            libcap-dev \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+
+      - name: Build Codewith native arm64 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_args=(build --locked -p codex-cli --bin codewith)
+          if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            cargo_args+=(--release)
+          fi
+          timeout --signal=TERM --kill-after=30s 75m cargo "${cargo_args[@]}"
+
+      - name: Stage Codewith arm64 artifact
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          profile_dir=debug
+          if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            profile_dir=release
+          fi
+
+          stage_dir="dist/codewith-linux-aarch64-${BUILD_PROFILE}"
+          archive="dist/codewith-linux-aarch64-${BUILD_PROFILE}.tar.gz"
+          rm -rf "${stage_dir}" "${archive}"
+          mkdir -p "${stage_dir}"
+          install -m 0755 "../scripts/codewith" "${stage_dir}/codewith"
+          install -m 0755 "target/${profile_dir}/codewith" "${stage_dir}/codewith-bin"
+          file "${stage_dir}/codewith-bin" | grep -F "ARM aarch64"
+          "${stage_dir}/codewith" --version
+          tar -C "${stage_dir}" -czf "${archive}" codewith codewith-bin
+
+          echo "archive=codex-rs/${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Codewith arm64 artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codewith-linux-aarch64-${{ env.BUILD_PROFILE }}
+          path: ${{ steps.stage.outputs.archive }}
