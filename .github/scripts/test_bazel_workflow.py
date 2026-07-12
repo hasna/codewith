@@ -6,6 +6,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BAZEL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "bazel.yml"
+SETUP_BAZEL_ACTION = REPO_ROOT / ".github" / "actions" / "setup-bazel-ci" / "action.yml"
 V8_WORKFLOWS = [
     REPO_ROOT / ".github" / "workflows" / "v8-canary.yml",
     REPO_ROOT / ".github" / "workflows" / "rusty-v8-release.yml",
@@ -21,6 +22,9 @@ class BazelWorkflowTest(unittest.TestCase):
     def bazel_workflow(self) -> dict:
         return yaml.safe_load(BAZEL_WORKFLOW.read_text(encoding="utf-8"))
 
+    def setup_bazel_action(self) -> dict:
+        return yaml.safe_load(SETUP_BAZEL_ACTION.read_text(encoding="utf-8"))
+
     def test_keyless_bazel_matrix_does_not_schedule_macos(self) -> None:
         workflow = self.bazel_workflow()
 
@@ -34,6 +38,30 @@ class BazelWorkflowTest(unittest.TestCase):
                     or str(entry.get("runs_on", "")).startswith("macos")
                 ]
                 self.assertEqual([], macos_entries)
+
+    def test_bazel_test_prereqs_enable_linux_user_namespaces(self) -> None:
+        action = self.setup_bazel_action()
+        namespace_step = next(
+            step
+            for step in action["runs"]["steps"]
+            if step.get("name") == "Enable unprivileged user namespaces (Linux)"
+        )
+        run_script = namespace_step["run"]
+
+        self.assertEqual(
+            "inputs.install-test-prereqs == 'true' && runner.os == 'Linux'",
+            namespace_step["if"],
+        )
+        self.assertEqual("bash", namespace_step["shell"])
+        self.assertIn("sudo sysctl -w kernel.unprivileged_userns_clone=1", run_script)
+        self.assertIn(
+            "kernel.apparmor_restrict_unprivileged_userns",
+            run_script,
+        )
+        self.assertIn(
+            "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+            run_script,
+        )
 
     def test_windows_clippy_uses_effective_buildbuddy_rbe_predicate(self) -> None:
         workflow = self.bazel_workflow()

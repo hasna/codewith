@@ -32,6 +32,15 @@ runs:
       shell: pwsh
       run: Copy-Item (Get-Command dotslash).Source -Destination "$env:LOCALAPPDATA\Microsoft\WindowsApps\dotslash.exe"
 
+    - name: Enable unprivileged user namespaces (Linux)
+      if: inputs.install-test-prereqs == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo sysctl -w kernel.unprivileged_userns_clone=1
+        if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+
     - name: Set up Bazel
       uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
 
