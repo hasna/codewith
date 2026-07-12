@@ -1566,6 +1566,7 @@ fn classify_codex_error_info(info: &CodexErrorInfo) -> Option<ScheduleRunErrorCl
         | CodexErrorInfo::ResponseStreamDisconnected { .. }
         | CodexErrorInfo::ResponseTooManyFailedAttempts { .. }
         | CodexErrorInfo::ActiveTurnNotSteerable { .. }
+        | CodexErrorInfo::ProviderFailure { .. }
         | CodexErrorInfo::Other => None,
     }
 }
@@ -3109,6 +3110,7 @@ mod tests {
         let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
             message: "auth profile missing".to_string(),
             codex_error_info: None,
+            provider_failure: None,
         }));
 
         assert_eq!(
@@ -3124,6 +3126,7 @@ mod tests {
         let finish = scheduled_turn_finish(&EventMsg::Error(ErrorEvent {
             message: "You've hit your usage limit. OPENAI_API_KEY=sk-test-secret".to_string(),
             codex_error_info: Some(CoreCodexErrorInfo::UsageLimitExceeded),
+            provider_failure: None,
         }));
 
         let expected = "[usage-limit] scheduled turn failed: You've hit your usage limit. OPENAI_API_KEY=[redacted]".to_string();

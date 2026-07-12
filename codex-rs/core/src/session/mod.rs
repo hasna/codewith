@@ -260,10 +260,12 @@ impl SteerInputError {
             Self::NoActiveTurn(_) => ErrorEvent {
                 message: "no active turn to steer".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             },
             Self::ExpectedTurnMismatch { expected, actual } => ErrorEvent {
                 message: format!("expected active turn id `{expected}` but found `{actual}`"),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             },
             Self::ActiveTurnNotSteerable { turn_kind } => {
                 let turn_kind_label = match turn_kind {
@@ -275,16 +277,19 @@ impl SteerInputError {
                     codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                         turn_kind: *turn_kind,
                     }),
+                    provider_failure: None,
                 }
             }
             Self::EmptyInput => ErrorEvent {
                 message: "input must not be empty".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             },
             Self::InfinityAgentOverride => ErrorEvent {
                 message: "Infinity Agent rejects additional context and client metadata"
                     .to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             },
         }
     }

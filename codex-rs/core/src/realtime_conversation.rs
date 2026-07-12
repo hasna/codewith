@@ -1524,6 +1524,7 @@ async fn send_conversation_error(
         msg: EventMsg::Error(ErrorEvent {
             message,
             codex_error_info: Some(codex_error_info),
+            provider_failure: None,
         }),
     })
     .await;

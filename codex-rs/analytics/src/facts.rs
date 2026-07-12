@@ -220,6 +220,9 @@ impl From<&CodexErr> for CodexErrKind {
         match error {
             CodexErr::TurnAborted => CodexErrKind::TurnAborted,
             CodexErr::Stream(..) => CodexErrKind::Stream,
+            CodexErr::ProviderTransport(_) | CodexErr::ProviderRateLimit(..) => {
+                CodexErrKind::Stream
+            }
             CodexErr::ContextWindowExceeded => CodexErrKind::ContextWindowExceeded,
             CodexErr::ThreadNotFound(_) => CodexErrKind::ThreadNotFound,
             CodexErr::AgentLimitReached { .. } => CodexErrKind::AgentLimitReached,
@@ -241,6 +244,7 @@ impl From<&CodexErr> for CodexErrKind {
             CodexErr::QuotaExceeded => CodexErrKind::QuotaExceeded,
             CodexErr::UsageNotIncluded => CodexErrKind::UsageNotIncluded,
             CodexErr::InternalServerError => CodexErrKind::InternalServerError,
+            CodexErr::ProviderInternalServerError { .. } => CodexErrKind::InternalServerError,
             CodexErr::RetryLimit(_) => CodexErrKind::RetryLimit,
             CodexErr::InternalAgentDied => CodexErrKind::InternalAgentDied,
             CodexErr::Sandbox(_) => CodexErrKind::Sandbox,

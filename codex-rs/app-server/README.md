@@ -1957,6 +1957,8 @@ There are additional item-specific events:
 - `ResponseStreamConnectionFailed { httpStatusCode? }`: failure to connect to the response SSE stream
 - `ResponseStreamDisconnected { httpStatusCode? }`: disconnect of the response SSE stream in the middle of a turn before completion
 - `ResponseTooManyFailedAttempts { httpStatusCode? }`
+- `ProviderFailure { kind, httpStatusCode? }`: a privacy-safe model-provider failure. `kind` is one
+  of `unauthorized`, `rateLimit`, `server`, `stream`, `transport`, or `unknown`.
 - `ActiveTurnNotSteerable { turnKind }`: `turn/start` or `turn/steer` was submitted while the
   current active turn was not steerable, for example `/review` or manual `/compact`
 - `BadRequest`
@@ -1965,7 +1967,7 @@ There are additional item-specific events:
 - `InternalServerError`
 - `Other`: all unclassified errors
 
-When an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.
+When an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant. For live app-server turns, provider diagnostics use `ProviderFailure`; the older connection/stream/retry/auth variants remain valid for historical or replayed events that do not carry the live diagnostic sidecar. `ProviderFailure` turn errors expose only the allowlisted `kind` and an HTTP status in the range 100–599 (or `null`); provider bodies, headers, tokens, URL query data, and raw messages are not copied into that public turn error.
 
 ## Approvals
 

@@ -750,3 +750,19 @@ impl ChatWidget {
         }
     }
 }
+
+#[cfg(test)]
+mod provider_failure_tests {
+    use super::*;
+    use codex_app_server_protocol::ProviderFailureKind;
+
+    #[test]
+    fn provider_failure_does_not_expand_tui_rate_limit_recovery() {
+        let info = AppServerCodexErrorInfo::provider_failure(
+            ProviderFailureKind::RateLimit,
+            /*http_status_code*/ Some(429),
+        );
+
+        assert!(app_server_rate_limit_error_kind(&info).is_none());
+    }
+}

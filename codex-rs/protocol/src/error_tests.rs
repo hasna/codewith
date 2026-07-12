@@ -112,6 +112,122 @@ fn server_overloaded_maps_to_protocol() {
     );
 }
 
+fn unexpected_status(status: StatusCode) -> CodexErr {
+    CodexErr::UnexpectedStatus(UnexpectedResponseError {
+        status,
+        body: r#"{"error":{"message":"provider-body-secret"}}"#.to_string(),
+        url: Some("https://provider.example/v1/responses?token=url-query-secret".to_string()),
+        cf_ray: Some("header-secret".to_string()),
+        request_id: Some("request-id-secret".to_string()),
+        identity_authorization_error: Some("authorization-header-secret".to_string()),
+        identity_error_code: Some("identity-error-secret".to_string()),
+    })
+}
+
+#[test]
+fn unexpected_status_carries_sanitized_provider_failure_metadata() {
+    let cases = [
+        (StatusCode::UNAUTHORIZED, ProviderFailureKind::Unauthorized),
+        (StatusCode::FORBIDDEN, ProviderFailureKind::Unauthorized),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            ProviderFailureKind::RateLimit,
+        ),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ProviderFailureKind::Server,
+        ),
+        (
+            StatusCode::from_u16(599).unwrap(),
+            ProviderFailureKind::Server,
+        ),
+        (StatusCode::IM_A_TEAPOT, ProviderFailureKind::Unknown),
+    ];
+
+    for (status, kind) in cases {
+        let err = unexpected_status(status);
+        let expected = ProviderFailureMetadata::new(kind, Some(status.as_u16()));
+
+        assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::Other);
+        assert_eq!(err.provider_failure_metadata(), Some(expected));
+        let event = err.to_error_event(/*message_prefix*/ None);
+        assert_eq!(event.codex_error_info, Some(CodexErrorInfo::Other));
+        assert_eq!(event.provider_failure, Some(expected));
+    }
+}
+
+#[test]
+fn stream_transport_rate_limit_and_auth_carry_provider_failure_metadata() {
+    let transport_response = HttpResponse::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .url(Url::parse("https://provider.example/responses?token=transport-secret").unwrap())
+        .body("")
+        .unwrap();
+    let transport_source = Response::from(transport_response)
+        .error_for_status_ref()
+        .unwrap_err();
+    let cases = [
+        (
+            CodexErr::Stream("stream-raw-secret".to_string(), None),
+            ProviderFailureKind::Stream,
+            None,
+        ),
+        (
+            CodexErr::ConnectionFailed(ConnectionFailedError {
+                source: transport_source,
+            }),
+            ProviderFailureKind::Transport,
+            Some(502),
+        ),
+        (
+            CodexErr::ProviderTransport("provider-transport-raw-secret".to_string()),
+            ProviderFailureKind::Transport,
+            None,
+        ),
+        (
+            CodexErr::RequestTimeout,
+            ProviderFailureKind::Transport,
+            None,
+        ),
+        (
+            CodexErr::RefreshTokenFailed(RefreshTokenFailedError::new(
+                RefreshTokenFailedReason::Revoked,
+                "auth-raw-secret",
+            )),
+            ProviderFailureKind::Unauthorized,
+            None,
+        ),
+        (
+            CodexErr::RetryLimit(RetryLimitReachedError {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                request_id: Some("retry-request-id-secret".to_string()),
+            }),
+            ProviderFailureKind::RateLimit,
+            Some(429),
+        ),
+        (
+            CodexErr::ProviderRateLimit("provider-rate-limit-secret".to_string(), None),
+            ProviderFailureKind::RateLimit,
+            None,
+        ),
+        (
+            CodexErr::ProviderInternalServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            ProviderFailureKind::Server,
+            Some(500),
+        ),
+    ];
+
+    for (err, kind, http_status_code) in cases {
+        let expected = ProviderFailureMetadata::new(kind, http_status_code);
+        assert_eq!(err.provider_failure_metadata(), Some(expected));
+
+        let event = err.to_error_event(/*message_prefix*/ None);
+        assert_eq!(event.provider_failure, Some(expected));
+    }
+}
+
 #[test]
 fn sandbox_denied_uses_aggregated_output_when_stderr_empty() {
     let output = ExecToolCallOutput {
@@ -188,6 +304,34 @@ fn to_error_event_handles_response_stream_failed() {
             http_status_code: Some(429)
         })
     );
+    assert_eq!(
+        event.provider_failure,
+        Some(ProviderFailureMetadata::new(
+            ProviderFailureKind::Stream,
+            Some(429),
+        ))
+    );
+}
+
+#[test]
+fn provider_failure_metadata_bounds_status_and_stays_out_of_serialized_error_event() {
+    let metadata = ProviderFailureMetadata::new(ProviderFailureKind::Server, Some(600));
+    assert_eq!(metadata.http_status_code(), None);
+
+    let event = ErrorEvent {
+        message: "provider-body-secret".to_string(),
+        codex_error_info: Some(CodexErrorInfo::Other),
+        provider_failure: Some(metadata),
+    };
+    let serialized = serde_json::to_value(event).unwrap();
+    assert_eq!(
+        serialized,
+        serde_json::json!({
+            "message": "provider-body-secret",
+            "codex_error_info": "other"
+        })
+    );
+    assert!(serialized.get("provider_failure").is_none());
 }
 
 #[test]

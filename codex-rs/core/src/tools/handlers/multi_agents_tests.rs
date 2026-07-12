@@ -2119,6 +2119,7 @@ async fn multi_agent_v2_child_error_notification_surfaces_redacted_error_to_pare
             EventMsg::Error(ErrorEvent {
                 message: "child failed: [redacted]".to_string(),
                 codex_error_info: None,
+                provider_failure: None,
             }),
         )
         .await;

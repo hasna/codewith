@@ -99,6 +99,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ProviderFailureMetadata;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
@@ -257,6 +258,27 @@ fn terminal_status_for_mcp_action(
         McpServerElicitationAction::Accept => codex_state::PendingInteractionStatus::Responded,
         McpServerElicitationAction::Decline => codex_state::PendingInteractionStatus::Denied,
         McpServerElicitationAction::Cancel => codex_state::PendingInteractionStatus::Cancelled,
+    }
+}
+
+fn provider_failure_turn_error(metadata: ProviderFailureMetadata) -> TurnError {
+    let message = match metadata.http_status_code() {
+        Some(http_status_code) => format!(
+            "Model provider request failed (classification: {}, HTTP status: {http_status_code}).",
+            metadata.kind().as_str()
+        ),
+        None => format!(
+            "Model provider request failed (classification: {}).",
+            metadata.kind().as_str()
+        ),
+    };
+    TurnError {
+        message,
+        codex_error_info: Some(V2CodexErrorInfo::provider_failure(
+            metadata.kind().into(),
+            metadata.http_status_code(),
+        )),
+        additional_details: None,
     }
 }
 
@@ -1284,10 +1306,13 @@ pub(crate) async fn apply_bespoke_event_handling(
                 return;
             }
 
-            let turn_error = TurnError {
-                message: ev.message,
-                codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
-                additional_details: None,
+            let turn_error = match ev.provider_failure {
+                Some(metadata) => provider_failure_turn_error(metadata),
+                None => TurnError {
+                    message: ev.message,
+                    codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
+                    additional_details: None,
+                },
             };
             handle_error(conversation_id, turn_error.clone(), &thread_state).await;
             outgoing
@@ -2706,6 +2731,7 @@ mod tests {
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GuardianAssessmentEvent;
     use codex_protocol::protocol::GuardianAssessmentStatus;
+    use codex_protocol::protocol::ProviderFailureKind;
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::RolloutItem;
@@ -3915,6 +3941,35 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[test]
+    fn provider_failure_turn_error_exposes_only_allowlisted_metadata() {
+        for (kind, expected_kind) in [
+            (ProviderFailureKind::Unauthorized, "unauthorized"),
+            (ProviderFailureKind::RateLimit, "rateLimit"),
+            (ProviderFailureKind::Server, "server"),
+            (ProviderFailureKind::Stream, "stream"),
+            (ProviderFailureKind::Transport, "transport"),
+            (ProviderFailureKind::Unknown, "unknown"),
+        ] {
+            let error = provider_failure_turn_error(ProviderFailureMetadata::new(kind, None));
+            assert_eq!(
+                serde_json::to_value(error).unwrap(),
+                json!({
+                    "message": format!(
+                        "Model provider request failed (classification: {expected_kind})."
+                    ),
+                    "codexErrorInfo": {
+                        "providerFailure": {
+                            "kind": expected_kind,
+                            "httpStatusCode": null
+                        }
+                    },
+                    "additionalDetails": null
+                })
+            );
+        }
     }
 
     #[tokio::test]

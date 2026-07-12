@@ -49,7 +49,8 @@ pub(crate) async fn handle_retryable_response_stream_error(
         *retries += 1;
         let retry_count = *retries;
         let delay = match &err {
-            CodexErr::Stream(_, requested_delay) => {
+            CodexErr::Stream(_, requested_delay)
+            | CodexErr::ProviderRateLimit(_, requested_delay) => {
                 requested_delay.unwrap_or_else(|| backoff(retry_count))
             }
             _ => backoff(retry_count),

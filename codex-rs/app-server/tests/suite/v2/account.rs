@@ -22,6 +22,7 @@ use codex_app_server_protocol::CancelLoginAccountResponse;
 use codex_app_server_protocol::CancelLoginAccountStatus;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshReason;
 use codex_app_server_protocol::ChatgptAuthTokensRefreshResponse;
+use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::GetAuthStatusParams;
@@ -32,6 +33,7 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LogoutAccountResponse;
+use codex_app_server_protocol::ProviderFailureKind;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
@@ -713,13 +715,27 @@ async fn external_auth_refresh_error_fails_turn() -> Result<()> {
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
-    let completed: TurnCompletedNotification = serde_json::from_value(
-        completed_notif
-            .params
-            .expect("turn/completed params must be present"),
-    )?;
+    let completed_params = completed_notif
+        .params
+        .expect("turn/completed params must be present");
+    assert!(!serde_json::to_string(&completed_params)?.contains("refresh failed"));
+    let completed: TurnCompletedNotification = serde_json::from_value(completed_params)?;
     assert_eq!(completed.turn.status, TurnStatus::Failed);
-    assert!(completed.turn.error.is_some());
+    let error = completed
+        .turn
+        .error
+        .expect("failed turn must include an error");
+    assert_eq!(
+        error.codex_error_info,
+        Some(CodexErrorInfo::provider_failure(
+            ProviderFailureKind::Unauthorized,
+            /*http_status_code*/ None,
+        ))
+    );
+    assert_eq!(
+        error.message,
+        "Model provider request failed (classification: unauthorized)."
+    );
 
     Ok(())
 }

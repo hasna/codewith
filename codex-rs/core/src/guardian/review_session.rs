@@ -1505,6 +1505,7 @@ mod tests {
                 msg: EventMsg::Error(ErrorEvent {
                     message: "stale guardian error".to_string(),
                     codex_error_info: None,
+                    provider_failure: None,
                 }),
             })
             .await

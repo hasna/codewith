@@ -486,6 +486,7 @@ pub(crate) async fn run_turn(
                     message: "Invalid image in your last message. Please remove it and try again."
                         .to_string(),
                     codex_error_info: Some(error),
+                    provider_failure: None,
                 });
                 sess.send_event(&turn_context, event).await;
                 break;

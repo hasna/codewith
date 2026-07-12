@@ -707,6 +707,7 @@ impl Session {
                 msg: EventMsg::Error(ErrorEvent {
                     message: message.clone(),
                     codex_error_info: Some(CodexErrorInfo::BadRequest),
+                    provider_failure: None,
                 }),
             })
             .await;
@@ -728,6 +729,7 @@ impl Session {
                         msg: EventMsg::Error(ErrorEvent {
                             message: message.clone(),
                             codex_error_info: Some(CodexErrorInfo::BadRequest),
+                            provider_failure: None,
                         }),
                     })
                     .await;
@@ -817,6 +819,7 @@ impl Session {
                     msg: EventMsg::Error(ErrorEvent {
                         message: message.clone(),
                         codex_error_info: Some(CodexErrorInfo::BadRequest),
+                        provider_failure: None,
                     }),
                 })
                 .await;

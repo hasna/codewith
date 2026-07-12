@@ -74,6 +74,18 @@ pub enum NonSteerableTurnKind {
     Compact,
 }
 
+v2_enum_from_core! {
+    /// Privacy-safe classification for failures returned by a model provider.
+    pub enum ProviderFailureKind from codex_protocol::protocol::ProviderFailureKind {
+        Unauthorized,
+        RateLimit,
+        Server,
+        Stream,
+        Transport,
+        Unknown,
+    }
+}
+
 /// This translation layer make sure that we expose codex error code in camel case.
 ///
 /// When an upstream HTTP status is available (for example, from the Responses API or a provider),
@@ -121,7 +133,25 @@ pub enum CodexErrorInfo {
         #[ts(rename = "turnKind")]
         turn_kind: NonSteerableTurnKind,
     },
+    /// A privacy-safe model-provider failure. No provider response content or request metadata is
+    /// included; only this allowlisted classification and an optional numeric HTTP status.
+    ProviderFailure {
+        kind: ProviderFailureKind,
+        #[serde(rename = "httpStatusCode")]
+        #[ts(rename = "httpStatusCode")]
+        http_status_code: Option<u16>,
+    },
     Other,
+}
+
+impl CodexErrorInfo {
+    /// Builds a provider failure while discarding out-of-range HTTP status values.
+    pub fn provider_failure(kind: ProviderFailureKind, http_status_code: Option<u16>) -> Self {
+        Self::ProviderFailure {
+            kind,
+            http_status_code: http_status_code.filter(|status| (100..=599).contains(status)),
+        }
+    }
 }
 
 impl From<CoreCodexErrorInfo> for CodexErrorInfo {

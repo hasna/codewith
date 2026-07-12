@@ -378,6 +378,10 @@ pub fn process_responses_event(
                         response_error = ApiError::InvalidRequest { message };
                     } else if is_server_overloaded_error(&error) {
                         response_error = ApiError::ServerOverloaded;
+                    } else if is_rate_limit_error(&error) {
+                        let delay = try_parse_retry_after(&error);
+                        let message = error.message.unwrap_or_default();
+                        response_error = ApiError::RetryableRateLimit { message, delay };
                     } else {
                         let delay = try_parse_retry_after(&error);
                         let message = error.message.unwrap_or_default();
@@ -478,11 +482,19 @@ fn api_error_from_stream_error(error: Error) -> ApiError {
         ApiError::InvalidRequest { message }
     } else if is_server_overloaded_error(&error) {
         ApiError::ServerOverloaded
+    } else if is_rate_limit_error(&error) {
+        let delay = try_parse_retry_after(&error);
+        let message = error.message.unwrap_or_default();
+        ApiError::RetryableRateLimit { message, delay }
     } else {
         let delay = try_parse_retry_after(&error);
         let message = error.message.unwrap_or_default();
         ApiError::Retryable { message, delay }
     }
+}
+
+fn is_rate_limit_error(error: &Error) -> bool {
+    error.code.as_deref() == Some("rate_limit_exceeded")
 }
 
 pub async fn process_sse(
@@ -1000,7 +1012,7 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(ApiError::Retryable { message, delay }) => {
+            Err(ApiError::RetryableRateLimit { message, delay }) => {
                 assert_eq!(
                     message,
                     "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
@@ -1022,7 +1034,7 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(ApiError::Retryable { message, delay }) => {
+            Err(ApiError::RetryableRateLimit { message, delay }) => {
                 assert_eq!(message, "Rate limit exceeded. Please try again in 2s.");
                 assert_eq!(*delay, Some(Duration::from_secs_f64(2.0)));
             }

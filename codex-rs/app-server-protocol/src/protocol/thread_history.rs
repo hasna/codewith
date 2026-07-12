@@ -3679,6 +3679,7 @@ mod tests {
             EventMsg::Error(ErrorEvent {
                 message: "rollback failed".into(),
                 codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                provider_failure: None,
             }),
         ];
 
@@ -3720,6 +3721,7 @@ mod tests {
             EventMsg::Error(ErrorEvent {
                 message: "request-level failure".into(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             }),
         ];
 
@@ -3774,6 +3776,7 @@ mod tests {
                 codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
                     http_status_code: Some(502),
                 }),
+                provider_failure: None,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),

@@ -21,6 +21,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
+        ApiError::RetryableRateLimit { message, delay } => {
+            CodexErr::ProviderRateLimit(message, delay)
+        }
         ApiError::Stream(msg) => CodexErr::Stream(msg, None),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => CodexErr::UnexpectedStatus(UnexpectedResponseError {
@@ -77,7 +80,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         CodexErr::InvalidRequest(body_text)
                     }
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
-                    CodexErr::InternalServerError
+                    CodexErr::ProviderInternalServerError { status }
                 } else if status == http::StatusCode::TOO_MANY_REQUESTS {
                     if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text) {
                         if err.error.error_type.as_deref() == Some("usage_limit_reached") {
@@ -129,10 +132,10 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             }),
             TransportError::Timeout => CodexErr::RequestTimeout,
             TransportError::Network(msg) | TransportError::Build(msg) => {
-                CodexErr::Stream(msg, None)
+                CodexErr::ProviderTransport(msg)
             }
         },
-        ApiError::RateLimit(msg) => CodexErr::Stream(msg, None),
+        ApiError::RateLimit(msg) => CodexErr::ProviderRateLimit(msg, None),
     }
 }
 

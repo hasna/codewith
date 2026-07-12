@@ -7,6 +7,8 @@ use crate::exec_output::ExecToolCallOutput;
 use crate::network_policy::NetworkPolicyDecisionPayload;
 use crate::protocol::CodexErrorInfo;
 use crate::protocol::ErrorEvent;
+use crate::protocol::ProviderFailureKind;
+use crate::protocol::ProviderFailureMetadata;
 use crate::protocol::RateLimitReachedType;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::TruncationPolicy;
@@ -77,6 +79,10 @@ pub enum CodexErr {
     /// Optionally includes the requested delay before retrying the turn.
     #[error("stream disconnected before completion: {0}")]
     Stream(String, Option<Duration>),
+    #[error("stream disconnected before completion: {0}")]
+    ProviderTransport(String),
+    #[error("stream disconnected before completion: {0}")]
+    ProviderRateLimit(String, Option<Duration>),
     #[error(
         "Codewith ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
     )]
@@ -127,6 +133,8 @@ pub enum CodexErr {
     UsageNotIncluded,
     #[error("We're currently experiencing high demand, which may cause temporary errors.")]
     InternalServerError,
+    #[error("We're currently experiencing high demand, which may cause temporary errors.")]
+    ProviderInternalServerError { status: StatusCode },
     /// Retry limit exceeded.
     #[error("{0}")]
     RetryLimit(RetryLimitReachedError),
@@ -194,16 +202,19 @@ impl CodexErr {
             | CodexErr::ServerOverloaded
             | CodexErr::CyberPolicy { .. } => false,
             CodexErr::Stream(..)
+            | CodexErr::ProviderTransport(_)
+            | CodexErr::ProviderRateLimit(..)
             | CodexErr::Timeout
             | CodexErr::RequestTimeout
-            | CodexErr::UnexpectedStatus(_)
             | CodexErr::ResponseStreamFailed(_)
             | CodexErr::ConnectionFailed(_)
             | CodexErr::InternalServerError
+            | CodexErr::ProviderInternalServerError { .. }
             | CodexErr::InternalAgentDied
             | CodexErr::Io(_)
             | CodexErr::Json(_)
-            | CodexErr::TokioJoin(_) => true,
+            | CodexErr::TokioJoin(_)
+            | CodexErr::UnexpectedStatus(_) => true,
             #[cfg(target_os = "linux")]
             CodexErr::LandlockRuleset(_) | CodexErr::LandlockPathFd(_) => false,
         }
@@ -237,6 +248,7 @@ impl CodexErr {
             CodexErr::RefreshTokenFailed(_) => CodexErrorInfo::Unauthorized,
             CodexErr::SessionConfiguredNotFirstEvent
             | CodexErr::InternalServerError
+            | CodexErr::ProviderInternalServerError { .. }
             | CodexErr::InternalAgentDied => CodexErrorInfo::InternalServerError,
             CodexErr::UnsupportedOperation(_)
             | CodexErr::ThreadNotFound(_)
@@ -255,7 +267,37 @@ impl CodexErr {
         ErrorEvent {
             message,
             codex_error_info: Some(self.to_codex_protocol_error()),
+            provider_failure: self.provider_failure_metadata(),
         }
+    }
+
+    pub fn provider_failure_metadata(&self) -> Option<ProviderFailureMetadata> {
+        let (kind, http_status_code) = match self {
+            CodexErr::UnexpectedStatus(err) => {
+                let kind = classify_provider_http_status(err.status.as_u16());
+                (kind, Some(err.status.as_u16()))
+            }
+            CodexErr::RetryLimit(err) => (
+                classify_provider_http_status(err.status.as_u16()),
+                Some(err.status.as_u16()),
+            ),
+            CodexErr::ProviderRateLimit(..) => (ProviderFailureKind::RateLimit, None),
+            CodexErr::ProviderInternalServerError { status } => {
+                (ProviderFailureKind::Server, Some(status.as_u16()))
+            }
+            CodexErr::Stream(..) | CodexErr::ResponseStreamFailed(_) => {
+                (ProviderFailureKind::Stream, self.http_status_code_value())
+            }
+            CodexErr::ProviderTransport(_)
+            | CodexErr::RequestTimeout
+            | CodexErr::ConnectionFailed(_) => (
+                ProviderFailureKind::Transport,
+                self.http_status_code_value(),
+            ),
+            CodexErr::RefreshTokenFailed(_) => (ProviderFailureKind::Unauthorized, None),
+            _ => return None,
+        };
+        Some(ProviderFailureMetadata::new(kind, http_status_code))
     }
 
     pub fn http_status_code_value(&self) -> Option<u16> {
@@ -267,6 +309,15 @@ impl CodexErr {
             _ => None,
         };
         http_status_code.as_ref().map(StatusCode::as_u16)
+    }
+}
+
+fn classify_provider_http_status(http_status_code: u16) -> ProviderFailureKind {
+    match http_status_code {
+        401 | 403 => ProviderFailureKind::Unauthorized,
+        429 => ProviderFailureKind::RateLimit,
+        500..=599 => ProviderFailureKind::Server,
+        _ => ProviderFailureKind::Unknown,
     }
 }
 

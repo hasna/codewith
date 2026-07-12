@@ -1,0 +1,50 @@
+name: provider-failure-verify
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            libssl-dev \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - name: Generate app-server schema fixtures
+        run: cargo run --locked -p codex-app-server-protocol --bin write_schema_fixtures
+      - name: Upload generated app-server schema fixtures
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-failure-app-server-schema
+          path: codex-rs/app-server-protocol/schema
+      - name: Test provider failure protocol and API mapping
+        run: |
+          cargo test --locked -p codex-protocol provider_failure
+          cargo test --locked -p codex-app-server-protocol provider_failure
+          cargo test --locked -p codex-api map_api_error_preserves_500_as_provider_status
+          cargo test --locked -p codex-api map_api_error_preserves_transport_and_rate_limit_provenance
+      - name: Test provider failure app-server notifications
+        run: |
+          cargo test --locked -p codex-app-server --lib provider_failure
+          cargo test --locked -p codex-app-server --test all external_auth_refresh_error_fails_turn
+          cargo test --locked -p codex-app-server --test all turn_completed_preserves_privacy_safe_provider_failure

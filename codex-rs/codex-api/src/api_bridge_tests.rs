@@ -125,6 +125,60 @@ fn map_api_error_keeps_unknown_400_errors_generic() {
 }
 
 #[test]
+fn map_api_error_preserves_local_invalid_request_provenance() {
+    let err = map_api_error(ApiError::InvalidRequest {
+        message: "unsupported local request shape".to_string(),
+    });
+
+    let CodexErr::InvalidRequest(message) = err else {
+        panic!("expected CodexErr::InvalidRequest, got {err:?}");
+    };
+    assert_eq!(message, "unsupported local request shape");
+}
+
+#[test]
+fn map_api_error_preserves_500_as_provider_status() {
+    let body = r#"{"error":{"message":"provider-500-body-secret"}}"#.to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::INTERNAL_SERVER_ERROR,
+        url: Some("https://provider.example/v1/responses?token=query-secret".to_string()),
+        headers: None,
+        body: Some(body.clone()),
+    }));
+
+    let CodexErr::ProviderInternalServerError { status } = err else {
+        panic!("expected CodexErr::ProviderInternalServerError, got {err:?}");
+    };
+    assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[test]
+fn map_api_error_preserves_transport_and_rate_limit_provenance() {
+    for transport in [
+        TransportError::Network("network-secret".to_string()),
+        TransportError::Build("build-secret".to_string()),
+    ] {
+        assert!(matches!(
+            map_api_error(ApiError::Transport(transport)),
+            CodexErr::ProviderTransport(_)
+        ));
+    }
+
+    assert!(matches!(
+        map_api_error(ApiError::RateLimit("rate-limit-secret".to_string())),
+        CodexErr::ProviderRateLimit(_, None)
+    ));
+    assert!(matches!(
+        map_api_error(ApiError::RetryableRateLimit {
+            message: "retry-rate-limit-secret".to_string(),
+            delay: Some(std::time::Duration::from_secs(2)),
+        }),
+        CodexErr::ProviderRateLimit(_, Some(delay))
+            if delay == std::time::Duration::from_secs(2)
+    ));
+}
+
+#[test]
 fn map_api_error_maps_usage_limit_limit_name_header() {
     let mut headers = HeaderMap::new();
     headers.insert(

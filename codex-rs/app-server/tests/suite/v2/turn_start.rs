@@ -22,12 +22,14 @@ use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
 use codex_app_server_protocol::ByteRange;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangePatchUpdatedNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
@@ -39,6 +41,7 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
+use codex_app_server_protocol::ProviderFailureKind;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
@@ -87,6 +90,7 @@ use wiremock::Mock;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+use wiremock::matchers::query_param;
 
 use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_analytics_event;
@@ -1088,6 +1092,156 @@ async fn turn_start_tracks_turn_event_analytics() -> Result<()> {
         })
     );
 
+    Ok(())
+}
+
+async fn assert_turn_completed_provider_failure(
+    status: u16,
+    kind: ProviderFailureKind,
+    kind_label: &str,
+) -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let sensitive_response = ResponseTemplate::new(status)
+        .insert_header("x-request-id", "provider-request-id-secret")
+        .insert_header("cf-ray", "provider-header-secret")
+        .set_body_json(json!({
+            "error": {
+                "type": "provider_error",
+                "message": "provider-body-secret"
+            }
+        }));
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(query_param("diagnostic", "url-query-secret"))
+        .respond_with(sensitive_response)
+        .mount(&server)
+        .await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::default(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(codex_home.path().join("config.toml"))?
+        .write_all(
+            format!(
+                r#"
+[model_providers.xiaomi]
+base_url = "{}/v1"
+experimental_bearer_token = "mimo-bearer-token-secret"
+query_params = {{ diagnostic = "url-query-secret" }}
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+                server.uri()
+            )
+            .as_bytes(),
+        )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            model: Some("mimo-v2.5-pro-ultraspeed".to_string()),
+            input: vec![V2UserInput::Text {
+                text: "trigger a mocked provider failure".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let error_notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("error"),
+    )
+    .await??;
+    let error_params = error_notification
+        .params
+        .expect("error notification params must be present");
+    let sensitive_values = [
+        "provider-body-secret",
+        "provider-request-id-secret",
+        "provider-header-secret",
+        "mimo-bearer-token-secret",
+        "url-query-secret",
+    ];
+    let raw_error_params = serde_json::to_string(&error_params)?;
+    for sensitive in sensitive_values {
+        assert!(!raw_error_params.contains(sensitive));
+    }
+    let error_notification: ErrorNotification = serde_json::from_value(error_params)?;
+
+    let completed_notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    let completed_params = completed_notification
+        .params
+        .expect("turn/completed params must be present");
+    let raw_params = serde_json::to_string(&completed_params)?;
+    for sensitive in sensitive_values {
+        assert!(!raw_params.contains(sensitive));
+    }
+    let completed: TurnCompletedNotification = serde_json::from_value(completed_params)?;
+
+    assert_eq!(completed.turn.status, TurnStatus::Failed);
+    let error = completed
+        .turn
+        .error
+        .expect("failed turn must include an error");
+    assert!(!error_notification.will_retry);
+    assert_eq!(error_notification.error, error);
+    assert_eq!(
+        error.codex_error_info,
+        Some(CodexErrorInfo::provider_failure(kind, Some(status)))
+    );
+    assert_eq!(
+        error.message,
+        format!(
+            "Model provider request failed (classification: {kind_label}, HTTP status: {status})."
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_completed_preserves_privacy_safe_provider_failure() -> Result<()> {
+    for (status, kind, kind_label) in [
+        (401, ProviderFailureKind::Unauthorized, "unauthorized"),
+        (403, ProviderFailureKind::Unauthorized, "unauthorized"),
+        (429, ProviderFailureKind::RateLimit, "rateLimit"),
+        (500, ProviderFailureKind::Server, "server"),
+        (502, ProviderFailureKind::Server, "server"),
+        (418, ProviderFailureKind::Unknown, "unknown"),
+    ] {
+        assert_turn_completed_provider_failure(status, kind, kind_label).await?;
+    }
     Ok(())
 }
 

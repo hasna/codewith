@@ -3669,6 +3669,50 @@ fn codex_error_info_serializes_http_status_code_in_camel_case() {
 }
 
 #[test]
+fn codex_error_info_serializes_privacy_safe_provider_failure() {
+    for (kind, expected_kind) in [
+        (ProviderFailureKind::Unauthorized, "unauthorized"),
+        (ProviderFailureKind::RateLimit, "rateLimit"),
+        (ProviderFailureKind::Server, "server"),
+        (ProviderFailureKind::Stream, "stream"),
+        (ProviderFailureKind::Transport, "transport"),
+        (ProviderFailureKind::Unknown, "unknown"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(CodexErrorInfo::provider_failure(kind, Some(429))).unwrap(),
+            json!({
+                "providerFailure": {
+                    "kind": expected_kind,
+                    "httpStatusCode": 429
+                }
+            })
+        );
+    }
+
+    for (http_status_code, expected) in [
+        (Some(99), None),
+        (Some(100), Some(100)),
+        (Some(599), Some(599)),
+        (Some(600), None),
+        (None, None),
+    ] {
+        assert_eq!(
+            serde_json::to_value(CodexErrorInfo::provider_failure(
+                ProviderFailureKind::Unknown,
+                http_status_code,
+            ))
+            .unwrap(),
+            json!({
+                "providerFailure": {
+                    "kind": "unknown",
+                    "httpStatusCode": expected
+                }
+            })
+        );
+    }
+}
+
+#[test]
 fn codex_error_info_serializes_cyber_policy_in_camel_case() {
     assert_eq!(
         serde_json::to_value(CodexErrorInfo::CyberPolicy).unwrap(),

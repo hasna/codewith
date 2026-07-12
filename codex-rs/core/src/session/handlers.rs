@@ -126,6 +126,7 @@ pub async fn update_thread_settings(
             let msg = EventMsg::Error(ErrorEvent {
                 message: format!("invalid thread settings override: {err}"),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             });
             sess.send_event_raw(Event { id: sub_id, msg }).await;
         }
@@ -155,6 +156,7 @@ pub async fn update_auth_profile(
             let msg = EventMsg::Error(ErrorEvent {
                 message: format!("invalid auth profile override: {err}"),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             });
             sess.send_event_raw(Event { id: sub_id, msg }).await;
         }
@@ -283,6 +285,7 @@ pub(super) async fn user_input_or_turn_inner(
                 message: "Infinity Agent rejects additional context and client metadata"
                     .to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                provider_failure: None,
             }),
         })
         .await;
@@ -632,6 +635,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             msg: EventMsg::Error(ErrorEvent {
                 message: "num_turns must be >= 1".to_string(),
                 codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                provider_failure: None,
             }),
         })
         .await;
@@ -652,6 +656,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             msg: EventMsg::Error(ErrorEvent {
                 message: "Cannot rollback while a turn is in progress.".to_string(),
                 codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                provider_failure: None,
             }),
         })
         .await;
@@ -667,6 +672,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
                 msg: EventMsg::Error(ErrorEvent {
                     message: "thread rollback requires persisted thread history".to_string(),
                     codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                    provider_failure: None,
                 }),
             })
             .await;
@@ -679,6 +685,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             msg: EventMsg::Error(ErrorEvent {
                 message: format!("failed to flush thread persistence for rollback replay: {err}"),
                 codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                provider_failure: None,
             }),
         })
         .await;
@@ -693,6 +700,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
                 msg: EventMsg::Error(ErrorEvent {
                     message: format!("failed to load thread history for rollback replay: {err}"),
                     codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+                    provider_failure: None,
                 }),
             })
             .await;
@@ -758,6 +766,7 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
             msg: EventMsg::Error(ErrorEvent {
                 message: err.to_string(),
                 codex_error_info: Some(CodexErrorInfo::Other),
+                provider_failure: None,
             }),
         };
         sess.send_event_raw(event).await;
@@ -824,6 +833,7 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
             msg: EventMsg::Error(ErrorEvent {
                 message: "Failed to shutdown thread persistence".to_string(),
                 codex_error_info: Some(CodexErrorInfo::Other),
+                provider_failure: None,
             }),
         };
         sess.send_event_raw(event).await;
@@ -872,6 +882,7 @@ pub async fn review(
                 msg: EventMsg::Error(ErrorEvent {
                     message: err.to_string(),
                     codex_error_info: Some(CodexErrorInfo::Other),
+                    provider_failure: None,
                 }),
             };
             sess.send_event(&turn_context, event.msg).await;
@@ -908,6 +919,7 @@ pub(super) async fn submission_loop(
                             msg: EventMsg::Error(ErrorEvent {
                                 message: err.to_string(),
                                 codex_error_info: Some(CodexErrorInfo::Other),
+                                provider_failure: None,
                             }),
                         })
                         .await;
@@ -952,6 +964,7 @@ pub(super) async fn submission_loop(
                             msg: EventMsg::Error(ErrorEvent {
                                 message: err.to_string(),
                                 codex_error_info: Some(CodexErrorInfo::BadRequest),
+                                provider_failure: None,
                             }),
                         })
                         .await;

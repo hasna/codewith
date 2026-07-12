@@ -1647,6 +1647,56 @@ pub enum NonSteerableTurnKind {
     Compact,
 }
 
+/// Privacy-safe classification for failures returned by a model provider.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ProviderFailureKind {
+    Unauthorized,
+    RateLimit,
+    Server,
+    Stream,
+    Transport,
+    Unknown,
+}
+
+impl ProviderFailureKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unauthorized => "unauthorized",
+            Self::RateLimit => "rateLimit",
+            Self::Server => "server",
+            Self::Stream => "stream",
+            Self::Transport => "transport",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Sanitized model-provider diagnostics carried in-process to app-server only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderFailureMetadata {
+    kind: ProviderFailureKind,
+    http_status_code: Option<u16>,
+}
+
+impl ProviderFailureMetadata {
+    pub fn new(kind: ProviderFailureKind, http_status_code: Option<u16>) -> Self {
+        Self {
+            kind,
+            http_status_code: http_status_code.filter(|status| (100..=599).contains(status)),
+        }
+    }
+
+    pub const fn kind(self) -> ProviderFailureKind {
+        self.kind
+    }
+
+    pub const fn http_status_code(self) -> Option<u16> {
+        self.http_status_code
+    }
+}
+
 /// Codewith errors that we expose to clients.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -1857,6 +1907,10 @@ pub struct ErrorEvent {
     pub message: String,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub provider_failure: Option<ProviderFailureMetadata>,
 }
 
 impl ErrorEvent {
@@ -5323,6 +5377,7 @@ mod tests {
         let event = ErrorEvent {
             message: "rollback failed".into(),
             codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+            provider_failure: None,
         };
         assert!(!event.affects_turn_status());
     }
@@ -5334,6 +5389,7 @@ mod tests {
             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                 turn_kind: NonSteerableTurnKind::Review,
             }),
+            provider_failure: None,
         };
         assert!(!event.affects_turn_status());
     }
@@ -5343,6 +5399,7 @@ mod tests {
         let event = ErrorEvent {
             message: "generic".into(),
             codex_error_info: Some(CodexErrorInfo::Other),
+            provider_failure: None,
         };
         assert!(event.affects_turn_status());
     }

@@ -489,6 +489,7 @@ pub(crate) async fn run_legacy_after_agent_hook(
     let event = EventMsg::Error(codex_protocol::protocol::ErrorEvent {
         message,
         codex_error_info: None,
+        provider_failure: None,
     });
     sess.send_event(turn_context, event).await;
     true
