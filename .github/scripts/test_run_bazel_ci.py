@@ -42,6 +42,8 @@ class RunBazelCiTest(unittest.TestCase):
                 env.pop("BUILDBUDDY_API_KEY", None)
             else:
                 env["BUILDBUDDY_API_KEY"] = buildbuddy_api_key
+            env.pop("GITHUB_ACTIONS", None)
+            env.pop("GITHUB_REPOSITORY", None)
             env["FAKE_BAZEL_ARGS"] = str(args_path)
             env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
             env["RUNNER_OS"] = runner_os
