@@ -20,7 +20,10 @@ impl InfinityAgentCommand {
     pub async fn run(self, config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
         match self.action {
             InfinityAgentSubcommand::Attest => {
-                let config = Config::load_with_cli_overrides(config_overrides)
+                let overrides = config_overrides
+                    .parse_overrides()
+                    .map_err(anyhow::Error::msg)?;
+                let config = Config::load_with_cli_overrides(overrides)
                     .await
                     .context("failed to load the Infinity Agent configuration")?;
                 let attestation = config
