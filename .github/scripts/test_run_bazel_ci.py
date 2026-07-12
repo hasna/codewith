@@ -44,6 +44,7 @@ class RunBazelCiTest(unittest.TestCase):
                 env["BUILDBUDDY_API_KEY"] = buildbuddy_api_key
             env.pop("GITHUB_ACTIONS", None)
             env.pop("GITHUB_REPOSITORY", None)
+            env.pop("CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE", None)
             env["FAKE_BAZEL_ARGS"] = str(args_path)
             env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
             env["RUNNER_OS"] = runner_os
@@ -110,10 +111,31 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
 
-    def test_keyed_hasna_ci_linux_uses_openai_buildbuddy_rbe_config(self) -> None:
+    def test_keyed_hasna_ci_linux_uses_keyless_fallback_by_default(self) -> None:
         result, bazel_args = self.run_wrapper(
             buildbuddy_api_key="test-token",
             extra_env={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "hasna/codewith"},
+        )
+
+        self.assert_success(result)
+        self.assertIn("using local Bazel configuration", result.stdout)
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
+        self.assertIn("--config=ci-keyless", bazel_args)
+        self.assertNotIn("--config=buildbuddy-openai-rbe", bazel_args)
+        self.assertNotIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+
+    def test_keyed_hasna_ci_linux_can_opt_into_openai_buildbuddy_rbe_config(
+        self,
+    ) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            extra_env={
+                "CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE": "1",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+            },
         )
 
         self.assert_success(result)
@@ -148,7 +170,7 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertNotIn("--host_platform=//:local_windows_msvc", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
 
-    def test_keyed_hasna_ci_windows_cross_uses_openai_buildbuddy_rbe_config(
+    def test_keyed_hasna_ci_windows_cross_uses_keyless_fallback_by_default(
         self,
     ) -> None:
         result, bazel_args = self.run_wrapper(
@@ -158,6 +180,34 @@ class RunBazelCiTest(unittest.TestCase):
             bazel_args=("test",),
             extra_env={
                 "CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32",
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "hasna/codewith",
+            },
+        )
+
+        self.assert_success(result)
+        self.assertIn("using local Bazel configuration", result.stdout)
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
+        self.assertIn("--host_platform=//:local_windows_msvc", bazel_args)
+        self.assertIn("--jobs=8", bazel_args)
+        self.assertNotIn("--config=buildbuddy-openai-rbe", bazel_args)
+        self.assertNotIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--host_platform=//:rbe", bazel_args)
+        self.assertNotIn("--shell_executable=/bin/bash", bazel_args)
+
+    def test_keyed_hasna_ci_windows_cross_can_opt_into_openai_buildbuddy_rbe_config(
+        self,
+    ) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            runner_os="Windows",
+            wrapper_args=("--windows-cross-compile",),
+            bazel_args=("test",),
+            extra_env={
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32",
+                "CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE": "1",
                 "GITHUB_ACTIONS": "true",
                 "GITHUB_REPOSITORY": "hasna/codewith",
             },

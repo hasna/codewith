@@ -76,9 +76,22 @@ esac
 
 buildbuddy_rbe_config=buildbuddy-generic-rbe
 if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "hasna/codewith" ]]; then
-  # The hasna/codewith workflow secret is provisioned for the OpenAI BuildBuddy
-  # tenant. The generic RBE endpoint currently has no registered executors.
+  # The hasna/codewith workflow key currently reaches the OpenAI tenant but has
+  # no registered RBE executors. Stay on the keyless CI shape until that
+  # external registration is fixed, while keeping an explicit opt-in for smoke
+  # testing the keyed path.
   buildbuddy_rbe_config=buildbuddy-openai-rbe
+fi
+
+use_buildbuddy_key=0
+if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  use_buildbuddy_key=1
+fi
+if [[ $use_buildbuddy_key -eq 1 &&
+  "${GITHUB_ACTIONS:-}" == "true" &&
+  "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
+  "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+  use_buildbuddy_key=0
 fi
 
 buildbuddy_config=()
@@ -105,7 +118,7 @@ print_bazel_test_log_tails() {
   # platform-specific output roots match. On Windows, omitting `ci-windows`
   # would point at `local_windows-fastbuild` even when the test ran with the
   # MSVC host platform under `local_windows_msvc-fastbuild`.
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if (( use_buildbuddy_key == 1 )); then
     bazel_info_args+=(
       "${buildbuddy_config[@]}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
@@ -271,7 +284,7 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $use_buildbuddy_key -eq 0 ]]; then
   # Fork PRs do not receive the BuildBuddy secret needed for the remote
   # cross-compile config. Preserve the previous local Windows build shape.
   windows_msvc_host_platform=1
@@ -302,7 +315,7 @@ if [[ $remote_download_toplevel -eq 1 ]]; then
   post_config_bazel_args+=(--remote_download_toplevel)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $use_buildbuddy_key -eq 1 ]]; then
   # `--enable_platform_specific_config` expands `common:windows` on Windows
   # hosts after ordinary rc configs, which can override `ci-windows-cross`'s
   # RBE host platform. Repeat the host platform on the command line so V8 and
@@ -314,7 +327,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
   post_config_bazel_args+=(--host_platform=//:rbe --shell_executable=/bin/bash)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $use_buildbuddy_key -eq 0 ]]; then
   # The Windows cross-compile config depends on remote execution. Fork PRs do
   # not receive the BuildBuddy secret, so fall back to the existing local build
   # shape and keep its lower concurrency cap.
@@ -340,7 +353,7 @@ fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   pass_windows_build_env=1
-  if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ $windows_cross_compile -eq 1 && $use_buildbuddy_key -eq 1 ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
     # runner's build environment there makes Bazel genrules try to execute
     # C:\Program Files\Git\usr\bin\bash.exe on Linux.
@@ -400,7 +413,7 @@ if (( ${#bazel_startup_args[@]} > 0 )); then
   bazel_cmd+=("${bazel_startup_args[@]}")
 fi
 
-if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if (( use_buildbuddy_key == 1 )); then
   echo "BuildBuddy API key is available; using remote Bazel configuration."
   # Work around Bazel 9 remote repo contents cache / overlay materialization failures
   # seen in CI (for example "is not a symlink" or permission errors while
@@ -425,7 +438,11 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_status=${PIPESTATUS[0]}
   set -e
 else
-  echo "BuildBuddy API key is not available; using local Bazel configuration."
+  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+    echo "BuildBuddy remote configuration is disabled; using local Bazel configuration."
+  else
+    echo "BuildBuddy API key is not available; using local Bazel configuration."
+  fi
   # Keep fork/community PRs on Bazel but disable remote services that are
   # configured in .bazelrc and require auth.
   #
