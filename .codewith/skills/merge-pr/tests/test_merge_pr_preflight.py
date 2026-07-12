@@ -43,6 +43,18 @@ class MergePrPreflightTests(unittest.TestCase):
         self.assertEqual(snapshot["verdict"], "not_mergeable")
         self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
 
+    def test_backcompat_startup_failure_check_blocks(self) -> None:
+        snapshot = run_preflight("checks_startup_failure_backcompat.json")
+
+        self.assertEqual(snapshot["verdict"], "not_mergeable")
+        self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
+
+    def test_backcompat_stale_check_blocks(self) -> None:
+        snapshot = run_preflight("checks_stale_backcompat.json")
+
+        self.assertEqual(snapshot["verdict"], "not_mergeable")
+        self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
+
     def test_pending_checks_warn_without_blocking(self) -> None:
         snapshot = run_preflight("checks_pending_mixed.json")
 

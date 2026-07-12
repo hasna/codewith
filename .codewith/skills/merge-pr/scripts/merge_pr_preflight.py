@@ -31,6 +31,8 @@ BLOCKING_CHECK_STATES = {
     "fail",
     "failed",
     "failure",
+    "stale",
+    "startup_failure",
     "timed_out",
 }
 PENDING_CHECK_STATES = {
