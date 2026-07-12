@@ -74,6 +74,16 @@ case "${RUNNER_OS:-}" in
     ;;
 esac
 
+buildbuddy_config=()
+case "$ci_config" in
+  ci-linux | ci-macos | ci-windows-cross)
+    # These CI configs require the endpoint-bearing RBE config, not just an
+    # API-key header. Keep this remote-execution shape aligned with
+    # `.github/scripts/run_bazel_with_buildbuddy.py`.
+    buildbuddy_config=("--config=buildbuddy-generic-rbe")
+    ;;
+esac
+
 print_bazel_test_log_tails() {
   local console_log="$1"
   local testlogs_dir
@@ -90,8 +100,9 @@ print_bazel_test_log_tails() {
   # MSVC host platform under `local_windows_msvc-fastbuild`.
   if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     bazel_info_args+=(
-      "--config=${ci_config}"
+      "${buildbuddy_config[@]}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+      "--config=${ci_config}"
     )
   fi
   # Only pass flags that affect Bazel's output-root selection or repository
@@ -390,8 +401,9 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   # remote execution/cache; this only disables the startup-level repo contents cache.
   bazel_run_args=(
     "${bazel_args[@]}"
-    "--config=${ci_config}"
+    "${buildbuddy_config[@]}"
     "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+    "--config=${ci_config}"
   )
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")

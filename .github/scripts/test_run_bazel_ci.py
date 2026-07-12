@@ -10,7 +10,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class RunBazelCiTest(unittest.TestCase):
-    def test_local_fallback_clears_remote_services(self) -> None:
+    def run_wrapper(
+        self,
+        *,
+        buildbuddy_api_key: str | None,
+        runner_os: str = "Linux",
+        wrapper_args: tuple[str, ...] = (),
+        bazel_args: tuple[str, ...] = ("build",),
+        bazel_targets: tuple[str, ...] = ("//fake:target",),
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             args_path = tmp_path / "bazel-args.txt"
@@ -29,19 +38,25 @@ class RunBazelCiTest(unittest.TestCase):
             )
 
             env = os.environ.copy()
-            env.pop("BUILDBUDDY_API_KEY", None)
+            if buildbuddy_api_key is None:
+                env.pop("BUILDBUDDY_API_KEY", None)
+            else:
+                env["BUILDBUDDY_API_KEY"] = buildbuddy_api_key
             env["FAKE_BAZEL_ARGS"] = str(args_path)
             env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
-            env["RUNNER_OS"] = "Linux"
+            env["RUNNER_OS"] = runner_os
+            if extra_env is not None:
+                env.update(extra_env)
 
             result = subprocess.run(
                 [
                     "bash",
                     ".github/scripts/run-bazel-ci.sh",
+                    *wrapper_args,
                     "--",
-                    "build",
+                    *bazel_args,
                     "--",
-                    "//fake:target",
+                    *bazel_targets,
                 ],
                 cwd=REPO_ROOT,
                 env=env,
@@ -51,17 +66,82 @@ class RunBazelCiTest(unittest.TestCase):
                 check=False,
             )
 
-            self.assertEqual(
-                result.returncode,
-                0,
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-            )
-            self.assertIn("using local Bazel configuration", result.stdout)
+            bazel_invocation = []
+            if args_path.exists():
+                bazel_invocation = args_path.read_text(encoding="utf-8").splitlines()
 
-            bazel_args = args_path.read_text(encoding="utf-8").splitlines()
-            self.assertIn("--remote_cache=", bazel_args)
-            self.assertIn("--remote_executor=", bazel_args)
-            self.assertIn("--experimental_remote_downloader=", bazel_args)
+            return result, bazel_invocation
+
+    def assert_success(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+    def assert_remote_config_before_ci_config(
+        self, bazel_args: list[str], *, remote_config: str, ci_config: str
+    ) -> None:
+        self.assertIn(remote_config, bazel_args)
+        self.assertIn(ci_config, bazel_args)
+        self.assertLess(bazel_args.index(remote_config), bazel_args.index(ci_config))
+
+    def test_local_fallback_clears_remote_services(self) -> None:
+        result, bazel_args = self.run_wrapper(buildbuddy_api_key=None)
+
+        self.assert_success(result)
+        self.assertIn("using local Bazel configuration", result.stdout)
+        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn("--remote_executor=", bazel_args)
+        self.assertIn("--experimental_remote_downloader=", bazel_args)
+
+    def test_keyed_linux_uses_buildbuddy_rbe_config(self) -> None:
+        result, bazel_args = self.run_wrapper(buildbuddy_api_key="test-token")
+
+        self.assert_success(result)
+        self.assertIn("using remote Bazel configuration", result.stdout)
+        self.assert_remote_config_before_ci_config(
+            bazel_args,
+            remote_config="--config=buildbuddy-generic-rbe",
+            ci_config="--config=ci-linux",
+        )
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--remote_executor=", bazel_args)
+
+    def test_keyed_windows_cross_uses_buildbuddy_rbe_config(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            runner_os="Windows",
+            wrapper_args=("--windows-cross-compile",),
+            bazel_args=("test",),
+            extra_env={"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"},
+        )
+
+        self.assert_success(result)
+        self.assertIn("using remote Bazel configuration", result.stdout)
+        self.assert_remote_config_before_ci_config(
+            bazel_args,
+            remote_config="--config=buildbuddy-generic-rbe",
+            ci_config="--config=ci-windows-cross",
+        )
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertIn("--host_platform=//:rbe", bazel_args)
+        self.assertIn("--shell_executable=/bin/bash", bazel_args)
+        self.assertNotIn("--host_platform=//:local_windows_msvc", bazel_args)
+        self.assertNotIn("--remote_executor=", bazel_args)
+
+    def test_keyed_native_windows_preserves_non_rbe_ci_config(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            runner_os="Windows",
+            extra_env={"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"},
+        )
+
+        self.assert_success(result)
+        self.assertIn("--config=ci-windows", bazel_args)
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertNotIn("--host_platform=//:rbe", bazel_args)
 
 
 if __name__ == "__main__":
