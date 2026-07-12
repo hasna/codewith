@@ -86,9 +86,19 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
-          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
-          # keyed RBE runs do not. Never print the key, only test its presence.
-          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+          # Keyless/effective-local Linux runs use a persisted local disk
+          # cache; keyed RBE runs do not. Never print the key, only test its
+          # presence.
+          use_buildbuddy_rbe=0
+          if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+            use_buildbuddy_rbe=1
+          fi
+          if [[ "${GITHUB_ACTIONS:-}" == "true" &&
+            "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
+            "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+            use_buildbuddy_rbe=0
+          fi
+          if [[ $use_buildbuddy_rbe -eq 0 ]]; then
             echo "keyless=true" >> "${GITHUB_OUTPUT}"
           else
             echo "keyless=false" >> "${GITHUB_OUTPUT}"
@@ -183,8 +193,10 @@ jobs:
 
   test-windows-shard:
     # Split the Windows Bazel test leg across separate Windows
-    # hosts. Each shard still uses Linux RBE for build actions, but the test
-    # execution itself happens on its own Windows runner.
+    # hosts. When effective BuildBuddy RBE is enabled, each shard uses Linux
+    # RBE for build actions; keyless/effective-local runs fall back to the
+    # local Windows MSVC host-platform shape. Test execution itself happens on
+    # the shard's Windows runner.
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -408,9 +420,19 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
-          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
-          # keyed RBE runs do not. Never print the key, only test its presence.
-          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+          # Keyless/effective-local Linux runs use a persisted local disk
+          # cache; keyed RBE runs do not. Never print the key, only test its
+          # presence.
+          use_buildbuddy_rbe=0
+          if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+            use_buildbuddy_rbe=1
+          fi
+          if [[ "${GITHUB_ACTIONS:-}" == "true" &&
+            "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
+            "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+            use_buildbuddy_rbe=0
+          fi
+          if [[ $use_buildbuddy_rbe -eq 0 ]]; then
             echo "keyless=true" >> "${GITHUB_OUTPUT}"
           else
             echo "keyless=false" >> "${GITHUB_OUTPUT}"
@@ -561,9 +583,19 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
-          # Keyless (no BuildBuddy) Linux runs use a persisted local disk cache;
-          # keyed RBE runs do not. Never print the key, only test its presence.
-          if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+          # Keyless/effective-local Linux runs use a persisted local disk
+          # cache; keyed RBE runs do not. Never print the key, only test its
+          # presence.
+          use_buildbuddy_rbe=0
+          if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+            use_buildbuddy_rbe=1
+          fi
+          if [[ "${GITHUB_ACTIONS:-}" == "true" &&
+            "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
+            "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+            use_buildbuddy_rbe=0
+          fi
+          if [[ $use_buildbuddy_rbe -eq 0 ]]; then
             echo "keyless=true" >> "${GITHUB_OUTPUT}"
           else
             echo "keyless=false" >> "${GITHUB_OUTPUT}"
@@ -600,10 +632,10 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # This is build-only signal, so use the same Linux-RBE
-            # cross-compile path as the fast Windows test and clippy jobs.
-            # Fork/community PRs without the BuildBuddy secret fall back
-            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
+            # This is build-only signal, so use the same effective RBE/local
+            # decision as the fast Windows test and clippy jobs. Keyless or
+            # otherwise effective-local runs fall back inside
+            # `run-bazel-ci.sh` to the previous local Windows MSVC
             # host-platform shape.
             bazel_wrapper_args+=(--windows-cross-compile)
           fi

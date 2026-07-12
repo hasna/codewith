@@ -81,6 +81,54 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ],
             )
 
+    def test_hasna_codewith_actions_default_ignores_buildbuddy_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env = self.github_env(temp_dir, repository="hasna/codewith")
+
+            self.assertIsNone(
+                run_bazel_with_buildbuddy.remote_config(
+                    ["build", "--config=ci-linux", "//codex-rs/cli:codex"],
+                    env,
+                )
+            )
+            self.assertEqual(
+                run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    [
+                        "build",
+                        "--config=ci-windows-cross",
+                        "--",
+                        "//codex-rs/cli:codex",
+                    ],
+                    env,
+                ),
+                ["build", "--", "//codex-rs/cli:codex"],
+            )
+
+    def test_hasna_codewith_actions_can_opt_into_openai_rbe(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env = self.github_env(temp_dir, repository="hasna/codewith")
+            env["CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE"] = "1"
+
+            self.assertEqual(
+                run_bazel_with_buildbuddy.remote_config(
+                    ["build", "--config=ci-windows-cross", "//codex-rs/cli:codex"],
+                    env,
+                ),
+                "buildbuddy-openai-rbe",
+            )
+            self.assertEqual(
+                run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    ["query", "--output=label", "//codex-rs/..."], env
+                ),
+                [
+                    "query",
+                    "--config=buildbuddy-openai",
+                    "--remote_header=x-buildbuddy-api-key=token",
+                    "--output=label",
+                    "//codex-rs/...",
+                ],
+            )
+
     def test_windows_cross_ci_configuration_follows_remote_configuration(self) -> None:
         env = {"BUILDBUDDY_API_KEY": "fork-token"}
 

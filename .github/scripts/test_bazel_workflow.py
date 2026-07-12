@@ -65,6 +65,34 @@ class BazelWorkflowTest(unittest.TestCase):
             run_script,
         )
 
+    def test_keyless_disk_cache_uses_effective_buildbuddy_rbe_predicate(self) -> None:
+        workflow = self.bazel_workflow()
+
+        for job_name in ("test", "clippy", "verify-release-build"):
+            with self.subTest(job=job_name):
+                cache_step = next(
+                    step
+                    for step in workflow["jobs"][job_name]["steps"]
+                    if step.get("name") == "Configure keyless Bazel disk cache"
+                )
+                run_script = cache_step["run"]
+
+                self.assertIn('use_buildbuddy_rbe=0', run_script)
+                self.assertIn('if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then', run_script)
+                self.assertIn(
+                    '"${GITHUB_REPOSITORY:-}" == "hasna/codewith"',
+                    run_script,
+                )
+                self.assertIn(
+                    '"${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1"',
+                    run_script,
+                )
+                self.assertIn('if [[ $use_buildbuddy_rbe -eq 0 ]]; then', run_script)
+                self.assertNotIn(
+                    'if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then',
+                    run_script,
+                )
+
     def test_keyless_v8_artifact_jobs_skip_macos_outside_upstream(self) -> None:
         for workflow_path in V8_WORKFLOWS:
             workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))

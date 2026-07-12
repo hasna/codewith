@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 OPENAI_REPOSITORY = "openai/codex"
+HASNA_REPOSITORY = "hasna/codewith"
 # Remote configurations select cache/BES/download endpoints. Their -rbe forms
 # also select the matching remote executor endpoint.
 GENERIC_REMOTE_CONFIG = "buildbuddy-generic"
@@ -93,8 +94,28 @@ def is_trusted_upstream_run(env: Mapping[str, str]) -> bool:
         return False
 
 
+def is_hasna_codewith_actions_run(env: Mapping[str, str]) -> bool:
+    return (
+        env.get("GITHUB_ACTIONS") == "true"
+        and env.get("GITHUB_REPOSITORY") == HASNA_REPOSITORY
+    )
+
+
+def hasna_buildbuddy_rbe_opt_in(env: Mapping[str, str]) -> bool:
+    return (
+        is_hasna_codewith_actions_run(env)
+        and env.get("CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE") == "1"
+    )
+
+
+def buildbuddy_disabled_by_hasna_default(env: Mapping[str, str]) -> bool:
+    return is_hasna_codewith_actions_run(env) and not hasna_buildbuddy_rbe_opt_in(env)
+
+
 def uses_openai_host(env: Mapping[str, str]) -> bool:
-    return bool(env.get("BUILDBUDDY_API_KEY")) and is_trusted_upstream_run(env)
+    return bool(env.get("BUILDBUDDY_API_KEY")) and (
+        is_trusted_upstream_run(env) or hasna_buildbuddy_rbe_opt_in(env)
+    )
 
 
 def uses_remote_execution(args: Sequence[str]) -> bool:
@@ -106,7 +127,7 @@ def uses_remote_execution(args: Sequence[str]) -> bool:
 
 
 def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
-    if not env.get("BUILDBUDDY_API_KEY"):
+    if not env.get("BUILDBUDDY_API_KEY") or buildbuddy_disabled_by_hasna_default(env):
         return None
 
     config = OPENAI_REMOTE_CONFIG if uses_openai_host(env) else GENERIC_REMOTE_CONFIG
@@ -161,10 +182,18 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
 def main() -> None:
     config = remote_config(sys.argv[1:], os.environ)
     if config is None:
-        print(
-            "BuildBuddy key unavailable; using local Bazel configuration.",
-            file=sys.stderr,
-        )
+        if os.environ.get("BUILDBUDDY_API_KEY") and buildbuddy_disabled_by_hasna_default(
+            os.environ
+        ):
+            print(
+                "BuildBuddy remote configuration is disabled; using local Bazel configuration.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "BuildBuddy key unavailable; using local Bazel configuration.",
+                file=sys.stderr,
+            )
     else:
         host_description = (
             "OpenAI tenant" if uses_openai_host(os.environ) else "generic"
