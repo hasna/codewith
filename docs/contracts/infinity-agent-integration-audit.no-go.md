@@ -68,6 +68,24 @@ Scope invariant: this patch does not turn Codewith generally into a restricted
 agent. It adds an opt-in policy and an admin constraint. Without the dedicated
 AuthCapsule system requirement the effective default is, and remains, `full`.
 
+The capsule supervisor can verify the installed process boundary before the
+first model request with:
+
+```text
+codewith infinity-agent attest
+```
+
+The command loads the same system requirements, launcher bindings, signed tool
+manifest, trust key, and executable identity as runtime startup. It fails
+closed unless the effective profile is `infinity-agent`, every optional feature
+and external instruction source is disabled, the session is ephemeral, named
+auth profiles are absent, MCP credentials are forbidden, and the configured
+bridge sources exactly match the signed route. Success is one JSON object with
+`safe: true`, Codewith version, executable/policy/effective-config SHA-256
+claims, route mode, expiry, exact bridge sources and tool allowlist, plus the
+explicit denied-capability set. The supervisor must treat command failure,
+unknown fields, `safe != true`, or a digest mismatch as a launch denial.
+
 A supervised prototype may proceed without that patch only with
 `CODEX_EXEC_SERVER_URL=none --ignore-user-config` (MCP) or `environments: []`
 (app-server), a dedicated single-account `CODEWITH_HOME` containing no named

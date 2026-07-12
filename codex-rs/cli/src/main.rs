@@ -50,6 +50,7 @@ mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+mod infinity_agent_cmd;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
@@ -69,6 +70,7 @@ use self::plugin_cmd::PluginSubcommand;
 use self::remote_control_cmd::RemoteControlCommand;
 use self::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
+use infinity_agent_cmd::InfinityAgentCommand;
 use state_db_recovery as local_state_db;
 
 use codex_config::LoaderOverrides;
@@ -195,6 +197,9 @@ enum Subcommand {
 
     /// Diagnose local Codewith installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
+
+    /// Verify the fail-closed Infinity Agent subscription-capsule boundary.
+    InfinityAgent(InfinityAgentCommand),
 
     /// Run commands within a Codewith-provided sandbox.
     Sandbox(HostSandboxArgs),
@@ -1742,6 +1747,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             )
             .await?;
         }
+        Some(Subcommand::InfinityAgent(command)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "infinity-agent",
+            )?;
+            command.run(root_config_overrides).await?;
+        }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2494,6 +2507,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Usage(_)) => Some("usage"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
+        Some(Subcommand::InfinityAgent(_)) => Some("infinity-agent"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
@@ -3080,6 +3094,17 @@ mod tests {
         assert!(matches!(
             profile.action,
             ProfileSubcommand::List { json: true }
+        ));
+    }
+
+    #[test]
+    fn infinity_agent_attestation_command_parses() {
+        let cli = MultitoolCli::try_parse_from(["codewith", "infinity-agent", "attest"])
+            .expect("parse Infinity Agent attestation command");
+
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommand::InfinityAgent(_))
         ));
     }
 

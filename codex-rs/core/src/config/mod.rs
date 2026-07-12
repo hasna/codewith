@@ -3,6 +3,8 @@ pub use crate::agents_md::LoadedAgentsMd;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::path_utils::normalize_for_native_workdir;
+use crate::tools::policy::InfinityAgentSafetyAttestation;
+use crate::tools::policy::EffectiveSafetyState;
 use crate::tools::policy::PolicyMode;
 use crate::tools::policy::VerifiedToolPolicy;
 use crate::tools::policy::load_process_policy;
@@ -1827,6 +1829,65 @@ impl Config {
         } else {
             McpCredentialPolicy::AllowConfigured
         }
+    }
+
+    /// Produce a fail-closed, machine-readable proof of the effective
+    /// Infinity Agent boundary. Calling this for ordinary Codewith profiles or
+    /// for a drifted restricted configuration is an error.
+    pub fn infinity_agent_safety_attestation(
+        &self,
+    ) -> std::io::Result<InfinityAgentSafetyAttestation> {
+        if !self.is_infinity_agent() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the effective tool policy is not infinity-agent",
+            ));
+        }
+        let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the Infinity Agent policy has no verified process manifest",
+            )
+        })?;
+        let actual_mcp_sources = self
+            .mcp_servers
+            .get()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let bridge_config_matches = match policy.mode() {
+            PolicyMode::DynamicCliOnly => actual_mcp_sources.is_empty(),
+            PolicyMode::McpOnly => actual_mcp_sources == policy.mcp_source_ids(),
+        };
+        if !bridge_config_matches {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the effective bridge configuration does not match the verified policy",
+            ));
+        }
+
+        let external_instructions_disabled = self.user_instructions.is_none()
+            && self.base_instructions.is_none()
+            && self.developer_instructions.is_none()
+            && self.compact_prompt.is_none()
+            && !self.include_permissions_instructions
+            && !self.include_apps_instructions
+            && !self.include_collaboration_mode_instructions
+            && !self.include_skill_instructions
+            && !self.include_environment_context
+            && self.notify.as_ref().is_none_or(Vec::is_empty);
+        policy
+            .safety_attestation(EffectiveSafetyState {
+                all_optional_features_disabled: self.features.is_empty(),
+                ephemeral_session: self.ephemeral,
+                named_auth_profile_absent: self.selected_auth_profile.is_none(),
+                external_instructions_disabled,
+                mcp_credentials_forbidden: self.mcp_credential_policy()
+                    == McpCredentialPolicy::Forbid,
+            })
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            })
     }
 
     pub(crate) fn multi_agent_version_from_features(&self) -> MultiAgentVersion {

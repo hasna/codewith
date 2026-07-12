@@ -73,6 +73,25 @@ const INFINITY_AGENT_PUBLIC_TOOL_NAMES: &[&str] = &[
     "infinity_approval_list",
     "infinity_promotion_get",
 ];
+const INFINITY_AGENT_DENIED_CAPABILITIES: &[&str] = &[
+    "apply-patch",
+    "auth-profile-control",
+    "background-agents",
+    "browser-and-computer-use",
+    "code-mode",
+    "host-filesystem",
+    "host-shell",
+    "hosted-tools",
+    "hooks-and-notify",
+    "mcp-oauth-and-credentials",
+    "multi-agent",
+    "plugins-and-extensions",
+    "skills-and-external-instructions",
+    "tool-search-and-deferred-tools",
+    "unified-exec",
+    "usage-control",
+    "view-image",
+];
 
 static PROCESS_POLICY: OnceLock<Result<Arc<VerifiedToolPolicy>, String>> = OnceLock::new();
 
@@ -213,6 +232,52 @@ pub struct VerifiedToolPolicy {
     entries: BTreeMap<ToolName, VerifiedPolicyEntry>,
 }
 
+/// Machine-readable proof that this process loaded the fail-closed Infinity
+/// Agent policy and reduced its effective runtime to the signed bridge surface.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InfinityAgentSafetyAttestation {
+    pub schema_version: &'static str,
+    pub safe: bool,
+    pub profile: &'static str,
+    pub codewith_version: &'static str,
+    pub binary_sha256: String,
+    pub policy_sha256: String,
+    pub effective_config_sha256: String,
+    pub route_mode: &'static str,
+    pub policy_expires_at: String,
+    pub bridge_protection: &'static str,
+    pub bridge_sources: Vec<String>,
+    pub allowed_tools: Vec<String>,
+    pub denied_capabilities: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct EffectiveSafetyState {
+    pub all_optional_features_disabled: bool,
+    pub ephemeral_session: bool,
+    pub named_auth_profile_absent: bool,
+    pub external_instructions_disabled: bool,
+    pub mcp_credentials_forbidden: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EffectiveSafetyConfiguration<'a> {
+    pub profile: &'static str,
+    pub route_mode: &'static str,
+    pub binary_sha256: &'a str,
+    pub policy_sha256: &'a str,
+    pub bridge_sources: &'a [String],
+    pub allowed_tools: &'a [String],
+    pub denied_capabilities: &'a [&'static str],
+    pub all_optional_features_disabled: bool,
+    pub ephemeral_session: bool,
+    pub named_auth_profile_absent: bool,
+    pub external_instructions_disabled: bool,
+    pub mcp_credentials_forbidden: bool,
+}
+
 impl VerifiedToolPolicy {
     pub(crate) fn digest(&self) -> &str {
         &self.digest
@@ -240,6 +305,93 @@ impl VerifiedToolPolicy {
             .filter(|entry| entry.source == PolicySource::Mcp && entry.source_id == source_id)
             .map(|entry| entry.raw_tool_name.clone())
             .collect()
+    }
+
+    pub(crate) fn safety_attestation(
+        &self,
+        state: EffectiveSafetyState,
+    ) -> Result<InfinityAgentSafetyAttestation, PolicyError> {
+        let binary_sha256 = current_executable_sha256()?;
+        self.safety_attestation_with_binary_sha256(state, binary_sha256)
+    }
+
+    fn safety_attestation_with_binary_sha256(
+        &self,
+        state: EffectiveSafetyState,
+        binary_sha256: String,
+    ) -> Result<InfinityAgentSafetyAttestation, PolicyError> {
+        self.ensure_active(Utc::now())?;
+        if !state.all_optional_features_disabled
+            || !state.ephemeral_session
+            || !state.named_auth_profile_absent
+            || !state.external_instructions_disabled
+            || !state.mcp_credentials_forbidden
+        {
+            return Err(invalid(
+                "the effective configuration does not preserve the Infinity Agent safety boundary",
+            ));
+        }
+
+        let route_mode = match self.mode {
+            PolicyMode::DynamicCliOnly => "dynamic-cli-only",
+            PolicyMode::McpOnly => "mcp-only",
+        };
+        let bridge_sources = self
+            .entries
+            .values()
+            .map(|entry| entry.source_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let allowed_tools = self
+            .entries
+            .keys()
+            .map(|name| match &name.namespace {
+                Some(namespace) => format!("{namespace}/{}", name.name),
+                None => name.name.clone(),
+            })
+            .collect::<Vec<_>>();
+        let denied_capabilities = INFINITY_AGENT_DENIED_CAPABILITIES.to_vec();
+        let effective = EffectiveSafetyConfiguration {
+            profile: "infinity-agent",
+            route_mode,
+            binary_sha256: &binary_sha256,
+            policy_sha256: &self.digest,
+            bridge_sources: &bridge_sources,
+            allowed_tools: &allowed_tools,
+            denied_capabilities: &denied_capabilities,
+            all_optional_features_disabled: state.all_optional_features_disabled,
+            ephemeral_session: state.ephemeral_session,
+            named_auth_profile_absent: state.named_auth_profile_absent,
+            external_instructions_disabled: state.external_instructions_disabled,
+            mcp_credentials_forbidden: state.mcp_credentials_forbidden,
+        };
+        let effective_value = serde_json::to_value(effective).map_err(|error| {
+            invalid(format!(
+                "effective safety configuration serialization failed: {error}"
+            ))
+        })?;
+        let effective_bytes = serde_json_canonicalizer::to_vec(&effective_value).map_err(|error| {
+            invalid(format!(
+                "effective safety configuration canonicalization failed: {error}"
+            ))
+        })?;
+
+        Ok(InfinityAgentSafetyAttestation {
+            schema_version: "codewith.infinity-agent-safety-attestation/v1",
+            safe: true,
+            profile: "infinity-agent",
+            codewith_version: env!("CARGO_PKG_VERSION"),
+            binary_sha256,
+            policy_sha256: self.digest.clone(),
+            effective_config_sha256: sha256_claim(&effective_bytes),
+            route_mode,
+            policy_expires_at: self.expires_at.to_rfc3339(),
+            bridge_protection: "signed-exact-manifest-and-dispatch-gate",
+            bridge_sources,
+            allowed_tools,
+            denied_capabilities,
+        })
     }
 
     pub(crate) fn ensure_active(&self, now: DateTime<Utc>) -> Result<(), PolicyError> {
@@ -1840,6 +1992,61 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn infinity_agent_safety_attestation_is_machine_readable_and_digest_bound() {
+        let policy = test_dynamic_policy(&[dynamic_tool("infinity_run_submit")]);
+        let attestation = policy
+            .safety_attestation_with_binary_sha256(
+                EffectiveSafetyState {
+                    all_optional_features_disabled: true,
+                    ephemeral_session: true,
+                    named_auth_profile_absent: true,
+                    external_instructions_disabled: true,
+                    mcp_credentials_forbidden: true,
+                },
+                codewith_digest(),
+            )
+            .expect("safe attestation");
+        let value = serde_json::to_value(&attestation).expect("JSON attestation");
+
+        assert!(attestation.safe);
+        assert_eq!(attestation.profile, "infinity-agent");
+        assert_eq!(attestation.route_mode, "dynamic-cli-only");
+        assert_eq!(
+            attestation.allowed_tools,
+            vec!["infinity_cli/infinity_run_submit"]
+        );
+        assert!(attestation.binary_sha256.starts_with("sha256:"));
+        assert!(attestation.policy_sha256.starts_with("sha256:"));
+        assert!(attestation.effective_config_sha256.starts_with("sha256:"));
+        assert_eq!(
+            value.get("bridgeProtection").and_then(Value::as_str),
+            Some("signed-exact-manifest-and-dispatch-gate")
+        );
+        assert!(attestation.denied_capabilities.contains(&"host-shell"));
+        assert!(attestation.denied_capabilities.contains(&"host-filesystem"));
+        assert!(attestation.denied_capabilities.contains(&"unified-exec"));
+    }
+
+    #[test]
+    fn infinity_agent_safety_attestation_fails_on_effective_config_drift() {
+        let policy = test_dynamic_policy(&[dynamic_tool("infinity_run_submit")]);
+
+        let error = policy
+            .safety_attestation_with_binary_sha256(
+                EffectiveSafetyState {
+                    all_optional_features_disabled: false,
+                    ephemeral_session: true,
+                    named_auth_profile_absent: true,
+                    external_instructions_disabled: true,
+                    mcp_credentials_forbidden: true,
+                },
+                codewith_digest(),
+            )
+            .expect_err("feature drift must fail closed");
+        assert!(error.to_string().contains("does not preserve"));
     }
 
     #[cfg(target_os = "macos")]
