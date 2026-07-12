@@ -38,6 +38,9 @@ jobs:
       - name: Test Bazel workflow matrix
         run: python3 .github/scripts/test_bazel_workflow.py
 
+      - name: Test rust-ci workflow gates
+        run: python3 .github/scripts/test_rust_ci_workflow.py
+
       - name: Test SDK workflow budget
         run: python3 .github/scripts/test_sdk_workflow.py
 
