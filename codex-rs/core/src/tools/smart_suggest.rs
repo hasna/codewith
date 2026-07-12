@@ -75,13 +75,11 @@ pub(crate) async fn maybe_record_pre_tool_guidance(
         tool_input: payload.tool_input.clone(),
     };
     let config = turn.config.experimental_smart_suggest.clone();
-    let advisory = run_smart_suggest_for_policy(
-        infinity_agent_policy,
-        &config,
-        &tool_call,
-        |request| query_smart_suggest_model(session, turn, request),
-    )
-    .await;
+    let advisory =
+        run_smart_suggest_for_policy(infinity_agent_policy, &config, &tool_call, |request| {
+            query_smart_suggest_model(session, turn, request)
+        })
+        .await;
     if let Some(advisory) = advisory {
         record_additional_contexts(session, turn, vec![advisory]).await;
     }

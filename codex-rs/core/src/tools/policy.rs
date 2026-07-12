@@ -371,11 +371,12 @@ impl VerifiedToolPolicy {
                 "effective safety configuration serialization failed: {error}"
             ))
         })?;
-        let effective_bytes = serde_json_canonicalizer::to_vec(&effective_value).map_err(|error| {
-            invalid(format!(
-                "effective safety configuration canonicalization failed: {error}"
-            ))
-        })?;
+        let effective_bytes =
+            serde_json_canonicalizer::to_vec(&effective_value).map_err(|error| {
+                invalid(format!(
+                    "effective safety configuration canonicalization failed: {error}"
+                ))
+            })?;
 
         Ok(InfinityAgentSafetyAttestation {
             schema_version: "codewith.infinity-agent-safety-attestation/v1",
@@ -589,18 +590,12 @@ pub(crate) fn test_dynamic_policy(tools: &[DynamicToolSpec]) -> Arc<VerifiedTool
 }
 
 #[cfg(test)]
-pub(crate) fn test_mcp_policy(
-    source_id: &str,
-    raw_tool_names: &[&str],
-) -> Arc<VerifiedToolPolicy> {
+pub(crate) fn test_mcp_policy(source_id: &str, raw_tool_names: &[&str]) -> Arc<VerifiedToolPolicy> {
     let entries = raw_tool_names
         .iter()
         .map(|raw_tool_name| {
             (
-                ToolName::new(
-                    Some(source_id.to_string()),
-                    (*raw_tool_name).to_string(),
-                ),
+                ToolName::new(Some(source_id.to_string()), (*raw_tool_name).to_string()),
                 VerifiedPolicyEntry {
                     source: PolicySource::Mcp,
                     source_id: source_id.to_string(),

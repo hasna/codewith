@@ -244,10 +244,8 @@ fn infinity_agent_mcp_requirements(
 #[cfg(unix)]
 fn assert_infinity_agent_mcp_server_rejected(label: &str, server: McpServerConfig) {
     let requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
-    let policy = crate::tools::policy::test_mcp_policy(
-        INFINITY_TEST_MCP_SOURCE,
-        &[INFINITY_TEST_MCP_TOOL],
-    );
+    let policy =
+        crate::tools::policy::test_mcp_policy(INFINITY_TEST_MCP_SOURCE, &[INFINITY_TEST_MCP_TOOL]);
     let error = constrain_infinity_agent_mcp_servers(
         Constrained::allow_any(HashMap::from([(
             INFINITY_TEST_MCP_SOURCE.to_string(),
@@ -265,10 +263,8 @@ fn assert_infinity_agent_mcp_server_rejected(label: &str, server: McpServerConfi
 fn infinity_agent_policy_mcp_config_accepts_only_exact_protected_bridge() {
     let server = infinity_agent_mcp_server();
     let requirements = infinity_agent_mcp_requirements(INFINITY_TEST_MCP_SOURCE, &server);
-    let policy = crate::tools::policy::test_mcp_policy(
-        INFINITY_TEST_MCP_SOURCE,
-        &[INFINITY_TEST_MCP_TOOL],
-    );
+    let policy =
+        crate::tools::policy::test_mcp_policy(INFINITY_TEST_MCP_SOURCE, &[INFINITY_TEST_MCP_TOOL]);
     let extra_server = http_mcp("https://untrusted.example/mcp");
 
     let constrained = constrain_infinity_agent_mcp_servers(
@@ -314,10 +310,8 @@ fn infinity_agent_policy_mcp_config_rejects_reserved_host_apps_source() {
 #[test]
 fn infinity_agent_policy_mcp_config_rejects_missing_or_non_system_requirement() {
     let server = infinity_agent_mcp_server();
-    let policy = crate::tools::policy::test_mcp_policy(
-        INFINITY_TEST_MCP_SOURCE,
-        &[INFINITY_TEST_MCP_TOOL],
-    );
+    let policy =
+        crate::tools::policy::test_mcp_policy(INFINITY_TEST_MCP_SOURCE, &[INFINITY_TEST_MCP_TOOL]);
     let servers = || {
         Constrained::allow_any(HashMap::from([(
             INFINITY_TEST_MCP_SOURCE.to_string(),
@@ -359,10 +353,8 @@ fn infinity_agent_policy_mcp_config_rejects_requirement_identity_mismatch() {
     requirement.identity = McpServerIdentity::Url {
         url: "https://different.example/mcp".to_string(),
     };
-    let policy = crate::tools::policy::test_mcp_policy(
-        INFINITY_TEST_MCP_SOURCE,
-        &[INFINITY_TEST_MCP_TOOL],
-    );
+    let policy =
+        crate::tools::policy::test_mcp_policy(INFINITY_TEST_MCP_SOURCE, &[INFINITY_TEST_MCP_TOOL]);
 
     constrain_infinity_agent_mcp_servers(
         Constrained::allow_any(HashMap::from([(
@@ -383,7 +375,10 @@ fn infinity_agent_policy_mcp_config_rejects_non_https_and_userinfo_urls() {
         ("username", "https://user@bridge.example/mcp"),
         ("empty userinfo", "https://@bridge.example/mcp"),
         ("password", "https://user:secret@bridge.example/mcp"),
-        ("noncanonical authority slashes", "https:////bridge.example/mcp"),
+        (
+            "noncanonical authority slashes",
+            "https:////bridge.example/mcp",
+        ),
         ("backslash authority", "https:\\\\@bridge.example/mcp"),
         ("query", "https://bridge.example/mcp?token=secret"),
         ("fragment", "https://bridge.example/mcp#secret"),
@@ -451,9 +446,7 @@ fn infinity_agent_policy_mcp_config_rejects_credentials_and_overlays() {
         ),
         (
             "OAuth client",
-            Box::new(|server| {
-                server.oauth = Some(McpServerOAuthConfig { client_id: None })
-            }),
+            Box::new(|server| server.oauth = Some(McpServerOAuthConfig { client_id: None })),
         ),
         (
             "OAuth resource",
@@ -471,10 +464,7 @@ fn infinity_agent_policy_mcp_config_rejects_credentials_and_overlays() {
             "parallel tool calls",
             Box::new(|server| server.supports_parallel_tool_calls = true),
         ),
-        (
-            "disabled server",
-            Box::new(|server| server.enabled = false),
-        ),
+        ("disabled server", Box::new(|server| server.enabled = false)),
         (
             "missing raw-tool allowlist",
             Box::new(|server| server.enabled_tools = None),

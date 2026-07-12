@@ -3102,10 +3102,7 @@ mod tests {
         let cli = MultitoolCli::try_parse_from(["codewith", "infinity-agent", "attest"])
             .expect("parse Infinity Agent attestation command");
 
-        assert!(matches!(
-            cli.subcommand,
-            Some(Subcommand::InfinityAgent(_))
-        ));
+        assert!(matches!(cli.subcommand, Some(Subcommand::InfinityAgent(_))));
     }
 
     #[test]
