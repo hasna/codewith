@@ -302,7 +302,8 @@ impl App {
                 }))
             }
             "clear" => {
-                self.chat_widget.set_agent_statusline_from_tool(None)?;
+                self.chat_widget
+                    .set_agent_statusline_from_tool(/*message*/ None)?;
                 tracing::info!("agent cleared statusline display text from UI tool");
                 Ok(json!({
                     "surface": "statusline",
