@@ -23,6 +23,24 @@ APPROVED_REVIEW_DECISIONS = {"APPROVED"}
 BLOCKING_REVIEW_DECISIONS = {"CHANGES_REQUESTED", "REVIEW_REQUIRED"}
 BLOCKING_MERGE_STATE_STATUSES = {"BLOCKED", "DIRTY", "UNKNOWN"}
 PENDING_MERGE_STATE_STATUSES = {"BEHIND", "UNSTABLE"}
+CHECK_STATE_FIELDS = ("bucket", "conclusion", "state", "status")
+BLOCKING_CHECK_STATES = {
+    "action_required",
+    "cancel",
+    "cancelled",
+    "fail",
+    "failed",
+    "failure",
+    "timed_out",
+}
+PENDING_CHECK_STATES = {
+    "expected",
+    "in_progress",
+    "pending",
+    "queued",
+    "requested",
+    "waiting",
+}
 
 
 def utc_now() -> str:
@@ -92,14 +110,29 @@ def review_decision(review_decision_value: str | None, reviews: list[dict[str, A
     return None, blockers, warnings
 
 
+def normalize_check_state(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized or None
+
+
+def check_states(check: dict[str, Any]) -> set[str]:
+    states: set[str] = set()
+    for field in CHECK_STATE_FIELDS:
+        normalized = normalize_check_state(check.get(field))
+        if normalized:
+            states.add(normalized)
+    return states
+
+
 def checks_decision(checks: list[dict[str, Any]]) -> tuple[str | None, list[str]]:
     if not checks:
         return None, ["no_checks_observed"]
-    conclusions = [check.get("conclusion") or check.get("state") or check.get("status") for check in checks]
-    normalized = {str(value).lower() for value in conclusions if value is not None}
-    if normalized & {"failure", "failed", "cancelled", "timed_out", "action_required"}:
+    normalized = set().union(*(check_states(check) for check in checks))
+    if normalized & BLOCKING_CHECK_STATES:
         return "not_mergeable", ["checks_not_successful"]
-    if normalized & {"pending", "queued", "in_progress", "waiting", "requested", "expected"}:
+    if normalized & PENDING_CHECK_STATES:
         return "pending", ["checks_pending"]
     return None, []
 
@@ -212,7 +245,14 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         if args.repo:
             command.extend(["--repo", args.repo])
         pr_view = run_json(command)
-        checks_command = ["gh", "pr", "checks", str(args.pr), "--json", "name,state,conclusion,link"]
+        checks_command = [
+            "gh",
+            "pr",
+            "checks",
+            str(args.pr),
+            "--json",
+            "name,state,bucket,workflow,startedAt,completedAt,link",
+        ]
         if args.repo:
             checks_command.extend(["--repo", args.repo])
         try:
