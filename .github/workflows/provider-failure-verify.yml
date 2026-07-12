@@ -1,6 +1,9 @@
 name: provider-failure-verify
 
 on:
+  push:
+    branches:
+      - build/infinity-agent-attestation
   workflow_dispatch:
 
 permissions:
