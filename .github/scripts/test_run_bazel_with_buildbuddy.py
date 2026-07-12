@@ -81,15 +81,16 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ],
             )
 
-    def test_hasna_codewith_actions_default_ignores_buildbuddy_key(self) -> None:
+    def test_hasna_codewith_actions_default_uses_cache_without_rbe(self) -> None:
         with TemporaryDirectory() as temp_dir:
             env = self.github_env(temp_dir, repository="hasna/codewith")
 
-            self.assertIsNone(
+            self.assertEqual(
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-linux", "//codex-rs/cli:codex"],
                     env,
-                )
+                ),
+                "buildbuddy-openai",
             )
             self.assertEqual(
                 run_bazel_with_buildbuddy.bazel_args_with_remote_config(
@@ -101,7 +102,13 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ],
                     env,
                 ),
-                ["build", "--", "//codex-rs/cli:codex"],
+                [
+                    "build",
+                    "--config=buildbuddy-openai",
+                    "--remote_header=x-buildbuddy-api-key=token",
+                    "--",
+                    "//codex-rs/cli:codex",
+                ],
             )
 
     def test_hasna_codewith_actions_can_opt_into_openai_rbe(self) -> None:

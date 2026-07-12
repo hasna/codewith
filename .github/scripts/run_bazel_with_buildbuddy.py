@@ -112,9 +112,17 @@ def buildbuddy_disabled_by_hasna_default(env: Mapping[str, str]) -> bool:
     return is_hasna_codewith_actions_run(env) and not hasna_buildbuddy_rbe_opt_in(env)
 
 
+def hasna_buildbuddy_cache_only(env: Mapping[str, str]) -> bool:
+    return bool(env.get("BUILDBUDDY_API_KEY")) and buildbuddy_disabled_by_hasna_default(
+        env
+    )
+
+
 def uses_openai_host(env: Mapping[str, str]) -> bool:
     return bool(env.get("BUILDBUDDY_API_KEY")) and (
-        is_trusted_upstream_run(env) or hasna_buildbuddy_rbe_opt_in(env)
+        is_trusted_upstream_run(env)
+        or hasna_buildbuddy_rbe_opt_in(env)
+        or hasna_buildbuddy_cache_only(env)
     )
 
 
@@ -127,11 +135,11 @@ def uses_remote_execution(args: Sequence[str]) -> bool:
 
 
 def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
-    if not env.get("BUILDBUDDY_API_KEY") or buildbuddy_disabled_by_hasna_default(env):
+    if not env.get("BUILDBUDDY_API_KEY"):
         return None
 
     config = OPENAI_REMOTE_CONFIG if uses_openai_host(env) else GENERIC_REMOTE_CONFIG
-    if uses_remote_execution(args):
+    if uses_remote_execution(args) and not hasna_buildbuddy_cache_only(env):
         config += "-rbe"
     return config
 
@@ -155,6 +163,9 @@ def bazel_args_with_remote_config(
     config = remote_config(args, env)
     if config is None:
         return bazel_args_without_remote_execution(args)
+
+    if hasna_buildbuddy_cache_only(env):
+        args = bazel_args_without_remote_execution(args)
 
     # `remote_config()` returns a configuration only when this key is present.
     api_key = env["BUILDBUDDY_API_KEY"]
@@ -186,7 +197,7 @@ def main() -> None:
             os.environ
         ):
             print(
-                "BuildBuddy remote configuration is disabled; using local Bazel configuration.",
+                "BuildBuddy RBE is disabled; using BuildBuddy cache with local Bazel execution.",
                 file=sys.stderr,
             )
         else:

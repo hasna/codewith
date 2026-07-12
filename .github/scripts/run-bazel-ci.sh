@@ -77,21 +77,36 @@ esac
 buildbuddy_rbe_config=buildbuddy-generic-rbe
 if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "hasna/codewith" ]]; then
   # The hasna/codewith workflow key currently reaches the OpenAI tenant but has
-  # no registered RBE executors. Stay on the keyless CI shape until that
-  # external registration is fixed, while keeping an explicit opt-in for smoke
-  # testing the keyed path.
+  # no registered RBE executors. Keep RBE behind an explicit opt-in until that
+  # external registration is fixed.
   buildbuddy_rbe_config=buildbuddy-openai-rbe
 fi
 
-use_buildbuddy_key=0
+has_buildbuddy_key=0
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-  use_buildbuddy_key=1
+  has_buildbuddy_key=1
 fi
-if [[ $use_buildbuddy_key -eq 1 &&
+
+hasna_buildbuddy_rbe_disabled=0
+if [[ $has_buildbuddy_key -eq 1 &&
   "${GITHUB_ACTIONS:-}" == "true" &&
   "${GITHUB_REPOSITORY:-}" == "hasna/codewith" &&
   "${CODEWITH_BAZEL_ENABLE_BUILDBUDDY_RBE:-}" != "1" ]]; then
+  hasna_buildbuddy_rbe_disabled=1
+fi
+
+use_buildbuddy_key=$has_buildbuddy_key
+if [[ $hasna_buildbuddy_rbe_disabled -eq 1 ]]; then
   use_buildbuddy_key=0
+fi
+
+use_buildbuddy_cache_only=0
+if [[ $hasna_buildbuddy_rbe_disabled -eq 1 && "$ci_config" == "ci-linux" ]]; then
+  # The Hasna key can reach the OpenAI tenant, but RBE is opt-in until its
+  # executor pool is registered. Keep Linux execution local while still using
+  # the remote cache/BES/downloader to avoid cold-building expensive toolchain
+  # artifacts when cache entries are available.
+  use_buildbuddy_cache_only=1
 fi
 
 buildbuddy_config=()
@@ -123,6 +138,13 @@ print_bazel_test_log_tails() {
       "${buildbuddy_config[@]}"
       "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
       "--config=${ci_config}"
+    )
+  elif (( use_buildbuddy_cache_only == 1 )); then
+    bazel_info_args+=(
+      "--config=buildbuddy-openai"
+      "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+      "--remote_executor="
+      "--config=ci-keyless"
     )
   fi
   # Only pass flags that affect Bazel's output-root selection or repository
@@ -424,6 +446,27 @@ if (( use_buildbuddy_key == 1 )); then
     "${buildbuddy_config[@]}"
     "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
     "--config=${ci_config}"
+  )
+  if (( ${#post_config_bazel_args[@]} > 0 )); then
+    bazel_run_args+=("${post_config_bazel_args[@]}")
+  fi
+  set +e
+  run_bazel "${bazel_cmd[@]:1}" \
+    --noexperimental_remote_repo_contents_cache \
+    "${bazel_run_args[@]}" \
+    -- \
+    "${bazel_targets[@]}" \
+    2>&1 | tee "$bazel_console_log"
+  bazel_status=${PIPESTATUS[0]}
+  set -e
+elif (( use_buildbuddy_cache_only == 1 )); then
+  echo "BuildBuddy API key is available; using BuildBuddy cache with local Bazel execution."
+  bazel_run_args=(
+    "${bazel_args[@]}"
+    --config=buildbuddy-openai
+    "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+    --remote_executor=
+    --config=ci-keyless
   )
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")

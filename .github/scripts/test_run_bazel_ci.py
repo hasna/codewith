@@ -111,20 +111,27 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
 
-    def test_keyed_hasna_ci_linux_uses_keyless_fallback_by_default(self) -> None:
+    def test_keyed_hasna_ci_linux_uses_buildbuddy_cache_only_by_default(self) -> None:
         result, bazel_args = self.run_wrapper(
             buildbuddy_api_key="test-token",
             extra_env={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "hasna/codewith"},
         )
 
         self.assert_success(result)
-        self.assertIn("using local Bazel configuration", result.stdout)
-        self.assertIn("--remote_cache=", bazel_args)
+        self.assertIn(
+            "using BuildBuddy cache with local Bazel execution", result.stdout
+        )
+        self.assertIn("--config=buildbuddy-openai", bazel_args)
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
         self.assertIn("--remote_executor=", bazel_args)
-        self.assertIn("--experimental_remote_downloader=", bazel_args)
         self.assertIn("--config=ci-keyless", bazel_args)
         self.assertNotIn("--config=buildbuddy-openai-rbe", bazel_args)
-        self.assertNotIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--remote_cache=", bazel_args)
+        self.assertNotIn("--experimental_remote_downloader=", bazel_args)
+        self.assertLess(
+            bazel_args.index("--config=buildbuddy-openai"),
+            bazel_args.index("--config=ci-keyless"),
+        )
 
     def test_keyed_hasna_ci_linux_can_opt_into_openai_buildbuddy_rbe_config(
         self,
