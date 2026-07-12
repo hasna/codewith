@@ -75,10 +75,12 @@ case "${RUNNER_OS:-}" in
 esac
 
 buildbuddy_rbe_config=buildbuddy-generic-rbe
-if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "hasna/codewith" ]]; then
+if [[ "${GITHUB_ACTIONS:-}" == "true" &&
+  ( "${GITHUB_REPOSITORY:-}" == "openai/codex" || "${GITHUB_REPOSITORY:-}" == "hasna/codewith" ) ]]; then
   # The hasna/codewith workflow key currently reaches the OpenAI tenant but has
   # no registered RBE executors. Keep RBE behind an explicit opt-in until that
-  # external registration is fixed.
+  # external registration is fixed. Trusted upstream openai/codex CI also uses
+  # the OpenAI tenant for remote execution.
   buildbuddy_rbe_config=buildbuddy-openai-rbe
 fi
 

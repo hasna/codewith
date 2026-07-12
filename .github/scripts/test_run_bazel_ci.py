@@ -111,6 +111,23 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
         self.assertNotIn("--remote_executor=", bazel_args)
 
+    def test_keyed_upstream_actions_uses_openai_buildbuddy_rbe_config(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            buildbuddy_api_key="test-token",
+            extra_env={"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "openai/codex"},
+        )
+
+        self.assert_success(result)
+        self.assertIn("using remote Bazel configuration", result.stdout)
+        self.assert_remote_config_before_ci_config(
+            bazel_args,
+            remote_config="--config=buildbuddy-openai-rbe",
+            ci_config="--config=ci-linux",
+        )
+        self.assertIn("--remote_header=x-buildbuddy-api-key=test-token", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertNotIn("--remote_executor=", bazel_args)
+
     def test_keyed_hasna_ci_linux_uses_buildbuddy_cache_only_by_default(self) -> None:
         result, bazel_args = self.run_wrapper(
             buildbuddy_api_key="test-token",
