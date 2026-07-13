@@ -26,6 +26,7 @@ const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
 const GPT_5_4_CONTEXT_WINDOW: i64 = 1_050_000;
+const CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW: i64 = 272_000;
 
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
@@ -562,6 +563,105 @@ async fn get_model_info_keeps_chatgpt_remote_gpt_5_5_context_window() {
 }
 
 #[tokio::test]
+async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_auth() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    for slug in [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.5",
+    ] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(
+            model_info.context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default context window"
+        );
+        assert_eq!(
+            model_info.max_context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default max context window"
+        );
+        assert!(!model_info.used_fallback_model_metadata);
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_auth_caps_api_sized_remote_gpt_context_window() {
+    let mut remote = remote_model(GPT_5_5_MODEL_ID, "GPT-5.5", /*priority*/ 0);
+    remote.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    remote.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![vec![remote]]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(
+        model_info.context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert_eq!(
+        model_info.max_context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_explicit_gpt_context_window_override() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(model_info.context_window, Some(500_000));
+    assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_api_sized_gpt_context_window_for_non_openai_provider() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openrouter".to_string()),
+        ..Default::default()
+    };
+
+    for slug in [GPT_5_5_MODEL_ID, "openrouter/gpt-5.5"] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(model_info.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+        assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    }
+}
+
+#[tokio::test]
 async fn get_model_info_keeps_chatgpt_remote_gpt_5_4_context_window() {
     let remote_context_window = 273_000;
     let remote_max_context_window = 274_000;
@@ -761,17 +861,22 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(vec![remote_models]);
     let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
-    let bundled_slug = load_remote_models_from_file()
-        .expect("bundled models should parse")
-        .first()
-        .expect("bundled models should contain at least one model")
-        .slug
-        .clone();
 
     manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
         .await
         .expect("refresh succeeds");
+    let remote_models = manager.get_remote_models().await;
+    let bundled_slug = load_remote_models_from_file()
+        .expect("bundled models should parse")
+        .into_iter()
+        .find(|bundled| {
+            !remote_models
+                .iter()
+                .any(|remote| remote.slug == bundled.slug)
+        })
+        .expect("bundled models should contain at least one non-required model")
+        .slug;
 
     let model_info = manager
         .get_model_info(&bundled_slug, &ModelsManagerConfig::default())
