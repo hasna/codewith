@@ -42,6 +42,25 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.64] - 2026-07-13
+
+Tag: `rust-v0.1.64`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.64>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.63...rust-v0.1.64>
+
+Hotfix release for ChatGPT subscription context-window compaction.
+
+### Fixed
+
+- Compaction: ChatGPT-authenticated OpenAI GPT-5.4, GPT-5.5, and GPT-5.6
+  model metadata now clamps API-sized fallback or stale remote context windows
+  to the subscription-sized 272K raw window by default, so auto-compaction uses
+  the 244.8K default compact threshold and the 258.4K effective full-window cap
+  instead of waiting for a 1M-class API budget.
+- Status: ChatGPT profile switches and resumed/forked token-count replay now
+  refresh or clamp stale API-sized context-window denominators while preserving
+  smaller backend-reported ChatGPT replay windows.
+
 ## [0.1.61] - 2026-07-09
 
 Tag: `rust-v0.1.61`

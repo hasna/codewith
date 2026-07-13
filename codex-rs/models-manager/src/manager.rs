@@ -201,7 +201,16 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     async fn get_model_info(&self, model: &str, config: &ModelsManagerConfig) -> ModelInfo {
         async move {
             let remote_models = self.get_remote_models().await;
-            construct_model_info_from_candidates(model, &remote_models, config)
+            let model_info = construct_model_info_from_candidates(model, &remote_models, config);
+            if self
+                .auth_manager()
+                .and_then(AuthManager::auth_mode)
+                .is_some_and(AuthMode::has_chatgpt_account)
+            {
+                cap_api_sized_gpt_context_for_chatgpt_auth(model_info, config)
+            } else {
+                model_info
+            }
         }
         .instrument(tracing::info_span!("get_model_info", model = model))
         .await
@@ -562,6 +571,57 @@ pub(crate) fn construct_model_info_from_candidates(
         model_info::model_info_from_slug_for_provider(model, config.model_provider_id.as_deref())
     };
     model_info::with_config_overrides(model_info, config)
+}
+
+const CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW: i64 = 272_000;
+const API_SIZED_GPT_CONTEXT_WINDOW_FLOOR: i64 = 1_000_000;
+
+fn cap_api_sized_gpt_context_for_chatgpt_auth(
+    mut model_info: ModelInfo,
+    config: &ModelsManagerConfig,
+) -> ModelInfo {
+    if config.model_context_window.is_some()
+        || !is_openai_model_provider(config)
+        || !is_chatgpt_default_capped_gpt_model(&model_info.slug)
+    {
+        return model_info;
+    }
+
+    model_info.context_window = cap_api_sized_gpt_context_window(model_info.context_window);
+    model_info.max_context_window = cap_api_sized_gpt_context_window(model_info.max_context_window);
+
+    if let (Some(context_window), Some(max_context_window)) =
+        (model_info.context_window, model_info.max_context_window)
+        && max_context_window < context_window
+    {
+        model_info.max_context_window = Some(context_window);
+    }
+
+    model_info
+}
+
+fn is_openai_model_provider(config: &ModelsManagerConfig) -> bool {
+    matches!(config.model_provider_id.as_deref(), None | Some("openai"))
+}
+
+fn cap_api_sized_gpt_context_window(context_window: Option<i64>) -> Option<i64> {
+    context_window.map(|window| {
+        if window >= API_SIZED_GPT_CONTEXT_WINDOW_FLOOR {
+            CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW
+        } else {
+            window
+        }
+    })
+}
+
+fn is_chatgpt_default_capped_gpt_model(slug: &str) -> bool {
+    let slug = slug
+        .rsplit_once('/')
+        .map_or(slug, |(_namespace, suffix)| suffix);
+    matches!(
+        slug,
+        "gpt-5.4" | "gpt-5.5" | "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+    )
 }
 
 #[cfg(test)]
