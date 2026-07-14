@@ -434,7 +434,11 @@ fn summarize_json(value: &Value) -> String {
     let mut summary =
         serde_json::to_string(value).unwrap_or_else(|_| "<unserializable json>".to_string());
     if summary.len() > MAX_JSON_SUMMARY_LEN {
-        summary.truncate(MAX_JSON_SUMMARY_LEN);
+        let mut end = MAX_JSON_SUMMARY_LEN;
+        while !summary.is_char_boundary(end) {
+            end -= 1;
+        }
+        summary.truncate(end);
         summary.push_str("...");
     }
     summary
@@ -445,4 +449,20 @@ fn u64_field(value: &Value, field: &str) -> Option<u64> {
         .get(field)
         .and_then(Value::as_i64)
         .map(|value| value.max(0) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn json_summary_handles_a_multibyte_character_crossing_the_byte_limit() {
+        let value = json!({"xy": "é".repeat(200)});
+
+        let summary = summarize_json(&value);
+
+        assert_eq!(summary, format!("{{\"xy\":\"{}...", "é".repeat(116)));
+    }
 }

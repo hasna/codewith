@@ -20,12 +20,14 @@ use std::time::Instant;
 
 use crate::app::App;
 use crate::app::AttemptView;
+use crate::truncation::truncate_to_byte_limit;
 use crate::util::format_relative_time_now;
 use codex_cloud_tasks_client::AttemptStatus;
 use codex_cloud_tasks_client::TaskStatus;
 use codex_tui::render_markdown_text;
 
 const CODEWITH_EMERALD: Color = Color::Green;
+const STATUS_BYTE_LIMIT: usize = 2000;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -38,10 +40,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(area);
     if app.new_task.is_some() {
         draw_new_task_page(frame, chunks[0], app);
-        draw_footer(frame, chunks[1], app);
+        draw_footer(frame, chunks[1], app, STATUS_BYTE_LIMIT);
     } else {
         draw_list(frame, chunks[0], app);
-        draw_footer(frame, chunks[1], app);
+        draw_footer(frame, chunks[1], app, STATUS_BYTE_LIMIT);
     }
 
     if app.diff_overlay.is_some() {
@@ -235,7 +237,7 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App, status_byte_limit: usize) {
     let mut help = vec![
         "↑/↓".dim(),
         ": Move  ".dim(),
@@ -300,10 +302,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Bottom row: status/log text across full width (single-line; sanitize newlines)
     let mut status_line = app.status.replace('\n', " ");
-    if status_line.len() > 2000 {
+    if status_line.len() > status_byte_limit {
         // hard cap to avoid TUI noise
-        status_line.truncate(2000);
-        status_line.push('…');
+        status_line = format!(
+            "{}…",
+            truncate_to_byte_limit(&status_line, status_byte_limit)
+        );
     }
     // Clear the status row to avoid trailing characters when the message shrinks.
     frame.render_widget(Clear, rows[1]);
@@ -465,6 +469,30 @@ fn draw_diff_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             .unwrap_or(0);
         let content = Paragraph::new(Text::from(styled_lines)).scroll((scroll, 0));
         frame.render_widget(content, content_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn footer_renders_a_multibyte_status_truncated_at_a_byte_boundary() {
+        let backend = TestBackend::new(12, 4);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        let mut app = App::new();
+        app.status = "aaaaéz".to_string();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_footer(frame, area, &mut app, /*status_byte_limit*/ 5);
+            })
+            .expect("draw footer");
+
+        insta::assert_snapshot!("footer_multibyte_status_truncation", terminal.backend());
     }
 }
 
