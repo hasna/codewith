@@ -3793,6 +3793,7 @@ dependencies = [
  "codex-state",
  "codex-utils-path",
  "pretty_assertions",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -3800,6 +3801,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
