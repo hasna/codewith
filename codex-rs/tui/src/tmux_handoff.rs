@@ -673,4 +673,32 @@ mod tests {
             "tmux switch-client -t '=named-session:@42'"
         );
     }
+
+    #[test]
+    fn summary_exit_preserves_raw_exact_target_for_cli() {
+        let summary = TmuxHandoffSummary {
+            session_name: "named-session".to_string(),
+            window_name: "Codewith window".to_string(),
+            attach_target: exact_tmux_window_target("named-session", "@42"),
+            handoff_command: handoff_command(
+                TmuxHandoffAttachMode::SwitchClient,
+                &exact_tmux_window_target("named-session", "@42"),
+            ),
+            attach_mode: TmuxHandoffAttachMode::SwitchClient,
+        };
+
+        assert_eq!(
+            summary.exit(),
+            TmuxHandoffExit {
+                session_name: "named-session".to_string(),
+                window_name: "Codewith window".to_string(),
+                target: "=named-session:@42".to_string(),
+                attach_mode: TmuxHandoffAttachMode::SwitchClient,
+            }
+        );
+        assert_eq!(
+            summary.handoff_command,
+            "tmux switch-client -t '=named-session:@42'"
+        );
+    }
 }
