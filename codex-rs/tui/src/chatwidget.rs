@@ -115,6 +115,7 @@ use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::ModelVerification as AppServerModelVerification;
 use codex_app_server_protocol::RateLimitReachedType;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
@@ -277,6 +278,7 @@ use crate::app_event::ExitMode;
 use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RateLimitRefreshTarget;
+use crate::app_event::RateLimitResetAttempt;
 #[cfg(any(target_os = "windows", test))]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -456,6 +458,9 @@ use self::transcript::TranscriptState;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
+mod usage_limit_reset;
+pub(crate) use usage_limit_reset::RateLimitResetCompletion;
+pub(crate) use usage_limit_reset::UsageLimitAutoResetCheckOutcome;
 mod usage_panel;
 mod usage_profile_broker;
 mod usage_self_heal;
@@ -617,6 +622,17 @@ pub(crate) struct ChatWidget {
     refreshing_minimax_usage_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     usage_panel_rate_limit_state: UsagePanelRateLimitState,
     usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
+    rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+    announced_rate_limit_reset_available_count: Option<i64>,
+    pending_rate_limit_reset_consumption: Option<RateLimitResetAttempt>,
+    rate_limit_reset_in_flight: Option<RateLimitResetAttempt>,
+    rate_limit_reset_retry: Option<RateLimitResetAttempt>,
+    rate_limit_reset_generation: u64,
+    pending_rate_limit_reset_picker: Option<u64>,
+    pending_usage_limit_auto_reset_check: Option<u64>,
+    pending_post_reset_refresh: Option<RateLimitResetAttempt>,
+    automatic_reset_opted_out_generation: Option<u64>,
+    usage_limit_auto_reset_key: Option<String>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

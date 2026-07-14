@@ -2950,7 +2950,8 @@ async fn profile_selection_popup_snapshot_and_selection() {
         Ok(AppEvent::SwitchAuthProfile {
             profile,
             reason,
-            resume_queued_input
+            resume_queued_input,
+        ..
         })
             if profile.as_deref() == Some("personal")
                 && reason == crate::app_event::AuthProfileSwitchReason::Manual
@@ -2962,7 +2963,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::ReloginAuthProfile { profile }) if profile == "personal"
+        Ok(AppEvent::ReloginAuthProfile { profile, .. }) if profile == "personal"
     );
 
     chat.open_profile_popup();
@@ -2970,7 +2971,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenAuthProfileRenamePrompt { profile }) if profile == "personal"
+        Ok(AppEvent::OpenAuthProfileRenamePrompt { profile, .. }) if profile == "personal"
     );
 
     chat.open_auth_profile_settings_popup("personal".to_string());
@@ -2978,7 +2979,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
+        Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile, .. }) if profile == "personal"
     );
 
     chat.open_profile_popup();
@@ -2986,7 +2987,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::MoveAuthProfile { profile, direction })
+        Ok(AppEvent::MoveAuthProfile { profile, direction, .. })
             if profile == "personal"
                 && direction == codex_login::AuthProfileMoveDirection::Down
     );
@@ -2996,7 +2997,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::MoveAuthProfile { profile, direction })
+        Ok(AppEvent::MoveAuthProfile { profile, direction, .. })
             if profile == "personal"
                 && direction == codex_login::AuthProfileMoveDirection::Up
     );
@@ -3006,7 +3007,10 @@ async fn profile_selection_popup_snapshot_and_selection() {
         chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAuthProfileLoginPrompt));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileLoginPrompt { .. })
+    );
 }
 
 #[tokio::test]

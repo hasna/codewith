@@ -2412,6 +2412,7 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `authProfile/saveCurrent` — save current root auth credentials as a named auth profile, switch to it, and trigger `account/updated`.
 - `authProfile/switch` — switch the selected auth profile, refresh account-scoped app-server state, and trigger `account/updated`.
 - `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
+- `account/rateLimitResetCredit/consume` — consume one available ChatGPT usage-limit reset credit for the selected auth profile, or pass `authProfile` to target root or a saved auth profile.
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, success, error? }`.
@@ -2562,11 +2563,27 @@ Field notes:
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 
-### 9) Notify a workspace owner about a limit
+### 9) Consume a usage-limit reset credit
+
+Use this only after `account/rateLimits/read` reports available reset credits and the user has explicitly chosen to spend one, or after the local client has an opt-in auto-reset policy.
 
 ```json
-{ "method": "account/sendAddCreditsNudgeEmail", "id": 13, "params": { "creditType": "credits" } }
-{ "id": 13, "result": { "status": "sent" } }
+{ "method": "account/rateLimitResetCredit/consume", "id": 13, "params": { "idempotencyKey": "<uuid>", "authProfile": "work", "creditId": "optional-credit-id" } }
+{ "id": 13, "result": { "outcome": "reset" } }
+```
+
+Field notes:
+
+- `idempotencyKey` is required and must be non-empty; reuse it only when retrying the same logical reset attempt.
+- `authProfile` follows `account/rateLimits/read`: omit it for the selected auth profile, set a profile name, or set `null` for root auth.
+- `creditId` is optional; when omitted, the backend chooses an available reset credit.
+- `outcome` is one of `reset`, `nothingToReset`, `noCredit`, `alreadyRedeemed`, or `unknown`.
+
+### 10) Notify a workspace owner about a limit
+
+```json
+{ "method": "account/sendAddCreditsNudgeEmail", "id": 14, "params": { "creditType": "credits" } }
+{ "id": 14, "result": { "status": "sent" } }
 ```
 
 Use `creditType: "credits"` when workspace credits are depleted, or `creditType: "usage_limit"` when the workspace usage limit has been reached. If the owner was already notified recently, the response status is `cooldown_active`.

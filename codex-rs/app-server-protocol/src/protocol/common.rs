@@ -1558,6 +1558,12 @@ client_request_definitions! {
         response: v2::GetAccountRateLimitsResponse,
     },
 
+    ConsumeAccountRateLimitResetCredit => "account/rateLimitResetCredit/consume" {
+        params: v2::ConsumeAccountRateLimitResetCreditParams,
+        serialization: global("account-auth"),
+        response: v2::ConsumeAccountRateLimitResetCreditResponse,
+    },
+
     GetAccountTokenUsage => "account/usage/read" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         serialization: None,
@@ -3340,6 +3346,45 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: v2::GetAccountRateLimitsParams::default(),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_consume_account_rate_limit_reset_credit() -> Result<()> {
+        let request = ClientRequest::ConsumeAccountRateLimitResetCredit {
+            request_id: RequestId::Integer(1),
+            params: v2::ConsumeAccountRateLimitResetCreditParams {
+                idempotency_key: "redeem-123".to_string(),
+                credit_id: None,
+                auth_profile: Some(Some("work".to_string())),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(1));
+        assert_eq!(request.method(), "account/rateLimitResetCredit/consume");
+        assert_eq!(
+            json!({
+                "method": "account/rateLimitResetCredit/consume",
+                "id": 1,
+                "params": {
+                    "idempotencyKey": "redeem-123",
+                    "authProfile": "work",
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_consume_account_rate_limit_reset_credit_outcome_as_camel_case() -> Result<()> {
+        let response = v2::ConsumeAccountRateLimitResetCreditResponse {
+            outcome: v2::ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed,
+        };
+
+        assert_eq!(
+            json!({ "outcome": "alreadyRedeemed" }),
+            serde_json::to_value(response)?,
         );
         Ok(())
     }

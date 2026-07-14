@@ -175,6 +175,11 @@ impl ChatWidget {
         self.on_rate_limit_snapshot_from(Some(snapshot), RateLimitSnapshotSource::RollingUpdate);
     }
 
+    pub(crate) fn begin_authoritative_selected_rate_limit_refresh(&mut self) {
+        self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
+        self.codex_rate_limit_reached_type = None;
+    }
+
     fn on_rate_limit_snapshot_from(
         &mut self,
         snapshot: Option<RateLimitSnapshot>,
@@ -272,7 +277,9 @@ impl ChatWidget {
             }
 
             self.update_auth_profile_auto_switch_snapshot(&limit_id, &snapshot, is_codex_limit);
-            self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
+            if !self.usage_limit_reset_takes_precedence_for_snapshot(&snapshot) {
+                self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
+            }
 
             let mut display =
                 rate_limit_snapshot_display_for_limit(&snapshot, limit_label, Local::now());
@@ -317,7 +324,7 @@ impl ChatWidget {
         }
     }
 
-    fn maybe_auto_switch_auth_profile_for_rate_limit(
+    pub(super) fn maybe_auto_switch_auth_profile_for_rate_limit(
         &mut self,
         limit_id: &str,
         snapshot: &RateLimitSnapshot,
@@ -344,6 +351,7 @@ impl ChatWidget {
         &mut self,
         user_message: &UserMessage,
         history_record: &UserMessageHistoryRecord,
+        shell_escape_policy: ShellEscapePolicy,
         queue_position: QueueInsertionPosition,
     ) -> bool {
         let Some((limit_id, window)) = self
@@ -360,11 +368,18 @@ impl ChatWidget {
         else {
             return false;
         };
+        if limit_id.eq_ignore_ascii_case("codex")
+            && window.label.eq_ignore_ascii_case("weekly")
+            && self.usage_limit_reset_takes_precedence()
+        {
+            return false;
+        }
         let trigger_key = auto_switch_trigger_key(&limit_id, &window);
         if self.pending_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
-            self.queue_user_message_for_auth_profile_auto_switch(
+            self.queue_user_message_at_position(
                 user_message,
                 history_record,
+                shell_escape_policy,
                 queue_position,
             );
             return true;
@@ -374,34 +389,44 @@ impl ChatWidget {
         else {
             return false;
         };
-        self.queue_user_message_for_auth_profile_auto_switch(
+        self.queue_user_message_at_position(
             user_message,
             history_record,
+            shell_escape_policy,
             queue_position,
         );
         self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
         true
     }
 
-    fn queue_user_message_for_auth_profile_auto_switch(
+    pub(super) fn queue_user_message_at_position(
         &mut self,
         user_message: &UserMessage,
         history_record: &UserMessageHistoryRecord,
+        shell_escape_policy: ShellEscapePolicy,
         queue_position: QueueInsertionPosition,
     ) {
         match queue_position {
             QueueInsertionPosition::Front => {
-                self.input_queue
-                    .queued_user_messages
-                    .push_front(QueuedUserMessage::from(user_message.clone()));
+                self.input_queue.queued_user_messages.push_front(
+                    QueuedUserMessage::new_with_shell_escape_policy(
+                        user_message.clone(),
+                        QueuedInputAction::Plain,
+                        shell_escape_policy,
+                    ),
+                );
                 self.input_queue
                     .queued_user_message_history_records
                     .push_front(history_record.clone());
             }
             QueueInsertionPosition::Back => {
-                self.input_queue
-                    .queued_user_messages
-                    .push_back(QueuedUserMessage::from(user_message.clone()));
+                self.input_queue.queued_user_messages.push_back(
+                    QueuedUserMessage::new_with_shell_escape_policy(
+                        user_message.clone(),
+                        QueuedInputAction::Plain,
+                        shell_escape_policy,
+                    ),
+                );
                 self.input_queue
                     .queued_user_message_history_records
                     .push_back(history_record.clone());
@@ -505,6 +530,7 @@ impl ChatWidget {
                 window: window.label,
             },
             resume_queued_input: true,
+            reset_generation: self.rate_limit_reset_generation,
         });
     }
 

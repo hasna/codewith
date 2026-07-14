@@ -1,3 +1,4 @@
+use super::account_rate_limit_resets;
 use super::*;
 
 // Duration before a browser ChatGPT login attempt is abandoned.
@@ -226,6 +227,15 @@ impl AccountRequestProcessor {
         params: GetAccountRateLimitsParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.get_account_rate_limits_response(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn consume_account_rate_limit_reset_credit(
+        &self,
+        params: ConsumeAccountRateLimitResetCreditParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.consume_account_rate_limit_reset_credit_response(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -997,7 +1007,7 @@ impl AccountRequestProcessor {
         params: GetAccountRateLimitsParams,
     ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
         self.fetch_account_rate_limits(params).await.map(
-            |(rate_limits, rate_limits_by_limit_id)| GetAccountRateLimitsResponse {
+            |(rate_limits, rate_limits_by_limit_id, reset_credits)| GetAccountRateLimitsResponse {
                 rate_limits: rate_limits.into(),
                 rate_limits_by_limit_id: Some(
                     rate_limits_by_limit_id
@@ -1005,6 +1015,7 @@ impl AccountRequestProcessor {
                         .map(|(limit_id, snapshot)| (limit_id, snapshot.into()))
                         .collect(),
                 ),
+                rate_limit_reset_credits: reset_credits,
             },
         )
     }
@@ -1013,7 +1024,15 @@ impl AccountRequestProcessor {
         &self,
         params: GetAccountRateLimitsParams,
     ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
-        let Some(auth_profile) = params.auth_profile else {
+        self.auth_manager_for_auth_profile(params.auth_profile)
+            .await
+    }
+
+    async fn auth_manager_for_auth_profile(
+        &self,
+        auth_profile: Option<Option<String>>,
+    ) -> Result<Arc<AuthManager>, JSONRPCErrorError> {
+        let Some(auth_profile) = auth_profile else {
             return Ok(self.auth_manager.clone());
         };
 
@@ -1126,6 +1145,46 @@ impl AccountRequestProcessor {
         }
     }
 
+    async fn consume_account_rate_limit_reset_credit_response(
+        &self,
+        params: ConsumeAccountRateLimitResetCreditParams,
+    ) -> Result<ConsumeAccountRateLimitResetCreditResponse, JSONRPCErrorError> {
+        let ConsumeAccountRateLimitResetCreditParams {
+            idempotency_key,
+            credit_id,
+            auth_profile,
+        } = params;
+        let idempotency_key =
+            account_rate_limit_resets::validated_idempotency_key(&idempotency_key)?.to_string();
+        let credit_id = account_rate_limit_resets::validated_credit_id(credit_id.as_deref())?
+            .map(str::to_string);
+        let auth_manager = self.auth_manager_for_auth_profile(auth_profile).await?;
+
+        let Some(auth) = auth_manager.auth().await else {
+            return Err(invalid_request(
+                "codex account authentication required to reset usage limits",
+            ));
+        };
+
+        if !auth.uses_codex_backend() {
+            return Err(invalid_request(
+                "chatgpt authentication required to reset usage limits",
+            ));
+        }
+
+        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+            .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
+
+        let outcome = account_rate_limit_resets::consume_credit(
+            &client,
+            &idempotency_key,
+            credit_id.as_deref(),
+        )
+        .await?;
+
+        Ok(ConsumeAccountRateLimitResetCreditResponse { outcome })
+    }
+
     async fn fetch_account_rate_limits(
         &self,
         params: GetAccountRateLimitsParams,
@@ -1133,6 +1192,7 @@ impl AccountRequestProcessor {
         (
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
+            Option<RateLimitResetCreditsSummary>,
         ),
         JSONRPCErrorError,
     > {
@@ -1148,6 +1208,7 @@ impl AccountRequestProcessor {
         (
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
+            Option<RateLimitResetCreditsSummary>,
         ),
         JSONRPCErrorError,
     > {
@@ -1166,10 +1227,16 @@ impl AccountRequestProcessor {
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
 
-        let snapshots = client
-            .get_rate_limits_many()
+        let rate_limits = client
+            .get_rate_limits_with_reset_credits()
             .await
             .map_err(|err| internal_error(format!("failed to fetch codex rate limits: {err}")))?;
+        let reset_credits = account_rate_limit_resets::enrich_summary(
+            &client,
+            rate_limits.rate_limit_reset_credits,
+        )
+        .await;
+        let snapshots = rate_limits.rate_limits;
         if snapshots.is_empty() {
             return Err(internal_error(
                 "failed to fetch codex rate limits: no snapshots returned",
@@ -1194,7 +1261,7 @@ impl AccountRequestProcessor {
             .cloned()
             .unwrap_or_else(|| snapshots[0].clone());
 
-        Ok((primary, rate_limits_by_limit_id))
+        Ok((primary, rate_limits_by_limit_id, reset_credits))
     }
 }
 

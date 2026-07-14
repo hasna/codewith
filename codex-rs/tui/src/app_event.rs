@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
@@ -23,6 +24,7 @@ use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
@@ -160,6 +162,12 @@ pub(crate) enum RateLimitRefreshOrigin {
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
+    /// A manual reset picker requested a fresh, exact credit list.
+    ResetPicker { generation: u64 },
+    /// A failed weekly-limited turn requested a fresh reset decision.
+    AutoResetCheck { generation: u64 },
+    /// A successful reset is being verified before a failed turn resumes.
+    PostReset { generation: u64 },
 }
 
 /// Selects which auth profile a rate-limit refresh should read.
@@ -171,6 +179,23 @@ pub(crate) enum RateLimitRefreshTarget {
     Root,
     /// Read limits for a saved named auth profile.
     Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RateLimitRefreshData {
+    pub(crate) snapshots: Vec<RateLimitSnapshot>,
+    pub(crate) reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RateLimitResetAttempt {
+    pub(crate) idempotency_key: String,
+    pub(crate) credit_id: String,
+    pub(crate) auth_profile: Option<String>,
+    pub(crate) generation: u64,
+    pub(crate) automatic: bool,
+    pub(crate) trigger_key: Option<String>,
+    pub(crate) retry_count: u8,
 }
 
 impl RateLimitRefreshTarget {
@@ -370,6 +395,20 @@ pub(crate) enum AppEvent {
 
     /// Refresh cached usage for every auth profile that needs a heartbeat.
     RefreshAuthProfileUsageHeartbeats,
+
+    /// Open a confirmation prompt before consuming a usage-limit reset.
+    OpenRateLimitResetConfirm,
+
+    /// Consume one available usage-limit reset.
+    ConsumeRateLimitResetCredit {
+        attempt: RateLimitResetAttempt,
+    },
+
+    /// Result of consuming one available usage-limit reset.
+    RateLimitResetCreditConsumed {
+        attempt: RateLimitResetAttempt,
+        result: Result<ConsumeAccountRateLimitResetCreditResponse, String>,
+    },
 
     /// Refresh MiniMax Token Plan usage in the background.
     RefreshMiniMaxUsage {
@@ -869,7 +908,7 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<RateLimitRefreshData, String>,
     },
 
     /// Timer fired for a scheduled usage self-heal retry.
@@ -1249,26 +1288,31 @@ pub(crate) enum AppEvent {
         profile: Option<String>,
         reason: AuthProfileSwitchReason,
         resume_queued_input: bool,
+        reset_generation: u64,
     },
 
     /// Prompt for renaming a saved auth profile.
     OpenAuthProfileRenamePrompt {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Open settings for a saved auth profile.
     OpenAuthProfileSettings {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Prompt for confirming saved auth profile deletion.
     OpenAuthProfileDeleteConfirm {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Start ChatGPT relogin for a saved auth profile.
     ReloginAuthProfile {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Result of ChatGPT relogin for a saved auth profile.
@@ -1278,7 +1322,9 @@ pub(crate) enum AppEvent {
     },
 
     /// Prompt for creating and logging in a new saved auth profile.
-    OpenAuthProfileLoginPrompt,
+    OpenAuthProfileLoginPrompt {
+        reset_generation: u64,
+    },
 
     /// Prompt for naming a new saved auth profile after a provider is selected.
     OpenAuthProfileNamePrompt {
@@ -1313,6 +1359,7 @@ pub(crate) enum AppEvent {
     MoveAuthProfile {
         profile: String,
         direction: AuthProfileMoveDirection,
+        reset_generation: u64,
     },
 
     /// Update the current personality in the running app and widget.
