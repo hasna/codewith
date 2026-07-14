@@ -42,6 +42,24 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.65] - 2026-07-14
+
+Tag: `rust-v0.1.65`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.65>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.64...rust-v0.1.65>
+
+Hotfix release for GPT-5.6 Sol backend version gating.
+
+### Fixed
+
+- Model selection: Codewith now advertises upstream Codex API compatibility
+  `0.144.4` instead of the fork's low `0.1.x` package version, so
+  `gpt-5.6-sol` requests do not fail with the backend "requires a newer version
+  of Codex" gate.
+- Model discovery: ChatGPT model catalog refreshes now use the same advertised
+  Codex API compatibility version for model-list cache/version checks, keeping
+  model availability aligned with request headers.
+
 ## [0.1.64] - 2026-07-13
 
 Tag: `rust-v0.1.64`
