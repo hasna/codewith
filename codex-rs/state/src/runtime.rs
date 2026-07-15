@@ -1806,11 +1806,15 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
         include_str!("runtime/fixtures/goals_0148_0005_thread_goal_deferred.sql");
 
     fn legacy_0148_goals_deferred_migration() -> Migration {
+        let sql = LEGACY_0148_GOALS_DEFERRED_V5_SQL
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+
         Migration::new(
             5,
             Cow::Borrowed("thread goal deferred"),
             MigrationType::Simple,
-            LEGACY_0148_GOALS_DEFERRED_V5_SQL.into_sql_str(),
+            sql.into_sql_str(),
             /*no_tx*/ true,
         )
     }

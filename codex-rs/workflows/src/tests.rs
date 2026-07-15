@@ -23,9 +23,13 @@ fn workflow_with_execution_defaults_routing(routing_yaml: &str) -> String {
     insert_execution_defaults_routing(DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML, routing_yaml)
 }
 
+fn normalize_yaml_line_endings(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn insert_execution_defaults_routing(workflow_yaml: &str, routing_yaml: &str) -> String {
-    let workflow_yaml = workflow_yaml.replace("\r\n", "\n");
-    let routing_yaml = routing_yaml.replace("\r\n", "\n");
+    let workflow_yaml = normalize_yaml_line_endings(workflow_yaml);
+    let routing_yaml = normalize_yaml_line_endings(routing_yaml);
     let with_routing = workflow_yaml.replacen(
         "  permission_profile: \"workspace-write\"\nlimits:",
         &format!("  permission_profile: \"workspace-write\"\n{routing_yaml}limits:"),
