@@ -1099,13 +1099,14 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
+    use sqlx::AssertSqlSafe;
+    use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
     use sqlx::migrate::Migration;
     use sqlx::migrate::MigrationType;
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{AssertSqlSafe, SqlSafeStr};
     use std::borrow::Cow;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
