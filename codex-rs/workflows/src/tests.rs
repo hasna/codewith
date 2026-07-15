@@ -24,7 +24,22 @@ fn workflow_with_execution_defaults_routing(routing_yaml: &str) -> String {
 }
 
 fn normalize_yaml_line_endings(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n")
+    let mut normalized = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            while chars.peek() == Some(&'\r') {
+                chars.next();
+            }
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
 }
 
 fn insert_execution_defaults_routing(workflow_yaml: &str, routing_yaml: &str) -> String {

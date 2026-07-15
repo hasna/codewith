@@ -1099,7 +1099,7 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
-    use sqlx::SqlSafeStr;
+    use sqlx::{AssertSqlSafe, SqlSafeStr};
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
     use sqlx::migrate::Migration;
@@ -1814,7 +1814,7 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
             5,
             Cow::Borrowed("thread goal deferred"),
             MigrationType::Simple,
-            sql.into_sql_str(),
+            AssertSqlSafe(sql).into_sql_str(),
             /*no_tx*/ true,
         )
     }
