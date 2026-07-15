@@ -350,6 +350,14 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
     echo "Windows RBE host platform requires an endpoint-bearing remote execution config or --remote_executor." >&2
     exit 1
   fi
+  if [[ $windows_rbe_execution_platform -eq 1 && $windows_rbe_host_platform -eq 0 ]]; then
+    echo "Windows RBE execution platform requires a final RBE host platform override." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_execution_platform -eq 1 && $windows_rbe_endpoint_configured -eq 0 ]]; then
+    echo "Windows RBE execution platform requires an endpoint-bearing remote execution config or --remote_executor." >&2
+    exit 1
+  fi
   if [[ $windows_rbe_host_platform -eq 1 \
     && -n "$windows_execution_platform_override" \
     && $windows_rbe_execution_platform -eq 0 ]]; then
@@ -506,17 +514,14 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   # seen in CI (for example "is not a symlink" or permission errors while
   # materializing external repos such as rules_perl). Keyed configs can use
   # BuildBuddy services; this only disables the startup-level repo contents cache.
-  bazel_run_args=(
-    "${bazel_args[@]}"
-    "--config=${ci_config}"
-  )
+  buildbuddy_config=""
   if [[ "${RUNNER_OS:-}" != "Windows" \
     || $windows_cross_compile -ne 1 \
     || $windows_rbe_host_platform -eq 0 ]]; then
     # Resolve the tenant with the same trust boundary as the generic Bazel
-    # wrapper. Linux/macOS/v8 CI configs get the -rbe form so they actually
-    # select remote execution platforms; Windows-cross stays cache-only unless
-    # the caller explicitly opts into an RBE host platform.
+    # wrapper. OpenAI CI configs get the -rbe form so they actually select
+    # remote execution platforms; generic Hasna runs use cache/BES/download
+    # services because that BuildBuddy host has no registered executors.
     buildbuddy_config="$(
       python3 "$(dirname "${BASH_SOURCE[0]}")/run_bazel_with_buildbuddy.py" \
         --print-config-for "--config=${ci_config}"
@@ -530,6 +535,17 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
         exit 1
         ;;
     esac
+  fi
+  ci_config_for_bazel="$ci_config"
+  if [[ "$buildbuddy_config" == "buildbuddy-generic" && "$ci_config" == "ci-linux" ]]; then
+    ci_config_for_bazel="ci-keyless"
+  fi
+  bazel_run_args=(
+    "${bazel_args[@]}"
+    "--config=${ci_config_for_bazel}"
+  )
+  if [[ -n "$buildbuddy_config" ]]; then
+    bazel_run_args+=("--config=${buildbuddy_config}")
   fi
   bazel_run_args+=("--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}")
   if (( ${#post_config_bazel_args[@]} > 0 )); then

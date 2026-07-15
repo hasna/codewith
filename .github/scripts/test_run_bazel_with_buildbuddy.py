@@ -149,7 +149,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
 
     def test_run_in_fork_repository_cannot_select_openai_host(self) -> None:
@@ -160,8 +160,26 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
+
+    def test_generic_keyed_linux_uses_keyless_local_config_with_cache(self) -> None:
+        env = {"BUILDBUDDY_API_KEY": "fork-token"}
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["build", "--config=ci-linux", "--", "//codex-rs/cli:codex"],
+                env,
+            ),
+            [
+                "build",
+                "--config=buildbuddy-generic",
+                "--remote_header=x-buildbuddy-api-key=fork-token",
+                "--config=ci-keyless",
+                "--",
+                "//codex-rs/cli:codex",
+            ],
+        )
 
     def test_pull_request_without_readable_event_payload_fails_closed(self) -> None:
         for event_path in (None, "missing-event.json"):

@@ -423,6 +423,50 @@ class RunBazelCiTest(unittest.TestCase):
                 self.assertEqual(bazel_args, [])
                 self.assertIn("RBE-compatible execution platform", result.stderr)
 
+    def test_rbe_execution_platform_requires_rbe_host_and_endpoint(self) -> None:
+        env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}
+        for topology_args, expected_error in (
+            (
+                ("--extra_execution_platforms=//:rbe",),
+                "requires a final RBE host platform override",
+            ),
+            (
+                (
+                    "--config=buildbuddy-generic-rbe",
+                    "--extra_execution_platforms=//:rbe",
+                ),
+                "requires a final RBE host platform override",
+            ),
+            (
+                (
+                    "--host_platform=//:rbe",
+                    "--host_platform=//:local_windows_msvc",
+                    "--remote_executor=grpcs://remote.example.test",
+                    "--extra_execution_platforms=//:rbe",
+                ),
+                "requires a final RBE host platform override",
+            ),
+            (
+                (
+                    "--host_platform=//:rbe",
+                    "--extra_execution_platforms=//:rbe",
+                ),
+                "requires an endpoint-bearing remote execution",
+            ),
+        ):
+            with self.subTest(topology_args=topology_args):
+                result, bazel_args = self.run_wrapper(
+                    runner_os="Windows",
+                    wrapper_args=("--windows-cross-compile",),
+                    bazel_args=("build", *topology_args),
+                    buildbuddy_api_key="x",
+                    extra_env=env,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(bazel_args, [])
+                self.assertIn(expected_error, result.stderr)
+
     def test_rbe_host_accepts_final_rbe_execution_platform_in_both_orders(self) -> None:
         for execution_args in (
             (
@@ -529,7 +573,7 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertEqual(bazel_args, [])
         self.assertIn("requires a value", result.stderr)
 
-    def test_keyed_linux_uses_buildbuddy_rbe_configuration(self) -> None:
+    def test_keyed_linux_uses_generic_cache_and_local_configuration(self) -> None:
         result, bazel_args = self.run_wrapper(
             runner_os="Linux",
             buildbuddy_api_key="x",
@@ -537,8 +581,10 @@ class RunBazelCiTest(unittest.TestCase):
 
         self.assert_success(result)
         self.assertIn("using keyed Bazel configuration", result.stdout)
-        self.assertIn("--config=ci-linux", bazel_args)
-        self.assertIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertIn("--config=ci-keyless", bazel_args)
+        self.assertIn("--config=buildbuddy-generic", bazel_args)
+        self.assertNotIn("--config=ci-linux", bazel_args)
+        self.assertNotIn("--config=buildbuddy-generic-rbe", bazel_args)
         self.assertTrue(
             any(
                 arg.startswith("--remote_header=x-buildbuddy-api-key=")

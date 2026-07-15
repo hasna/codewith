@@ -10,13 +10,13 @@ from pathlib import Path
 
 
 OPENAI_REPOSITORY = "openai/codex"
-# Remote configurations select cache/BES/download endpoints. Their -rbe forms
-# also select the matching remote executor endpoint.
+# Remote configurations select cache/BES/download endpoints. The OpenAI -rbe
+# form also selects the matching remote executor endpoint.
 GENERIC_REMOTE_CONFIG = "buildbuddy-generic"
 OPENAI_REMOTE_CONFIG = "buildbuddy-openai"
-# These CI configurations require remote build execution. The Windows-cross
-# configuration intentionally stays local so its actions use Windows LLVM.
-# The wrapper supplies an RBE configuration for only the entries below.
+# These CI configurations request remote build execution on trusted OpenAI
+# workflow runs. Generic BuildBuddy runs do not have executors, so they use
+# cache/BES/download services without opting into RBE.
 REMOTE_EXECUTION_CONFIGS = {
     "--config=ci-linux",
     "--config=ci-macos",
@@ -109,8 +109,9 @@ def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
     if not env.get("BUILDBUDDY_API_KEY"):
         return None
 
-    config = OPENAI_REMOTE_CONFIG if uses_openai_host(env) else GENERIC_REMOTE_CONFIG
-    if uses_remote_execution(args):
+    openai_host = uses_openai_host(env)
+    config = OPENAI_REMOTE_CONFIG if openai_host else GENERIC_REMOTE_CONFIG
+    if openai_host and uses_remote_execution(args):
         config += "-rbe"
     return config
 
@@ -124,6 +125,24 @@ def bazel_args_without_remote_execution(args: Sequence[str]) -> list[str]:
         separator_idx = len(args)
     return [
         *(arg for arg in args[:separator_idx] if arg not in REMOTE_EXECUTION_CONFIGS),
+        *args[separator_idx:],
+    ]
+
+
+def bazel_args_for_remote_config(args: Sequence[str], config: str) -> list[str]:
+    if config != GENERIC_REMOTE_CONFIG:
+        return list(args)
+
+    try:
+        separator_idx = args.index("--")
+    except ValueError:
+        separator_idx = len(args)
+
+    return [
+        *(
+            "--config=ci-keyless" if arg == "--config=ci-linux" else arg
+            for arg in args[:separator_idx]
+        ),
         *args[separator_idx:],
     ]
 
@@ -149,7 +168,12 @@ def bazel_args_with_remote_config(
         (idx + 1 for idx, arg in enumerate(args) if not arg.startswith("-")),
         len(args),
     )
-    return [*args[:insertion_idx], *remote_args, *args[insertion_idx:]]
+    configured_args = bazel_args_for_remote_config(args, config)
+    return [
+        *configured_args[:insertion_idx],
+        *remote_args,
+        *configured_args[insertion_idx:],
+    ]
 
 
 def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]:
