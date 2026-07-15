@@ -7,18 +7,17 @@ use std::fmt;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::InstanceType;
-use schemars::schema::Metadata;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
-use schemars::schema::StringValidation;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use serde::de::DeserializeOwned;
 use serde::de::Error;
+use serde_json::Map;
+use serde_json::Value;
+use std::borrow::Cow;
 use strum_macros::Display;
 use strum_macros::EnumIter;
 use tracing::warn;
@@ -71,25 +70,23 @@ impl fmt::Display for ReasoningEffort {
 }
 
 impl JsonSchema for ReasoningEffort {
-    fn schema_name() -> String {
-        "ReasoningEffort".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "ReasoningEffort".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            metadata: Some(Box::new(Metadata {
-                description: Some(
+        {
+            let mut schema = Map::new();
+            schema.insert("type".to_string(), Value::String("string".to_string()));
+            schema.insert(
+                "description".to_string(),
+                Value::String(
                     "A non-empty reasoning effort value advertised by the model.".to_string(),
                 ),
-                ..Default::default()
-            })),
-            string: Some(Box::new(StringValidation {
-                min_length: Some(1),
-                ..Default::default()
-            })),
-            ..Default::default()
-        })
+            );
+            schema.insert("minLength".to_string(), Value::Number(1.into()));
+            schema.into()
+        }
     }
 }
 
@@ -728,23 +725,18 @@ mod tests {
     fn reasoning_effort_json_schema_is_an_open_string() {
         let mut effort_generator = SchemaGenerator::default();
 
-        assert_eq!(
-            ReasoningEffort::json_schema(&mut effort_generator),
-            Schema::Object(SchemaObject {
-                instance_type: Some(InstanceType::String.into()),
-                metadata: Some(Box::new(Metadata {
-                    description: Some(
-                        "A non-empty reasoning effort value advertised by the model.".to_string(),
-                    ),
-                    ..Default::default()
-                })),
-                string: Some(Box::new(StringValidation {
-                    min_length: Some(1),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            })
-        );
+        assert_eq!(ReasoningEffort::json_schema(&mut effort_generator), {
+            let mut schema = Map::new();
+            schema.insert("type".to_string(), Value::String("string".to_string()));
+            schema.insert(
+                "description".to_string(),
+                Value::String(
+                    "A non-empty reasoning effort value advertised by the model.".to_string(),
+                ),
+            );
+            schema.insert("minLength".to_string(), Value::Number(1.into()));
+            schema.into()
+        });
     }
 
     #[test]

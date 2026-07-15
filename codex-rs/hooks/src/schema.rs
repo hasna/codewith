@@ -1,10 +1,7 @@
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::r#gen::SchemaSettings;
-use schemars::schema::InstanceType;
-use schemars::schema::RootSchema;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
+use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Map;
@@ -51,14 +48,13 @@ impl NullableString {
 }
 
 impl JsonSchema for NullableString {
-    fn schema_name() -> String {
-        "NullableString".to_string()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "NullableString".into()
     }
 
     fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(vec![InstanceType::String, InstanceType::Null].into()),
-            ..Default::default()
+        schemars::json_schema!({
+            "type": ["string", "null"]
         })
     }
 }
@@ -705,14 +701,11 @@ where
     Ok(serde_json::to_vec_pretty(&value)?)
 }
 
-fn schema_for_type<T>() -> RootSchema
+fn schema_for_type<T>() -> Schema
 where
     T: JsonSchema,
 {
     SchemaSettings::draft07()
-        .with(|settings| {
-            settings.option_add_null_type = false;
-        })
         .into_generator()
         .into_root_schema_for::<T>()
 }
@@ -792,26 +785,25 @@ fn compaction_trigger_schema(_gen: &mut SchemaGenerator) -> Schema {
 }
 
 fn string_const_schema(value: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        ..Default::default()
-    };
-    schema.const_value = Some(Value::String(value.to_string()));
-    Schema::Object(schema)
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("string".to_string()));
+    schema.insert("const".to_string(), Value::String(value.to_string()));
+    schema.into()
 }
 
 fn string_enum_schema(values: &[&str]) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| Value::String((*value).to_string()))
-            .collect(),
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("string".to_string()));
+    schema.insert(
+        "enum".to_string(),
+        Value::Array(
+            values
+                .iter()
+                .map(|value| Value::String((*value).to_string()))
+                .collect(),
+        ),
     );
-    Schema::Object(schema)
+    schema.into()
 }
 
 fn default_continue() -> bool {

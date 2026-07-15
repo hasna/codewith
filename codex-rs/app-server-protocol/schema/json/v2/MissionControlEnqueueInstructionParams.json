@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "dryRun": {
       "type": "boolean"
@@ -19,7 +19,7 @@
     },
     "maxAttempts": {
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -55,8 +55,8 @@
     }
   },
   "required": [
-    "message",
-    "targetThreadId"
+    "targetThreadId",
+    "message"
   ],
   "title": "MissionControlEnqueueInstructionParams",
   "type": "object"

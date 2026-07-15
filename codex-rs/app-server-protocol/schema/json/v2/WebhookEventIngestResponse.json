@@ -1,16 +1,15 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WebhookEventDetail": {
       "properties": {
         "payloadJson": true,
         "summary": {
-          "$ref": "#/definitions/WebhookEventSummary"
+          "$ref": "#/$defs/WebhookEventSummary"
         }
       },
       "required": [
-        "payloadJson",
-        "summary"
+        "summary",
+        "payloadJson"
       ],
       "type": "object"
     },
@@ -56,7 +55,7 @@
         },
         "redactions": {
           "items": {
-            "$ref": "#/definitions/WebhookPayloadRedaction"
+            "$ref": "#/$defs/WebhookPayloadRedaction"
           },
           "type": "array"
         },
@@ -70,7 +69,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/WebhookEventStatus"
+          "$ref": "#/$defs/WebhookEventStatus"
         },
         "subscriptionId": {
           "type": [
@@ -91,13 +90,13 @@
       },
       "required": [
         "eventId",
-        "eventType",
-        "payloadPreview",
-        "payloadSha256",
-        "receivedAt",
-        "redactions",
         "sourceAppId",
+        "eventType",
         "status",
+        "payloadSha256",
+        "payloadPreview",
+        "redactions",
+        "receivedAt",
         "updatedAt"
       ],
       "type": "object"
@@ -118,17 +117,18 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "created": {
       "type": "boolean"
     },
     "event": {
-      "$ref": "#/definitions/WebhookEventDetail"
+      "$ref": "#/$defs/WebhookEventDetail"
     }
   },
   "required": [
-    "created",
-    "event"
+    "event",
+    "created"
   ],
   "title": "WebhookEventIngestResponse",
   "type": "object"

@@ -3,86 +3,99 @@
   "additionalProperties": false,
   "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AgentRoleToml": {
       "additionalProperties": false,
       "properties": {
         "config_file": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
-          "description": "Path to a role-specific config layer. Relative paths are resolved relative to the `config.toml` that defines them."
+          "description": "Path to a role-specific config layer.\nRelative paths are resolved relative to the `config.toml` that defines them."
         },
         "description": {
-          "description": "Human-facing role documentation used in spawn tool guidance. Required unless supplied by the referenced agent role file.",
-          "type": "string"
+          "description": "Human-facing role documentation used in spawn tool guidance.\nRequired unless supplied by the referenced agent role file.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "nickname_candidates": {
           "description": "Candidate nicknames for agents spawned with this role.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "AgentsToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AgentRoleToml"
-      },
+      "additionalProperties": false,
       "properties": {
         "interrupt_message": {
-          "description": "Whether to record a model-visible message when an agent turn is interrupted. Defaults to true.",
-          "type": "boolean"
+          "description": "Whether to record a model-visible message when an agent turn is interrupted.\nDefaults to true.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "job_max_runtime_seconds": {
           "description": "Default maximum runtime in seconds for agent job workers.",
           "format": "uint64",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_depth": {
-          "description": "Maximum nesting depth allowed for spawned agent threads. Root sessions start at depth 0.",
+          "description": "Maximum nesting depth allowed for spawned agent threads.\nRoot sessions start at depth 0.",
           "format": "int32",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_threads": {
-          "description": "Maximum number of agent threads that can be open concurrently. When unset, no limit is enforced.",
+          "description": "Maximum number of agent threads that can be open concurrently.\nWhen unset, no limit is enforced.",
           "format": "uint",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "AltScreenMode": {
-      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen mode. - `always`: Always use alternate screen mode. - `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
+      "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen mode.\n- `always`: Always use alternate screen mode.\n- `never`: Never use alternate screen mode. Runs in inline mode, preserving scrollback.\n\nThe CLI flag `--no-alt-screen` can override this setting at runtime.",
       "oneOf": [
         {
+          "const": "auto",
           "description": "Use alternate screen mode.",
-          "enum": [
-            "auto"
-          ],
           "type": "string"
         },
         {
+          "const": "always",
           "description": "Always use alternate screen mode.",
-          "enum": [
-            "always"
-          ],
           "type": "string"
         },
         {
+          "const": "never",
           "description": "Never use alternate screen (inline mode only).",
-          "enum": [
-            "never"
-          ],
           "type": "string"
         }
       ]
@@ -93,7 +106,10 @@
       "properties": {
         "enabled": {
           "description": "When `false`, disables analytics across Codewith product surfaces in this profile.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -103,28 +119,40 @@
       "description": "Config values for a single app/connector.",
       "properties": {
         "approvals_reviewer": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/ApprovalsReviewer"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Reviewer for approval prompts from this app, overriding the thread default."
         },
         "default_tools_approval_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approval mode for tools in this app unless a tool override exists."
         },
         "default_tools_enabled": {
           "description": "Whether tools are enabled by default for this app.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "destructive_enabled": {
           "description": "Whether tools with `destructive_hint = true` are allowed for this app.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enabled": {
           "default": true,
@@ -133,12 +161,18 @@
         },
         "open_world_enabled": {
           "description": "Whether tools with `open_world_hint = true` are allowed for this app.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tools": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolsConfig"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Per-tool settings for this app."
@@ -159,24 +193,28 @@
       "description": "Per-tool settings for a single app tool.",
       "properties": {
         "approval_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
         },
         "enabled": {
           "description": "Whether this tool is enabled. `Some(true)` explicitly allows this tool.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "AppToolsConfig": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AppToolConfig"
-      },
+      "additionalProperties": false,
       "description": "Tool settings for a single app.",
       "type": "object"
     },
@@ -190,15 +228,16 @@
       "type": "string"
     },
     "AppsConfigToml": {
-      "additionalProperties": {
-        "$ref": "#/definitions/AppConfig"
-      },
+      "additionalProperties": false,
       "description": "App/connector settings loaded from `config.toml`.",
       "properties": {
         "_default": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppsDefaultConfig"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Default settings for all apps."
@@ -230,41 +269,41 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "path": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "AskForApproval": {
-      "description": "Determines the conditions under which the user is consulted to approve running the command proposed by Codewith.",
+      "description": "Determines the conditions under which the user is consulted to approve\nrunning the command proposed by Codewith.",
       "oneOf": [
         {
-          "description": "Under this policy, only \"known safe\" commands—as determined by `is_safe_command()`—that **only read files** are auto‑approved. Everything else will ask the user to approve.",
-          "enum": [
-            "untrusted"
-          ],
+          "const": "untrusted",
+          "description": "Under this policy, only \"known safe\" commands—as determined by\n`is_safe_command()`—that **only read files** are auto‑approved.\nEverything else will ask the user to approve.",
           "type": "string"
         },
         {
-          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to run inside a sandbox where network access is disabled and writes are confined to a specific set of paths. If the command fails, it will be escalated to the user to approve execution without a sandbox. Prefer `OnRequest` for interactive runs or `Never` for non-interactive runs.",
-          "enum": [
-            "on-failure"
-          ],
+          "const": "on-failure",
+          "description": "DEPRECATED: *All* commands are auto‑approved, but they are expected to\nrun inside a sandbox where network access is disabled and writes are\nconfined to a specific set of paths. If the command fails, it will be\nescalated to the user to approve execution without a sandbox.\nPrefer `OnRequest` for interactive runs or `Never` for non-interactive\nruns.",
           "type": "string"
         },
         {
+          "const": "on-request",
           "description": "The model decides when to ask the user for approval.",
-          "enum": [
-            "on-request"
-          ],
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "Fine-grained controls for individual approval flows.\n\nWhen a field is `true`, commands in that category are allowed. When it is `false`, those requests are automatically rejected instead of shown to the user.",
+          "description": "Fine-grained controls for individual approval flows.\n\nWhen a field is `true`, commands in that category are allowed. When it\nis `false`, those requests are automatically rejected instead of shown\nto the user.",
           "properties": {
             "granular": {
               "$ref": "#/definitions/GranularApprovalConfig"
@@ -276,10 +315,8 @@
           "type": "object"
         },
         {
-          "description": "Never ask the user to approve commands. Failures are immediately returned to the model, and never escalated to the user for approval.",
-          "enum": [
-            "never"
-          ],
+          "const": "never",
+          "description": "Never ask the user to approve commands. Failures are immediately returned\nto the model, and never escalated to the user for approval.",
           "type": "string"
         }
       ]
@@ -288,31 +325,23 @@
       "description": "Determine where Codewith should store CLI auth credentials.",
       "oneOf": [
         {
+          "const": "file",
           "description": "Persist credentials in CODEWITH_HOME/auth.json.",
-          "enum": [
-            "file"
-          ],
           "type": "string"
         },
         {
+          "const": "keyring",
           "description": "Persist credentials in the keyring. Fail if unavailable.",
-          "enum": [
-            "keyring"
-          ],
           "type": "string"
         },
         {
+          "const": "auto",
           "description": "Use keyring when available; otherwise, fall back to a file in CODEWITH_HOME.",
-          "enum": [
-            "auto"
-          ],
           "type": "string"
         },
         {
+          "const": "ephemeral",
           "description": "Store credentials in memory only for the current process.",
-          "enum": [
-            "ephemeral"
-          ],
           "type": "string"
         }
       ]
@@ -320,17 +349,13 @@
     "AuthProfileAutoSwitchStrategyToml": {
       "oneOf": [
         {
+          "const": "highest_available",
           "description": "Prefer the profile with the most remaining enabled Codewith limit.",
-          "enum": [
-            "highest_available"
-          ],
           "type": "string"
         },
         {
+          "const": "ordered",
           "description": "Preserve configured order and rotate to the next available profile.",
-          "enum": [
-            "ordered"
-          ],
           "type": "string"
         }
       ]
@@ -339,41 +364,59 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "description": "Enables runtime switching to another auth profile when selected rate limit windows are fully exhausted.",
-          "type": "boolean"
+          "description": "Enables runtime switching to another auth profile when selected rate\nlimit windows are fully exhausted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "heartbeat_freshness_secs": {
           "description": "Maximum age in seconds for usage data to guide profile selection.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "heartbeat_interval_secs": {
           "description": "Seconds between background usage heartbeat checks.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "on_5h_limit": {
           "description": "Switch when the 5h Codewith window reaches 100%.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "on_weekly_limit": {
           "description": "Switch when the weekly Codewith window reaches 100%.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "profiles": {
           "default": [],
-          "description": "Preferred profile order. When empty, saved auth profiles are used in sorted profile-name order.",
+          "description": "Preferred profile order. When empty, saved auth profiles are used in\nsorted profile-name order.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "strategy": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AuthProfileAutoSwitchStrategyToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Strategy used to choose the next profile."
@@ -382,20 +425,16 @@
       "type": "object"
     },
     "AutoCompactTokenLimitScope": {
-      "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
+      "description": "Selects which part of the active context is charged against\n`model_auto_compact_token_limit`.",
       "oneOf": [
         {
+          "const": "total",
           "description": "Count the full active context against the limit.",
-          "enum": [
-            "total"
-          ],
           "type": "string"
         },
         {
+          "const": "body_after_prefix",
           "description": "Count sampled output and later growth after the carried window prefix.",
-          "enum": [
-            "body_after_prefix"
-          ],
           "type": "string"
         }
       ]
@@ -404,7 +443,10 @@
       "properties": {
         "policy": {
           "description": "Additional policy instructions inserted into the guardian prompt.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -423,39 +465,79 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "excluded_tool_namespaces": {
           "description": "Exact tool namespaces to omit from the code-mode nested tool surface.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "ConfigProfile": {
       "additionalProperties": false,
-      "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
+      "description": "Collection of common configuration options that a user can define as a unit\nin `config.toml`.",
       "properties": {
         "analytics": {
-          "$ref": "#/definitions/AnalyticsConfigToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AnalyticsConfigToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "approval_policy": {
-          "$ref": "#/definitions/AskForApproval"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AskForApproval"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "approvals_reviewer": {
-          "$ref": "#/definitions/ApprovalsReviewer"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApprovalsReviewer"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "chatgpt_base_url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "experimental_compact_prompt_file": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "experimental_use_unified_exec_tool": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "features": {
           "additionalProperties": false,
@@ -472,7 +554,7 @@
               "type": "boolean"
             },
             "apps_mcp_path_override": {
-              "$ref": "#/definitions/FeatureToml_for_AppsMcpPathOverrideConfigToml"
+              "$ref": "#/definitions/FeatureToml4"
             },
             "auth_elicitation": {
               "type": "boolean"
@@ -490,7 +572,7 @@
               "type": "boolean"
             },
             "code_mode": {
-              "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
+              "$ref": "#/definitions/FeatureToml"
             },
             "code_mode_only": {
               "type": "boolean"
@@ -592,10 +674,10 @@
               "type": "boolean"
             },
             "multi_agent_v2": {
-              "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
+              "$ref": "#/definitions/FeatureToml3"
             },
             "network_proxy": {
-              "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
+              "$ref": "#/definitions/FeatureToml2"
             },
             "non_prefixed_mcp_tool_names": {
               "type": "boolean"
@@ -742,88 +824,183 @@
           "type": "object"
         },
         "include_apps_instructions": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_collaboration_mode_instructions": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_environment_context": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_permissions_instructions": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "model": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "model_catalog_json": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Optional path to a JSON model catalog (applied on startup only)."
         },
         "model_gateway": {
           "description": "Gateway to use above the selected model provider.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "model_instructions_file": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Optional path to a file containing model instructions."
         },
         "model_provider": {
-          "description": "The key in the `model_providers` map identifying the [`ModelProviderInfo`] to use.",
-          "type": "string"
+          "description": "The key in the `model_providers` map identifying the\n[`ModelProviderInfo`] to use.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "model_reasoning_effort": {
-          "$ref": "#/definitions/ReasoningEffort"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "model_reasoning_summary": {
-          "$ref": "#/definitions/ReasoningSummary"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "model_verbosity": {
-          "$ref": "#/definitions/Verbosity"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Verbosity"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "oss_provider": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "personality": {
-          "$ref": "#/definitions/Personality"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Personality"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "plan_mode_reasoning_effort": {
-          "$ref": "#/definitions/ReasoningEffort"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sandbox_mode": {
-          "$ref": "#/definitions/SandboxMode"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SandboxMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "service_tier": {
-          "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
-          "type": "string"
+          "description": "Optional explicit service tier request id for new turns (for example\n`default`, `priority`, or `flex`; legacy `fast` also works).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tools": {
-          "$ref": "#/definitions/ToolsToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolsToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "tui": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/ProfileTui"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null,
           "description": "TUI settings scoped to this profile."
         },
         "web_search": {
-          "$ref": "#/definitions/WebSearchMode"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "windows": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WindowsToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
@@ -836,27 +1013,39 @@
       "properties": {
         "allow_codex_version_mismatch": {
           "description": "Allow replaying a lock generated by a different Codewith version.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "export_dir": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Directory where Codewith writes effective session config lock files."
         },
         "load_path": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Lockfile to replay as the authoritative effective config."
         },
         "save_fields_resolved_from_model_catalog": {
           "description": "Save fields resolved from the model catalog/session configuration.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -865,7 +1054,14 @@
       "additionalProperties": false,
       "properties": {
         "config_lockfile": {
-          "$ref": "#/definitions/DebugConfigLockToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DebugConfigLockToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -882,16 +1078,22 @@
     },
     "ExternalConfigMigrationPrompts": {
       "additionalProperties": false,
-      "description": "Settings for notices we display to users via the tui and app-server clients (primarily the Codewith IDE extension). NOTE: these are different from notifications - notices are warnings, NUX screens, acknowledgements, etc.",
+      "description": "Settings for notices we display to users via the tui and app-server clients\n(primarily the Codewith IDE extension). NOTE: these are different from\nnotifications - notices are warnings, NUX screens, acknowledgements, etc.",
       "properties": {
         "home": {
           "description": "Tracks whether home-level external config migration prompts are hidden.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "home_last_prompted_at": {
           "description": "Tracks the last time the home-level external config migration prompt was shown.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "project_last_prompted_at": {
           "additionalProperties": {
@@ -913,17 +1115,7 @@
       },
       "type": "object"
     },
-    "FeatureToml_for_AppsMcpPathOverrideConfigToml": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "$ref": "#/definitions/AppsMcpPathOverrideConfigToml"
-        }
-      ]
-    },
-    "FeatureToml_for_CodeModeConfigToml": {
+    "FeatureToml": {
       "anyOf": [
         {
           "type": "boolean"
@@ -933,17 +1125,7 @@
         }
       ]
     },
-    "FeatureToml_for_MultiAgentV2ConfigToml": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "$ref": "#/definitions/MultiAgentV2ConfigToml"
-        }
-      ]
-    },
-    "FeatureToml_for_NetworkProxyConfigToml": {
+    "FeatureToml2": {
       "anyOf": [
         {
           "type": "boolean"
@@ -953,18 +1135,41 @@
         }
       ]
     },
+    "FeatureToml3": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/MultiAgentV2ConfigToml"
+        }
+      ]
+    },
+    "FeatureToml4": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/AppsMcpPathOverrideConfigToml"
+        }
+      ]
+    },
     "FeedbackConfigToml": {
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "description": "When `false`, disables the feedback flow across Codewith product surfaces.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "FileSystemAccessMode": {
-      "description": "Access mode for a filesystem entry.\n\nWhen two equally specific entries target the same path, we compare these by conflict precedence rather than by capability breadth: `deny` beats `write`, and `write` beats `read`.",
+      "description": "Access mode for a filesystem entry.\n\nWhen two equally specific entries target the same path, we compare these by\nconflict precedence rather than by capability breadth: `deny` beats\n`write`, and `write` beats `read`.",
       "oneOf": [
         {
           "enum": [
@@ -974,10 +1179,8 @@
           "type": "string"
         },
         {
+          "const": "deny",
           "description": "`none` is a legacy input alias retained temporarily for compatibility.",
-          "enum": [
-            "deny"
-          ],
           "type": "string"
         }
       ]
@@ -996,12 +1199,18 @@
       ]
     },
     "FilesystemPermissionsToml": {
+      "additionalProperties": {
+        "$ref": "#/definitions/FilesystemPermissionToml"
+      },
       "properties": {
         "glob_scan_max_depth": {
-          "description": "Optional maximum depth for expanding unreadable glob patterns on platforms that snapshot glob matches before sandbox startup.",
+          "description": "Optional maximum depth for expanding unreadable glob patterns on\nplatforms that snapshot glob matches before sandbox startup.",
           "format": "uint",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1032,17 +1241,26 @@
       "properties": {
         "disable_warnings": {
           "description": "Legacy no-op setting retained for compatibility.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "ignore_large_untracked_dirs": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "ignore_large_untracked_files": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1059,38 +1277,53 @@
       "additionalProperties": false,
       "properties": {
         "auto_execute": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/GoalsAutoExecuteToml"
+            },
+            {
+              "type": "null"
             }
           ],
-          "description": "Controls whether goal plans may advance to ready goals without asking the user between goals."
+          "description": "Controls whether goal plans may advance to ready goals without asking the\nuser between goals."
         },
         "max_auto_goals_per_plan": {
-          "description": "Maximum number of goals the model may add to one automatically executed plan. Omit for the default cap.",
+          "description": "Maximum number of goals the model may add to one automatically executed\nplan. Omit for the default cap.",
           "format": "uint",
-          "maximum": 64.0,
-          "minimum": 1.0,
-          "type": "integer"
+          "maximum": 64,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_tokens_per_goal_plan": {
           "description": "Optional combined token cap for all goals in a plan. Omit for unlimited.",
           "format": "int64",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "post_goal_context": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/PostGoalContextActionToml"
+            },
+            {
+              "type": "null"
             }
           ],
-          "description": "Context lifecycle action after a completed goal when no next goal is immediately activated."
+          "description": "Context lifecycle action after a completed goal when no next goal is\nimmediately activated."
         },
         "post_goal_plan_context": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/PostGoalContextActionToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Context lifecycle action after a goal plan completes."
@@ -1114,7 +1347,7 @@
           "type": "boolean"
         },
         "sandbox_approval": {
-          "description": "Whether to allow shell command approval requests, including inline `with_additional_permissions` and `require_escalated` requests.",
+          "description": "Whether to allow shell command approval requests, including inline\n`with_additional_permissions` and `require_escalated` requests.",
           "type": "boolean"
         },
         "skill_approval": {
@@ -1124,9 +1357,9 @@
         }
       },
       "required": [
-        "mcp_elicitations",
+        "sandbox_approval",
         "rules",
-        "sandbox_approval"
+        "mcp_elicitations"
       ],
       "type": "object"
     },
@@ -1136,10 +1369,13 @@
       "properties": {
         "max_bytes": {
           "default": null,
-          "description": "If set, the maximum size of the history file in bytes. The oldest entries are dropped once the file exceeds this limit.",
+          "description": "If set, the maximum size of the history file in bytes. The oldest entries\nare dropped once the file exceeds this limit.",
           "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "persistence": {
           "allOf": [
@@ -1156,17 +1392,13 @@
     "HistoryPersistence": {
       "oneOf": [
         {
+          "const": "save-all",
           "description": "Save all history entries to disk.",
-          "enum": [
-            "save-all"
-          ],
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Do not write history to disk.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -1184,27 +1416,46 @@
             },
             "commandWindows": {
               "default": null,
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "statusMessage": {
               "default": null,
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "timeout": {
               "default": null,
               "format": "uint64",
-              "minimum": 0.0,
-              "type": "integer"
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "type": {
-              "enum": [
-                "command"
-              ],
+              "const": "command",
               "type": "string"
             }
           },
           "required": [
-            "command",
+            "type",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "prompt",
+              "type": "string"
+            }
+          },
+          "required": [
             "type"
           ],
           "type": "object"
@@ -1212,23 +1463,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "prompt"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "agent"
-              ],
+              "const": "agent",
               "type": "string"
             }
           },
@@ -1242,10 +1477,16 @@
     "HookStateToml": {
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "trusted_hash": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1331,19 +1572,23 @@
       },
       "type": "object"
     },
+    "KeybindingSpec": {
+      "description": "Normalized string representation of a single key event (for example `ctrl-a`).\n\nThe parser accepts a small alias set (for example `escape` -> `esc`,\n`pageup` -> `page-up`) and stores the canonical form.\n\nThis deliberately represents one terminal key event, not a sequence of\nevents. A value like `ctrl-x ctrl-s` is not a chord in this schema; adding\nmulti-step chords would require a separate runtime state machine.",
+      "type": "string"
+    },
     "KeybindingsSpec": {
       "anyOf": [
         {
-          "type": "string"
+          "$ref": "#/definitions/KeybindingSpec"
         },
         {
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/KeybindingSpec"
           },
           "type": "array"
         }
       ],
-      "description": "One action binding value in config.\n\nThis accepts either:\n\n1. A single key spec string (`\"ctrl-a\"`). 2. A list of key spec strings (`[\"ctrl-a\", \"alt-a\"]`).\n\nAn empty list explicitly unbinds the action in that scope. Because an explicit empty list is still a configured value, runtime resolution must not fall through to global or built-in defaults for that action."
+      "description": "One action binding value in config.\n\nThis accepts either:\n\n1. A single key spec string (`\"ctrl-a\"`).\n2. A list of key spec strings (`[\"ctrl-a\", \"alt-a\"]`).\n\nAn empty list explicitly unbinds the action in that scope. Because an\nexplicit empty list is still a configured value, runtime resolution must not\nfall through to global or built-in defaults for that action."
     },
     "MarketplaceConfig": {
       "additionalProperties": false,
@@ -1351,27 +1596,42 @@
         "last_revision": {
           "default": null,
           "description": "Git revision Codewith last successfully activated for this marketplace.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "last_updated": {
           "default": null,
           "description": "Last time Codewith successfully added or refreshed this marketplace.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ref": {
           "default": null,
           "description": "Git ref to check out when `source_type` is `git`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "source": {
           "default": null,
           "description": "Source location used when the marketplace was added.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "source_type": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/MarketplaceSourceType"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null,
@@ -1383,7 +1643,10 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1406,7 +1669,10 @@
         },
         "matcher": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1423,7 +1689,10 @@
               "type": "string"
             },
             "source": {
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1439,7 +1708,10 @@
       "properties": {
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1449,9 +1721,12 @@
       "description": "Per-tool approval settings for a single MCP server tool.",
       "properties": {
         "approval_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
@@ -1465,73 +1740,105 @@
       "properties": {
         "consolidation_model": {
           "description": "Model used for memory consolidation.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "dedicated_tools": {
           "description": "When `true`, expose dedicated memory tools through the extension tool surface.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "disable_on_external_context": {
           "description": "When `true`, external context sources mark the thread `memory_mode` as `\"polluted\"`.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "extract_model": {
           "description": "Model used for thread summarisation.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "generate_memories": {
           "description": "When `false`, newly created threads are stored with `memory_mode = \"disabled\"` in the state DB.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "max_raw_memories_for_consolidation": {
           "description": "Maximum number of recent raw memories retained for global consolidation.",
           "format": "uint",
-          "maximum": 4096.0,
-          "minimum": 1.0,
-          "type": "integer"
+          "maximum": 4096,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_rollout_age_days": {
           "description": "Maximum age of the threads used for memories.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_rollouts_per_startup": {
           "description": "Maximum number of rollout candidates processed per pass.",
           "format": "uint",
-          "maximum": 128.0,
-          "minimum": 1.0,
-          "type": "integer"
+          "maximum": 128,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_unused_days": {
           "description": "Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "min_rate_limit_remaining_percent": {
           "description": "Minimum remaining percentage required in Codewith rate-limit windows before memory startup runs.",
           "format": "int64",
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "type": "integer"
+          "maximum": 100,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "min_rollout_idle_hours": {
           "description": "Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "ModelAvailabilityNuxConfig": {
-      "additionalProperties": {
-        "format": "uint32",
-        "minimum": 0.0,
-        "type": "integer"
-      },
+      "additionalProperties": false,
       "type": "object"
     },
     "ModelProviderAuthInfo": {
@@ -1560,16 +1867,16 @@
         },
         "refresh_interval_ms": {
           "default": 300000,
-          "description": "Maximum age for the cached token before rerunning the command. Set to `0` to disable proactive refresh and only rerun after a 401 retry path.",
+          "description": "Maximum age for the cached token before rerunning the command.\nSet to `0` to disable proactive refresh and only rerun after a 401 retry path.",
           "format": "uint64",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "timeout_ms": {
           "default": 5000,
           "description": "Maximum time to wait for the token command to exit successfully.",
           "format": "uint64",
-          "minimum": 1.0,
+          "minimum": 1,
           "type": "integer"
         }
       },
@@ -1584,11 +1891,17 @@
       "properties": {
         "profile": {
           "description": "AWS profile name to use. When unset, the AWS SDK default chain decides.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "region": {
           "description": "AWS region to use for provider-specific endpoints.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1598,50 +1911,74 @@
       "description": "Serializable representation of a provider definition.",
       "properties": {
         "auth": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/ModelProviderAuthInfo"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Command-backed bearer-token configuration for this provider."
         },
         "aws": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/ModelProviderAwsAuthInfo"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "AWS SigV4 auth configuration for this provider."
         },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Optional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and _environment variable_ whose value should be used. If the environment variable is not set, or the value is empty, the header will not be included in the request.",
-          "type": "object"
+          "description": "Optional HTTP headers to include in requests to this provider where the\n(key, value) pairs are the header name and _environment variable_ whose\nvalue should be used. If the environment variable is not set, or the\nvalue is empty, the header will not be included in the request.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "env_key": {
           "description": "Environment variable that stores the user's API key for this provider.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "env_key_instructions": {
-          "description": "Optional instructions to help the user get a valid value for the variable and set it.",
-          "type": "string"
+          "description": "Optional instructions to help the user get a valid value for the\nvariable and set it.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "experimental_bearer_token": {
-          "description": "Value to use with `Authorization: Bearer <token>` header. Use of this config is discouraged in favor of `env_key` for security reasons, but this may be necessary when using this programmatically.",
-          "type": "string"
+          "description": "Value to use with `Authorization: Bearer <token>` header. Use of this\nconfig is discouraged in favor of `env_key` for security reasons, but\nthis may be necessary when using this programmatically.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional HTTP headers to include in requests to this provider where the (key, value) pairs are the header name and value.",
-          "type": "object"
+          "description": "Additional HTTP headers to include in requests to this provider where\nthe (key, value) pairs are the header name and value.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "name": {
           "default": "",
@@ -1653,30 +1990,42 @@
             "type": "string"
           },
           "description": "Optional query parameters to append to the base URL.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "request_max_retries": {
           "description": "Maximum number of times to retry a failed HTTP request to this provider.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "requires_openai_auth": {
           "default": false,
-          "description": "Does this provider require an OpenAI API Key or ChatGPT login token? If true, user is presented with login screen on first run, and login preference and token/key are stored in auth.json. If false (which is the default), login screen is skipped, and API key (if needed) comes from the \"env_key\" environment variable.",
+          "description": "Does this provider require an OpenAI API Key or ChatGPT login token? If true,\nuser is presented with login screen on first run, and login preference and token/key\nare stored in auth.json. If false (which is the default), login screen is skipped,\nand API key (if needed) comes from the \"env_key\" environment variable.",
           "type": "boolean"
         },
         "stream_idle_timeout_ms": {
-          "description": "Idle timeout (in milliseconds) to wait for activity on a streaming response before treating the connection as lost.",
+          "description": "Idle timeout (in milliseconds) to wait for activity on a streaming response before treating\nthe connection as lost.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "stream_max_retries": {
           "description": "Number of times to retry reconnecting a dropped streaming response before failing.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "supports_websockets": {
           "default": false,
@@ -1684,10 +2033,13 @@
           "type": "boolean"
         },
         "websocket_connect_timeout_ms": {
-          "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating it as failed.",
+          "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating\nit as failed.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "wire_api": {
           "allOf": [
@@ -1706,53 +2058,89 @@
       "properties": {
         "default_wait_timeout_ms": {
           "format": "int64",
-          "maximum": 3600000.0,
-          "minimum": 0.0,
-          "type": "integer"
+          "maximum": 3600000,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_spawn_agent_metadata": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "max_concurrent_threads_per_session": {
           "format": "uint",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_wait_timeout_ms": {
           "format": "int64",
-          "maximum": 3600000.0,
-          "minimum": 0.0,
-          "type": "integer"
+          "maximum": 3600000,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "min_wait_timeout_ms": {
           "format": "int64",
-          "maximum": 3600000.0,
-          "minimum": 0.0,
-          "type": "integer"
+          "maximum": 3600000,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "non_code_mode_only": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "root_agent_usage_hint_text": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "subagent_usage_hint_text": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tool_namespace": {
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-zA-Z0-9_-]+$",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "usage_hint_enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "usage_hint_text": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1765,6 +2153,9 @@
       "type": "string"
     },
     "NetworkDomainPermissionsToml": {
+      "additionalProperties": {
+        "$ref": "#/definitions/NetworkDomainPermissionToml"
+      },
       "type": "object"
     },
     "NetworkMitmActionToml": {
@@ -1833,10 +2224,10 @@
         }
       },
       "required": [
-        "action",
         "host",
         "methods",
-        "path_prefixes"
+        "path_prefixes",
+        "action"
       ],
       "type": "object"
     },
@@ -1848,15 +2239,24 @@
         },
         "prefix": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "secret_env_var": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "secret_file": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1868,13 +2268,19 @@
           "additionalProperties": {
             "$ref": "#/definitions/NetworkMitmActionToml"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "hooks": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkMitmHookToml"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1890,46 +2296,86 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "allow_upstream_proxy": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "dangerously_allow_all_unix_sockets": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "dangerously_allow_non_loopback_proxy": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "domains": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkProxyDomainPermissionToml"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "enable_socks5": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enable_socks5_udp": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "mode": {
-          "$ref": "#/definitions/NetworkProxyModeToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkProxyModeToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "proxy_url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "socks_url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "unix_sockets": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkProxyUnixSocketPermissionToml"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1959,43 +2405,98 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "allow_upstream_proxy": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "dangerously_allow_all_unix_sockets": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "dangerously_allow_non_loopback_proxy": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "domains": {
-          "$ref": "#/definitions/NetworkDomainPermissionsToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkDomainPermissionsToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "enable_socks5": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enable_socks5_udp": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "mitm": {
-          "$ref": "#/definitions/NetworkMitmToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkMitmToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "mode": {
-          "$ref": "#/definitions/NetworkModeSchema"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkModeSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "proxy_url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "socks_url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "unix_sockets": {
-          "$ref": "#/definitions/NetworkUnixSocketPermissionsToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkUnixSocketPermissionsToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -2008,6 +2509,9 @@
       "type": "string"
     },
     "NetworkUnixSocketPermissionsToml": {
+      "additionalProperties": {
+        "$ref": "#/definitions/NetworkUnixSocketPermissionToml"
+      },
       "type": "object"
     },
     "Notice": {
@@ -2029,27 +2533,45 @@
         },
         "fast_default_opt_out": {
           "description": "Tracks whether the user opted out of Codewith-managed fast defaults.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_full_access_warning": {
           "description": "Tracks whether the user has acknowledged the full access warning prompt.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_gpt-5.1-codex-max_migration_prompt": {
           "description": "Tracks whether the user has seen the gpt-5.1-codex-max migration prompt",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_gpt5_1_migration_prompt": {
           "description": "Tracks whether the user has seen the model migration prompt",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_rate_limit_model_nudge": {
           "description": "Tracks whether the user opted out of the rate limit model switch reminder.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "hide_world_writable_warning": {
           "description": "Tracks whether the user has acknowledged the Windows world-writable directories warning.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "model_migrations": {
           "additionalProperties": {
@@ -2065,17 +2587,13 @@
     "NotificationCondition": {
       "oneOf": [
         {
+          "const": "unfocused",
           "description": "Emit TUI notifications only while the terminal is unfocused.",
-          "enum": [
-            "unfocused"
-          ],
           "type": "string"
         },
         {
+          "const": "always",
           "description": "Emit TUI notifications regardless of terminal focus.",
-          "enum": [
-            "always"
-          ],
           "type": "string"
         }
       ]
@@ -2105,24 +2623,18 @@
       "description": "Determine where Codewith should store and read MCP credentials.",
       "oneOf": [
         {
-          "description": "`Keyring` when available; otherwise, `File`. Credentials stored in the keyring will only be readable by Codewith unless the user explicitly grants access via OS-level keyring access.",
-          "enum": [
-            "auto"
-          ],
+          "const": "auto",
+          "description": "`Keyring` when available; otherwise, `File`.\nCredentials stored in the keyring will only be readable by Codewith unless the user explicitly grants access via OS-level keyring access.",
           "type": "string"
         },
         {
-          "description": "CODEWITH_HOME/.credentials.json This file will be readable to Codewith and other applications running as the same user.",
-          "enum": [
-            "file"
-          ],
+          "const": "file",
+          "description": "CODEWITH_HOME/.credentials.json\nThis file will be readable to Codewith and other applications running as the same user.",
           "type": "string"
         },
         {
+          "const": "keyring",
           "description": "Keyring when available, otherwise fail.",
-          "enum": [
-            "keyring"
-          ],
           "type": "string"
         }
       ]
@@ -2133,24 +2645,36 @@
       "properties": {
         "environment": {
           "description": "Mark traces with environment (dev, staging, prod, test). Defaults to dev.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "exporter": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Optional log exporter"
         },
         "log_user_prompt": {
           "description": "Log user prompt in traces",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "metrics_exporter": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Optional metrics exporter"
@@ -2160,12 +2684,18 @@
             "type": "string"
           },
           "description": "Attributes to add to every exported trace span.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "trace_exporter": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Optional trace exporter"
@@ -2178,7 +2708,10 @@
             "type": "object"
           },
           "description": "Semicolon-separated `key:value` fields to upsert into W3C tracestate members.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2213,9 +2746,12 @@
                   "$ref": "#/definitions/OtelHttpProtocol"
                 },
                 "tls": {
-                  "allOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/definitions/OtelTlsConfig"
+                    },
+                    {
+                      "type": "null"
                     }
                   ],
                   "default": null
@@ -2250,9 +2786,12 @@
                   "type": "object"
                 },
                 "tls": {
-                  "allOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/definitions/OtelTlsConfig"
+                    },
+                    {
+                      "type": "null"
                     }
                   ],
                   "default": null
@@ -2274,17 +2813,13 @@
     "OtelHttpProtocol": {
       "oneOf": [
         {
+          "const": "binary",
           "description": "Binary payload",
-          "enum": [
-            "binary"
-          ],
           "type": "string"
         },
         {
+          "const": "json",
           "description": "JSON payload",
-          "enum": [
-            "json"
-          ],
           "type": "string"
         }
       ]
@@ -2293,13 +2828,34 @@
       "additionalProperties": false,
       "properties": {
         "ca-certificate": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "client-certificate": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "client-private-key": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -2308,24 +2864,54 @@
       "additionalProperties": false,
       "properties": {
         "description": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "extends": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "filesystem": {
-          "$ref": "#/definitions/FilesystemPermissionsToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FilesystemPermissionsToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "network": {
-          "$ref": "#/definitions/NetworkToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NetworkToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "workspace_roots": {
-          "$ref": "#/definitions/WorkspaceRootsToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkspaceRootsToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
     },
     "PermissionsToml": {
+      "additionalProperties": {
+        "$ref": "#/definitions/PermissionProfileToml"
+      },
       "type": "object"
     },
     "Personality": {
@@ -2355,12 +2941,15 @@
     },
     "PluginMcpServerConfig": {
       "additionalProperties": false,
-      "description": "Policy settings for a plugin-provided MCP server.\n\nThis intentionally excludes transport settings: plugin manifests own how the MCP server is launched, while user config owns enablement and tool policy.",
+      "description": "Policy settings for a plugin-provided MCP server.\n\nThis intentionally excludes transport settings: plugin manifests own how the\nMCP server is launched, while user config owns enablement and tool policy.",
       "properties": {
         "default_tools_approval_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approval mode for tools in this server unless a tool override exists."
@@ -2370,7 +2959,10 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "enabled": {
           "default": true,
@@ -2382,7 +2974,10 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "tools": {
           "additionalProperties": {
@@ -2406,9 +3001,12 @@
       "description": "TUI settings supported inside a named profile.",
       "properties": {
         "session_picker_view": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/SessionPickerViewMode"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null,
@@ -2421,36 +3019,58 @@
       "additionalProperties": false,
       "properties": {
         "trust_level": {
-          "$ref": "#/definitions/TrustLevel"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TrustLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
     },
     "RawMcpServerConfig": {
       "additionalProperties": false,
-      "description": "Raw MCP config shape used for deserialization and supported-field JSON Schema generation.\n\nFields that are accepted only to produce targeted validation errors should be skipped in the generated schema.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively destructuring this struct so new TOML fields cannot be added here without updating the validation/mapping logic that produces [`McpServerConfig`].",
+      "description": "Raw MCP config shape used for deserialization and supported-field JSON\nSchema generation.\n\nFields that are accepted only to produce targeted validation errors should\nbe skipped in the generated schema.\n\nKeep `TryFrom<RawMcpServerConfig> for McpServerConfig` exhaustively\ndestructuring this struct so new TOML fields cannot be added here without\nupdating the validation/mapping logic that produces [`McpServerConfig`].",
       "properties": {
         "args": {
           "default": null,
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "bearer_token_env_var": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "command": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "cwd": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "default_tools_approval_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
@@ -2460,107 +3080,164 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "enabled": {
           "default": null,
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "enabled_tools": {
           "default": null,
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "env": {
           "additionalProperties": {
             "type": "string"
           },
           "default": null,
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "default": null,
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "env_vars": {
           "default": null,
           "items": {
             "$ref": "#/definitions/McpServerEnvVar"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "environment_id": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "name": {
           "default": null,
           "description": "Legacy display-name field accepted for backward compatibility.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "oauth": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/McpServerOAuthConfig"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
         },
         "oauth_resource": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "required": {
           "default": null,
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "scopes": {
           "default": null,
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "startup_timeout_ms": {
           "default": null,
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "startup_timeout_sec": {
           "default": null,
           "format": "double",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "supports_parallel_tool_calls": {
           "default": null,
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tool_timeout_sec": {
           "default": null,
           "format": "double",
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "tools": {
           "additionalProperties": {
             "$ref": "#/definitions/McpServerToolConfig"
           },
           "default": null,
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "url": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2569,10 +3246,16 @@
       "additionalProperties": false,
       "properties": {
         "microphone": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "speaker": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2588,16 +3271,44 @@
       "additionalProperties": false,
       "properties": {
         "transport": {
-          "$ref": "#/definitions/RealtimeTransport"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RealtimeTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "type": {
-          "$ref": "#/definitions/RealtimeWsMode"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RealtimeWsMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "version": {
-          "$ref": "#/definitions/RealtimeConversationVersion"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RealtimeConversationVersion"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "voice": {
-          "$ref": "#/definitions/RealtimeVoice"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RealtimeVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -2646,7 +3357,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -2657,10 +3368,8 @@
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Option to disable reasoning summaries.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -2711,26 +3420,41 @@
       "properties": {
         "enabled": {
           "description": "Enables background session recaps in interactive TUI sessions.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "fallback_model": {
           "description": "Fallback model used when the preferred recap model is unavailable.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "idle_minutes": {
-          "description": "Minutes the terminal must stay unfocused after the last completed turn before Codewith prepares an automatic recap.",
+          "description": "Minutes the terminal must stay unfocused after the last completed turn\nbefore Codewith prepares an automatic recap.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "model": {
           "description": "Preferred lightweight model for recap generation.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "reasoning_effort": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Reasoning effort requested for recap generation."
@@ -2741,24 +3465,18 @@
     "ShellEnvironmentPolicyInherit": {
       "oneOf": [
         {
-          "description": "\"Core\" environment variables for the platform. On UNIX, this would include HOME, LOGNAME, PATH, SHELL, and USER, among others.",
-          "enum": [
-            "core"
-          ],
+          "const": "core",
+          "description": "\"Core\" environment variables for the platform. On UNIX, this would\ninclude HOME, LOGNAME, PATH, SHELL, and USER, among others.",
           "type": "string"
         },
         {
+          "const": "all",
           "description": "Inherits the full environment from the parent process.",
-          "enum": [
-            "all"
-          ],
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Do not inherit any environment variables from the parent process.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -2772,29 +3490,51 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "experimental_use_profile": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "ignore_default_excludes": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "include_only": {
           "description": "List of regular expressions.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "inherit": {
-          "$ref": "#/definitions/ShellEnvironmentPolicyInherit"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ShellEnvironmentPolicyInherit"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "set": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2807,12 +3547,18 @@
         },
         "name": {
           "description": "Name-based selector.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Path-based selector."
@@ -2827,7 +3573,14 @@
       "additionalProperties": false,
       "properties": {
         "bundled": {
-          "$ref": "#/definitions/BundledSkillsConfig"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BundledSkillsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "config": {
           "items": {
@@ -2837,7 +3590,10 @@
         },
         "include_instructions": {
           "description": "Whether turns receive the automatic skills instructions block.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2847,37 +3603,58 @@
       "properties": {
         "enabled": {
           "description": "Enables the experimental pre-tool advisory pass. Defaults to false.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "max_input_chars": {
           "description": "Maximum serialized tool input characters exposed to the advisory model.",
           "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_suggestion_chars": {
           "description": "Maximum advisory text characters injected back into the main context.",
           "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "model": {
           "description": "Required model id for the advisory pass when enabled.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "model_provider": {
           "description": "Optional configured model provider id used for the advisory pass.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "service_tier": {
           "description": "Optional service tier forwarded only to the advisory model request.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout_ms": {
           "description": "Maximum time to wait for advisory output, in milliseconds.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -2887,9 +3664,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "local"
-              ],
+              "const": "local",
               "type": "string"
             }
           },
@@ -2931,8 +3706,8 @@
         }
       },
       "required": [
-        "id",
-        "type"
+        "type",
+        "id"
       ],
       "type": "object"
     },
@@ -2947,8 +3722,8 @@
         }
       },
       "required": [
-        "id",
-        "type"
+        "type",
+        "id"
       ],
       "type": "object"
     },
@@ -2963,12 +3738,22 @@
       "additionalProperties": false,
       "properties": {
         "experimental_request_user_input": {
-          "$ref": "#/definitions/ExperimentalRequestUserInput"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExperimentalRequestUserInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "web_search": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WebSearchToolConfig"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
@@ -2977,7 +3762,7 @@
       "type": "object"
     },
     "TrustLevel": {
-      "description": "Represents the trust level for a project directory. This determines the approval policy and sandbox mode applied.",
+      "description": "Represents the trust level for a project directory.\nThis determines the approval policy and sandbox mode applied.",
       "enum": [
         "trusted",
         "untrusted"
@@ -2995,11 +3780,11 @@
             }
           ],
           "default": "auto",
-          "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen. - `always`: Always use alternate screen. - `never`: Never use alternate screen (inline mode only, preserves scrollback)."
+          "description": "Controls whether the TUI uses the terminal's alternate screen buffer.\n\n- `auto` (default): Use alternate screen.\n- `always`: Always use alternate screen.\n- `never`: Never use alternate screen (inline mode only, preserves scrollback)."
         },
         "animations": {
           "default": true,
-          "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
+          "description": "Enable animations (welcome screen, shimmer effects, spinners).\nDefaults to `true`.",
           "type": "boolean"
         },
         "keymap": {
@@ -3143,15 +3928,18 @@
               "word": null
             }
           },
-          "description": "Keybinding overrides for the TUI.\n\nThis supports rebinding selected actions globally and by context. Context bindings take precedence over `global` bindings."
+          "description": "Keybinding overrides for the TUI.\n\nThis supports rebinding selected actions globally and by context.\nContext bindings take precedence over `global` bindings."
         },
         "message_summary": {
           "default": null,
-          "description": "Ordered list of final assistant-message summary item identifiers.\n\nWhen set, the TUI renders the selected items after completed assistant messages. When unset, the TUI defaults to the full built-in summary.",
+          "description": "Ordered list of final assistant-message summary item identifiers.\n\nWhen set, the TUI renders the selected items after completed assistant\nmessages. When unset, the TUI defaults to the full built-in summary.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "model_availability_nux": {
           "allOf": [
@@ -3169,7 +3957,7 @@
             }
           ],
           "default": "unfocused",
-          "description": "Controls whether TUI notifications are delivered only when the terminal is unfocused or regardless of focus. Defaults to `unfocused`."
+          "description": "Controls whether TUI notifications are delivered only when the terminal is unfocused or\nregardless of focus. Defaults to `unfocused`."
         },
         "notification_method": {
           "allOf": [
@@ -3178,7 +3966,7 @@
             }
           ],
           "default": "auto",
-          "description": "Notification method to use for terminal notifications. Defaults to `auto`."
+          "description": "Notification method to use for terminal notifications.\nDefaults to `auto`."
         },
         "notifications": {
           "allOf": [
@@ -3187,12 +3975,15 @@
             }
           ],
           "default": true,
-          "description": "Enable desktop notifications from the TUI. Defaults to `true`."
+          "description": "Enable desktop notifications from the TUI.\nDefaults to `true`."
         },
         "pet": {
           "default": null,
           "description": "Pet id to preselect in the terminal pet picker.\n\nCustom pet ids resolve against CODEWITH_HOME/pets/<pet-id>/pet.json.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "pet_anchor": {
           "allOf": [
@@ -3205,13 +3996,16 @@
         },
         "raw_output_mode": {
           "default": false,
-          "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
+          "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output.\nDefaults to `false`.",
           "type": "boolean"
         },
         "session_picker_view": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/SessionPickerViewMode"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null,
@@ -3219,45 +4013,57 @@
         },
         "show_tooltips": {
           "default": true,
-          "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",
+          "description": "Show startup tooltips in the TUI welcome screen.\nDefaults to `true`.",
           "type": "boolean"
         },
         "status_line": {
           "default": null,
-          "description": "Ordered list of status line item identifiers.\n\nWhen set, the TUI renders the selected items as the status line. When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.",
+          "description": "Ordered list of status line item identifiers.\n\nWhen set, the TUI renders the selected items as the status line.\nWhen unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "status_line_use_colors": {
           "default": true,
-          "description": "Color status line items with colors derived from the active syntax theme. Defaults to `true`.",
+          "description": "Color status line items with colors derived from the active syntax theme.\nDefaults to `true`.",
           "type": "boolean"
         },
         "terminal_resize_reflow_max_rows": {
           "default": null,
-          "description": "Trim terminal resize-reflow replay to the most recent rendered terminal rows when the transcript exceeds this cap. Omit to use Codewith's terminal-specific default. Set to `0` to keep all rendered rows.",
+          "description": "Trim terminal resize-reflow replay to the most recent rendered terminal rows when the\ntranscript exceeds this cap. Omit to use Codewith's terminal-specific default. Set to `0` to\nkeep all rendered rows.",
           "format": "uint",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "terminal_title": {
           "default": null,
-          "description": "Ordered list of terminal title item identifiers.\n\nWhen set, the TUI renders the selected items into the terminal window/tab title. When unset, the TUI defaults to: `activity` and `project`. The `activity` item spins while working and shows an action-required message when blocked on the user.",
+          "description": "Ordered list of terminal title item identifiers.\n\nWhen set, the TUI renders the selected items into the terminal window/tab title.\nWhen unset, the TUI defaults to: `activity` and `project`.\nThe `activity` item spins while working and shows an action-required\nmessage when blocked on the user.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "theme": {
           "default": null,
-          "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection. Use `/theme` in the TUI or see `$CODEWITH_HOME/themes` for custom themes.",
-          "type": "string"
+          "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection.\nUse `/theme` in the TUI or see `$CODEWITH_HOME/themes` for custom themes.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "vim_mode_default": {
           "default": false,
-          "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
+          "description": "Start the composer in Vim mode (`Normal`) by default.\nDefaults to `false`.",
           "type": "boolean"
         }
       },
@@ -3268,65 +4074,89 @@
       "description": "Approval overlay keybindings.",
       "properties": {
         "approve": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approve the primary option."
         },
         "approve_for_prefix": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approve with exec-policy prefix when that option exists."
         },
         "approve_for_session": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Approve for session when that option exists."
         },
         "cancel": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cancel an elicitation request."
         },
         "decline": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Decline and provide corrective guidance."
         },
         "deny": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Deny without providing follow-up guidance."
         },
         "open_fullscreen": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open the full-screen approval details view."
         },
         "open_thread": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open the thread that requested approval when shown from another thread."
@@ -3339,33 +4169,45 @@
       "description": "Chat context keybindings.",
       "properties": {
         "decrease_reasoning_effort": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Decrease the active reasoning effort."
         },
         "edit_queued_message": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Edit the most recently queued message."
         },
         "increase_reasoning_effort": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Increase the active reasoning effort."
         },
         "interrupt_turn": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Interrupt the active turn."
@@ -3378,41 +4220,56 @@
       "description": "Composer context keybindings. These override corresponding `global` actions.",
       "properties": {
         "history_search_next": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move to the next match in reverse history search."
         },
         "history_search_previous": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open reverse history search or move to the previous match."
         },
         "queue": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Queue the current composer draft while a task is running."
         },
         "submit": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Submit the current composer draft."
         },
         "toggle_shortcuts": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Toggle the composer shortcut overlay."
@@ -3425,137 +4282,188 @@
       "description": "Editor context keybindings for text editing inside text areas.",
       "properties": {
         "delete_backward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete one grapheme to the left."
         },
         "delete_backward_word": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete the previous word."
         },
         "delete_forward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete one grapheme to the right."
         },
         "delete_forward_word": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete the next word."
         },
         "insert_newline": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Insert a newline in the editor."
         },
         "kill_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Kill text from cursor to line end."
         },
         "kill_line_start": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Kill text from cursor to line start."
         },
         "kill_whole_line": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Kill the current line."
         },
         "move_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor down one visual line."
         },
         "move_left": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor left by one grapheme."
         },
         "move_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to end of line."
         },
         "move_line_start": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to beginning of line."
         },
         "move_right": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor right by one grapheme."
         },
         "move_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor up one visual line."
         },
         "move_word_left": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to beginning of previous word."
         },
         "move_word_right": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to end of next word."
         },
         "yank": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Yank the kill buffer."
@@ -3568,89 +4476,122 @@
       "description": "Global keybindings. These are used when a context does not define an override.",
       "properties": {
         "clear_terminal": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Clear the terminal UI."
         },
         "copy": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Copy the last agent response to the clipboard."
         },
         "cycle_permissions": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cycle to the next permissions preset."
         },
         "open_external_editor": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open the external editor for the current draft."
         },
         "open_transcript": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open the transcript overlay."
         },
         "queue": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Queue the current composer draft while a task is running."
         },
         "submit": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Submit the current composer draft."
         },
         "toggle_fast_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Toggle Fast mode."
         },
         "toggle_raw_output": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Toggle raw scrollback mode for copy-friendly transcript selection."
         },
         "toggle_shortcuts": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Toggle the composer shortcut overlay."
         },
         "toggle_vim_mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Toggle Vim mode for the composer input."
@@ -3660,7 +4601,7 @@
     },
     "TuiKeymap": {
       "additionalProperties": false,
-      "description": "Raw keymap configuration from `[tui.keymap]`.\n\nEach context contains action-level overrides. Missing actions inherit from built-in defaults, and selected chat/composer actions can fall back through `global` during runtime resolution.\n\nThis type is intentionally a persistence shape, not the structure used by input handlers. Runtime consumers should resolve it into `RuntimeKeymap` first so precedence, empty-list unbinding, and duplicate-key validation are applied consistently.",
+      "description": "Raw keymap configuration from `[tui.keymap]`.\n\nEach context contains action-level overrides. Missing actions inherit from\nbuilt-in defaults, and selected chat/composer actions can fall back\nthrough `global` during runtime resolution.\n\nThis type is intentionally a persistence shape, not the structure used by\ninput handlers. Runtime consumers should resolve it into\n`RuntimeKeymap` first so precedence, empty-list unbinding, and duplicate-key\nvalidation are applied consistently.",
       "properties": {
         "approval": {
           "allOf": [
@@ -3873,81 +4814,111 @@
       "description": "List selection context keybindings for popup-style selectable lists.",
       "properties": {
         "accept": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Accept current selection."
         },
         "cancel": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cancel and close selection view."
         },
         "jump_bottom": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Jump to the last list item."
         },
         "jump_top": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Jump to the first list item."
         },
         "move_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move list selection down."
         },
         "move_left": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move horizontally left in list pickers that support horizontal actions."
         },
         "move_right": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move horizontally right in list pickers that support horizontal actions."
         },
         "move_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move list selection up."
         },
         "page_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move list selection down by one page."
         },
         "page_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move list selection up by one page."
@@ -3960,81 +4931,111 @@
       "description": "Pager context keybindings for transcript and static overlays.",
       "properties": {
         "close": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Close the pager overlay."
         },
         "close_transcript": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Close the transcript overlay via its dedicated toggle key."
         },
         "half_page_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll down by half a page."
         },
         "half_page_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll up by half a page."
         },
         "jump_bottom": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Jump to the end."
         },
         "jump_top": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Jump to the beginning."
         },
         "page_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll down by one page."
         },
         "page_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll up by one page."
         },
         "scroll_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll down by one row."
         },
         "scroll_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Scroll up by one row."
@@ -4045,221 +5046,292 @@
     "TuiPetAnchor": {
       "oneOf": [
         {
+          "const": "composer",
           "description": "Anchor the pet to the bottom of the current TUI composer viewport.",
-          "enum": [
-            "composer"
-          ],
           "type": "string"
         },
         {
+          "const": "screen-bottom",
           "description": "Anchor the pet to the physical bottom of the terminal screen.",
-          "enum": [
-            "screen-bottom"
-          ],
           "type": "string"
         }
       ]
     },
     "TuiVimNormalKeymap": {
       "additionalProperties": false,
-      "description": "Vim normal-mode keybindings for modal editing inside text areas.\n\nActions that use uppercase letters (like `A` for append-line-end) should be specified as `shift-a` in config; the runtime matcher handles cross-terminal shift-reporting differences automatically.",
+      "description": "Vim normal-mode keybindings for modal editing inside text areas.\n\nActions that use uppercase letters (like `A` for append-line-end) should\nbe specified as `shift-a` in config; the runtime matcher handles\ncross-terminal shift-reporting differences automatically.",
       "properties": {
         "append_after_cursor": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Enter insert mode after cursor (`a`)."
         },
         "append_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Enter insert mode at end of line (`A`)."
         },
         "cancel_operator": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cancel a pending operator and return to normal mode."
         },
         "change_to_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Change from cursor to end of line and enter insert mode (`C`)."
         },
         "delete_char": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete character under cursor (`x`)."
         },
         "delete_to_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete from cursor to end of line (`D`)."
         },
         "enter_insert": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Enter insert mode at cursor (`i`)."
         },
         "insert_line_start": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Enter insert mode at first non-blank of line (`I`)."
         },
         "move_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor down (`j`), or recall newer composer history at history boundaries."
         },
         "move_left": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor left (`h`)."
         },
         "move_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to end of line (`$`)."
         },
         "move_line_start": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to start of line (`0`)."
         },
         "move_right": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor right (`l`)."
         },
         "move_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor up (`k`), or recall older composer history at history boundaries."
         },
         "move_word_backward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to start of previous word (`b`)."
         },
         "move_word_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to end of current/next word (`e`)."
         },
         "move_word_forward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Move cursor to start of next word (`w`)."
         },
         "open_line_above": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open a new line above and enter insert mode (`O`)."
         },
         "open_line_below": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Open a new line below and enter insert mode (`o`)."
         },
         "paste_after": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Paste after cursor (`p`)."
         },
         "start_change_operator": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Begin change operator; next keys select a text object."
         },
         "start_delete_operator": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Begin delete operator; next key selects motion (`d`)."
         },
         "start_yank_operator": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Begin yank operator; next key selects motion (`y`)."
         },
         "substitute_char": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Delete character under cursor and enter insert mode (`s`)."
         },
         "yank_line": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Yank the entire line (`Y`)."
@@ -4269,116 +5341,158 @@
     },
     "TuiVimOperatorKeymap": {
       "additionalProperties": false,
-      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion after `d` or `y`. Repeating the operator key (`dd`, `yy`) targets the entire line. Pressing `Esc` cancels the pending operator and returns to normal mode without modifying text.",
+      "description": "Vim operator-pending keybindings for modal editing inside text areas.\n\nThis context is active only while waiting for a motion after `d` or `y`.\nRepeating the operator key (`dd`, `yy`) targets the entire line. Pressing\n`Esc` cancels the pending operator and returns to normal mode without\nmodifying text.",
       "properties": {
         "cancel": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cancel the pending operator and return to normal mode."
         },
         "delete_line": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Repeat delete operator to delete the whole line (`dd`)."
         },
         "motion_down": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: down one line (`j`)."
         },
         "motion_left": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: left (`h`)."
         },
         "motion_line_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: to end of line (`$`)."
         },
         "motion_line_start": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: to start of line (`0`)."
         },
         "motion_right": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: right (`l`)."
         },
         "motion_up": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: up one line (`k`)."
         },
         "motion_word_backward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: to start of previous word (`b`)."
         },
         "motion_word_end": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: to end of current/next word (`e`)."
         },
         "motion_word_forward": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Motion: to start of next word (`w`)."
         },
         "select_around_text_object": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Select an around text object after an operator."
         },
         "select_inner_text_object": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Select an inner text object after an operator."
         },
         "yank_line": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Repeat yank operator to yank the whole line (`yy`)."
@@ -4391,73 +5505,100 @@
       "description": "Vim text-object keybindings for modal editing inside text areas.",
       "properties": {
         "backtick": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: backticks."
         },
         "big_word": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: whitespace-delimited WORD."
         },
         "braces": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: braces."
         },
         "brackets": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: brackets."
         },
         "cancel": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Cancel the pending text-object command."
         },
         "double_quote": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: double quotes."
         },
         "parentheses": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: parentheses."
         },
         "single_quote": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: single quotes."
         },
         "word": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Text object: word."
@@ -4477,10 +5618,8 @@
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Option to disable the URI-based file opener.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -4490,43 +5629,61 @@
       "properties": {
         "enabled": {
           "description": "Enables automatic retry for recoverable usage and transient availability errors.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "initial_backoff_secs": {
           "description": "Initial retry delay in seconds for transient errors or usage errors without reset metadata.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_backoff_secs": {
           "description": "Maximum retry delay in seconds for exponential backoff.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_reset_retry_delay_secs": {
           "description": "Longest reset-based delay, in seconds, that Codewith will schedule automatically.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_retries": {
           "description": "Maximum automatic retry attempts per failing turn.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "reset_retry_buffer_secs": {
           "description": "Extra seconds to wait after a usage-limit reset timestamp before retrying.",
           "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
     },
     "Verbosity": {
-      "description": "Controls output length/detail on GPT-5 models via the Responses API. Serialized with lowercase values to match the OpenAI API.",
+      "description": "Controls output length/detail on GPT-5 models via the Responses API.\nSerialized with lowercase values to match the OpenAI API.",
       "enum": [
         "low",
         "medium",
@@ -4546,16 +5703,28 @@
       "additionalProperties": false,
       "properties": {
         "city": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "country": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "region": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timezone": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -4575,13 +5744,30 @@
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "context_size": {
-          "$ref": "#/definitions/WebSearchContextSize"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchContextSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "location": {
-          "$ref": "#/definitions/WebSearchLocation"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WebSearchLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -4597,11 +5783,21 @@
       "additionalProperties": false,
       "properties": {
         "sandbox": {
-          "$ref": "#/definitions/WindowsSandboxModeToml"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WindowsSandboxModeToml"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sandbox_private_desktop": {
-          "description": "Defaults to `true`. Set to `false` to launch the final sandboxed child process on `Winsta0\\\\Default` instead of a private desktop.",
-          "type": "boolean"
+          "description": "Defaults to `true`. Set to `false` to launch the final sandboxed child\nprocess on `Winsta0\\\\Default` instead of a private desktop.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -4610,22 +5806,21 @@
       "description": "Wire protocol that the provider speaks.",
       "oneOf": [
         {
+          "const": "responses",
           "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
-          "enum": [
-            "responses"
-          ],
           "type": "string"
         },
         {
+          "const": "chat",
           "description": "The OpenAI-compatible Chat Completions API exposed at `/v1/chat/completions`.",
-          "enum": [
-            "chat"
-          ],
           "type": "string"
         }
       ]
     },
     "WorkspaceRootsToml": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
       "type": "object"
     },
     "WorktreeCleanupToml": {
@@ -4640,9 +5835,12 @@
       "additionalProperties": false,
       "properties": {
         "mode": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionModeToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Controls whether this session class can use managed worktrees."
@@ -4662,33 +5860,48 @@
       "additionalProperties": false,
       "properties": {
         "cleanup_default": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WorktreeCleanupToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Default cleanup policy when a managed worktree is released."
         },
         "enabled": {
           "description": "Global managed-worktree gate. When false, creation/attach actions should be unavailable.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "main_sessions": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionConfigToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Policy for ordinary interactive sessions."
         },
         "root": {
           "description": "Optional root directory for Codewith-owned managed worktrees.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "sub_sessions": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionConfigToml"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Policy for subagent and background-agent sessions."
@@ -4700,46 +5913,64 @@
   "description": "Base config deserialized from ~/.codewith/config.toml.",
   "properties": {
     "agents": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AgentsToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Agent-related settings (thread limits, etc.)."
     },
     "allow_login_shell": {
       "default": true,
-      "description": "Whether the model may request a login shell for shell-based tools. Default to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and omitting `login` defaults to using a login shell. If `false`, the model can never use a login shell: `login = true` requests are rejected, and omitting `login` defaults to a non-login shell.",
-      "type": "boolean"
+      "description": "Whether the model may request a login shell for shell-based tools.\nDefault to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and\nomitting `login` defaults to using a login shell.\nIf `false`, the model can never use a login shell: `login = true`\nrequests are rejected, and omitting `login` defaults to a non-login\nshell.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "analytics": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AnalyticsConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "When `false`, disables analytics across Codewith product surfaces in this machine. Defaults to `true`."
+      "description": "When `false`, disables analytics across Codewith product surfaces in this machine.\nDefaults to `true`."
     },
     "approval_policy": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AskForApproval"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Default approval policy for executing commands."
     },
     "approvals_reviewer": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ApprovalsReviewer"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Configures who approval requests are routed to for review once they have been escalated. This does not disable separate safety checks such as ARC."
+      "description": "Configures who approval requests are routed to for review once they have\nbeen escalated. This does not disable separate safety checks such as\nARC."
     },
     "apps": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AppsConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
@@ -4747,135 +5978,211 @@
     },
     "apps_mcp_product_sku": {
       "description": "Optional product SKU forwarded on host-owned Codewith Apps MCP requests.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "audio": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/RealtimeAudioToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Machine-local realtime audio device preferences used by realtime voice."
     },
     "auth_profile_auto_switch": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AuthProfileAutoSwitchToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Runtime auth-profile failover behavior for rate-limited sessions."
     },
     "auto_review": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AutoReviewToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Optional policy instructions for the guardian auto-reviewer."
     },
     "background_terminal_max_timeout": {
-      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds. Default: `300000` (5 minutes).",
+      "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds.\nDefault: `300000` (5 minutes).",
       "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "chatgpt_base_url": {
       "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "check_for_update_on_startup": {
-      "description": "When `true`, checks for Codewith updates on startup and surfaces update prompts. Codewith is updated through explicit upstream merges and releases, so this defaults to `false`.",
-      "type": "boolean"
+      "description": "When `true`, checks for Codewith updates on startup and surfaces update prompts.\nCodewith is updated through explicit upstream merges and releases,\nso this defaults to `false`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "cli_auth_credentials_store": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AuthCredentialsStoreMode"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
-      "description": "Preferred backend for storing CLI auth credentials. file (default): Use a file in the Codewith home directory. keyring: Use an OS-specific keyring service. auto: Use the keyring if available, otherwise use a file."
+      "description": "Preferred backend for storing CLI auth credentials.\nfile (default): Use a file in the Codewith home directory.\nkeyring: Use an OS-specific keyring service.\nauto: Use the keyring if available, otherwise use a file."
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "debug": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/DebugToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Debugging and reproducibility settings."
     },
     "default_permissions": {
-      "description": "Default permissions profile to apply. Names starting with `:` refer to built-in profiles; other names are resolved from the `[permissions]` table.",
-      "type": "string"
+      "description": "Default permissions profile to apply. Names starting with `:` refer to\nbuilt-in profiles; other names are resolved from the `[permissions]`\ntable.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "desktop": {
       "additionalProperties": true,
       "default": null,
       "description": "Opaque desktop settings stored alongside the rest of config.toml.",
-      "type": "object"
+      "type": [
+        "object",
+        "null"
+      ]
     },
     "developer_instructions": {
       "default": null,
       "description": "Developer instructions inserted as a `developer` role message.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "disable_paste_burst": {
-      "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
-      "type": "boolean"
+      "description": "When true, disables burst-paste detection for typed input entirely.\nAll characters are inserted as they are received, and no buffering\nor placeholder replacement will occur for fast keypress bursts.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "experimental_compact_prompt_file": {
-      "$ref": "#/definitions/AbsolutePathBuf"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "experimental_realtime_start_instructions": {
-      "description": "Experimental / do not use. Replaces the built-in realtime start instructions inserted into developer messages when realtime becomes active.",
-      "type": "string"
+      "description": "Experimental / do not use. Replaces the built-in realtime start\ninstructions inserted into developer messages when realtime becomes\nactive.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_realtime_ws_backend_prompt": {
-      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport instructions (the `Op::RealtimeConversation` `/ws` session.update instructions) without changing normal prompts.",
-      "type": "string"
+      "description": "Experimental / do not use. Overrides only the realtime conversation\nwebsocket transport instructions (the `Op::RealtimeConversation`\n`/ws` session.update instructions) without changing normal prompts.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_realtime_ws_base_url": {
-      "description": "Experimental / do not use. Overrides only the realtime conversation websocket transport base URL (the `Op::RealtimeConversation` `/v1/realtime` connection) without changing normal provider HTTP requests.",
-      "type": "string"
+      "description": "Experimental / do not use. Overrides only the realtime conversation\nwebsocket transport base URL (the `Op::RealtimeConversation`\n`/v1/realtime`\nconnection) without changing normal provider HTTP requests.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_realtime_ws_model": {
-      "description": "Experimental / do not use. Selects the realtime websocket model/snapshot used for the `Op::RealtimeConversation` connection.",
-      "type": "string"
+      "description": "Experimental / do not use. Selects the realtime websocket model/snapshot\nused for the `Op::RealtimeConversation` connection.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_realtime_ws_startup_context": {
-      "description": "Experimental / do not use. Replaces the synthesized realtime startup context appended to websocket session instructions. An empty string disables startup context injection entirely.",
-      "type": "string"
+      "description": "Experimental / do not use. Replaces the synthesized realtime startup\ncontext appended to websocket session instructions. An empty string\ndisables startup context injection entirely.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_smart_suggest": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/SmartSuggestConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
-      "description": "Experimental / do not use. Opt-in advisory model pass before tool execution for suggesting better tools or commands."
+      "description": "Experimental / do not use. Opt-in advisory model pass before tool\nexecution for suggesting better tools or commands."
     },
     "experimental_thread_config_endpoint": {
-      "description": "Experimental / do not use. When set, app-server fetches thread-scoped config from a remote service at this endpoint.",
-      "type": "string"
+      "description": "Experimental / do not use. When set, app-server fetches thread-scoped\nconfig from a remote service at this endpoint.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "experimental_thread_store": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ThreadStoreToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Experimental / do not use. Selects the thread store implementation."
     },
     "experimental_use_unified_exec_tool": {
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "features": {
       "additionalProperties": false,
@@ -4892,7 +6199,7 @@
           "type": "boolean"
         },
         "apps_mcp_path_override": {
-          "$ref": "#/definitions/FeatureToml_for_AppsMcpPathOverrideConfigToml"
+          "$ref": "#/definitions/FeatureToml4"
         },
         "auth_elicitation": {
           "type": "boolean"
@@ -4910,7 +6217,7 @@
           "type": "boolean"
         },
         "code_mode": {
-          "$ref": "#/definitions/FeatureToml_for_CodeModeConfigToml"
+          "$ref": "#/definitions/FeatureToml"
         },
         "code_mode_only": {
           "type": "boolean"
@@ -5012,10 +6319,10 @@
           "type": "boolean"
         },
         "multi_agent_v2": {
-          "$ref": "#/definitions/FeatureToml_for_MultiAgentV2ConfigToml"
+          "$ref": "#/definitions/FeatureToml3"
         },
         "network_proxy": {
-          "$ref": "#/definitions/FeatureToml_for_NetworkProxyConfigToml"
+          "$ref": "#/definitions/FeatureToml2"
         },
         "non_prefixed_mcp_tool_names": {
           "type": "boolean"
@@ -5162,52 +6469,70 @@
       "type": "object"
     },
     "feedback": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/FeedbackConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "When `false`, disables feedback collection across Codewith product surfaces. Defaults to `true`."
+      "description": "When `false`, disables feedback collection across Codewith product surfaces.\nDefaults to `true`."
     },
     "file_opener": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/UriBasedFileOpener"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Optional URI-based file opener. If set, citations to files in the model output will be hyperlinked using the specified URI scheme."
+      "description": "Optional URI-based file opener. If set, citations to files in the model\noutput will be hyperlinked using the specified URI scheme."
     },
     "forced_chatgpt_workspace_id": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ForcedChatgptWorkspaceIds"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "When set, restricts ChatGPT login to one or more workspace identifiers."
     },
     "forced_login_method": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ForcedLoginMethod"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "When set, restricts the login mechanism users may use."
     },
     "ghost_snapshot": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/GhostSnapshotToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
-      "description": "Compatibility-only settings retained so legacy `ghost_snapshot` config still loads."
+      "description": "Compatibility-only settings retained so legacy `ghost_snapshot`\nconfig still loads."
     },
     "goals": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/GoalsConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
@@ -5215,13 +6540,19 @@
     },
     "hide_agent_reasoning": {
       "default": false,
-      "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
-      "type": "boolean"
+      "description": "When set to `true`, `AgentReasoning` events will be hidden from the\nUI/output. Defaults to `false`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "history": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/History"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": {
@@ -5231,40 +6562,61 @@
       "description": "Settings that govern if and what will be written to `~/.codewith/history.jsonl`."
     },
     "hooks": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/HooksToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Lifecycle hooks configured inline in TOML plus user-level overrides."
     },
     "include_apps_instructions": {
       "description": "Whether to inject the `<apps_instructions>` developer block.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "include_collaboration_mode_instructions": {
       "description": "Whether to inject the `<collaboration_mode>` developer block.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "include_environment_context": {
       "description": "Whether to inject the `<environment_context>` user block.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "include_permissions_instructions": {
       "description": "Whether to inject the `<permissions instructions>` developer block.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "instructions": {
       "description": "System instructions.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "log_dir": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Directory where Codewith writes log files. Setting this value explicitly also enables the TUI text log in this directory. Defaults to the Codewith home directory's `log` folder."
+      "description": "Directory where Codewith writes log files. Setting this value explicitly\nalso enables the TUI text log in this directory.\nDefaults to the Codewith home directory's `log` folder."
     },
     "marketplaces": {
       "additionalProperties": {
@@ -5275,23 +6627,33 @@
       "type": "object"
     },
     "mcp_oauth_callback_port": {
-      "description": "Optional fixed port for the local HTTP callback server used during MCP OAuth login. When unset, Codewith will bind to an ephemeral port chosen by the OS.",
+      "description": "Optional fixed port for the local HTTP callback server used during MCP OAuth login.\nWhen unset, Codewith will bind to an ephemeral port chosen by the OS.",
       "format": "uint16",
-      "minimum": 0.0,
-      "type": "integer"
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "mcp_oauth_callback_url": {
-      "description": "Optional redirect URI to use during MCP OAuth login. When set, this URI is used in the OAuth authorization request instead of the local listener address. The local callback listener still binds to 127.0.0.1 (using `mcp_oauth_callback_port` when provided).",
-      "type": "string"
+      "description": "Optional redirect URI to use during MCP OAuth login.\nWhen set, this URI is used in the OAuth authorization request instead\nof the local listener address. The local callback listener still binds\nto 127.0.0.1 (using `mcp_oauth_callback_port` when provided).",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "mcp_oauth_credentials_store": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/OAuthCredentialsStoreMode"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
-      "description": "Preferred backend for storing MCP OAuth credentials. keyring: Use an OS-specific keyring service. https://github.com/hasna/codewith/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2 file: Use a file in the Codewith home directory. auto (default): Use the OS-specific keyring service if available, otherwise use a file."
+      "description": "Preferred backend for storing MCP OAuth credentials.\nkeyring: Use an OS-specific keyring service.\n         https://github.com/hasna/codewith/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2\nfile: Use a file in the Codewith home directory.\nauto (default): Use the OS-specific keyring service if available, otherwise use a file."
     },
     "mcp_servers": {
       "additionalProperties": {
@@ -5302,92 +6664,142 @@
       "type": "object"
     },
     "memories": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/MemoriesToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Memories subsystem settings."
     },
     "model": {
       "description": "Optional override of model selection.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "model_auto_compact_token_limit": {
       "description": "Token usage threshold triggering auto-compaction of conversation history.",
       "format": "int64",
-      "type": "integer"
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "model_auto_compact_token_limit_scope": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AutoCompactTokenLimitScope"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Controls whether the auto-compaction limit applies to the full context or only to tokens after the carried prefix in the current compaction window."
+      "description": "Controls whether the auto-compaction limit applies to the full context or\nonly to tokens after the carried prefix in the current compaction window."
     },
     "model_catalog_json": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Optional path to a JSON model catalog (applied on startup only). Per-thread `config` overrides are accepted but do not reapply this (no-ops)."
+      "description": "Optional path to a JSON model catalog (applied on startup only).\nPer-thread `config` overrides are accepted but do not reapply this (no-ops)."
     },
     "model_context_window": {
       "description": "Size of the context window for the model, in tokens.",
       "format": "int64",
-      "type": "integer"
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "model_gateway": {
       "description": "Gateway to use above the selected model provider.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "model_instructions_file": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codewith will likely degrade model performance."
+      "description": "Optional path to a file containing model instructions that will override\nthe built-in instructions for the selected model. Users are STRONGLY\nDISCOURAGED from using this field, as deviating from the instructions\nsanctioned by Codewith will likely degrade model performance."
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "model_providers": {
       "additionalProperties": {
         "$ref": "#/definitions/ModelProviderInfo"
       },
       "default": {},
-      "description": "User-defined provider entries that extend the built-in list. Built-in IDs cannot be overridden.",
+      "description": "User-defined provider entries that extend the built-in list. Built-in\nIDs cannot be overridden.",
       "type": "object"
     },
     "model_reasoning_effort": {
-      "$ref": "#/definitions/ReasoningEffort"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReasoningEffort"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "model_reasoning_summary": {
-      "$ref": "#/definitions/ReasoningSummary"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReasoningSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "model_supports_reasoning_summaries": {
       "description": "Override to force-enable reasoning summaries for the configured model.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "model_verbosity": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/Verbosity"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
     },
     "notice": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/Notice"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Collection of in-product notices (different from notifications) See [`crate::types::Notice`] for more details"
+      "description": "Collection of in-product notices (different from notifications)\nSee [`crate::types::Notice`] for more details"
     },
     "notify": {
       "default": null,
@@ -5395,43 +6807,68 @@
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "oss_provider": {
       "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "otel": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/OtelConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "OTEL configuration."
     },
     "permissions": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/PermissionsToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Named permissions profiles."
     },
     "personality": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/Personality"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Optionally specify a personality for the model"
     },
     "plan_mode_reasoning_effort": {
-      "$ref": "#/definitions/ReasoningEffort"
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReasoningEffort"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "plugins": {
       "additionalProperties": {
@@ -5443,7 +6880,10 @@
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "profiles": {
       "additionalProperties": {
@@ -5459,66 +6899,96 @@
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "project_doc_max_bytes": {
       "default": 32768,
       "description": "Maximum number of bytes to include from a project instruction file.",
       "format": "uint",
-      "minimum": 0.0,
-      "type": "integer"
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "project_root_markers": {
       "default": null,
-      "description": "Markers used to detect the project root when searching parent directories for `.codewith` folders. Defaults to [\".git\"] when unset.",
+      "description": "Markers used to detect the project root when searching parent\ndirectories for `.codewith` folders. Defaults to [\".git\"] when unset.",
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "projects": {
       "additionalProperties": {
         "$ref": "#/definitions/ProjectConfig"
       },
-      "type": "object"
+      "type": [
+        "object",
+        "null"
+      ]
     },
     "realtime": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/RealtimeToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
-      "description": "Experimental / do not use. Realtime websocket session selection. `version` controls v1/v2 and `type` controls conversational/transcription."
+      "description": "Experimental / do not use. Realtime websocket session selection.\n`version` controls v1/v2 and `type` controls conversational/transcription."
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "sandbox_mode": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/SandboxMode"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Sandbox mode to use."
     },
     "sandbox_workspace_write": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/SandboxWorkspaceWrite"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`."
     },
     "service_tier": {
-      "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
-      "type": "string"
+      "description": "Optional explicit service tier request id for new turns (for example\n`default`, `priority`, or `flex`; legacy `fast` also works).",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "session_recap": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/SessionRecapToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
@@ -5540,89 +7010,125 @@
       }
     },
     "show_raw_agent_reasoning": {
-      "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output. Defaults to `false`.",
-      "type": "boolean"
+      "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.\nDefaults to `false`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "skills": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/SkillsConfig"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
     },
     "sqlite_home": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
         }
       ],
-      "description": "Directory where Codewith stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses the Codewith home directory."
+      "description": "Directory where Codewith stores the SQLite state DB.\nDefaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses the Codewith home directory."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "tool_output_token_limit": {
       "description": "Token budget applied when storing tool/function outputs in the context manager.",
       "format": "uint",
-      "minimum": 0.0,
-      "type": "integer"
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "tool_suggest": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ToolSuggestConfig"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Additional discoverable tools that can be suggested for installation."
     },
     "tools": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/ToolsToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Nested tools section for feature toggles"
     },
     "tui": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/Tui"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
     },
     "usage_self_heal": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/UsageSelfHealToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Automatic retry behavior for recoverable usage-limit and availability failures."
     },
     "web_search": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/WebSearchMode"
+        },
+        {
+          "type": "null"
         }
       ],
       "description": "Controls the web search tool mode: disabled, cached, or live."
     },
     "windows": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/WindowsToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,
       "description": "Windows-specific configuration."
     },
     "worktrees": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/WorktreesConfigToml"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null,

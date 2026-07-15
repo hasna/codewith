@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -45,9 +44,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -87,7 +86,16 @@
         },
         "allowedApprovalPolicies": {
           "items": {
-            "$ref": "#/definitions/AskForApproval"
+            "$ref": "#/$defs/AskForApproval"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "allowedApprovalsReviewers": {
+          "items": {
+            "$ref": "#/$defs/ApprovalsReviewer"
           },
           "type": [
             "array",
@@ -105,7 +113,7 @@
         },
         "allowedSandboxModes": {
           "items": {
-            "$ref": "#/definitions/SandboxMode"
+            "$ref": "#/$defs/SandboxMode"
           },
           "type": [
             "array",
@@ -114,7 +122,7 @@
         },
         "allowedWebSearchModes": {
           "items": {
-            "$ref": "#/definitions/WebSearchMode"
+            "$ref": "#/$defs/WebSearchMode"
           },
           "type": [
             "array",
@@ -123,7 +131,7 @@
         },
         "allowedWindowsSandboxImplementations": {
           "items": {
-            "$ref": "#/definitions/WindowsSandboxSetupMode"
+            "$ref": "#/$defs/WindowsSandboxSetupMode"
           },
           "type": [
             "array",
@@ -133,7 +141,7 @@
         "computerUse": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ComputerUseRequirements"
+              "$ref": "#/$defs/ComputerUseRequirements"
             },
             {
               "type": "null"
@@ -149,7 +157,7 @@
         "enforceResidency": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ResidencyRequirement"
+              "$ref": "#/$defs/ResidencyRequirement"
             },
             {
               "type": "null"
@@ -163,6 +171,26 @@
           "type": [
             "object",
             "null"
+          ]
+        },
+        "hooks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManagedHooksRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NetworkRequirements"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -192,24 +220,22 @@
             },
             "timeoutSec": {
               "format": "uint64",
-              "minimum": 0.0,
+              "minimum": 0,
               "type": [
                 "integer",
                 "null"
               ]
             },
             "type": {
-              "enum": [
-                "command"
-              ],
+              "const": "command",
               "title": "CommandConfiguredHookHandlerType",
               "type": "string"
             }
           },
           "required": [
-            "async",
+            "type",
             "command",
-            "type"
+            "async"
           ],
           "title": "CommandConfiguredHookHandler",
           "type": "object"
@@ -217,9 +243,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "prompt"
-              ],
+              "const": "prompt",
               "title": "PromptConfiguredHookHandlerType",
               "type": "string"
             }
@@ -233,9 +257,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "agent"
-              ],
+              "const": "agent",
               "title": "AgentConfiguredHookHandlerType",
               "type": "string"
             }
@@ -252,7 +274,7 @@
       "properties": {
         "hooks": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookHandler"
+            "$ref": "#/$defs/ConfiguredHookHandler"
           },
           "type": "array"
         },
@@ -272,61 +294,61 @@
       "properties": {
         "PermissionRequest": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PostCompact": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PostToolUse": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PreCompact": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "PreToolUse": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SessionStart": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "Stop": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SubagentStart": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "SubagentStop": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
         "UserPromptSubmit": {
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
@@ -344,16 +366,16 @@
         }
       },
       "required": [
+        "PreToolUse",
         "PermissionRequest",
-        "PostCompact",
         "PostToolUse",
         "PreCompact",
-        "PreToolUse",
+        "PostCompact",
         "SessionStart",
-        "Stop",
+        "UserPromptSubmit",
         "SubagentStart",
         "SubagentStop",
-        "UserPromptSubmit"
+        "Stop"
       ],
       "type": "object"
     },
@@ -422,7 +444,7 @@
         },
         "domains": {
           "additionalProperties": {
-            "$ref": "#/definitions/NetworkDomainPermission"
+            "$ref": "#/$defs/NetworkDomainPermission"
           },
           "description": "Canonical network permission map for `experimental_network`.",
           "type": [
@@ -438,14 +460,15 @@
         },
         "httpPort": {
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
           ]
         },
         "managedAllowedDomainsOnly": {
-          "description": "When true, only managed allowlist entries are respected while managed network enforcement is active.",
+          "description": "When true, only managed allowlist entries are respected while managed\nnetwork enforcement is active.",
           "type": [
             "boolean",
             "null"
@@ -453,7 +476,8 @@
         },
         "socksPort": {
           "format": "uint16",
-          "minimum": 0.0,
+          "maximum": 65535,
+          "minimum": 0,
           "type": [
             "integer",
             "null"
@@ -461,7 +485,7 @@
         },
         "unixSockets": {
           "additionalProperties": {
-            "$ref": "#/definitions/NetworkUnixSocketPermission"
+            "$ref": "#/$defs/NetworkUnixSocketPermission"
           },
           "description": "Canonical unix socket permission map for `experimental_network`.",
           "type": [
@@ -509,11 +533,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "requirements": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ConfigRequirements"
+          "$ref": "#/$defs/ConfigRequirements"
         },
         {
           "type": "null"

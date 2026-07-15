@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WorktreeMergeCandidate": {
       "properties": {
         "appliedAt": {
@@ -37,7 +36,7 @@
           "type": "string"
         },
         "status": {
-          "$ref": "#/definitions/WorktreeMergeCandidateStatus"
+          "$ref": "#/$defs/WorktreeMergeCandidateStatus"
         },
         "targetRef": {
           "type": "string"
@@ -57,14 +56,14 @@
         }
       },
       "required": [
-        "baseSha",
         "candidateId",
-        "createdAt",
+        "worktreeId",
+        "targetRef",
+        "baseSha",
         "headSha",
         "status",
-        "targetRef",
-        "updatedAt",
-        "worktreeId"
+        "createdAt",
+        "updatedAt"
       ],
       "type": "object"
     },
@@ -78,10 +77,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/WorktreeMergeCandidate"
+        "$ref": "#/$defs/WorktreeMergeCandidate"
       },
       "type": "array"
     }

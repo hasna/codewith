@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ActiveSessionSendStatus": {
       "enum": [
         "delivered",
@@ -10,9 +9,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "messageId": {
-      "description": "App-server-generated id for this active delivery attempt. It is not a durable mailbox id or read receipt.",
+      "description": "App-server-generated id for this active delivery attempt. It is not a\ndurable mailbox id or read receipt.",
       "type": "string"
     },
     "reason": {
@@ -29,7 +29,7 @@
       ]
     },
     "status": {
-      "$ref": "#/definitions/ActiveSessionSendStatus"
+      "$ref": "#/$defs/ActiveSessionSendStatus"
     },
     "targetPeerId": {
       "default": "",
@@ -43,8 +43,8 @@
     }
   },
   "required": [
-    "messageId",
-    "status"
+    "status",
+    "messageId"
   ],
   "title": "ActiveSessionSendResponse",
   "type": "object"

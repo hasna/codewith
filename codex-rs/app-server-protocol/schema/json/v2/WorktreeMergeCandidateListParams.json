@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WorktreeMergeCandidateStatus": {
       "enum": [
         "open",
@@ -11,10 +10,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "limit": {
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -23,7 +23,7 @@
     "status": {
       "anyOf": [
         {
-          "$ref": "#/definitions/WorktreeMergeCandidateStatus"
+          "$ref": "#/$defs/WorktreeMergeCandidateStatus"
         },
         {
           "type": "null"
