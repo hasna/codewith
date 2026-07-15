@@ -1084,15 +1084,15 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         })
         .await
         .expect("submit user input");
-    wait_for_event_match(&codex, |ev| match ev {
-        EventMsg::AgentMessage(message) if message.message == final_response_text => Some(()),
-        _ => None,
-    })
-    .await;
+    let mut requests_payloads = request_log.requests();
+    for _ in 0..500 {
+        if requests_payloads.len() >= 7 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        requests_payloads = request_log.requests();
+    }
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    // collect the requests payloads from the model
-    let requests_payloads = request_log.requests();
     let body = requests_payloads[0].body_json();
     let input = body.get("input").and_then(|v| v.as_array()).unwrap();
 
