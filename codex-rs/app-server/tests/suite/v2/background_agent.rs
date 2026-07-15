@@ -2465,7 +2465,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "later work\n",
-        std::fs::read_to_string(codex_home.path().join("later.txt"))?
+        std::fs::read_to_string(repo_path.join("later.txt"))?
     );
 
     let race_create_request_id = mcp

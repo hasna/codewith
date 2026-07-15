@@ -1047,11 +1047,13 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     ]);
 
     // final response
+    let final_response_text = concat!(
+        "The task is to create an app. I started to create a react app. ",
+        "then I realized that I need to create a node app. ",
+        "then I realized that I need to create a python app."
+    );
     let model_final_response_sse = sse(vec![
-        ev_assistant_message(
-            "m8",
-            "The task is to create an app. I started to create a react app. then I realized that I need to create a node app. then I realized that I need to create a python app.",
-        ),
+        ev_assistant_message("m8", final_response_text),
         ev_completed_with_tokens("r8", token_count_used_after_compaction + 1000),
     ]);
 
@@ -1082,6 +1084,11 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         })
         .await
         .expect("submit user input");
+    wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::AgentMessage(message) if message.message == final_response_text => Some(()),
+        _ => None,
+    })
+    .await;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // collect the requests payloads from the model
@@ -1150,6 +1157,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
 
     let initial_input = normalize_inputs(input);
     let environment_message = initial_input[0]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(requests_payloads.len(), 7);
 
     // test 1: after compaction, we should have one environment message, one user message, and one user message with summary prefix
     let compaction_indices = [2, 4, 6];
@@ -1497,9 +1505,6 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         let expected_input = expected_requests_inputs[i].as_array().unwrap();
         assert_eq!(normalize_inputs(input), normalize_inputs(expected_input));
     }
-
-    // test 3: the number of requests should be 7
-    assert_eq!(requests_payloads.len(), 7);
 }
 
 // Windows CI only: bump to 4 workers to prevent SSE/event starvation and test timeouts.
