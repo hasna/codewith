@@ -5,7 +5,7 @@ expression: popup
   Select Model and Effort
   Hasna
 
-  1. gpt-5.5 (default)    Frontier model for complex coding, research, and
+  1. gpt-5.6 (default)    Frontier model for complex coding, research, and
                           real-world
   2. gpt-5.4              Strong model for everyday coding.
   3. gpt-5.4-mini         Small, fast, and cost-efficient model for simpler

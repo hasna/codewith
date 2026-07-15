@@ -200,6 +200,22 @@ async fn run_cmd_result_with_permission_profile_for_cwd(
 
 fn is_bwrap_unavailable_output(output: &codex_protocol::exec_output::ExecToolCallOutput) -> bool {
     output.stderr.text.contains(BWRAP_UNAVAILABLE_ERR)
+        || output
+            .stderr
+            .text
+            .contains("loopback: Failed RTM_NEWADDR")
+        || output
+            .stderr
+            .text
+            .contains("loopback: Failed RTM_NEWLINK")
+        || output
+            .stderr
+            .text
+            .contains("setting up uid map: Permission denied")
+        || output
+            .stderr
+            .text
+            .contains("No permissions to create a new namespace")
         || (output
             .stderr
             .text
