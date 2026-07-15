@@ -20,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_EXEC_PLATFORM = "//:windows_x86_64_msvc"
 LLVM_WINDOWS_TOOL_FRAGMENT = "windows-amd64/bin/clang.exe"
 LLVM_LINUX_TOOL_FRAGMENT = "linux-amd64/bin/clang"
+LLVM_WINDOWS_ARCHIVER_FRAGMENT = "windows-amd64/bin/llvm-ar.exe"
+LLVM_LINUX_ARCHIVER_FRAGMENT = "linux-amd64/bin/llvm-ar"
 LINUX_EXEC_PLATFORM = "//:linux_x86_64_ci_analysis"
 NATIVE_LINUX_EXEC_PLATFORM = "//:local_linux"
 
@@ -43,7 +45,7 @@ def verify_actions(payload: dict[str, object]) -> None:
             + ", ".join(wrong_platforms)
         )
 
-    compiler_paths = _compiler_paths(actions, "Windows-cross")
+    compiler_paths = _tool_paths(actions, "Windows-cross", "CppCompile", "compiler")
     wrong_compilers = sorted(
         path for path in compiler_paths if LLVM_WINDOWS_TOOL_FRAGMENT not in path
     )
@@ -53,12 +55,35 @@ def verify_actions(payload: dict[str, object]) -> None:
             f"every action; unexpected compilers were: {wrong_compilers}"
         )
 
+    archiver_paths = _tool_paths(actions, "Windows-cross", "CppArchive", "archiver")
+    wrong_archivers = sorted(
+        path
+        for path in archiver_paths
+        if LLVM_WINDOWS_ARCHIVER_FRAGMENT not in path
+    )
+    if wrong_archivers:
+        raise RuntimeError(
+            "Windows-cross C++ archive actions did not use Windows AMD64 LLVM "
+            f"llvm-ar.exe for every action; unexpected archivers were: {wrong_archivers}"
+        )
 
-def _compiler_paths(actions: list[object], description: str) -> list[str]:
-    compiler_paths: list[str] = []
-    for action in actions:
-        if not isinstance(action, dict):
-            raise RuntimeError(f"{description} aquery returned a malformed action")
+
+def _tool_paths(
+    actions: list[object],
+    description: str,
+    mnemonic: str,
+    tool_description: str,
+) -> list[str]:
+    matching_actions = [
+        action
+        for action in actions
+        if isinstance(action, dict) and action.get("mnemonic") == mnemonic
+    ]
+    if not matching_actions:
+        raise RuntimeError(f"{description} aquery returned no {mnemonic} actions")
+
+    tool_paths: list[str] = []
+    for action in matching_actions:
         arguments = action.get("arguments")
         if (
             not isinstance(arguments, list)
@@ -66,10 +91,11 @@ def _compiler_paths(actions: list[object], description: str) -> list[str]:
             or not isinstance(arguments[0], str)
         ):
             raise RuntimeError(
-                f"{description} aquery returned an action without compiler arguments"
+                f"{description} aquery returned an action without "
+                f"{tool_description} arguments"
             )
-        compiler_paths.append(arguments[0].replace("\\", "/"))
-    return compiler_paths
+        tool_paths.append(arguments[0].replace("\\", "/"))
+    return tool_paths
 
 
 def run_aquery(env: dict[str, str], *options: str) -> dict[str, object]:
@@ -83,7 +109,7 @@ def run_aquery(env: dict[str, str], *options: str) -> dict[str, object]:
         "--remote_executor=",
         "--experimental_remote_downloader=",
         "--output=jsonproto",
-        'mnemonic("CppCompile", @openssl//:crypto)',
+        'mnemonic("Cpp(Compile|Archive)", @openssl//:crypto)',
     ]
     result = subprocess.run(
         command,
@@ -113,7 +139,7 @@ def verify_linux_control(payload: dict[str, object]) -> None:
         for action in actions
     ):
         raise RuntimeError("x86_64 Linux C++ actions changed execution platform")
-    compiler_paths = _compiler_paths(actions, "Linux control")
+    compiler_paths = _tool_paths(actions, "Linux control", "CppCompile", "compiler")
     wrong_compilers = sorted(
         path for path in compiler_paths if LLVM_LINUX_TOOL_FRAGMENT not in path
     )
@@ -121,6 +147,16 @@ def verify_linux_control(payload: dict[str, object]) -> None:
         raise RuntimeError(
             "x86_64 Linux C++ actions did not use Linux AMD64 LLVM clang for every "
             f"action; unexpected compilers were: {wrong_compilers}"
+        )
+
+    archiver_paths = _tool_paths(actions, "Linux control", "CppArchive", "archiver")
+    wrong_archivers = sorted(
+        path for path in archiver_paths if LLVM_LINUX_ARCHIVER_FRAGMENT not in path
+    )
+    if wrong_archivers:
+        raise RuntimeError(
+            "x86_64 Linux C++ archive actions did not use Linux AMD64 LLVM llvm-ar "
+            f"for every action; unexpected archivers were: {wrong_archivers}"
         )
 
 
@@ -137,20 +173,42 @@ def verify_native_linux_control(payload: dict[str, object]) -> None:
 
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64"}:
-        tool_fragment = "linux-amd64/bin/clang"
+        compiler_fragment = "linux-amd64/bin/clang"
+        archiver_fragment = "linux-amd64/bin/llvm-ar"
     elif machine in {"aarch64", "arm64"}:
-        tool_fragment = "linux-arm64/bin/clang"
+        compiler_fragment = "linux-arm64/bin/clang"
+        archiver_fragment = "linux-arm64/bin/llvm-ar"
     else:
         raise RuntimeError(f"unsupported native Linux architecture: {machine}")
 
-    compiler_paths = _compiler_paths(actions, "Native Linux control")
+    compiler_paths = _tool_paths(
+        actions,
+        "Native Linux control",
+        "CppCompile",
+        "compiler",
+    )
     wrong_compilers = sorted(
-        path for path in compiler_paths if tool_fragment not in path
+        path for path in compiler_paths if compiler_fragment not in path
     )
     if wrong_compilers:
         raise RuntimeError(
             "native Linux C++ actions did not use the host-architecture LLVM clang "
             f"for every action; unexpected compilers were: {wrong_compilers}"
+        )
+
+    archiver_paths = _tool_paths(
+        actions,
+        "Native Linux control",
+        "CppArchive",
+        "archiver",
+    )
+    wrong_archivers = sorted(
+        path for path in archiver_paths if archiver_fragment not in path
+    )
+    if wrong_archivers:
+        raise RuntimeError(
+            "native Linux C++ archive actions did not use the host-architecture "
+            f"LLVM llvm-ar for every action; unexpected archivers were: {wrong_archivers}"
         )
 
 
@@ -177,9 +235,10 @@ def main() -> None:
             verify_native_linux_control(run_aquery(env))
 
     print(
-        "Windows-cross aquery resolved Windows execution platform and Windows AMD64 LLVM tools; "
-        "the x86_64 Linux control retained Linux AMD64 LLVM tools, and the native "
-        "Linux control retained its host-architecture LLVM tools."
+        "Windows-cross aquery resolved Windows execution platform and Windows AMD64 "
+        "LLVM compiler and archiver tools; the x86_64 Linux control retained Linux "
+        "AMD64 LLVM tools, and the native Linux control retained its host-architecture "
+        "LLVM tools."
     )
 
 

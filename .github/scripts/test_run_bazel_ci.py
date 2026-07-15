@@ -276,7 +276,7 @@ class RunBazelCiTest(unittest.TestCase):
                 )
                 self.assertIn(expected_exec_platforms, post_config_args)
 
-    def test_spaced_host_override_after_rbe_returns_to_local_windows(self) -> None:
+    def test_spaced_local_host_after_rbe_endpoint_fails_closed(self) -> None:
         result, bazel_args = self.run_wrapper(
             runner_os="Windows",
             wrapper_args=("--windows-cross-compile",),
@@ -293,12 +293,9 @@ class RunBazelCiTest(unittest.TestCase):
             },
         )
 
-        self.assert_success(result)
-        self.assertIn("--host_platform=//:local_windows_msvc", bazel_args)
-        self.assertIn(
-            "--extra_execution_platforms=//:windows_x86_64_msvc", bazel_args
-        )
-        self.assertNotIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(bazel_args, [])
+        self.assertIn("complete RBE topology", result.stderr)
 
     def test_spaced_empty_executor_after_rbe_fails_closed(self) -> None:
         result, bazel_args = self.run_wrapper(
@@ -388,6 +385,28 @@ class RunBazelCiTest(unittest.TestCase):
 
         self.assert_success(result)
         self.assertIn("--host_platform=@external//:rbe", bazel_args)
+        self.assertNotIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
+        self.assertNotIn("--shell_executable=/bin/bash", bazel_args)
+
+    def test_external_repository_execution_label_is_not_main_repository_rbe(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            runner_os="Windows",
+            wrapper_args=("--windows-cross-compile",),
+            bazel_args=(
+                "build",
+                "--extra_execution_platforms=@external//:rbe",
+            ),
+            buildbuddy_api_key="x",
+            extra_env={
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32",
+            },
+        )
+
+        self.assert_success(result)
+        self.assertIn(
+            "--extra_execution_platforms=@external//:rbe",
+            bazel_args,
+        )
         self.assertNotIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
         self.assertNotIn("--shell_executable=/bin/bash", bazel_args)
 
@@ -500,6 +519,141 @@ class RunBazelCiTest(unittest.TestCase):
                 self.assert_success(result)
                 self.assertIn("--shell_executable=/bin/bash", bazel_args)
                 self.assertIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
+
+    def test_rbe_execution_platform_requires_rbe_host_and_endpoint(self) -> None:
+        env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}
+        for buildbuddy_api_key, topology_args in (
+            (
+                "x",
+                (
+                    "--extra_execution_platforms=//:rbe,//:windows_x86_64_msvc",
+                ),
+            ),
+            (
+                None,
+                (
+                    "--extra_execution_platforms",
+                    "@codex//:rbe,//:windows_x86_64_msvc",
+                ),
+            ),
+            (
+                "x",
+                (
+                    "--remote_executor=grpcs://remote.example.test",
+                    "--extra_execution_platforms=@@//:rbe",
+                ),
+            ),
+            (
+                None,
+                (
+                    "--extra_execution_platforms",
+                    "@//:rbe",
+                    "--remote_executor",
+                    "grpcs://remote.example.test",
+                ),
+            ),
+        ):
+            with self.subTest(
+                buildbuddy_api_key=buildbuddy_api_key,
+                topology_args=topology_args,
+            ):
+                result, bazel_args = self.run_wrapper(
+                    runner_os="Windows",
+                    wrapper_args=("--windows-cross-compile",),
+                    bazel_args=("build", *topology_args),
+                    buildbuddy_api_key=buildbuddy_api_key,
+                    extra_env=env,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(bazel_args, [])
+                self.assertIn("recognized RBE host platform", result.stderr)
+
+    def test_remote_executor_requires_complete_rbe_topology(self) -> None:
+        env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}
+        for buildbuddy_api_key, endpoint_args in (
+            ("x", ("--remote_executor=grpcs://remote.example.test",)),
+            (None, ("--remote_executor", "grpc://remote.example.test")),
+            ("x", ("--config=buildbuddy-generic-rbe",)),
+            (None, ("--config", "buildbuddy-openai-rbe")),
+        ):
+            with self.subTest(
+                buildbuddy_api_key=buildbuddy_api_key,
+                endpoint_args=endpoint_args,
+            ):
+                result, bazel_args = self.run_wrapper(
+                    runner_os="Windows",
+                    wrapper_args=("--windows-cross-compile",),
+                    bazel_args=("build", *endpoint_args),
+                    buildbuddy_api_key=buildbuddy_api_key,
+                    extra_env=env,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(bazel_args, [])
+                self.assertIn("complete RBE topology", result.stderr)
+
+    def test_complete_rbe_topology_accepts_both_option_orders_and_spellings(self) -> None:
+        env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}
+        for buildbuddy_api_key, topology_args in (
+            (
+                "x",
+                (
+                    "--host_platform=//:rbe",
+                    "--remote_executor=grpcs://remote.example.test",
+                    "--extra_execution_platforms=@//:rbe,//:windows_x86_64_msvc",
+                ),
+            ),
+            (
+                None,
+                (
+                    "--extra_execution_platforms",
+                    "@@//:rbe,//:windows_x86_64_msvc",
+                    "--remote_executor",
+                    "grpc://remote.example.test",
+                    "--host_platform",
+                    "@codex//:rbe",
+                ),
+            ),
+        ):
+            with self.subTest(
+                buildbuddy_api_key=buildbuddy_api_key,
+                topology_args=topology_args,
+            ):
+                result, bazel_args = self.run_wrapper(
+                    runner_os="Windows",
+                    wrapper_args=("--windows-cross-compile",),
+                    bazel_args=("build", *topology_args),
+                    buildbuddy_api_key=buildbuddy_api_key,
+                    extra_env=env,
+                )
+
+                self.assert_success(result)
+                self.assertIn("--shell_executable=/bin/bash", bazel_args)
+                self.assertIn("--host_action_env=PATH=/usr/bin:/bin", bazel_args)
+
+    def test_rbe_host_and_endpoint_without_explicit_exec_gets_safe_default(self) -> None:
+        result, bazel_args = self.run_wrapper(
+            runner_os="Windows",
+            wrapper_args=("--windows-cross-compile",),
+            bazel_args=(
+                "build",
+                "--remote_executor",
+                "grpc://remote.example.test",
+                "--host_platform",
+                "@@//:rbe",
+            ),
+            extra_env={
+                "CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32",
+            },
+        )
+
+        self.assert_success(result)
+        self.assertIn(
+            "--extra_execution_platforms=//:rbe,//:windows_x86_64_msvc",
+            bazel_args,
+        )
+        self.assertIn("--shell_executable=/bin/bash", bazel_args)
 
     def test_empty_attached_values_rejected_except_remote_executor(self) -> None:
         env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}

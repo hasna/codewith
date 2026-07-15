@@ -258,6 +258,7 @@ windows_host_platform_override=""
 windows_execution_platform_override=""
 windows_rbe_endpoint_configured=0
 windows_rbe_execution_platform=0
+windows_rbe_config_requested=0
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
   # The target remains windows-gnullvm, but the default exec host must match
   # the Windows runner. Selecting the Linux RBE platform without an active
@@ -319,6 +320,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
         case "$option_value" in
           buildbuddy-generic-rbe | buildbuddy-openai-rbe)
             windows_rbe_endpoint_configured=1
+            windows_rbe_config_requested=1
             ;;
         esac
         ;;
@@ -346,6 +348,26 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
     esac
   done
 
+  if [[ -z "$windows_execution_platform_override" \
+    && $windows_rbe_config_requested -eq 1 ]]; then
+    # The remote config expands to --extra_execution_platforms=//:rbe. An
+    # explicit execution-platform override is repeated after configs below and
+    # therefore owns the effective list; otherwise account for that expansion
+    # during validation rather than waiting for Bazel to mix it with a local
+    # Windows host.
+    windows_rbe_execution_platform=1
+  fi
+
+  if [[ $windows_rbe_host_platform -eq 0 \
+    && $windows_rbe_execution_platform -eq 1 ]]; then
+    echo "Windows RBE execution platform requires a complete RBE topology: recognized RBE host platform and nonempty remote execution endpoint." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_host_platform -eq 0 \
+    && $windows_rbe_endpoint_configured -eq 1 ]]; then
+    echo "Windows remote execution endpoint requires a complete RBE topology: recognized RBE host and RBE-compatible execution platforms." >&2
+    exit 1
+  fi
   if [[ $windows_rbe_host_platform -eq 1 && $windows_rbe_endpoint_configured -eq 0 ]]; then
     echo "Windows RBE host platform requires an endpoint-bearing remote execution config or --remote_executor." >&2
     exit 1

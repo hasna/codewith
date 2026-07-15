@@ -12,8 +12,16 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-def action(platform: str, compiler: str) -> dict[str, object]:
-    return {"executionPlatform": platform, "arguments": [compiler, "-c", "input.cc"]}
+def action(
+    platform: str,
+    tool: str,
+    mnemonic: str = "CppCompile",
+) -> dict[str, object]:
+    return {
+        "executionPlatform": platform,
+        "mnemonic": mnemonic,
+        "arguments": [tool, "-c", "input.cc"],
+    }
 
 
 class CheckWindowsBazelHostToolsTest(unittest.TestCase):
@@ -26,14 +34,36 @@ class CheckWindowsBazelHostToolsTest(unittest.TestCase):
             "//:windows_x86_64_msvc",
             "external/llvm_toolchain_llvm/bin/linux-amd64/bin/clang",
         )
+        archive = action(
+            "//:windows_x86_64_msvc",
+            "external/llvm_toolchain_llvm/bin/windows-amd64/bin/llvm-ar.exe",
+            "CppArchive",
+        )
+        wrong_archive = action(
+            "//:windows_x86_64_msvc",
+            "external/llvm_toolchain_llvm/bin/linux-amd64/bin/llvm-ar",
+            "CppArchive",
+        )
 
-        MODULE.verify_actions({"actions": [good]})
+        MODULE.verify_actions({"actions": [good, archive]})
         with self.assertRaisesRegex(RuntimeError, "every action"):
-            MODULE.verify_actions({"actions": [good, mixed]})
+            MODULE.verify_actions({"actions": [good, mixed, archive]})
+        with self.assertRaisesRegex(RuntimeError, "llvm-ar"):
+            MODULE.verify_actions({"actions": [good, wrong_archive]})
         with self.assertRaisesRegex(RuntimeError, "compiler arguments"):
             MODULE.verify_actions(
-                {"actions": [{"executionPlatform": "//:windows_x86_64_msvc"}]}
+                {
+                    "actions": [
+                        {
+                            "executionPlatform": "//:windows_x86_64_msvc",
+                            "mnemonic": "CppCompile",
+                        },
+                        archive,
+                    ]
+                }
             )
+        with self.assertRaisesRegex(RuntimeError, r"no CppArchive actions"):
+            MODULE.verify_actions({"actions": [good]})
         with self.assertRaisesRegex(RuntimeError, r"no C\+\+ compile actions"):
             MODULE.verify_actions({"actions": []})
 
@@ -46,13 +76,33 @@ class CheckWindowsBazelHostToolsTest(unittest.TestCase):
             MODULE.LINUX_EXEC_PLATFORM,
             "external/llvm_toolchain_llvm/bin/windows-amd64/bin/clang.exe",
         )
+        archive = action(
+            MODULE.LINUX_EXEC_PLATFORM,
+            "external/llvm_toolchain_llvm/bin/linux-amd64/bin/llvm-ar",
+            "CppArchive",
+        )
+        wrong_archive = action(
+            MODULE.LINUX_EXEC_PLATFORM,
+            "external/llvm_toolchain_llvm/bin/windows-amd64/bin/llvm-ar.exe",
+            "CppArchive",
+        )
 
-        MODULE.verify_linux_control({"actions": [good]})
+        MODULE.verify_linux_control({"actions": [good, archive]})
         with self.assertRaisesRegex(RuntimeError, "every action"):
-            MODULE.verify_linux_control({"actions": [good, mixed]})
+            MODULE.verify_linux_control({"actions": [good, mixed, archive]})
+        with self.assertRaisesRegex(RuntimeError, "llvm-ar"):
+            MODULE.verify_linux_control({"actions": [good, wrong_archive]})
         with self.assertRaisesRegex(RuntimeError, "compiler arguments"):
             MODULE.verify_linux_control(
-                {"actions": [{"executionPlatform": MODULE.LINUX_EXEC_PLATFORM}]}
+                {
+                    "actions": [
+                        {
+                            "executionPlatform": MODULE.LINUX_EXEC_PLATFORM,
+                            "mnemonic": "CppCompile",
+                        },
+                        archive,
+                    ]
+                }
             )
         with self.assertRaisesRegex(RuntimeError, r"no C\+\+ compile actions"):
             MODULE.verify_linux_control({"actions": []})
@@ -66,12 +116,26 @@ class CheckWindowsBazelHostToolsTest(unittest.TestCase):
             MODULE.NATIVE_LINUX_EXEC_PLATFORM,
             "external/llvm_toolchain_llvm/bin/linux-amd64/bin/clang",
         )
+        arm_archive = action(
+            MODULE.NATIVE_LINUX_EXEC_PLATFORM,
+            "external/llvm_toolchain_llvm/bin/linux-arm64/bin/llvm-ar",
+            "CppArchive",
+        )
+        amd_archive = action(
+            MODULE.NATIVE_LINUX_EXEC_PLATFORM,
+            "external/llvm_toolchain_llvm/bin/linux-amd64/bin/llvm-ar",
+            "CppArchive",
+        )
 
         with patch.object(MODULE.platform, "machine", return_value="aarch64"):
-            MODULE.verify_native_linux_control({"actions": [arm_action]})
+            MODULE.verify_native_linux_control({"actions": [arm_action, arm_archive]})
             with self.assertRaisesRegex(RuntimeError, "every action"):
                 MODULE.verify_native_linux_control(
-                    {"actions": [arm_action, amd_action]}
+                    {"actions": [arm_action, amd_action, arm_archive]}
+                )
+            with self.assertRaisesRegex(RuntimeError, "llvm-ar"):
+                MODULE.verify_native_linux_control(
+                    {"actions": [arm_action, amd_archive]}
                 )
 
 
