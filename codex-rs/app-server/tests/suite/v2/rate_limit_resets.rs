@@ -6,6 +6,7 @@ use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditOutcome;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
+use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -54,6 +55,56 @@ async fn rate_limit_read_skips_reset_details_when_summary_has_no_available_credi
         Some(RateLimitResetCreditsSummary {
             available_count: 0,
             credits: None,
+        })
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rate_limit_read_can_force_reset_details_after_last_credit_is_redeemed() -> Result<()> {
+    let (codex_home, server) = rate_limit_test_server().await?;
+    mount_usage_response(&server, Some(0)).await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "available_count": 0,
+            "credits": [{
+                "id": "credit-1",
+                "reset_type": "codex_rate_limits",
+                "status": "redeemed",
+                "granted_at": "2026-07-01T00:00:00Z",
+                "expires_at": null,
+                "title": null,
+                "description": null
+            }],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = read_rate_limits_with_params(
+        codex_home.path(),
+        GetAccountRateLimitsParams {
+            include_reset_credit_details: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        response.rate_limit_reset_credits,
+        Some(RateLimitResetCreditsSummary {
+            available_count: 0,
+            credits: Some(vec![codex_app_server_protocol::RateLimitResetCredit {
+                id: "credit-1".to_string(),
+                reset_type: RateLimitResetType::CodexRateLimits,
+                status: RateLimitResetCreditStatus::Redeemed,
+                granted_at: 1_782_864_000,
+                expires_at: None,
+                title: None,
+                description: None,
+            }]),
         })
     );
     server.verify().await;
@@ -251,6 +302,57 @@ async fn consume_rate_limit_reset_credit_rejects_invalid_auth_profile_name() -> 
         error.error.message,
         "invalid auth profile: invalid auth profile name `bad/profile`; use letters, numbers, dots, dashes, or underscores, and start with a letter or number"
     );
+
+    Ok(())
+}
+
+#[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
+#[tokio::test]
+async fn consume_rate_limit_reset_credit_rejects_changed_account_without_backend_post() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("current-token")
+            .account_id("current-account")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut mcp = test_app_server(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("redeem-123").with_expected_account("previous-account"),
+        )
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: ConsumeAccountRateLimitResetCreditResponse = to_response(response)?;
+
+    assert_eq!(
+        received,
+        ConsumeAccountRateLimitResetCreditResponse {
+            outcome: ConsumeAccountRateLimitResetCreditOutcome::AccountChanged,
+            account_identity_fingerprint: codex_login::account_identity_fingerprint(
+                "current-account"
+            ),
+        }
+    );
+    server.verify().await;
 
     Ok(())
 }
@@ -567,12 +669,14 @@ fn consume_reset_params(idempotency_key: &str) -> ConsumeAccountRateLimitResetCr
         idempotency_key: idempotency_key.to_string(),
         credit_id: None,
         auth_profile: None,
+        expected_account_identity_fingerprint: None,
     }
 }
 
 trait ConsumeResetParamsExt {
     fn with_credit_id(self, credit_id: &str) -> Self;
     fn with_auth_profile(self, profile: Option<&str>) -> Self;
+    fn with_expected_account(self, account_id: &str) -> Self;
 }
 
 impl ConsumeResetParamsExt for ConsumeAccountRateLimitResetCreditParams {
@@ -583,6 +687,12 @@ impl ConsumeResetParamsExt for ConsumeAccountRateLimitResetCreditParams {
 
     fn with_auth_profile(mut self, profile: Option<&str>) -> Self {
         self.auth_profile = Some(profile.map(str::to_string));
+        self
+    }
+
+    fn with_expected_account(mut self, account_id: &str) -> Self {
+        self.expected_account_identity_fingerprint =
+            Some(codex_login::account_identity_fingerprint(account_id));
         self
     }
 }
@@ -654,6 +764,13 @@ async fn mount_usage_response(server: &MockServer, available_count: Option<i64>)
 }
 
 async fn read_rate_limits(codex_home: &Path) -> Result<GetAccountRateLimitsResponse> {
+    read_rate_limits_with_params(codex_home, GetAccountRateLimitsParams::default()).await
+}
+
+async fn read_rate_limits_with_params(
+    codex_home: &Path,
+    params: GetAccountRateLimitsParams,
+) -> Result<GetAccountRateLimitsResponse> {
     let mut mcp = TestAppServer::new_with_env(
         codex_home,
         &[
@@ -664,7 +781,9 @@ async fn read_rate_limits(codex_home: &Path) -> Result<GetAccountRateLimitsRespo
     )
     .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let request_id = mcp.send_get_account_rate_limits_request().await?;
+    let request_id = mcp
+        .send_get_account_rate_limits_request_with_params(params)
+        .await?;
     let response: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_response_message(RequestId::Integer(request_id)),

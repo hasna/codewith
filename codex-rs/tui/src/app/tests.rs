@@ -4638,6 +4638,15 @@ async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ow
     while app_event_rx.try_recv().is_ok() {}
 
     app.chat_widget.start_rate_limit_reset_picker();
+    let manual_generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::ResetPicker { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("manual reset refresh");
     assert!(
         initial_events
             .iter()
@@ -4645,7 +4654,20 @@ async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ow
         "manual reset ownership must block every profile popup action"
     );
     app.chat_widget
-        .finish_rate_limit_reset_picker(initial_generation, Err("cancelled".to_string()));
+        .finish_rate_limit_reset_picker(manual_generation, Err("cancelled".to_string()));
+    let post_manual_events = profile_popup_workflow_events(manual_generation);
+    assert!(
+        post_manual_events
+            .iter()
+            .all(|event| app.auth_profile_event_is_current(event)),
+        "new profile actions must use the manual reset's retained generation after release"
+    );
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
+        "profile actions queued before manual reset ownership must remain stale after release"
+    );
 
     app.chat_widget.apply_config_popup_value(
         "usage_limit.auto_reset_enabled",
@@ -4720,6 +4742,7 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshTarget::Selected,
         Some("work".to_string()),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:work-account".to_string(),
             snapshots: vec![rate_limit_snapshot_for_window(
                 /*used_percent*/ 100, /*window_duration_mins*/ 300,
                 /*resets_at*/ 123,
@@ -4745,6 +4768,7 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshTarget::Selected,
         Some("personal".to_string()),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:personal-account".to_string(),
             snapshots: vec![rate_limit_snapshot_for_window(
                 /*used_percent*/ 100, /*window_duration_mins*/ 300,
                 /*resets_at*/ 123,
@@ -4804,6 +4828,7 @@ async fn auto_reset_refresh_replaces_stale_codex_decision_snapshot() {
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:test-account".to_string(),
             snapshots: vec![non_codex],
             reset_credits: Some(RateLimitResetCreditsSummary {
                 available_count: 1,
@@ -4864,6 +4889,7 @@ async fn stale_reset_generation_never_applies_credits_or_snapshots() {
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:test-account".to_string(),
             snapshots: vec![rate_limit_snapshot_for_window(
                 /*used_percent*/ 100,
                 /*window_duration_mins*/ 7 * 24 * 60,
@@ -4933,6 +4959,7 @@ async fn same_generation_wrong_phase_auto_reset_refresh_never_applies_payload() 
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:test-account".to_string(),
             snapshots: vec![rate_limit_snapshot_for_window(
                 /*used_percent*/ 100,
                 /*window_duration_mins*/ 7 * 24 * 60,
@@ -5063,6 +5090,7 @@ async fn usage_panel_usage_refresh_completion_requests_frame() {
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:test-account".to_string(),
             snapshots: vec![],
             reset_credits: None,
         }),
@@ -5109,6 +5137,7 @@ async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
         Ok(RateLimitRefreshData {
+            account_identity_fingerprint: "sha256:test-account".to_string(),
             snapshots: vec![rate_limit_snapshot_for_window(
                 /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
             )],

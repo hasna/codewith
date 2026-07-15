@@ -78,6 +78,8 @@ impl App {
 
         let auth_url = server.auth_url.clone();
         let shutdown_handle = server.cancel_handle();
+        self.chat_widget
+            .begin_selected_auth_profile_credential_mutation(&profile);
         if let Err(err) = webbrowser::open(&auth_url) {
             tracing::warn!(
                 profile,
@@ -123,6 +125,8 @@ impl App {
         profile: String,
         result: Result<(), String>,
     ) {
+        self.chat_widget
+            .finish_selected_auth_profile_credential_mutation(&profile, result.is_ok());
         match result {
             Ok(()) => {
                 if self.config.selected_auth_profile.as_deref() == Some(profile.as_str()) {

@@ -67,9 +67,18 @@ impl App {
     }
 
     pub(super) fn auth_profile_event_is_current(&mut self, event: &AppEvent) -> bool {
-        event
+        let is_current = event
             .auth_profile_action_reset_generation()
-            .is_none_or(|reset_generation| self.auth_profile_action_is_current(reset_generation))
+            .is_none_or(|reset_generation| self.auth_profile_action_is_current(reset_generation));
+        if !is_current
+            && let AppEvent::AuthProfileReloginFinished {
+                profile, result, ..
+            } = event
+        {
+            self.chat_widget
+                .finish_selected_auth_profile_credential_mutation(profile, result.is_ok());
+        }
+        is_current
     }
 
     fn active_config_profile(&self) -> Option<&str> {
@@ -3379,9 +3388,31 @@ impl App {
                     self.chat_widget
                         .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
                 }
+                if is_current_profile
+                    && !self
+                        .chat_widget
+                        .rate_limit_reset_refresh_account_is_current(
+                            &origin,
+                            &data.account_identity_fingerprint,
+                        )
+                {
+                    if let RateLimitRefreshOrigin::PostReset { generation } = origin {
+                        self.chat_widget.finish_post_reset_refresh(
+                            generation,
+                            Err(
+                                "Reset verification was superseded by an authenticated account change"
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                    return RateLimitRefreshCompletion::None;
+                }
+                let account_identity_fingerprint = data.account_identity_fingerprint;
                 let reset_credits = data.reset_credits.clone();
                 let snapshots = data.snapshots;
                 if is_current_profile {
+                    self.chat_widget
+                        .on_rate_limit_account_identity(account_identity_fingerprint);
                     if matches!(
                         origin,
                         RateLimitRefreshOrigin::AutoResetCheck { .. }

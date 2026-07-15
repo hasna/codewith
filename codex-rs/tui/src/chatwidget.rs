@@ -279,6 +279,7 @@ use crate::app_event::PermissionProfileSelection;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RateLimitRefreshTarget;
 use crate::app_event::RateLimitResetAttempt;
+use crate::app_event::RateLimitResetVerification;
 #[cfg(any(target_os = "windows", test))]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -623,6 +624,7 @@ pub(crate) struct ChatWidget {
     usage_panel_rate_limit_state: UsagePanelRateLimitState,
     usage_panel_minimax_usage_state: UsagePanelMiniMaxUsageState,
     rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+    rate_limit_reset_account_identity_fingerprint: Option<String>,
     announced_rate_limit_reset_available_count: Option<i64>,
     pending_rate_limit_reset_consumption: Option<RateLimitResetAttempt>,
     rate_limit_reset_in_flight: Option<RateLimitResetAttempt>,
@@ -633,6 +635,7 @@ pub(crate) struct ChatWidget {
     pending_post_reset_refresh: Option<RateLimitResetAttempt>,
     automatic_reset_opted_out_generation: Option<u64>,
     usage_limit_auto_reset_key: Option<String>,
+    selected_auth_profile_credential_mutation_in_flight: Option<String>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

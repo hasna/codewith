@@ -7011,6 +7011,13 @@
           "type": "string"
         },
         {
+          "description": "The authenticated account no longer matches the account that selected the credit.",
+          "enum": [
+            "accountChanged"
+          ],
+          "type": "string"
+        },
+        {
           "description": "The backend returned an unrecognized reset outcome.",
           "enum": [
             "unknown"
@@ -7037,6 +7044,13 @@
             "null"
           ]
         },
+        "expectedAccountIdentityFingerprint": {
+          "description": "Opaque account fingerprint from the read that selected this reset credit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "idempotencyKey": {
           "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
           "type": "string"
@@ -7051,11 +7065,16 @@
     "ConsumeAccountRateLimitResetCreditResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "accountIdentityFingerprint": {
+          "description": "Opaque equality-only fingerprint of the account resolved for this request.",
+          "type": "string"
+        },
         "outcome": {
           "$ref": "#/definitions/ConsumeAccountRateLimitResetCreditOutcome"
         }
       },
       "required": [
+        "accountIdentityFingerprint",
         "outcome"
       ],
       "title": "ConsumeAccountRateLimitResetCreditResponse",
@@ -8536,6 +8555,10 @@
             "string",
             "null"
           ]
+        },
+        "includeResetCreditDetails": {
+          "description": "Include detailed reset-credit rows even when no credits remain available.",
+          "type": "boolean"
         }
       },
       "title": "GetAccountRateLimitsParams",
@@ -8544,6 +8567,10 @@
     "GetAccountRateLimitsResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "accountIdentityFingerprint": {
+          "description": "Opaque equality-only SHA-256 fingerprint of the authenticated account. Clients must not display or log it and must treat its representation as opaque.",
+          "type": "string"
+        },
         "rateLimitResetCredits": {
           "anyOf": [
             {
@@ -8574,6 +8601,7 @@
         }
       },
       "required": [
+        "accountIdentityFingerprint",
         "rateLimits"
       ],
       "title": "GetAccountRateLimitsResponse",

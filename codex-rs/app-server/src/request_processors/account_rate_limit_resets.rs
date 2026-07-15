@@ -61,10 +61,12 @@ pub(super) async fn consume_credit(
 pub(super) async fn enrich_summary(
     client: &BackendClient,
     summary: Option<BackendRateLimitResetCreditsSummary>,
+    include_details: bool,
 ) -> Option<RateLimitResetCreditsSummary> {
-    if summary
-        .as_ref()
-        .is_some_and(|summary| summary.available_count > 0)
+    if (include_details
+        || summary
+            .as_ref()
+            .is_some_and(|summary| summary.available_count > 0))
         && let Some(details) = detailed_credits(client).await
     {
         return Some(details);

@@ -2,16 +2,30 @@ use super::*;
 
 impl ChatWidget {
     pub(crate) fn start_rate_limit_reset_picker(&mut self) {
+        if !self.uses_canonical_codex_backend_for_usage_reset() {
+            self.add_error_message(
+                "Usage-limit resets are only available for the canonical OpenAI provider."
+                    .to_string(),
+            );
+            return;
+        }
         if self.automatic_usage_limit_reset_owns_failed_turn() {
             self.add_error_message(
                 "A usage-limit reset is already recovering the failed turn.".to_string(),
             );
             return;
         }
-        let generation = self.rate_limit_reset_generation;
-        if self.pending_rate_limit_reset_picker == Some(generation) {
+        if self.manual_usage_limit_reset_is_active() {
             return;
         }
+        if self.selected_auth_profile_credential_mutation_in_flight() {
+            self.add_error_message(
+                "Usage-limit reset is unavailable while the selected profile is logging in."
+                    .to_string(),
+            );
+            return;
+        }
+        let generation = self.advance_rate_limit_reset_generation();
         self.pending_rate_limit_reset_picker = Some(generation);
         self.add_info_message(
             "Refreshing available usage limit resets…".to_string(),
@@ -42,6 +56,13 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_rate_limit_reset_confirm(&mut self) {
+        if !self.uses_canonical_codex_backend_for_usage_reset() {
+            self.add_error_message(
+                "Usage-limit resets are only available for the canonical OpenAI provider."
+                    .to_string(),
+            );
+            return;
+        }
         if self.automatic_usage_limit_reset_owns_failed_turn() {
             self.add_error_message(
                 "A usage-limit reset is already recovering the failed turn.".to_string(),
@@ -65,6 +86,15 @@ impl ChatWidget {
         }
 
         let auth_profile = self.config.selected_auth_profile.clone();
+        let Some(account_identity_fingerprint) =
+            self.rate_limit_reset_account_identity_fingerprint.clone()
+        else {
+            self.add_error_message(
+                "Usage limit reset account identity is unavailable; refresh and try again."
+                    .to_string(),
+            );
+            return;
+        };
         let generation = self.rate_limit_reset_generation;
         let mut items = Vec::with_capacity(credits.len() + 1);
         for credit in credits {
@@ -79,16 +109,19 @@ impl ChatWidget {
                     .map(|expires_at| format!("Expires at Unix time {expires_at}."))
             });
             let auth_profile = auth_profile.clone();
+            let account_identity_fingerprint = account_identity_fingerprint.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::ConsumeRateLimitResetCredit {
                     attempt: RateLimitResetAttempt {
                         idempotency_key: uuid::Uuid::new_v4().to_string(),
                         credit_id: credit_id.clone(),
                         auth_profile: auth_profile.clone(),
+                        account_identity_fingerprint: account_identity_fingerprint.clone(),
                         generation,
                         automatic: false,
                         trigger_key: None,
                         retry_count: 0,
+                        verification: RateLimitResetVerification::LimitsOnly,
                     },
                 });
             })];

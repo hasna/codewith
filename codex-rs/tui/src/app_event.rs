@@ -183,8 +183,15 @@ pub(crate) enum RateLimitRefreshTarget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RateLimitRefreshData {
+    pub(crate) account_identity_fingerprint: String,
     pub(crate) snapshots: Vec<RateLimitSnapshot>,
     pub(crate) reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RateLimitResetVerification {
+    LimitsOnly,
+    ExactCreditRedemption,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,10 +199,12 @@ pub(crate) struct RateLimitResetAttempt {
     pub(crate) idempotency_key: String,
     pub(crate) credit_id: String,
     pub(crate) auth_profile: Option<String>,
+    pub(crate) account_identity_fingerprint: String,
     pub(crate) generation: u64,
     pub(crate) automatic: bool,
     pub(crate) trigger_key: Option<String>,
     pub(crate) retry_count: u8,
+    pub(crate) verification: RateLimitResetVerification,
 }
 
 impl RateLimitRefreshTarget {

@@ -185,6 +185,7 @@ async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
     let received: GetAccountRateLimitsResponse = to_response(response)?;
 
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: codex_login::account_identity_fingerprint("account-123"),
         rate_limits: RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
@@ -318,6 +319,7 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
         })
         .await?;
 
@@ -342,6 +344,7 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
         rate_limit_reached_type: None,
     };
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: codex_login::account_identity_fingerprint("work-account"),
         rate_limits: expected_snapshot.clone(),
         rate_limits_by_limit_id: Some(
             [("codex".to_string(), expected_snapshot)]
@@ -421,6 +424,7 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(None),
+            ..Default::default()
         })
         .await?;
 
@@ -445,6 +449,7 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
         rate_limit_reached_type: None,
     };
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: codex_login::account_identity_fingerprint("root-account"),
         rate_limits: expected_snapshot.clone(),
         rate_limits_by_limit_id: Some(
             [("codex".to_string(), expected_snapshot)]
@@ -469,6 +474,7 @@ async fn get_account_rate_limits_rejects_invalid_auth_profile_name() -> Result<(
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(Some("bad/profile".to_string())),
+            ..Default::default()
         })
         .await?;
 

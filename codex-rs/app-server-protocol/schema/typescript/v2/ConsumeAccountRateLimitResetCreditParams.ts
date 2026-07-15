@@ -17,4 +17,8 @@ creditId?: string | null,
  * Auth profile used for this reset. `null` selects the default root auth;
  * omission leaves the app-server's selected auth profile unchanged.
  */
-authProfile?: string | null, };
+authProfile?: string | null,
+/**
+ * Opaque account fingerprint from the read that selected this reset credit.
+ */
+expectedAccountIdentityFingerprint?: string | null, };

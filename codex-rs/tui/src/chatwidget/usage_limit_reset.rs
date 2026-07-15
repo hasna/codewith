@@ -8,6 +8,9 @@ use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitResetType;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RateLimitWindow;
+use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::provider_base_url_matches;
 
 const WEEKLY_WINDOW_MINUTES: i64 = 7 * 24 * 60;
 const MAX_AMBIGUOUS_RETRIES: u8 = 1;
@@ -31,6 +34,65 @@ pub(crate) enum UsageLimitAutoResetCheckOutcome {
 mod automatic;
 mod manual;
 impl ChatWidget {
+    pub(crate) fn advance_rate_limit_reset_generation(&mut self) -> u64 {
+        let Some(next_generation) = self.rate_limit_reset_generation.checked_add(1) else {
+            tracing::error!("usage-limit reset generation exhausted");
+            std::process::abort();
+        };
+        self.rate_limit_reset_generation = next_generation;
+        self.rate_limit_reset_generation
+    }
+
+    fn uses_canonical_codex_backend_for_usage_reset(&self) -> bool {
+        self.config.model_provider_id == OPENAI_PROVIDER_ID
+            && self.config.model_provider.requires_openai_auth
+            && self
+                .runtime_model_provider_base_url
+                .as_deref()
+                .is_some_and(|base_url| provider_base_url_matches(base_url, CHATGPT_CODEX_BASE_URL))
+    }
+
+    pub(crate) fn on_rate_limit_account_identity(&mut self, fingerprint: String) {
+        if self
+            .rate_limit_reset_account_identity_fingerprint
+            .as_ref()
+            .is_some_and(|current| current != &fingerprint)
+        {
+            self.rate_limit_reset_credits = None;
+            self.announced_rate_limit_reset_available_count = None;
+        }
+        self.rate_limit_reset_account_identity_fingerprint = Some(fingerprint);
+    }
+
+    pub(crate) fn begin_selected_auth_profile_credential_mutation(&mut self, profile: &str) {
+        if self.config.selected_auth_profile.as_deref() == Some(profile) {
+            self.selected_auth_profile_credential_mutation_in_flight = Some(profile.to_string());
+        }
+    }
+
+    pub(crate) fn finish_selected_auth_profile_credential_mutation(
+        &mut self,
+        profile: &str,
+        credentials_changed: bool,
+    ) {
+        if self
+            .selected_auth_profile_credential_mutation_in_flight
+            .as_deref()
+            != Some(profile)
+        {
+            return;
+        }
+        self.selected_auth_profile_credential_mutation_in_flight = None;
+        if credentials_changed && self.config.selected_auth_profile.as_deref() == Some(profile) {
+            self.invalidate_rate_limit_reset_state_after_account_update();
+        }
+    }
+
+    pub(crate) fn selected_auth_profile_credential_mutation_in_flight(&self) -> bool {
+        self.selected_auth_profile_credential_mutation_in_flight
+            .is_some()
+    }
+
     pub(crate) fn on_rate_limit_reset_credits(
         &mut self,
         reset_credits: Option<RateLimitResetCreditsSummary>,
@@ -129,9 +191,22 @@ impl ChatWidget {
         self.rate_limit_reset_in_flight = None;
 
         match response {
+            Ok(response)
+                if response.account_identity_fingerprint
+                    != attempt.account_identity_fingerprint =>
+            {
+                self.add_error_message(
+                    "Usage limit reset stopped because the authenticated account changed."
+                        .to_string(),
+                );
+                self.finish_automatic_reset_without_resuming(&attempt);
+                RateLimitResetCompletion::Ignore
+            }
             Ok(response) => match response.outcome {
                 ConsumeAccountRateLimitResetCreditOutcome::Reset
                 | ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed => {
+                    let mut attempt = attempt;
+                    attempt.verification = RateLimitResetVerification::LimitsOnly;
                     if let Some(trigger_key) = attempt.trigger_key.clone() {
                         self.usage_limit_auto_reset_key = Some(trigger_key);
                     }
@@ -165,6 +240,14 @@ impl ChatWidget {
                     });
                     self.announced_rate_limit_reset_available_count = None;
                     self.add_error_message("No usage limit resets are available.".to_string());
+                    self.finish_automatic_reset_without_resuming(&attempt);
+                    RateLimitResetCompletion::Ignore
+                }
+                ConsumeAccountRateLimitResetCreditOutcome::AccountChanged => {
+                    self.add_error_message(
+                        "Usage limit reset stopped because the authenticated account changed."
+                            .to_string(),
+                    );
                     self.finish_automatic_reset_without_resuming(&attempt);
                     RateLimitResetCompletion::Ignore
                 }
@@ -203,6 +286,9 @@ impl ChatWidget {
             return RateLimitResetCompletion::Retry(attempt);
         }
         self.rate_limit_reset_retry = None;
+        if !attempt.automatic {
+            attempt.verification = RateLimitResetVerification::ExactCreditRedemption;
+        }
         if let Some(trigger_key) = attempt.trigger_key.clone() {
             self.usage_limit_auto_reset_key = Some(trigger_key);
         }
@@ -240,6 +326,16 @@ impl ChatWidget {
             self.finish_automatic_reset_without_resuming(&attempt);
             return;
         }
+        if attempt.verification == RateLimitResetVerification::ExactCreditRedemption
+            && !self.exact_credit_redemption_is_verified(&attempt.credit_id)
+        {
+            self.add_error_message(
+                "Couldn't confirm exact usage limit reset redemption; no additional reset was attempted."
+                    .to_string(),
+            );
+            self.finish_automatic_reset_without_resuming(&attempt);
+            return;
+        }
         if self.weekly_usage_limit_auto_reset_key().is_some() {
             self.add_error_message(
                 "The weekly usage limit is still exhausted after the reset.".to_string(),
@@ -267,7 +363,7 @@ impl ChatWidget {
     }
 
     fn invalidate_pending_automatic_reset(&mut self) {
-        self.rate_limit_reset_generation = self.rate_limit_reset_generation.saturating_add(1);
+        self.advance_rate_limit_reset_generation();
         self.pending_usage_limit_auto_reset_check = None;
         if self
             .pending_rate_limit_reset_consumption
@@ -318,8 +414,9 @@ impl ChatWidget {
 
     pub(crate) fn invalidate_rate_limit_reset_state_after_account_update(&mut self) {
         let automatic_reset_owned_failed_turn = self.automatic_usage_limit_reset_owns_failed_turn();
-        self.rate_limit_reset_generation = self.rate_limit_reset_generation.saturating_add(1);
+        self.advance_rate_limit_reset_generation();
         self.rate_limit_reset_credits = None;
+        self.rate_limit_reset_account_identity_fingerprint = None;
         self.announced_rate_limit_reset_available_count = None;
         self.pending_rate_limit_reset_consumption = None;
         self.rate_limit_reset_in_flight = None;
@@ -334,6 +431,52 @@ impl ChatWidget {
         if automatic_reset_owned_failed_turn {
             self.fallback_auth_profile_switch_after_reset_unavailable();
         }
+    }
+}
+
+impl ChatWidget {
+    pub(crate) fn post_reset_refresh_requires_credit_details(
+        &self,
+        origin: &RateLimitRefreshOrigin,
+    ) -> bool {
+        let RateLimitRefreshOrigin::PostReset { generation } = origin else {
+            return false;
+        };
+        self.pending_post_reset_refresh
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.generation == *generation
+                    && attempt.verification == RateLimitResetVerification::ExactCreditRedemption
+            })
+    }
+
+    pub(crate) fn rate_limit_reset_refresh_account_is_current(
+        &self,
+        origin: &RateLimitRefreshOrigin,
+        fingerprint: &str,
+    ) -> bool {
+        let RateLimitRefreshOrigin::PostReset { generation } = origin else {
+            return true;
+        };
+        self.pending_post_reset_refresh
+            .as_ref()
+            .is_some_and(|attempt| {
+                attempt.generation == *generation
+                    && attempt.account_identity_fingerprint == fingerprint
+            })
+    }
+
+    fn exact_credit_redemption_is_verified(&self, credit_id: &str) -> bool {
+        self.rate_limit_reset_credits
+            .as_ref()
+            .and_then(|summary| summary.credits.as_deref())
+            .is_some_and(|credits| {
+                credits.iter().any(|credit| {
+                    credit.id == credit_id
+                        && credit.reset_type == RateLimitResetType::CodexRateLimits
+                        && credit.status == RateLimitResetCreditStatus::Redeemed
+                })
+            })
     }
 }
 

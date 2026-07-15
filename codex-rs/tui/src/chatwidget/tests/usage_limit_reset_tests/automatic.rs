@@ -117,6 +117,7 @@ async fn disabling_auto_reset_during_in_flight_consume_reconciles_without_resumi
         attempt.clone(),
         Ok(ConsumeAccountRateLimitResetCreditResponse {
             outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+            account_identity_fingerprint: "sha256:test-account".to_string(),
         }),
     ) else {
         panic!("an already-sent reset must still be reconciled after opt-out");
@@ -400,6 +401,7 @@ async fn second_ambiguous_result_reconciles_without_another_request_key() {
 async fn verified_reset_resumes_failed_turn_exactly_once() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     super::status_and_layout::configure_test_session(&mut chat);
+    set_canonical_reset_provider(&mut chat);
     chat.config.usage_limit.auto_reset_enabled = true;
     chat.config.auth_profile_auto_switch.enabled = false;
 
@@ -436,6 +438,7 @@ async fn verified_reset_resumes_failed_turn_exactly_once() {
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)

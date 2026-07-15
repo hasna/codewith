@@ -16,13 +16,12 @@ impl ChatWidget {
         if !self.config.usage_limit.auto_reset_enabled {
             return UsageLimitAutoResetCheckOutcome::Unavailable;
         }
-        if !self.config.model_provider.is_openai()
-            || !self.config.model_provider.requires_openai_auth
+        if !self.uses_canonical_codex_backend_for_usage_reset()
+            || self.selected_auth_profile_credential_mutation_in_flight()
         {
             return UsageLimitAutoResetCheckOutcome::Unavailable;
         }
-        self.rate_limit_reset_generation = self.rate_limit_reset_generation.saturating_add(1);
-        let generation = self.rate_limit_reset_generation;
+        let generation = self.advance_rate_limit_reset_generation();
         self.automatic_reset_opted_out_generation = None;
         self.pending_usage_limit_auto_reset_check = Some(generation);
         self.prepare_for_usage_limit_reset();
@@ -90,15 +89,23 @@ impl ChatWidget {
             self.fallback_auth_profile_switch_after_reset_unavailable();
             return;
         };
+        let Some(account_identity_fingerprint) =
+            self.rate_limit_reset_account_identity_fingerprint.clone()
+        else {
+            self.fallback_auth_profile_switch_after_reset_unavailable();
+            return;
+        };
 
         let attempt = RateLimitResetAttempt {
             idempotency_key: uuid::Uuid::new_v4().to_string(),
             credit_id,
             auth_profile: self.config.selected_auth_profile.clone(),
+            account_identity_fingerprint,
             generation,
             automatic: true,
             trigger_key: Some(trigger_key),
             retry_count: 0,
+            verification: RateLimitResetVerification::LimitsOnly,
         };
         self.pending_rate_limit_reset_consumption = Some(attempt.clone());
         self.app_event_tx

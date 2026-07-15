@@ -32,6 +32,13 @@
           "type": "string"
         },
         {
+          "description": "The authenticated account no longer matches the account that selected the credit.",
+          "enum": [
+            "accountChanged"
+          ],
+          "type": "string"
+        },
+        {
           "description": "The backend returned an unrecognized reset outcome.",
           "enum": [
             "unknown"
@@ -42,11 +49,16 @@
     }
   },
   "properties": {
+    "accountIdentityFingerprint": {
+      "description": "Opaque equality-only fingerprint of the account resolved for this request.",
+      "type": "string"
+    },
     "outcome": {
       "$ref": "#/definitions/ConsumeAccountRateLimitResetCreditOutcome"
     }
   },
   "required": [
+    "accountIdentityFingerprint",
     "outcome"
   ],
   "title": "ConsumeAccountRateLimitResetCreditResponse",

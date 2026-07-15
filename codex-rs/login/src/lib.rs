@@ -72,3 +72,31 @@ pub use auth::validate_auth_profile_name;
 pub use auth_env_telemetry::AuthEnvTelemetry;
 pub use auth_env_telemetry::collect_auth_env_telemetry;
 pub use token_data::TokenData;
+
+/// Returns an opaque equality-only fingerprint for a backend account identifier.
+///
+/// Callers must not display or log the fingerprint. Its representation is intentionally opaque and
+/// may change; it exists only to correlate security-sensitive operations within one workflow.
+pub fn account_identity_fingerprint(account_id: &str) -> String {
+    use sha2::Digest as _;
+
+    format!("sha256:{:x}", sha2::Sha256::digest(account_id.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account_identity_fingerprint;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn account_identity_fingerprint_is_stable_opaque_and_account_specific() {
+        let raw_account_id = "private-account-id";
+        let fingerprint = account_identity_fingerprint(raw_account_id);
+
+        assert_eq!(fingerprint, account_identity_fingerprint(raw_account_id));
+        assert_eq!(fingerprint.len(), "sha256:".len() + 64);
+        assert!(fingerprint.starts_with("sha256:"));
+        assert!(!fingerprint.contains(raw_account_id));
+        assert_ne!(fingerprint, account_identity_fingerprint("other-account"));
+    }
+}

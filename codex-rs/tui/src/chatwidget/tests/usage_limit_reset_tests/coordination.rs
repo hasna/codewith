@@ -46,6 +46,7 @@ async fn manual_reset_cannot_replace_a_pending_automatic_recovery() {
             automatic_attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)
@@ -156,6 +157,7 @@ async fn no_credit_without_a_fallback_drains_the_queued_follow_up() {
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::NoCredit,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Ignore
@@ -217,6 +219,7 @@ async fn preopened_profile_popup_is_invalidated_when_automatic_reset_takes_owner
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     super::status_and_layout::save_test_auth_profile(&chat, "personal");
     super::status_and_layout::configure_test_session(&mut chat);
+    set_canonical_reset_provider(&mut chat);
     chat.config.usage_limit.auto_reset_enabled = true;
     chat.submit_user_message(UserMessage::from("recover this failed turn"));
     assert_user_turn_text(next_submit_op(&mut op_rx), "recover this failed turn");
@@ -259,6 +262,7 @@ async fn preopened_profile_action_classes_are_generation_tagged_across_auto_comp
         super::status_and_layout::save_test_auth_profile(&chat, "personal");
         super::status_and_layout::save_test_auth_profile(&chat, "work");
         super::status_and_layout::configure_test_session(&mut chat);
+        set_canonical_reset_provider(&mut chat);
         chat.open_profile_popup();
         while rx.try_recv().is_ok() {}
         if label == "login" {
@@ -330,6 +334,7 @@ async fn stale_manual_reset_confirmation_is_invalid_after_automatic_recovery() {
     chat.config.usage_limit.auto_reset_enabled = true;
     chat.config.usage_self_heal.enabled = false;
     super::status_and_layout::configure_test_session(&mut chat);
+    set_canonical_reset_provider(&mut chat);
     chat.submit_user_message(UserMessage::from("recover this failed turn"));
     assert_user_turn_text(next_submit_op(&mut op_rx), "recover this failed turn");
     chat.on_task_started();

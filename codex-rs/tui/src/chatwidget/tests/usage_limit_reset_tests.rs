@@ -16,6 +16,18 @@ mod automatic;
 mod coordination;
 mod manual;
 mod profile_workflows;
+mod safety_invariants;
+
+fn set_canonical_reset_provider(chat: &mut ChatWidget) {
+    chat.config.model_provider_id = codex_model_provider_info::OPENAI_PROVIDER_ID.to_string();
+    chat.config.model_provider =
+        codex_model_provider_info::ModelProviderInfo::create_openai_provider(
+            /*base_url*/ None,
+        );
+    chat.runtime_model_provider_base_url =
+        Some(codex_model_provider_info::CHATGPT_CODEX_BASE_URL.to_string());
+    chat.has_chatgpt_account = true;
+}
 
 fn exact_reset_summary() -> RateLimitResetCreditsSummary {
     RateLimitResetCreditsSummary {
@@ -60,16 +72,19 @@ fn reset_attempt() -> RateLimitResetAttempt {
         idempotency_key: "stable-request-key".to_string(),
         credit_id: "exact-credit".to_string(),
         auth_profile: None,
+        account_identity_fingerprint: "sha256:test-account".to_string(),
         generation: 0,
         automatic: true,
         trigger_key: Some("profile:codex:weekly:123".to_string()),
         retry_count: 0,
+        verification: RateLimitResetVerification::LimitsOnly,
     }
 }
 
 fn start_manual_reset_consumption(chat: &mut ChatWidget) -> RateLimitResetAttempt {
     let mut attempt = reset_attempt();
     attempt.auth_profile = chat.config.selected_auth_profile.clone();
+    attempt.generation = chat.rate_limit_reset_generation;
     attempt.automatic = false;
     attempt.trigger_key = None;
     assert!(chat.start_rate_limit_reset_consumption(&attempt));
@@ -193,6 +208,7 @@ fn start_auto_reset_failed_turn(
     reached_type: Option<RateLimitReachedType>,
 ) {
     super::status_and_layout::configure_test_session(chat);
+    set_canonical_reset_provider(chat);
     chat.config.usage_limit.auto_reset_enabled = true;
     chat.config.auth_profile_auto_switch.enabled = false;
     chat.config.usage_self_heal.enabled = true;
@@ -229,6 +245,7 @@ fn accept_automatic_reset(
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)

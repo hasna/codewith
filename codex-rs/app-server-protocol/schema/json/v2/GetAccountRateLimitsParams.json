@@ -8,6 +8,10 @@
         "string",
         "null"
       ]
+    },
+    "includeResetCreditDetails": {
+      "description": "Include detailed reset-credit rows even when no credits remain available.",
+      "type": "boolean"
     }
   },
   "title": "GetAccountRateLimitsParams",

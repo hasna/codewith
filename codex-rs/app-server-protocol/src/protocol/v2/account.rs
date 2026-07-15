@@ -332,6 +332,9 @@ pub struct GetAccountRateLimitsParams {
     )]
     #[ts(optional = nullable, type = "string | null")]
     pub auth_profile: Option<Option<String>>,
+    /// Include detailed reset-credit rows even when no credits remain available.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_reset_credit_details: bool,
 }
 
 impl Serialize for GetAccountRateLimitsParams {
@@ -339,9 +342,16 @@ impl Serialize for GetAccountRateLimitsParams {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(usize::from(self.auth_profile.is_some())))?;
+        let mut len = usize::from(self.auth_profile.is_some());
+        if self.include_reset_credit_details {
+            len += 1;
+        }
+        let mut map = serializer.serialize_map(Some(len))?;
         if let Some(auth_profile) = &self.auth_profile {
             map.serialize_entry("authProfile", auth_profile)?;
+        }
+        if self.include_reset_credit_details {
+            map.serialize_entry("includeResetCreditDetails", &true)?;
         }
         map.end()
     }
@@ -351,6 +361,9 @@ impl Serialize for GetAccountRateLimitsParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct GetAccountRateLimitsResponse {
+    /// Opaque equality-only SHA-256 fingerprint of the authenticated account.
+    /// Clients must not display or log it and must treat its representation as opaque.
+    pub account_identity_fingerprint: String,
     /// Backward-compatible single-bucket view; mirrors the historical payload.
     pub rate_limits: RateLimitSnapshot,
     /// Multi-bucket view keyed by metered `limit_id` (for example, `codex`).
@@ -423,6 +436,9 @@ pub struct ConsumeAccountRateLimitResetCreditParams {
     )]
     #[ts(optional = nullable, type = "string | null")]
     pub auth_profile: Option<Option<String>>,
+    /// Opaque account fingerprint from the read that selected this reset credit.
+    #[ts(optional = nullable)]
+    pub expected_account_identity_fingerprint: Option<String>,
 }
 
 impl Serialize for ConsumeAccountRateLimitResetCreditParams {
@@ -437,6 +453,9 @@ impl Serialize for ConsumeAccountRateLimitResetCreditParams {
         if self.auth_profile.is_some() {
             len += 1;
         }
+        if self.expected_account_identity_fingerprint.is_some() {
+            len += 1;
+        }
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry("idempotencyKey", &self.idempotency_key)?;
         if let Some(credit_id) = &self.credit_id {
@@ -444,6 +463,14 @@ impl Serialize for ConsumeAccountRateLimitResetCreditParams {
         }
         if let Some(auth_profile) = &self.auth_profile {
             map.serialize_entry("authProfile", auth_profile)?;
+        }
+        if let Some(expected_account_identity_fingerprint) =
+            &self.expected_account_identity_fingerprint
+        {
+            map.serialize_entry(
+                "expectedAccountIdentityFingerprint",
+                expected_account_identity_fingerprint,
+            )?;
         }
         map.end()
     }
@@ -454,6 +481,8 @@ impl Serialize for ConsumeAccountRateLimitResetCreditParams {
 #[ts(export_to = "v2/")]
 pub struct ConsumeAccountRateLimitResetCreditResponse {
     pub outcome: ConsumeAccountRateLimitResetCreditOutcome,
+    /// Opaque equality-only fingerprint of the account resolved for this request.
+    pub account_identity_fingerprint: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -468,6 +497,8 @@ pub enum ConsumeAccountRateLimitResetCreditOutcome {
     NoCredit,
     /// The same idempotency key already completed a reset successfully.
     AlreadyRedeemed,
+    /// The authenticated account no longer matches the account that selected the credit.
+    AccountChanged,
     /// The backend returned an unrecognized reset outcome.
     Unknown,
 }

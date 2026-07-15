@@ -3292,6 +3292,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::GetAccountRateLimitsParams {
                 auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3315,6 +3316,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::GetAccountRateLimitsParams {
                 auth_profile: Some(None),
+                ..Default::default()
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3358,6 +3360,7 @@ mod tests {
                 idempotency_key: "redeem-123".to_string(),
                 credit_id: None,
                 auth_profile: Some(Some("work".to_string())),
+                expected_account_identity_fingerprint: None,
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3380,10 +3383,14 @@ mod tests {
     fn serialize_consume_account_rate_limit_reset_credit_outcome_as_camel_case() -> Result<()> {
         let response = v2::ConsumeAccountRateLimitResetCreditResponse {
             outcome: v2::ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed,
+            account_identity_fingerprint: "sha256:test-account".to_string(),
         };
 
         assert_eq!(
-            json!({ "outcome": "alreadyRedeemed" }),
+            json!({
+                "outcome": "alreadyRedeemed",
+                "accountIdentityFingerprint": "sha256:test-account",
+            }),
             serde_json::to_value(response)?,
         );
         Ok(())

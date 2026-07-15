@@ -115,7 +115,10 @@ impl App {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         let auth_profile = target.auth_profile_key(self.config.selected_auth_profile.as_deref());
-        let params = rate_limit_params_for_target(&target);
+        let include_reset_credit_details = self
+            .chat_widget
+            .post_reset_refresh_requires_credit_details(&origin);
+        let params = rate_limit_params_for_target(&target, include_reset_credit_details);
         tokio::spawn(async move {
             let result = fetch_account_rate_limits(request_handle, params)
                 .await
@@ -142,6 +145,7 @@ impl App {
                 attempt.idempotency_key.clone(),
                 Some(attempt.credit_id.clone()),
                 Some(attempt.auth_profile.clone()),
+                Some(attempt.account_identity_fingerprint.clone()),
             )
             .await
             .map_err(|err| err.to_string());
@@ -832,19 +836,28 @@ pub(super) async fn fetch_account_rate_limits(
     let reset_credits = response.rate_limit_reset_credits.clone();
 
     Ok(RateLimitRefreshData {
+        account_identity_fingerprint: response.account_identity_fingerprint.clone(),
         snapshots: app_server_rate_limit_snapshots(response),
         reset_credits,
     })
 }
 
-fn rate_limit_params_for_target(target: &RateLimitRefreshTarget) -> GetAccountRateLimitsParams {
+fn rate_limit_params_for_target(
+    target: &RateLimitRefreshTarget,
+    include_reset_credit_details: bool,
+) -> GetAccountRateLimitsParams {
     match target {
-        RateLimitRefreshTarget::Selected => GetAccountRateLimitsParams::default(),
+        RateLimitRefreshTarget::Selected => GetAccountRateLimitsParams {
+            include_reset_credit_details,
+            ..GetAccountRateLimitsParams::default()
+        },
         RateLimitRefreshTarget::Root => GetAccountRateLimitsParams {
             auth_profile: Some(None),
+            include_reset_credit_details,
         },
         RateLimitRefreshTarget::Named(profile) => GetAccountRateLimitsParams {
             auth_profile: Some(Some(profile.clone())),
+            include_reset_credit_details,
         },
     }
 }
@@ -889,6 +902,7 @@ async fn consume_rate_limit_reset_credit_request(
     idempotency_key: String,
     credit_id: Option<String>,
     auth_profile: Option<Option<String>>,
+    expected_account_identity_fingerprint: Option<String>,
 ) -> Result<ConsumeAccountRateLimitResetCreditResponse> {
     let request_id = RequestId::String(format!("rate-limit-reset-{}", Uuid::new_v4()));
     request_handle
@@ -898,6 +912,7 @@ async fn consume_rate_limit_reset_credit_request(
                 idempotency_key,
                 credit_id,
                 auth_profile,
+                expected_account_identity_fingerprint,
             },
         })
         .await
@@ -1471,19 +1486,30 @@ mod tests {
     #[test]
     fn rate_limit_params_for_target_maps_selected_root_and_named_profiles() {
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Selected),
-            GetAccountRateLimitsParams { auth_profile: None }
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Selected,
+                /*include_reset_credit_details*/ false,
+            ),
+            GetAccountRateLimitsParams::default()
         );
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Root),
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Root,
+                /*include_reset_credit_details*/ false,
+            ),
             GetAccountRateLimitsParams {
-                auth_profile: Some(None)
+                auth_profile: Some(None),
+                include_reset_credit_details: false,
             }
         );
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Named("work".to_string())),
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Named("work".to_string()),
+                /*include_reset_credit_details*/ false,
+            ),
             GetAccountRateLimitsParams {
-                auth_profile: Some(Some("work".to_string()))
+                auth_profile: Some(Some("work".to_string())),
+                include_reset_credit_details: false,
             }
         );
     }

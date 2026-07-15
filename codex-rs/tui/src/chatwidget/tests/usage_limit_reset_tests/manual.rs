@@ -159,6 +159,7 @@ async fn duplicate_limit_signal_waits_for_reset_and_resumes_failed_turn_once() {
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)
@@ -177,12 +178,13 @@ async fn duplicate_limit_signal_waits_for_reset_and_resumes_failed_turn_once() {
 async fn manual_reset_picker_never_owns_a_failed_automatic_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     configure_usage_limit_self_heal(&mut chat);
+    set_canonical_reset_provider(&mut chat);
     chat.start_rate_limit_reset_picker();
     assert!(
         std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
             event,
             AppEvent::RefreshRateLimits {
-                origin: RateLimitRefreshOrigin::ResetPicker { generation: 0 },
+                origin: RateLimitRefreshOrigin::ResetPicker { generation: 1 },
                 target: RateLimitRefreshTarget::Selected,
             }
         ))
@@ -222,6 +224,7 @@ async fn manual_reset_acceptance_preserves_the_failed_turn_fallback() {
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)
@@ -255,6 +258,7 @@ async fn manual_reset_verification_preserves_the_failed_turn_fallback() {
             attempt,
             Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::Reset,
+                account_identity_fingerprint: "sha256:test-account".to_string(),
             }),
         ),
         RateLimitResetCompletion::Verify(_)
@@ -293,6 +297,7 @@ async fn manual_reset_states_do_not_suppress_profile_fallback_for_failed_turn() 
             vec!["work".to_string(), "personal".to_string()];
         chat.config.usage_self_heal.enabled = false;
         super::status_and_layout::configure_test_session(&mut chat);
+        set_canonical_reset_provider(&mut chat);
         while rx.try_recv().is_ok() {}
 
         chat.submit_user_message(UserMessage::from("recover on another profile"));

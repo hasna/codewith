@@ -6,6 +6,11 @@ import type { RateLimitSnapshot } from "./RateLimitSnapshot";
 
 export type GetAccountRateLimitsResponse = {
 /**
+ * Opaque equality-only SHA-256 fingerprint of the authenticated account.
+ * Clients must not display or log it and must treat its representation as opaque.
+ */
+accountIdentityFingerprint: string,
+/**
  * Backward-compatible single-bucket view; mirrors the historical payload.
  */
 rateLimits: RateLimitSnapshot,

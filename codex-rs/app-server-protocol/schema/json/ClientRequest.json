@@ -908,6 +908,13 @@
             "null"
           ]
         },
+        "expectedAccountIdentityFingerprint": {
+          "description": "Opaque account fingerprint from the read that selected this reset credit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "idempotencyKey": {
           "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
           "type": "string"
@@ -1779,6 +1786,10 @@
             "string",
             "null"
           ]
+        },
+        "includeResetCreditDetails": {
+          "description": "Include detailed reset-credit rows even when no credits remain available.",
+          "type": "boolean"
         }
       },
       "type": "object"

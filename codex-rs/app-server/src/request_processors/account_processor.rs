@@ -1,5 +1,6 @@
 use super::account_rate_limit_resets;
 use super::*;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditOutcome;
 
 // Duration before a browser ChatGPT login attempt is abandoned.
 const LOGIN_CHATGPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -1007,7 +1008,13 @@ impl AccountRequestProcessor {
         params: GetAccountRateLimitsParams,
     ) -> Result<GetAccountRateLimitsResponse, JSONRPCErrorError> {
         self.fetch_account_rate_limits(params).await.map(
-            |(rate_limits, rate_limits_by_limit_id, reset_credits)| GetAccountRateLimitsResponse {
+            |(
+                account_identity_fingerprint,
+                rate_limits,
+                rate_limits_by_limit_id,
+                reset_credits,
+            )| GetAccountRateLimitsResponse {
+                account_identity_fingerprint,
                 rate_limits: rate_limits.into(),
                 rate_limits_by_limit_id: Some(
                     rate_limits_by_limit_id
@@ -1153,6 +1160,7 @@ impl AccountRequestProcessor {
             idempotency_key,
             credit_id,
             auth_profile,
+            expected_account_identity_fingerprint,
         } = params;
         let idempotency_key =
             account_rate_limit_resets::validated_idempotency_key(&idempotency_key)?.to_string();
@@ -1172,6 +1180,20 @@ impl AccountRequestProcessor {
             ));
         }
 
+        let account_id = auth.get_account_id().ok_or_else(|| {
+            invalid_request("chatgpt account identity required to reset usage limits")
+        })?;
+        let account_identity_fingerprint = codex_login::account_identity_fingerprint(&account_id);
+        if expected_account_identity_fingerprint
+            .as_deref()
+            .is_some_and(|expected| expected != account_identity_fingerprint)
+        {
+            return Ok(ConsumeAccountRateLimitResetCreditResponse {
+                outcome: ConsumeAccountRateLimitResetCreditOutcome::AccountChanged,
+                account_identity_fingerprint,
+            });
+        }
+
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
 
@@ -1182,7 +1204,10 @@ impl AccountRequestProcessor {
         )
         .await?;
 
-        Ok(ConsumeAccountRateLimitResetCreditResponse { outcome })
+        Ok(ConsumeAccountRateLimitResetCreditResponse {
+            outcome,
+            account_identity_fingerprint,
+        })
     }
 
     async fn fetch_account_rate_limits(
@@ -1190,22 +1215,29 @@ impl AccountRequestProcessor {
         params: GetAccountRateLimitsParams,
     ) -> Result<
         (
+            String,
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
             Option<RateLimitResetCreditsSummary>,
         ),
         JSONRPCErrorError,
     > {
+        let include_reset_credit_details = params.include_reset_credit_details;
         let auth_manager = self.auth_manager_for_rate_limits(params).await?;
-        self.fetch_account_rate_limits_with_auth_manager(&auth_manager)
-            .await
+        self.fetch_account_rate_limits_with_auth_manager(
+            &auth_manager,
+            include_reset_credit_details,
+        )
+        .await
     }
 
     async fn fetch_account_rate_limits_with_auth_manager(
         &self,
         auth_manager: &AuthManager,
+        include_reset_credit_details: bool,
     ) -> Result<
         (
+            String,
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
             Option<RateLimitResetCreditsSummary>,
@@ -1223,6 +1255,10 @@ impl AccountRequestProcessor {
                 "chatgpt authentication required to read rate limits",
             ));
         }
+        let account_id = auth.get_account_id().ok_or_else(|| {
+            invalid_request("chatgpt account identity required to read rate limits")
+        })?;
+        let account_identity_fingerprint = codex_login::account_identity_fingerprint(&account_id);
 
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
@@ -1234,6 +1270,7 @@ impl AccountRequestProcessor {
         let reset_credits = account_rate_limit_resets::enrich_summary(
             &client,
             rate_limits.rate_limit_reset_credits,
+            include_reset_credit_details,
         )
         .await;
         let snapshots = rate_limits.rate_limits;
@@ -1261,7 +1298,12 @@ impl AccountRequestProcessor {
             .cloned()
             .unwrap_or_else(|| snapshots[0].clone());
 
-        Ok((primary, rate_limits_by_limit_id, reset_credits))
+        Ok((
+            account_identity_fingerprint,
+            primary,
+            rate_limits_by_limit_id,
+            reset_credits,
+        ))
     }
 }
 
