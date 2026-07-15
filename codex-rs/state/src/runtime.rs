@@ -1099,7 +1099,6 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
-    use sqlx::AssertSqlSafe;
     use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
@@ -1807,15 +1806,11 @@ JOIN thread_goal_plan_nodes node ON node.plan_id = plan.plan_id
         include_str!("runtime/fixtures/goals_0148_0005_thread_goal_deferred.sql");
 
     fn legacy_0148_goals_deferred_migration() -> Migration {
-        let sql = LEGACY_0148_GOALS_DEFERRED_V5_SQL
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
-
         Migration::new(
             5,
             Cow::Borrowed("thread goal deferred"),
             MigrationType::Simple,
-            AssertSqlSafe(sql).into_sql_str(),
+            LEGACY_0148_GOALS_DEFERRED_V5_SQL.into_sql_str(),
             /*no_tx*/ true,
         )
     }
