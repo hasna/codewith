@@ -18,6 +18,32 @@ UPSTREAM_OR_NON_MACOS_IF = "${{ github.repository == 'openai/codex' || startsWit
 
 
 class BazelWorkflowTest(unittest.TestCase):
+    def test_host_tool_aquery_runs_once_on_the_primary_linux_leg(self) -> None:
+        workflow = yaml.safe_load(BAZEL_WORKFLOW.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["test"]["steps"]
+        matching_steps = [
+            step
+            for step in steps
+            if any(
+                probe in str(step.get("run", ""))
+                for probe in (
+                    "check_windows_bazel_host_tools.py",
+                    "check-windows-bazel-host-tools",
+                )
+            )
+        ]
+
+        self.assertEqual(1, len(matching_steps))
+        self.assertEqual(
+            "python3 .github/scripts/check_windows_bazel_host_tools.py",
+            matching_steps[0].get("run"),
+        )
+        self.assertNotIn("just", str(matching_steps[0].get("run", "")))
+        self.assertEqual(
+            "matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'",
+            matching_steps[0].get("if"),
+        )
+
     def test_keyless_bazel_matrix_does_not_schedule_macos(self) -> None:
         workflow = yaml.safe_load(BAZEL_WORKFLOW.read_text(encoding="utf-8"))
 

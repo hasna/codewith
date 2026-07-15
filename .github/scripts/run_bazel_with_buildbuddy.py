@@ -14,13 +14,13 @@ OPENAI_REPOSITORY = "openai/codex"
 # also select the matching remote executor endpoint.
 GENERIC_REMOTE_CONFIG = "buildbuddy-generic"
 OPENAI_REMOTE_CONFIG = "buildbuddy-openai"
-# These CI configurations require remote build execution. The wrapper supplies
-# an RBE configuration, which also includes the common `remote` settings.
+# These CI configurations require remote build execution. The Windows-cross
+# configuration intentionally stays local so its actions use Windows LLVM.
+# The wrapper supplies an RBE configuration for only the entries below.
 REMOTE_EXECUTION_CONFIGS = {
     "--config=ci-linux",
     "--config=ci-macos",
     "--config=ci-v8",
-    "--config=ci-windows-cross",
 }
 # Honor either explicit setting so the wrapper never overrides the caller's
 # choice when it supplies the CI default below.
@@ -159,6 +159,15 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--print-cache-config"]:
+        config = remote_config(
+            ["build", "--config=ci-windows-cross"], os.environ
+        )
+        if config is None:
+            raise SystemExit("BuildBuddy key unavailable")
+        print(config)
+        return
+
     config = remote_config(sys.argv[1:], os.environ)
     if config is None:
         print(
