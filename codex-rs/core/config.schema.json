@@ -13,69 +13,50 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Path to a role-specific config layer.\nRelative paths are resolved relative to the `config.toml` that defines them."
         },
         "description": {
           "description": "Human-facing role documentation used in spawn tool guidance.\nRequired unless supplied by the referenced agent role file.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "nickname_candidates": {
           "description": "Candidate nicknames for agents spawned with this role.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "type": "object"
     },
     "AgentsToml": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AgentRoleToml"
+      },
       "properties": {
         "interrupt_message": {
           "description": "Whether to record a model-visible message when an agent turn is interrupted.\nDefaults to true.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "job_max_runtime_seconds": {
           "description": "Default maximum runtime in seconds for agent job workers.",
           "format": "uint64",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_depth": {
           "description": "Maximum nesting depth allowed for spawned agent threads.\nRoot sessions start at depth 0.",
           "format": "int32",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_threads": {
           "description": "Maximum number of agent threads that can be open concurrently.\nWhen unset, no limit is enforced.",
           "format": "uint",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -106,10 +87,7 @@
       "properties": {
         "enabled": {
           "description": "When `false`, disables analytics across Codewith product surfaces in this profile.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -122,9 +100,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ApprovalsReviewer"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Reviewer for approval prompts from this app, overriding the thread default."
@@ -133,26 +108,17 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for tools in this app unless a tool override exists."
         },
         "default_tools_enabled": {
           "description": "Whether tools are enabled by default for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "destructive_enabled": {
           "description": "Whether tools with `destructive_hint = true` are allowed for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled": {
           "default": true,
@@ -161,18 +127,12 @@
         },
         "open_world_enabled": {
           "description": "Whether tools with `open_world_hint = true` are allowed for this app.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "tools": {
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolsConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Per-tool settings for this app."
@@ -196,25 +156,21 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
         },
         "enabled": {
           "description": "Whether this tool is enabled. `Some(true)` explicitly allows this tool.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
     },
     "AppToolsConfig": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AppToolConfig"
+      },
       "description": "Tool settings for a single app.",
       "type": "object"
     },
@@ -228,16 +184,15 @@
       "type": "string"
     },
     "AppsConfigToml": {
-      "additionalProperties": false,
+      "additionalProperties": {
+        "$ref": "#/definitions/AppConfig"
+      },
       "description": "App/connector settings loaded from `config.toml`.",
       "properties": {
         "_default": {
           "anyOf": [
             {
               "$ref": "#/definitions/AppsDefaultConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Default settings for all apps."
@@ -269,16 +224,10 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "path": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -365,42 +314,27 @@
       "properties": {
         "enabled": {
           "description": "Enables runtime switching to another auth profile when selected rate\nlimit windows are fully exhausted.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "heartbeat_freshness_secs": {
           "description": "Maximum age in seconds for usage data to guide profile selection.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "heartbeat_interval_secs": {
           "description": "Seconds between background usage heartbeat checks.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "on_5h_limit": {
           "description": "Switch when the 5h Codewith window reaches 100%.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "on_weekly_limit": {
           "description": "Switch when the weekly Codewith window reaches 100%.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "profiles": {
           "default": [],
@@ -414,9 +348,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AuthProfileAutoSwitchStrategyToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Strategy used to choose the next profile."
@@ -443,10 +374,7 @@
       "properties": {
         "policy": {
           "description": "Additional policy instructions inserted into the guardian prompt.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -465,20 +393,14 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "excluded_tool_namespaces": {
           "description": "Exact tool namespaces to omit from the code-mode nested tool surface.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "type": "object"
@@ -491,9 +413,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AnalyticsConfigToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -501,9 +420,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AskForApproval"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -511,33 +427,21 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ApprovalsReviewer"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "chatgpt_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "experimental_compact_prompt_file": {
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "experimental_use_unified_exec_tool": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "features": {
           "additionalProperties": false,
@@ -824,78 +728,48 @@
           "type": "object"
         },
         "include_apps_instructions": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "include_collaboration_mode_instructions": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "include_environment_context": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "include_permissions_instructions": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "model": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_catalog_json": {
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional path to a JSON model catalog (applied on startup only)."
         },
         "model_gateway": {
           "description": "Gateway to use above the selected model provider.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_instructions_file": {
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional path to a file containing model instructions."
         },
         "model_provider": {
           "description": "The key in the `model_providers` map identifying the\n[`ModelProviderInfo`] to use.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_reasoning_effort": {
           "anyOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -903,9 +777,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ReasoningSummary"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -913,25 +784,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/Verbosity"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "oss_provider": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "personality": {
           "anyOf": [
             {
               "$ref": "#/definitions/Personality"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -939,9 +801,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -949,26 +808,17 @@
           "anyOf": [
             {
               "$ref": "#/definitions/SandboxMode"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "service_tier": {
           "description": "Optional explicit service tier request id for new turns (for example\n`default`, `priority`, or `flex`; legacy `fast` also works).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "tools": {
           "anyOf": [
             {
               "$ref": "#/definitions/ToolsToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -976,9 +826,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ProfileTui"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null,
@@ -988,9 +835,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WebSearchMode"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -998,9 +842,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WindowsToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null
@@ -1013,18 +854,12 @@
       "properties": {
         "allow_codex_version_mismatch": {
           "description": "Allow replaying a lock generated by a different Codewith version.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "export_dir": {
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Directory where Codewith writes effective session config lock files."
@@ -1033,19 +868,13 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Lockfile to replay as the authoritative effective config."
         },
         "save_fields_resolved_from_model_catalog": {
           "description": "Save fields resolved from the model catalog/session configuration.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1057,9 +886,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/DebugConfigLockToml"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -1082,18 +908,12 @@
       "properties": {
         "home": {
           "description": "Tracks whether home-level external config migration prompts are hidden.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "home_last_prompted_at": {
           "description": "Tracks the last time the home-level external config migration prompt was shown.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "project_last_prompted_at": {
           "additionalProperties": {
@@ -1160,10 +980,7 @@
       "properties": {
         "enabled": {
           "description": "When `false`, disables the feedback flow across Codewith product surfaces.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1207,10 +1024,7 @@
           "description": "Optional maximum depth for expanding unreadable glob patterns on\nplatforms that snapshot glob matches before sandbox startup.",
           "format": "uint",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -1241,26 +1055,17 @@
       "properties": {
         "disable_warnings": {
           "description": "Legacy no-op setting retained for compatibility.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ignore_large_untracked_dirs": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "ignore_large_untracked_files": {
           "description": "Legacy no-op setting retained for compatibility.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -1280,9 +1085,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/GoalsAutoExecuteToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Controls whether goal plans may advance to ready goals without asking the\nuser between goals."
@@ -1292,27 +1094,18 @@
           "format": "uint",
           "maximum": 64,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_tokens_per_goal_plan": {
           "description": "Optional combined token cap for all goals in a plan. Omit for unlimited.",
           "format": "int64",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "post_goal_context": {
           "anyOf": [
             {
               "$ref": "#/definitions/PostGoalContextActionToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Context lifecycle action after a completed goal when no next goal is\nimmediately activated."
@@ -1321,9 +1114,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/PostGoalContextActionToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Context lifecycle action after a goal plan completes."
@@ -1372,10 +1162,7 @@
           "description": "If set, the maximum size of the history file in bytes. The oldest entries\nare dropped once the file exceeds this limit.",
           "format": "uint",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "persistence": {
           "allOf": [
@@ -1416,26 +1203,17 @@
             },
             "commandWindows": {
               "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "statusMessage": {
               "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "timeout": {
               "default": null,
               "format": "uint64",
               "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
+              "type": "integer"
             },
             "type": {
               "const": "command",
@@ -1477,16 +1255,10 @@
     "HookStateToml": {
       "properties": {
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "trusted_hash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1596,42 +1368,27 @@
         "last_revision": {
           "default": null,
           "description": "Git revision Codewith last successfully activated for this marketplace.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "last_updated": {
           "default": null,
           "description": "Last time Codewith successfully added or refreshed this marketplace.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "ref": {
           "default": null,
           "description": "Git ref to check out when `source_type` is `git`.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "source": {
           "default": null,
           "description": "Source location used when the marketplace was added.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "source_type": {
           "anyOf": [
             {
               "$ref": "#/definitions/MarketplaceSourceType"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null,
@@ -1643,10 +1400,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "type": "object"
@@ -1669,10 +1423,7 @@
         },
         "matcher": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1689,10 +1440,7 @@
               "type": "string"
             },
             "source": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -1708,10 +1456,7 @@
       "properties": {
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1724,9 +1469,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for this tool."
@@ -1740,99 +1482,63 @@
       "properties": {
         "consolidation_model": {
           "description": "Model used for memory consolidation.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "dedicated_tools": {
           "description": "When `true`, expose dedicated memory tools through the extension tool surface.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "disable_on_external_context": {
           "description": "When `true`, external context sources mark the thread `memory_mode` as `\"polluted\"`.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "extract_model": {
           "description": "Model used for thread summarisation.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "generate_memories": {
           "description": "When `false`, newly created threads are stored with `memory_mode = \"disabled\"` in the state DB.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "max_raw_memories_for_consolidation": {
           "description": "Maximum number of recent raw memories retained for global consolidation.",
           "format": "uint",
           "maximum": 4096,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_rollout_age_days": {
           "description": "Maximum age of the threads used for memories.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_rollouts_per_startup": {
           "description": "Maximum number of rollout candidates processed per pass.",
           "format": "uint",
           "maximum": 128,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_unused_days": {
           "description": "Maximum number of days since a memory was last used before it becomes ineligible for phase 2 selection.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "min_rate_limit_remaining_percent": {
           "description": "Minimum remaining percentage required in Codewith rate-limit windows before memory startup runs.",
           "format": "int64",
           "maximum": 100,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "min_rollout_idle_hours": {
           "description": "Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -1891,17 +1597,11 @@
       "properties": {
         "profile": {
           "description": "AWS profile name to use. When unset, the AWS SDK default chain decides.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "region": {
           "description": "AWS region to use for provider-specific endpoints.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -1914,9 +1614,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ModelProviderAuthInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Command-backed bearer-token configuration for this provider."
@@ -1925,60 +1622,39 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ModelProviderAwsAuthInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "AWS SigV4 auth configuration for this provider."
         },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Optional HTTP headers to include in requests to this provider where the\n(key, value) pairs are the header name and _environment variable_ whose\nvalue should be used. If the environment variable is not set, or the\nvalue is empty, the header will not be included in the request.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "env_key": {
           "description": "Environment variable that stores the user's API key for this provider.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "env_key_instructions": {
           "description": "Optional instructions to help the user get a valid value for the\nvariable and set it.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "experimental_bearer_token": {
           "description": "Value to use with `Authorization: Bearer <token>` header. Use of this\nconfig is discouraged in favor of `env_key` for security reasons, but\nthis may be necessary when using this programmatically.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "description": "Additional HTTP headers to include in requests to this provider where\nthe (key, value) pairs are the header name and value.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "name": {
           "default": "",
@@ -1990,19 +1666,13 @@
             "type": "string"
           },
           "description": "Optional query parameters to append to the base URL.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "request_max_retries": {
           "description": "Maximum number of times to retry a failed HTTP request to this provider.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "requires_openai_auth": {
           "default": false,
@@ -2013,19 +1683,13 @@
           "description": "Idle timeout (in milliseconds) to wait for activity on a streaming response before treating\nthe connection as lost.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "stream_max_retries": {
           "description": "Number of times to retry reconnecting a dropped streaming response before failing.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "supports_websockets": {
           "default": false,
@@ -2036,10 +1700,7 @@
           "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating\nit as failed.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "wire_api": {
           "allOf": [
@@ -2060,87 +1721,51 @@
           "format": "int64",
           "maximum": 3600000,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_spawn_agent_metadata": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "max_concurrent_threads_per_session": {
           "format": "uint",
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "min_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "non_code_mode_only": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "root_agent_usage_hint_text": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "subagent_usage_hint_text": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "tool_namespace": {
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-zA-Z0-9_-]+$",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "usage_hint_enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "usage_hint_text": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -2239,24 +1864,15 @@
         },
         "prefix": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "secret_env_var": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "secret_file": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -2268,19 +1884,13 @@
           "additionalProperties": {
             "$ref": "#/definitions/NetworkMitmActionToml"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "hooks": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkMitmHookToml"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         }
       },
       "type": "object"
@@ -2296,86 +1906,50 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "allow_upstream_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_all_unix_sockets": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_non_loopback_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "domains": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkProxyDomainPermissionToml"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "enable_socks5": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enable_socks5_udp": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "mode": {
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkProxyModeToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "proxy_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "socks_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "unix_sockets": {
           "additionalProperties": {
             "$ref": "#/definitions/NetworkProxyUnixSocketPermissionToml"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         }
       },
       "type": "object"
@@ -2405,64 +1979,37 @@
       "additionalProperties": false,
       "properties": {
         "allow_local_binding": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "allow_upstream_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_all_unix_sockets": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "dangerously_allow_non_loopback_proxy": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "domains": {
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkDomainPermissionsToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "enable_socks5": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enable_socks5_udp": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "mitm": {
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkMitmToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -2470,31 +2017,19 @@
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkModeSchema"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "proxy_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "socks_url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "unix_sockets": {
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkUnixSocketPermissionsToml"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -2533,45 +2068,27 @@
         },
         "fast_default_opt_out": {
           "description": "Tracks whether the user opted out of Codewith-managed fast defaults.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_full_access_warning": {
           "description": "Tracks whether the user has acknowledged the full access warning prompt.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_gpt-5.1-codex-max_migration_prompt": {
           "description": "Tracks whether the user has seen the gpt-5.1-codex-max migration prompt",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_gpt5_1_migration_prompt": {
           "description": "Tracks whether the user has seen the model migration prompt",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_rate_limit_model_nudge": {
           "description": "Tracks whether the user opted out of the rate limit model switch reminder.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "hide_world_writable_warning": {
           "description": "Tracks whether the user has acknowledged the Windows world-writable directories warning.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "model_migrations": {
           "additionalProperties": {
@@ -2645,36 +2162,24 @@
       "properties": {
         "environment": {
           "description": "Mark traces with environment (dev, staging, prod, test). Defaults to dev.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "exporter": {
           "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional log exporter"
         },
         "log_user_prompt": {
           "description": "Log user prompt in traces",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "metrics_exporter": {
           "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional metrics exporter"
@@ -2684,18 +2189,12 @@
             "type": "string"
           },
           "description": "Attributes to add to every exported trace span.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "trace_exporter": {
           "anyOf": [
             {
               "$ref": "#/definitions/OtelExporterKind"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Optional trace exporter"
@@ -2708,10 +2207,7 @@
             "type": "object"
           },
           "description": "Semicolon-separated `key:value` fields to upsert into W3C tracestate members.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         }
       },
       "type": "object"
@@ -2749,9 +2245,6 @@
                   "anyOf": [
                     {
                       "$ref": "#/definitions/OtelTlsConfig"
-                    },
-                    {
-                      "type": "null"
                     }
                   ],
                   "default": null
@@ -2789,9 +2282,6 @@
                   "anyOf": [
                     {
                       "$ref": "#/definitions/OtelTlsConfig"
-                    },
-                    {
-                      "type": "null"
                     }
                   ],
                   "default": null
@@ -2831,9 +2321,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -2841,9 +2328,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -2851,9 +2335,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -2864,24 +2345,15 @@
       "additionalProperties": false,
       "properties": {
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "extends": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "filesystem": {
           "anyOf": [
             {
               "$ref": "#/definitions/FilesystemPermissionsToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -2889,9 +2361,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/NetworkToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -2899,9 +2368,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WorkspaceRootsToml"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -2947,9 +2413,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approval mode for tools in this server unless a tool override exists."
@@ -2959,10 +2422,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "enabled": {
           "default": true,
@@ -2974,10 +2434,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "tools": {
           "additionalProperties": {
@@ -3004,9 +2461,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/SessionPickerViewMode"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null,
@@ -3022,9 +2476,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/TrustLevel"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -3040,37 +2491,22 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "bearer_token_env_var": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "command": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "cwd": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "default_tools_approval_mode": {
           "anyOf": [
             {
               "$ref": "#/definitions/AppToolApproval"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null
@@ -3080,164 +2516,107 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "enabled": {
           "default": null,
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "enabled_tools": {
           "default": null,
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "env": {
           "additionalProperties": {
             "type": "string"
           },
           "default": null,
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
           },
           "default": null,
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "env_vars": {
           "default": null,
           "items": {
             "$ref": "#/definitions/McpServerEnvVar"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "environment_id": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "http_headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "name": {
           "default": null,
           "description": "Legacy display-name field accepted for backward compatibility.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "oauth": {
           "anyOf": [
             {
               "$ref": "#/definitions/McpServerOAuthConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null
         },
         "oauth_resource": {
           "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "required": {
           "default": null,
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "scopes": {
           "default": null,
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "startup_timeout_ms": {
           "default": null,
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "startup_timeout_sec": {
           "default": null,
           "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
+          "type": "number"
         },
         "supports_parallel_tool_calls": {
           "default": null,
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "tool_timeout_sec": {
           "default": null,
           "format": "double",
-          "type": [
-            "number",
-            "null"
-          ]
+          "type": "number"
         },
         "tools": {
           "additionalProperties": {
             "$ref": "#/definitions/McpServerToolConfig"
           },
           "default": null,
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -3246,16 +2625,10 @@
       "additionalProperties": false,
       "properties": {
         "microphone": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "speaker": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -3274,9 +2647,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/RealtimeTransport"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3284,9 +2654,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/RealtimeWsMode"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3294,9 +2661,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/RealtimeConversationVersion"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3304,9 +2668,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/RealtimeVoice"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -3420,41 +2781,26 @@
       "properties": {
         "enabled": {
           "description": "Enables background session recaps in interactive TUI sessions.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "fallback_model": {
           "description": "Fallback model used when the preferred recap model is unavailable.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "idle_minutes": {
           "description": "Minutes the terminal must stay unfocused after the last completed turn\nbefore Codewith prepares an automatic recap.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "model": {
           "description": "Preferred lightweight model for recap generation.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "reasoning_effort": {
           "anyOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Reasoning effort requested for recap generation."
@@ -3490,40 +2836,25 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "experimental_use_profile": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ignore_default_excludes": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "include_only": {
           "description": "List of regular expressions.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "inherit": {
           "anyOf": [
             {
               "$ref": "#/definitions/ShellEnvironmentPolicyInherit"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3531,10 +2862,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         }
       },
       "type": "object"
@@ -3547,18 +2875,12 @@
         },
         "name": {
           "description": "Name-based selector.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
           "anyOf": [
             {
               "$ref": "#/definitions/AbsolutePathBuf"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Path-based selector."
@@ -3576,9 +2898,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/BundledSkillsConfig"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3590,10 +2909,7 @@
         },
         "include_instructions": {
           "description": "Whether turns receive the automatic skills instructions block.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -3603,58 +2919,37 @@
       "properties": {
         "enabled": {
           "description": "Enables the experimental pre-tool advisory pass. Defaults to false.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "max_input_chars": {
           "description": "Maximum serialized tool input characters exposed to the advisory model.",
           "format": "uint",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_suggestion_chars": {
           "description": "Maximum advisory text characters injected back into the main context.",
           "format": "uint",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "model": {
           "description": "Required model id for the advisory pass when enabled.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "model_provider": {
           "description": "Optional configured model provider id used for the advisory pass.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "service_tier": {
           "description": "Optional service tier forwarded only to the advisory model request.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "timeout_ms": {
           "description": "Maximum time to wait for advisory output, in milliseconds.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -3741,9 +3036,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/ExperimentalRequestUserInput"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -3751,9 +3043,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WebSearchToolConfig"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null
@@ -3936,10 +3225,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "model_availability_nux": {
           "allOf": [
@@ -3980,10 +3266,7 @@
         "pet": {
           "default": null,
           "description": "Pet id to preselect in the terminal pet picker.\n\nCustom pet ids resolve against CODEWITH_HOME/pets/<pet-id>/pet.json.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "pet_anchor": {
           "allOf": [
@@ -4003,9 +3286,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/SessionPickerViewMode"
-            },
-            {
-              "type": "null"
             }
           ],
           "default": null,
@@ -4022,10 +3302,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "status_line_use_colors": {
           "default": true,
@@ -4037,10 +3314,7 @@
           "description": "Trim terminal resize-reflow replay to the most recent rendered terminal rows when the\ntranscript exceeds this cap. Omit to use Codewith's terminal-specific default. Set to `0` to\nkeep all rendered rows.",
           "format": "uint",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "terminal_title": {
           "default": null,
@@ -4048,18 +3322,12 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "theme": {
           "default": null,
           "description": "Syntax highlighting theme name (kebab-case).\n\nWhen set, overrides automatic light/dark theme detection.\nUse `/theme` in the TUI or see `$CODEWITH_HOME/themes` for custom themes.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "vim_mode_default": {
           "default": false,
@@ -4077,9 +3345,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approve the primary option."
@@ -4088,9 +3353,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approve with exec-policy prefix when that option exists."
@@ -4099,9 +3361,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Approve for session when that option exists."
@@ -4110,9 +3369,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cancel an elicitation request."
@@ -4121,9 +3377,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Decline and provide corrective guidance."
@@ -4132,9 +3385,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Deny without providing follow-up guidance."
@@ -4143,9 +3393,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open the full-screen approval details view."
@@ -4154,9 +3401,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open the thread that requested approval when shown from another thread."
@@ -4172,9 +3416,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Decrease the active reasoning effort."
@@ -4183,9 +3424,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Edit the most recently queued message."
@@ -4194,9 +3432,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Increase the active reasoning effort."
@@ -4205,9 +3440,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Interrupt the active turn."
@@ -4223,9 +3455,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move to the next match in reverse history search."
@@ -4234,9 +3463,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open reverse history search or move to the previous match."
@@ -4245,9 +3471,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Queue the current composer draft while a task is running."
@@ -4256,9 +3479,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Submit the current composer draft."
@@ -4267,9 +3487,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Toggle the composer shortcut overlay."
@@ -4285,9 +3502,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete one grapheme to the left."
@@ -4296,9 +3510,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete the previous word."
@@ -4307,9 +3518,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete one grapheme to the right."
@@ -4318,9 +3526,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete the next word."
@@ -4329,9 +3534,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Insert a newline in the editor."
@@ -4340,9 +3542,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Kill text from cursor to line end."
@@ -4351,9 +3550,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Kill text from cursor to line start."
@@ -4362,9 +3558,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Kill the current line."
@@ -4373,9 +3566,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor down one visual line."
@@ -4384,9 +3574,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor left by one grapheme."
@@ -4395,9 +3582,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to end of line."
@@ -4406,9 +3590,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to beginning of line."
@@ -4417,9 +3598,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor right by one grapheme."
@@ -4428,9 +3606,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor up one visual line."
@@ -4439,9 +3614,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to beginning of previous word."
@@ -4450,9 +3622,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to end of next word."
@@ -4461,9 +3630,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Yank the kill buffer."
@@ -4479,9 +3645,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Clear the terminal UI."
@@ -4490,9 +3653,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Copy the last agent response to the clipboard."
@@ -4501,9 +3661,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cycle to the next permissions preset."
@@ -4512,9 +3669,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open the external editor for the current draft."
@@ -4523,9 +3677,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open the transcript overlay."
@@ -4534,9 +3685,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Queue the current composer draft while a task is running."
@@ -4545,9 +3693,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Submit the current composer draft."
@@ -4556,9 +3701,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Toggle Fast mode."
@@ -4567,9 +3709,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Toggle raw scrollback mode for copy-friendly transcript selection."
@@ -4578,9 +3717,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Toggle the composer shortcut overlay."
@@ -4589,9 +3725,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Toggle Vim mode for the composer input."
@@ -4817,9 +3950,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Accept current selection."
@@ -4828,9 +3958,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cancel and close selection view."
@@ -4839,9 +3966,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Jump to the last list item."
@@ -4850,9 +3974,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Jump to the first list item."
@@ -4861,9 +3982,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move list selection down."
@@ -4872,9 +3990,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move horizontally left in list pickers that support horizontal actions."
@@ -4883,9 +3998,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move horizontally right in list pickers that support horizontal actions."
@@ -4894,9 +4006,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move list selection up."
@@ -4905,9 +4014,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move list selection down by one page."
@@ -4916,9 +4022,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move list selection up by one page."
@@ -4934,9 +4037,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Close the pager overlay."
@@ -4945,9 +4045,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Close the transcript overlay via its dedicated toggle key."
@@ -4956,9 +4053,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll down by half a page."
@@ -4967,9 +4061,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll up by half a page."
@@ -4978,9 +4069,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Jump to the end."
@@ -4989,9 +4077,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Jump to the beginning."
@@ -5000,9 +4085,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll down by one page."
@@ -5011,9 +4093,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll up by one page."
@@ -5022,9 +4101,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll down by one row."
@@ -5033,9 +4109,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scroll up by one row."
@@ -5065,9 +4138,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Enter insert mode after cursor (`a`)."
@@ -5076,9 +4146,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Enter insert mode at end of line (`A`)."
@@ -5087,9 +4154,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cancel a pending operator and return to normal mode."
@@ -5098,9 +4162,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Change from cursor to end of line and enter insert mode (`C`)."
@@ -5109,9 +4170,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete character under cursor (`x`)."
@@ -5120,9 +4178,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete from cursor to end of line (`D`)."
@@ -5131,9 +4186,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Enter insert mode at cursor (`i`)."
@@ -5142,9 +4194,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Enter insert mode at first non-blank of line (`I`)."
@@ -5153,9 +4202,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor down (`j`), or recall newer composer history at history boundaries."
@@ -5164,9 +4210,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor left (`h`)."
@@ -5175,9 +4218,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to end of line (`$`)."
@@ -5186,9 +4226,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to start of line (`0`)."
@@ -5197,9 +4234,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor right (`l`)."
@@ -5208,9 +4242,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor up (`k`), or recall older composer history at history boundaries."
@@ -5219,9 +4250,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to start of previous word (`b`)."
@@ -5230,9 +4258,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to end of current/next word (`e`)."
@@ -5241,9 +4266,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Move cursor to start of next word (`w`)."
@@ -5252,9 +4274,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open a new line above and enter insert mode (`O`)."
@@ -5263,9 +4282,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Open a new line below and enter insert mode (`o`)."
@@ -5274,9 +4290,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Paste after cursor (`p`)."
@@ -5285,9 +4298,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Begin change operator; next keys select a text object."
@@ -5296,9 +4306,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Begin delete operator; next key selects motion (`d`)."
@@ -5307,9 +4314,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Begin yank operator; next key selects motion (`y`)."
@@ -5318,9 +4322,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Delete character under cursor and enter insert mode (`s`)."
@@ -5329,9 +4330,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Yank the entire line (`Y`)."
@@ -5347,9 +4345,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cancel the pending operator and return to normal mode."
@@ -5358,9 +4353,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Repeat delete operator to delete the whole line (`dd`)."
@@ -5369,9 +4361,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: down one line (`j`)."
@@ -5380,9 +4369,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: left (`h`)."
@@ -5391,9 +4377,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: to end of line (`$`)."
@@ -5402,9 +4385,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: to start of line (`0`)."
@@ -5413,9 +4393,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: right (`l`)."
@@ -5424,9 +4401,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: up one line (`k`)."
@@ -5435,9 +4409,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: to start of previous word (`b`)."
@@ -5446,9 +4417,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: to end of current/next word (`e`)."
@@ -5457,9 +4425,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Motion: to start of next word (`w`)."
@@ -5468,9 +4433,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Select an around text object after an operator."
@@ -5479,9 +4441,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Select an inner text object after an operator."
@@ -5490,9 +4449,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Repeat yank operator to yank the whole line (`yy`)."
@@ -5508,9 +4464,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: backticks."
@@ -5519,9 +4472,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: whitespace-delimited WORD."
@@ -5530,9 +4480,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: braces."
@@ -5541,9 +4488,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: brackets."
@@ -5552,9 +4496,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Cancel the pending text-object command."
@@ -5563,9 +4504,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: double quotes."
@@ -5574,9 +4512,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: parentheses."
@@ -5585,9 +4520,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: single quotes."
@@ -5596,9 +4528,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Text object: word."
@@ -5629,55 +4558,37 @@
       "properties": {
         "enabled": {
           "description": "Enables automatic retry for recoverable usage and transient availability errors.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "initial_backoff_secs": {
           "description": "Initial retry delay in seconds for transient errors or usage errors without reset metadata.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_backoff_secs": {
           "description": "Maximum retry delay in seconds for exponential backoff.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_reset_retry_delay_secs": {
           "description": "Longest reset-based delay, in seconds, that Codewith will schedule automatically.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "max_retries": {
           "description": "Maximum automatic retry attempts per failing turn.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "reset_retry_buffer_secs": {
           "description": "Extra seconds to wait after a usage-limit reset timestamp before retrying.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -5703,28 +4614,16 @@
       "additionalProperties": false,
       "properties": {
         "city": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "country": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "region": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "timezone": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -5744,18 +4643,12 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "context_size": {
           "anyOf": [
             {
               "$ref": "#/definitions/WebSearchContextSize"
-            },
-            {
-              "type": "null"
             }
           ]
         },
@@ -5763,9 +4656,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WebSearchLocation"
-            },
-            {
-              "type": "null"
             }
           ]
         }
@@ -5786,18 +4676,12 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WindowsSandboxModeToml"
-            },
-            {
-              "type": "null"
             }
           ]
         },
         "sandbox_private_desktop": {
           "description": "Defaults to `true`. Set to `false` to launch the final sandboxed child\nprocess on `Winsta0\\\\Default` instead of a private desktop.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -5838,9 +4722,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionModeToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Controls whether this session class can use managed worktrees."
@@ -5863,45 +4744,30 @@
           "anyOf": [
             {
               "$ref": "#/definitions/WorktreeCleanupToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Default cleanup policy when a managed worktree is released."
         },
         "enabled": {
           "description": "Global managed-worktree gate. When false, creation/attach actions should be unavailable.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "main_sessions": {
           "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionConfigToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Policy for ordinary interactive sessions."
         },
         "root": {
           "description": "Optional root directory for Codewith-owned managed worktrees.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "sub_sessions": {
           "anyOf": [
             {
               "$ref": "#/definitions/WorktreeSessionConfigToml"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Policy for subagent and background-agent sessions."
@@ -5916,9 +4782,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AgentsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Agent-related settings (thread limits, etc.)."
@@ -5926,18 +4789,12 @@
     "allow_login_shell": {
       "default": true,
       "description": "Whether the model may request a login shell for shell-based tools.\nDefault to `true`\n\nIf `true`, the model may request a login shell (`login = true`), and\nomitting `login` defaults to using a login shell.\nIf `false`, the model can never use a login shell: `login = true`\nrequests are rejected, and omitting `login` defaults to a non-login\nshell.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "analytics": {
       "anyOf": [
         {
           "$ref": "#/definitions/AnalyticsConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "When `false`, disables analytics across Codewith product surfaces in this machine.\nDefaults to `true`."
@@ -5946,9 +4803,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AskForApproval"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Default approval policy for executing commands."
@@ -5957,9 +4811,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ApprovalsReviewer"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Configures who approval requests are routed to for review once they have\nbeen escalated. This does not disable separate safety checks such as\nARC."
@@ -5968,9 +4819,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AppsConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -5978,18 +4826,12 @@
     },
     "apps_mcp_product_sku": {
       "description": "Optional product SKU forwarded on host-owned Codewith Apps MCP requests.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "audio": {
       "anyOf": [
         {
           "$ref": "#/definitions/RealtimeAudioToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -5999,9 +4841,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AuthProfileAutoSwitchToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6011,9 +4850,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AutoReviewToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6023,32 +4859,20 @@
       "description": "Maximum poll window for background terminal output (`write_stdin`), in milliseconds.\nDefault: `300000` (5 minutes).",
       "format": "uint64",
       "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "chatgpt_base_url": {
       "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "check_for_update_on_startup": {
       "description": "When `true`, checks for Codewith updates on startup and surfaces update prompts.\nCodewith is updated through explicit upstream merges and releases,\nso this defaults to `false`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "cli_auth_credentials_store": {
       "anyOf": [
         {
           "$ref": "#/definitions/AuthCredentialsStoreMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6056,105 +4880,66 @@
     },
     "compact_prompt": {
       "description": "Compact prompt used for history compaction.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "debug": {
       "anyOf": [
         {
           "$ref": "#/definitions/DebugToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Debugging and reproducibility settings."
     },
     "default_permissions": {
       "description": "Default permissions profile to apply. Names starting with `:` refer to\nbuilt-in profiles; other names are resolved from the `[permissions]`\ntable.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "desktop": {
       "additionalProperties": true,
       "default": null,
       "description": "Opaque desktop settings stored alongside the rest of config.toml.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "type": "object"
     },
     "developer_instructions": {
       "default": null,
       "description": "Developer instructions inserted as a `developer` role message.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "disable_paste_burst": {
       "description": "When true, disables burst-paste detection for typed input entirely.\nAll characters are inserted as they are received, and no buffering\nor placeholder replacement will occur for fast keypress bursts.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "experimental_compact_prompt_file": {
       "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ]
     },
     "experimental_realtime_start_instructions": {
       "description": "Experimental / do not use. Replaces the built-in realtime start\ninstructions inserted into developer messages when realtime becomes\nactive.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_backend_prompt": {
       "description": "Experimental / do not use. Overrides only the realtime conversation\nwebsocket transport instructions (the `Op::RealtimeConversation`\n`/ws` session.update instructions) without changing normal prompts.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_base_url": {
       "description": "Experimental / do not use. Overrides only the realtime conversation\nwebsocket transport base URL (the `Op::RealtimeConversation`\n`/v1/realtime`\nconnection) without changing normal provider HTTP requests.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_model": {
       "description": "Experimental / do not use. Selects the realtime websocket model/snapshot\nused for the `Op::RealtimeConversation` connection.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_realtime_ws_startup_context": {
       "description": "Experimental / do not use. Replaces the synthesized realtime startup\ncontext appended to websocket session instructions. An empty string\ndisables startup context injection entirely.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_smart_suggest": {
       "anyOf": [
         {
           "$ref": "#/definitions/SmartSuggestConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6162,27 +4947,18 @@
     },
     "experimental_thread_config_endpoint": {
       "description": "Experimental / do not use. When set, app-server fetches thread-scoped\nconfig from a remote service at this endpoint.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "experimental_thread_store": {
       "anyOf": [
         {
           "$ref": "#/definitions/ThreadStoreToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Experimental / do not use. Selects the thread store implementation."
     },
     "experimental_use_unified_exec_tool": {
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "features": {
       "additionalProperties": false,
@@ -6472,9 +5248,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/FeedbackConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "When `false`, disables feedback collection across Codewith product surfaces.\nDefaults to `true`."
@@ -6483,9 +5256,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/UriBasedFileOpener"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional URI-based file opener. If set, citations to files in the model\noutput will be hyperlinked using the specified URI scheme."
@@ -6494,9 +5264,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ForcedChatgptWorkspaceIds"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6506,9 +5273,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ForcedLoginMethod"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6518,9 +5282,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/GhostSnapshotToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6530,9 +5291,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/GoalsConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6541,18 +5299,12 @@
     "hide_agent_reasoning": {
       "default": false,
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the\nUI/output. Defaults to `false`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "history": {
       "anyOf": [
         {
           "$ref": "#/definitions/History"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": {
@@ -6565,55 +5317,34 @@
       "anyOf": [
         {
           "$ref": "#/definitions/HooksToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Lifecycle hooks configured inline in TOML plus user-level overrides."
     },
     "include_apps_instructions": {
       "description": "Whether to inject the `<apps_instructions>` developer block.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "include_collaboration_mode_instructions": {
       "description": "Whether to inject the `<collaboration_mode>` developer block.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "include_environment_context": {
       "description": "Whether to inject the `<environment_context>` user block.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "include_permissions_instructions": {
       "description": "Whether to inject the `<permissions instructions>` developer block.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "instructions": {
       "description": "System instructions.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "log_dir": {
       "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Directory where Codewith writes log files. Setting this value explicitly\nalso enables the TUI text log in this directory.\nDefaults to the Codewith home directory's `log` folder."
@@ -6631,25 +5362,16 @@
       "format": "uint16",
       "maximum": 65535,
       "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "mcp_oauth_callback_url": {
       "description": "Optional redirect URI to use during MCP OAuth login.\nWhen set, this URI is used in the OAuth authorization request instead\nof the local listener address. The local callback listener still binds\nto 127.0.0.1 (using `mcp_oauth_callback_port` when provided).",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "mcp_oauth_credentials_store": {
       "anyOf": [
         {
           "$ref": "#/definitions/OAuthCredentialsStoreMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6667,35 +5389,23 @@
       "anyOf": [
         {
           "$ref": "#/definitions/MemoriesToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Memories subsystem settings."
     },
     "model": {
       "description": "Optional override of model selection.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "model_auto_compact_token_limit": {
       "description": "Token usage threshold triggering auto-compaction of conversation history.",
       "format": "int64",
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "model_auto_compact_token_limit_scope": {
       "anyOf": [
         {
           "$ref": "#/definitions/AutoCompactTokenLimitScope"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Controls whether the auto-compaction limit applies to the full context or\nonly to tokens after the carried prefix in the current compaction window."
@@ -6704,9 +5414,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional path to a JSON model catalog (applied on startup only).\nPer-thread `config` overrides are accepted but do not reapply this (no-ops)."
@@ -6714,35 +5421,23 @@
     "model_context_window": {
       "description": "Size of the context window for the model, in tokens.",
       "format": "int64",
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "model_gateway": {
       "description": "Gateway to use above the selected model provider.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "model_instructions_file": {
       "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional path to a file containing model instructions that will override\nthe built-in instructions for the selected model. Users are STRONGLY\nDISCOURAGED from using this field, as deviating from the instructions\nsanctioned by Codewith will likely degrade model performance."
     },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "model_providers": {
       "additionalProperties": {
@@ -6756,9 +5451,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ReasoningEffort"
-        },
-        {
-          "type": "null"
         }
       ]
     },
@@ -6766,26 +5458,17 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ReasoningSummary"
-        },
-        {
-          "type": "null"
         }
       ]
     },
     "model_supports_reasoning_summaries": {
       "description": "Override to force-enable reasoning summaries for the configured model.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "model_verbosity": {
       "anyOf": [
         {
           "$ref": "#/definitions/Verbosity"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
@@ -6794,9 +5477,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Notice"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Collection of in-product notices (different from notifications)\nSee [`crate::types::Notice`] for more details"
@@ -6807,32 +5487,20 @@
       "items": {
         "type": "string"
       },
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "oss_provider": {
       "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "otel": {
       "anyOf": [
         {
           "$ref": "#/definitions/OtelConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "OTEL configuration."
@@ -6841,9 +5509,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/PermissionsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6853,9 +5518,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Personality"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Optionally specify a personality for the model"
@@ -6864,9 +5526,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ReasoningEffort"
-        },
-        {
-          "type": "null"
         }
       ]
     },
@@ -6880,10 +5539,7 @@
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "profiles": {
       "additionalProperties": {
@@ -6899,20 +5555,14 @@
       "items": {
         "type": "string"
       },
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "project_doc_max_bytes": {
       "default": 32768,
       "description": "Maximum number of bytes to include from a project instruction file.",
       "format": "uint",
       "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "project_root_markers": {
       "default": null,
@@ -6920,27 +5570,18 @@
       "items": {
         "type": "string"
       },
-      "type": [
-        "array",
-        "null"
-      ]
+      "type": "array"
     },
     "projects": {
       "additionalProperties": {
         "$ref": "#/definitions/ProjectConfig"
       },
-      "type": [
-        "object",
-        "null"
-      ]
+      "type": "object"
     },
     "realtime": {
       "anyOf": [
         {
           "$ref": "#/definitions/RealtimeToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -6948,18 +5589,12 @@
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "sandbox_mode": {
       "anyOf": [
         {
           "$ref": "#/definitions/SandboxMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Sandbox mode to use."
@@ -6968,27 +5603,18 @@
       "anyOf": [
         {
           "$ref": "#/definitions/SandboxWorkspaceWrite"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`."
     },
     "service_tier": {
       "description": "Optional explicit service tier request id for new turns (for example\n`default`, `priority`, or `flex`; legacy `fast` also works).",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "session_recap": {
       "anyOf": [
         {
           "$ref": "#/definitions/SessionRecapToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -7011,18 +5637,12 @@
     },
     "show_raw_agent_reasoning": {
       "description": "When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.\nDefaults to `false`.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "skills": {
       "anyOf": [
         {
           "$ref": "#/definitions/SkillsConfig"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
@@ -7031,36 +5651,24 @@
       "anyOf": [
         {
           "$ref": "#/definitions/AbsolutePathBuf"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Directory where Codewith stores the SQLite state DB.\nDefaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses the Codewith home directory."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": "boolean"
     },
     "tool_output_token_limit": {
       "description": "Token budget applied when storing tool/function outputs in the context manager.",
       "format": "uint",
       "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "type": "integer"
     },
     "tool_suggest": {
       "anyOf": [
         {
           "$ref": "#/definitions/ToolSuggestConfig"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Additional discoverable tools that can be suggested for installation."
@@ -7069,9 +5677,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/ToolsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Nested tools section for feature toggles"
@@ -7080,9 +5685,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Tui"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
@@ -7091,9 +5693,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/UsageSelfHealToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -7103,9 +5702,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/WebSearchMode"
-        },
-        {
-          "type": "null"
         }
       ],
       "description": "Controls the web search tool mode: disabled, cached, or live."
@@ -7114,9 +5710,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/WindowsToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
@@ -7126,9 +5719,6 @@
       "anyOf": [
         {
           "$ref": "#/definitions/WorktreesConfigToml"
-        },
-        {
-          "type": "null"
         }
       ],
       "default": null,
