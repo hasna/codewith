@@ -95,7 +95,7 @@ test-fast *args:
 
 # Run fast tests using an explicit persistent target directory.
 test-fast-target target_dir *args:
-    CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+    shift; CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 # Run a scoped compile-only check.
 check-fast *args:
