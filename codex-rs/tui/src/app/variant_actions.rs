@@ -79,10 +79,7 @@ impl App {
                         short_id(worktree.worktree_id.as_str())
                     ));
                     created.push(created_variant_summary(
-                        index,
-                        branch,
-                        &worktree,
-                        /*agent_id*/ None,
+                        index, branch, &worktree, /*agent_id*/ None,
                     ));
                     continue;
                 }
