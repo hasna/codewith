@@ -85,12 +85,24 @@ impl ChatWidget {
             }
             return false;
         }
+        let automatic_boundary_is_valid = !attempt.automatic
+            || (attempt.trigger_key.as_deref().is_some_and(|trigger_key| {
+                self.weekly_usage_limit_auto_reset_key().as_deref() == Some(trigger_key)
+            }) && self
+                .rate_limit_reset_credits
+                .as_ref()
+                .is_some_and(|summary| {
+                    available_reset_credits(summary, Utc::now().timestamp())
+                        .into_iter()
+                        .any(|credit| credit.id == attempt.credit_id)
+                }));
         let final_boundary_is_valid = self.uses_canonical_codex_backend_for_usage_reset()
             && !self.selected_auth_profile_credential_mutation_in_flight()
             && self
                 .rate_limit_reset_account_identity_fingerprint
                 .as_deref()
-                == Some(attempt.account_identity_fingerprint.as_str());
+                == Some(attempt.account_identity_fingerprint.as_str())
+            && automatic_boundary_is_valid;
         if !final_boundary_is_valid {
             if attempt.automatic {
                 self.invalidate_pending_automatic_reset();
@@ -197,7 +209,7 @@ fn weekly_exhausted_window(snapshot: &RateLimitSnapshot) -> Option<&RateLimitWin
         .into_iter()
         .flatten()
         .find(|window| {
-            window.window_duration_mins == Some(WEEKLY_WINDOW_MINUTES) && window.used_percent >= 100
+            window.window_duration_mins == Some(WEEKLY_WINDOW_MINUTES) && window.used_percent == 100
         })
 }
 
@@ -299,6 +311,8 @@ mod tests {
             weekly_exhausted_window(&snapshot).and_then(|window| window.resets_at),
             Some(10)
         );
+        snapshot.primary.as_mut().expect("primary").used_percent = 101;
+        assert!(weekly_exhausted_window(&snapshot).is_none());
         snapshot.limit_id = Some("other".to_string());
         assert!(weekly_exhausted_window(&snapshot).is_none());
     }

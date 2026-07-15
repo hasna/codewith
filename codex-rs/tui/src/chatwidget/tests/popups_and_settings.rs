@@ -3357,6 +3357,27 @@ async fn config_popup_snapshot_and_toggle() {
     assert!(account_popup.contains("Auth profile auto-switch"));
     assert!(account_popup.contains("Session recap"));
 
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenRateLimitResetConfirm));
+
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::AccountAutomation,
+    );
+    for _ in 0..4 {
+        chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "usage_limit.auto_reset_enabled"
+            && value == serde_json::json!(true)
+            && label == "Usage limit auto-reset"
+    );
+
     chat.open_config_section_popup(crate::common_config_options::CommonConfigSection::AiContext);
     let ai_context_popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_ai_context_popup", ai_context_popup);

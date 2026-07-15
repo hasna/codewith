@@ -314,16 +314,16 @@ async fn reset_attempts_are_profile_and_generation_correlated() {
     chat.config.selected_auth_profile = Some("work".to_string());
     let mut attempt = reset_attempt();
     attempt.auth_profile = Some("personal".to_string());
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
     assert!(!chat.start_rate_limit_reset_consumption(&attempt));
 
     attempt.auth_profile = Some("work".to_string());
     attempt.generation = 1;
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
     assert!(!chat.start_rate_limit_reset_consumption(&attempt));
 
     attempt.generation = 0;
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
     assert!(chat.start_rate_limit_reset_consumption(&attempt));
 }
 
@@ -332,10 +332,89 @@ async fn automatic_reset_rechecks_toggle_immediately_before_consumption() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let mut attempt = reset_attempt();
     attempt.auth_profile = chat.config.selected_auth_profile.clone();
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
 
     assert!(!chat.start_rate_limit_reset_consumption(&attempt));
     assert_eq!(chat.rate_limit_reset_generation, 1);
+}
+
+#[tokio::test]
+async fn automatic_reset_rechecks_exact_weekly_exhaustion_immediately_before_consumption() {
+    for used_percent in [99, 101] {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
+        chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+        chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+        let attempt = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|event| match event {
+                AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+                _ => None,
+            })
+            .expect("queued automatic reset");
+
+        let mut snapshot = exhausted_weekly_snapshot();
+        snapshot.primary.as_mut().expect("primary").used_percent = used_percent;
+        chat.on_rate_limit_snapshot(Some(snapshot));
+
+        assert!(
+            !chat.start_rate_limit_reset_consumption(&attempt),
+            "{used_percent}% must not satisfy the exact weekly exhaustion boundary"
+        );
+    }
+}
+
+#[tokio::test]
+async fn automatic_reset_rechecks_selected_credit_immediately_before_consumption() {
+    for replacement in [
+        RateLimitResetCreditsSummary {
+            available_count: 1,
+            credits: Some(vec![RateLimitResetCredit {
+                id: "different-credit".to_string(),
+                ..exact_reset_summary()
+                    .credits
+                    .and_then(|credits| credits.into_iter().next())
+                    .expect("exact credit")
+            }]),
+        },
+        RateLimitResetCreditsSummary {
+            available_count: 0,
+            credits: Some(vec![RateLimitResetCredit {
+                status: RateLimitResetCreditStatus::Redeemed,
+                ..exact_reset_summary()
+                    .credits
+                    .and_then(|credits| credits.into_iter().next())
+                    .expect("exact credit")
+            }]),
+        },
+        RateLimitResetCreditsSummary {
+            available_count: 1,
+            credits: Some(vec![RateLimitResetCredit {
+                expires_at: Some(0),
+                ..exact_reset_summary()
+                    .credits
+                    .and_then(|credits| credits.into_iter().next())
+                    .expect("exact credit")
+            }]),
+        },
+    ] {
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
+        chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+        chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+        let attempt = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|event| match event {
+                AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+                _ => None,
+            })
+            .expect("queued automatic reset");
+
+        chat.on_rate_limit_reset_credits(Some(replacement));
+
+        assert!(
+            !chat.start_rate_limit_reset_consumption(&attempt),
+            "a removed, redeemed, or expired queued credit must not be consumed"
+        );
+    }
 }
 
 #[tokio::test]
@@ -350,7 +429,7 @@ async fn ambiguous_retry_reuses_exact_request_key_and_credit() {
     chat.config.usage_limit.auto_reset_enabled = true;
     let mut attempt = reset_attempt();
     attempt.auth_profile = chat.config.selected_auth_profile.clone();
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
     assert!(chat.start_rate_limit_reset_consumption(&attempt));
 
     let RateLimitResetCompletion::Retry(retry) = chat
@@ -370,7 +449,7 @@ async fn second_ambiguous_result_reconciles_without_another_request_key() {
     chat.config.usage_limit.auto_reset_enabled = true;
     let mut attempt = reset_attempt();
     attempt.auth_profile = chat.config.selected_auth_profile.clone();
-    queue_automatic_reset_attempt(&mut chat, &attempt);
+    queue_automatic_reset_attempt(&mut chat, &mut attempt);
     assert!(chat.start_rate_limit_reset_consumption(&attempt));
     let RateLimitResetCompletion::Retry(retry) =
         chat.finish_rate_limit_reset_consumption(attempt, Err("connection closed".to_string()))

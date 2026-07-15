@@ -200,7 +200,14 @@ fn next_user_turn_or_shell_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<O
     }
 }
 
-fn queue_automatic_reset_attempt(chat: &mut ChatWidget, attempt: &RateLimitResetAttempt) {
+fn queue_automatic_reset_attempt(chat: &mut ChatWidget, attempt: &mut RateLimitResetAttempt) {
+    chat.on_rate_limit_snapshot(Some(exhausted_weekly_snapshot()));
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    attempt.trigger_key = Some(format!(
+        "{:?}:codex:weekly:{:?}",
+        chat.config.selected_auth_profile,
+        Some(123)
+    ));
     chat.pending_rate_limit_reset_consumption = Some(attempt.clone());
 }
 
