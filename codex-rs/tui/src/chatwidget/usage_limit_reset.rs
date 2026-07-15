@@ -52,22 +52,23 @@ impl ChatWidget {
                 .is_some_and(|base_url| provider_base_url_matches(base_url, CHATGPT_CODEX_BASE_URL))
     }
 
-    pub(crate) fn on_rate_limit_account_identity(&mut self, fingerprint: String) {
-        if self
-            .rate_limit_reset_account_identity_fingerprint
-            .as_ref()
-            .is_some_and(|current| current != &fingerprint)
+    pub(crate) fn on_rate_limit_account_identity(&mut self, fingerprint: Option<String>) {
+        if fingerprint.is_none()
+            || self
+                .rate_limit_reset_account_identity_fingerprint
+                .as_ref()
+                .zip(fingerprint.as_ref())
+                .is_some_and(|(current, next)| current != next)
         {
             self.rate_limit_reset_credits = None;
             self.announced_rate_limit_reset_available_count = None;
         }
-        self.rate_limit_reset_account_identity_fingerprint = Some(fingerprint);
+        self.rate_limit_reset_account_identity_fingerprint = fingerprint;
     }
 
     pub(crate) fn begin_selected_auth_profile_credential_mutation(&mut self, profile: &str) {
-        if self.config.selected_auth_profile.as_deref() == Some(profile) {
-            self.selected_auth_profile_credential_mutation_in_flight = Some(profile.to_string());
-        }
+        self.auth_profile_credential_mutations_in_flight
+            .insert(profile.to_string());
     }
 
     pub(crate) fn finish_selected_auth_profile_credential_mutation(
@@ -75,22 +76,25 @@ impl ChatWidget {
         profile: &str,
         credentials_changed: bool,
     ) {
-        if self
-            .selected_auth_profile_credential_mutation_in_flight
-            .as_deref()
-            != Some(profile)
+        if !self
+            .auth_profile_credential_mutations_in_flight
+            .remove(profile)
         {
             return;
         }
-        self.selected_auth_profile_credential_mutation_in_flight = None;
         if credentials_changed && self.config.selected_auth_profile.as_deref() == Some(profile) {
             self.invalidate_rate_limit_reset_state_after_account_update();
         }
     }
 
     pub(crate) fn selected_auth_profile_credential_mutation_in_flight(&self) -> bool {
-        self.selected_auth_profile_credential_mutation_in_flight
-            .is_some()
+        self.config
+            .selected_auth_profile
+            .as_deref()
+            .is_some_and(|profile| {
+                self.auth_profile_credential_mutations_in_flight
+                    .contains(profile)
+            })
     }
 
     pub(crate) fn on_rate_limit_reset_credits(
@@ -129,22 +133,63 @@ impl ChatWidget {
         if !attempt.automatic && self.automatic_usage_limit_reset_owns_failed_turn() {
             return false;
         }
-        let expected_automatic_attempt = if attempt.automatic {
+        let expected_attempt = if attempt.automatic {
             if attempt.retry_count == 0 {
-                self.pending_rate_limit_reset_consumption.as_ref()
+                self.pending_rate_limit_reset_consumption.as_ref() == Some(attempt)
             } else {
-                self.rate_limit_reset_retry.as_ref()
+                self.rate_limit_reset_retry.as_ref() == Some(attempt)
             }
+        } else if attempt.retry_count == 0 {
+            self.bottom_pane
+                .has_view_id(RATE_LIMIT_RESET_CONFIRM_VIEW_ID)
+                && self
+                    .manual_rate_limit_reset_authority
+                    .as_ref()
+                    .is_some_and(|authority| {
+                        authority.generation == attempt.generation
+                            && authority.auth_profile == attempt.auth_profile
+                            && authority.account_identity_fingerprint
+                                == attempt.account_identity_fingerprint
+                    })
+                && self
+                    .rate_limit_reset_credits
+                    .as_ref()
+                    .is_some_and(|summary| {
+                        available_reset_credits(summary, Utc::now().timestamp())
+                            .into_iter()
+                            .any(|credit| credit.id == attempt.credit_id)
+                    })
         } else {
-            Some(attempt)
+            self.rate_limit_reset_retry.as_ref() == Some(attempt)
         };
         if attempt.generation != self.rate_limit_reset_generation
             || attempt.auth_profile != self.config.selected_auth_profile
             || self.rate_limit_reset_in_flight.is_some()
             || self.pending_post_reset_refresh.is_some()
             || attempt.credit_id.is_empty()
-            || expected_automatic_attempt != Some(attempt)
+            || !expected_attempt
         {
+            if !attempt.automatic {
+                self.cancel_manual_rate_limit_reset_selection(attempt.generation);
+            }
+            return false;
+        }
+        let final_boundary_is_valid = self.uses_canonical_codex_backend_for_usage_reset()
+            && !self.selected_auth_profile_credential_mutation_in_flight()
+            && self
+                .rate_limit_reset_account_identity_fingerprint
+                .as_deref()
+                == Some(attempt.account_identity_fingerprint.as_str());
+        if !final_boundary_is_valid {
+            if attempt.automatic {
+                self.invalidate_pending_automatic_reset();
+                self.fallback_auth_profile_switch_after_reset_unavailable();
+            } else {
+                self.cancel_manual_rate_limit_reset_selection(attempt.generation);
+                self.add_error_message(
+                    "Usage limit reset selection expired before it could be used.".to_string(),
+                );
+            }
             return false;
         }
         if attempt.automatic && !self.config.usage_limit.auto_reset_enabled {
@@ -156,6 +201,7 @@ impl ChatWidget {
             self.prepare_for_usage_limit_reset();
         }
         self.pending_rate_limit_reset_consumption = None;
+        self.manual_rate_limit_reset_authority = None;
         self.rate_limit_reset_retry = None;
         self.rate_limit_reset_in_flight = Some(attempt.clone());
         if !attempt.automatic {
@@ -175,6 +221,25 @@ impl ChatWidget {
             /*hint*/ None,
         );
         true
+    }
+
+    pub(crate) fn cancel_manual_rate_limit_reset_selection(&mut self, generation: u64) {
+        if self
+            .manual_rate_limit_reset_authority
+            .as_ref()
+            .is_some_and(|authority| authority.generation == generation)
+        {
+            self.manual_rate_limit_reset_authority = None;
+        }
+        if self
+            .pending_rate_limit_reset_consumption
+            .as_ref()
+            .is_some_and(|attempt| !attempt.automatic && attempt.generation == generation)
+        {
+            self.pending_rate_limit_reset_consumption = None;
+        }
+        self.bottom_pane
+            .dismiss_active_view_if_id(RATE_LIMIT_RESET_CONFIRM_VIEW_ID);
     }
 
     pub(crate) fn finish_rate_limit_reset_consumption(
@@ -419,6 +484,7 @@ impl ChatWidget {
         self.rate_limit_reset_account_identity_fingerprint = None;
         self.announced_rate_limit_reset_available_count = None;
         self.pending_rate_limit_reset_consumption = None;
+        self.manual_rate_limit_reset_authority = None;
         self.rate_limit_reset_in_flight = None;
         self.rate_limit_reset_retry = None;
         self.pending_rate_limit_reset_picker = None;
@@ -453,7 +519,7 @@ impl ChatWidget {
     pub(crate) fn rate_limit_reset_refresh_account_is_current(
         &self,
         origin: &RateLimitRefreshOrigin,
-        fingerprint: &str,
+        fingerprint: Option<&str>,
     ) -> bool {
         let RateLimitRefreshOrigin::PostReset { generation } = origin else {
             return true;
@@ -462,7 +528,9 @@ impl ChatWidget {
             .as_ref()
             .is_some_and(|attempt| {
                 attempt.generation == *generation
-                    && attempt.account_identity_fingerprint == fingerprint
+                    && fingerprint.is_some_and(|fingerprint| {
+                        attempt.account_identity_fingerprint == fingerprint
+                    })
             })
     }
 

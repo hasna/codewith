@@ -70,7 +70,7 @@ fn non_exhausted_weekly_snapshot() -> RateLimitSnapshot {
 fn reset_attempt() -> RateLimitResetAttempt {
     RateLimitResetAttempt {
         idempotency_key: "stable-request-key".to_string(),
-        credit_id: "exact-credit".to_string(),
+        credit_id: "credit-earliest".to_string(),
         auth_profile: None,
         account_identity_fingerprint: "sha256:test-account".to_string(),
         generation: 0,
@@ -82,6 +82,9 @@ fn reset_attempt() -> RateLimitResetAttempt {
 }
 
 fn start_manual_reset_consumption(chat: &mut ChatWidget) -> RateLimitResetAttempt {
+    set_canonical_reset_provider(chat);
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.open_rate_limit_reset_confirm();
     let mut attempt = reset_attempt();
     attempt.auth_profile = chat.config.selected_auth_profile.clone();
     attempt.generation = chat.rate_limit_reset_generation;

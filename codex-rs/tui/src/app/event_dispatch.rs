@@ -1471,6 +1471,10 @@ impl App {
                     self.consume_rate_limit_reset_credit(app_server, attempt);
                 }
             }
+            AppEvent::CancelRateLimitResetCreditSelection { generation } => {
+                self.chat_widget
+                    .cancel_manual_rate_limit_reset_selection(generation);
+            }
             AppEvent::RateLimitResetCreditConsumed { attempt, result } => match self
                 .chat_widget
                 .finish_rate_limit_reset_consumption(attempt, result)
@@ -3393,7 +3397,7 @@ impl App {
                         .chat_widget
                         .rate_limit_reset_refresh_account_is_current(
                             &origin,
-                            &data.account_identity_fingerprint,
+                            data.account_identity_fingerprint.as_deref(),
                         )
                 {
                     if let RateLimitRefreshOrigin::PostReset { generation } = origin {

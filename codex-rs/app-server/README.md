@@ -2560,7 +2560,7 @@ Field notes:
 
 - `authProfile` may be omitted to use the app-server's selected auth profile, set to a profile name, or set to `null` for root auth.
 - `includeResetCreditDetails` forces a detailed reset-credit read even when the available count is zero; use it to reconcile the exact credit after an ambiguous consume response.
-- `accountIdentityFingerprint` is an opaque equality-only correlation value. Never display or log it.
+- `accountIdentityFingerprint` is a process-scoped opaque equality-only correlation value. It is `null` when the ChatGPT credentials do not expose an account identifier; in that case reset-credit details are withheld and reset consumption is unavailable. Never display or log it.
 - `usedPercent` is current usage within the OpenAI quota window.
 - `windowDurationMins` is the quota window length.
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.

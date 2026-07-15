@@ -3205,7 +3205,7 @@ mod tests {
     #[test]
     fn app_server_rate_limit_snapshots_deduplicates_top_level_limit_from_map() {
         let response = GetAccountRateLimitsResponse {
-            account_identity_fingerprint: "sha256:test-account".to_string(),
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
             rate_limits: rate_limit_snapshot("codex"),
             rate_limits_by_limit_id: Some(HashMap::from([
                 ("codex".to_string(), rate_limit_snapshot("codex")),

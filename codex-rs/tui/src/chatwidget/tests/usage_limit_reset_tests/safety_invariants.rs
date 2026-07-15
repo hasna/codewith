@@ -155,6 +155,103 @@ async fn auto_reset_requires_canonical_provider_id_and_effective_endpoint() {
 }
 
 #[tokio::test]
+async fn dismissed_manual_selection_cannot_spend_but_a_new_selection_can() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.open_rate_limit_reset_confirm();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Up));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let stale_attempt = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+            _ => None,
+        })
+        .expect("queued manual reset selection");
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    assert!(!chat.start_rate_limit_reset_consumption(&stale_attempt));
+
+    chat.start_rate_limit_reset_picker();
+    let generation = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::ResetPicker { generation },
+                ..
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("new manual reset refresh");
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.finish_rate_limit_reset_picker(generation, Ok(()));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Up));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let current_attempt = std::iter::from_fn(|| rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+            _ => None,
+        })
+        .expect("new manual reset selection");
+    assert!(chat.start_rate_limit_reset_consumption(&current_attempt));
+}
+
+#[tokio::test]
+async fn provider_or_endpoint_change_before_spend_fails_closed() {
+    let (mut manual, mut manual_rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    manual.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    manual.open_rate_limit_reset_confirm();
+    manual.handle_key_event(KeyEvent::from(KeyCode::Up));
+    manual.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let manual_attempt = std::iter::from_fn(|| manual_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+            _ => None,
+        })
+        .expect("manual reset selection");
+    manual.config.model_provider_id = "custom-openai".to_string();
+    assert!(!manual.start_rate_limit_reset_consumption(&manual_attempt));
+
+    let (mut automatic, mut automatic_rx, _op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    automatic.config.usage_limit.auto_reset_enabled = true;
+    assert_eq!(
+        automatic.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    let generation = std::iter::from_fn(|| automatic_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                ..
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("automatic reset refresh");
+    automatic.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    automatic.on_rate_limit_snapshot(Some(exhausted_weekly_snapshot()));
+    automatic.finish_usage_limit_auto_reset_check(generation, Ok(()));
+    let automatic_attempt = std::iter::from_fn(|| automatic_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
+            _ => None,
+        })
+        .expect("automatic reset selection");
+    automatic.runtime_model_provider_base_url = Some("https://example.test/v1".to_string());
+    assert!(!automatic.start_rate_limit_reset_consumption(&automatic_attempt));
+}
+
+#[tokio::test]
+async fn selecting_a_profile_with_relogin_in_flight_blocks_reset() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("personal".to_string());
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.config.selected_auth_profile = Some("work".to_string());
+
+    assert!(chat.selected_auth_profile_credential_mutation_in_flight());
+    chat.start_rate_limit_reset_picker();
+    assert!(chat.pending_rate_limit_reset_picker.is_none());
+}
+
+#[tokio::test]
 async fn ambiguous_manual_reset_requires_exact_credit_redemption_proof() {
     for summary in [
         RateLimitResetCreditsSummary {

@@ -341,12 +341,7 @@ async fn automatic_reset_rechecks_toggle_immediately_before_consumption() {
 #[tokio::test]
 async fn manual_reset_remains_available_when_automatic_reset_is_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let mut attempt = reset_attempt();
-    attempt.auth_profile = chat.config.selected_auth_profile.clone();
-    attempt.automatic = false;
-    attempt.trigger_key = None;
-
-    assert!(chat.start_rate_limit_reset_consumption(&attempt));
+    let _attempt = start_manual_reset_consumption(&mut chat);
 }
 
 #[tokio::test]

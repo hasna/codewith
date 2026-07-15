@@ -48,6 +48,7 @@ use ratatui::style::Styled;
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
 use crate::app_event::HistoryLookupResponse;
+use crate::app_event::ManualRateLimitResetAuthority;
 use crate::app_event::McpInventoryTarget;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_approval_conversions::file_update_changes_to_display;
@@ -627,6 +628,7 @@ pub(crate) struct ChatWidget {
     rate_limit_reset_account_identity_fingerprint: Option<String>,
     announced_rate_limit_reset_available_count: Option<i64>,
     pending_rate_limit_reset_consumption: Option<RateLimitResetAttempt>,
+    manual_rate_limit_reset_authority: Option<ManualRateLimitResetAuthority>,
     rate_limit_reset_in_flight: Option<RateLimitResetAttempt>,
     rate_limit_reset_retry: Option<RateLimitResetAttempt>,
     rate_limit_reset_generation: u64,
@@ -635,7 +637,7 @@ pub(crate) struct ChatWidget {
     pending_post_reset_refresh: Option<RateLimitResetAttempt>,
     automatic_reset_opted_out_generation: Option<u64>,
     usage_limit_auto_reset_key: Option<String>,
-    selected_auth_profile_credential_mutation_in_flight: Option<String>,
+    auth_profile_credential_mutations_in_flight: HashSet<String>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

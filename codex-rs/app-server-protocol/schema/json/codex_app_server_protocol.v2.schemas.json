@@ -8568,8 +8568,11 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "accountIdentityFingerprint": {
-          "description": "Opaque equality-only SHA-256 fingerprint of the authenticated account. Clients must not display or log it and must treat its representation as opaque.",
-          "type": "string"
+          "description": "Process-scoped opaque fingerprint of the authenticated account.\n\n`null` means the current ChatGPT credentials do not expose an account identifier. Clients must not display or log this value and must treat its representation as opaque.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "rateLimitResetCredits": {
           "anyOf": [
@@ -8601,7 +8604,6 @@
         }
       },
       "required": [
-        "accountIdentityFingerprint",
         "rateLimits"
       ],
       "title": "GetAccountRateLimitsResponse",

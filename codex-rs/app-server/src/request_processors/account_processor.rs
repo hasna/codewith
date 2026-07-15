@@ -1215,7 +1215,7 @@ impl AccountRequestProcessor {
         params: GetAccountRateLimitsParams,
     ) -> Result<
         (
-            String,
+            Option<String>,
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
             Option<RateLimitResetCreditsSummary>,
@@ -1237,7 +1237,7 @@ impl AccountRequestProcessor {
         include_reset_credit_details: bool,
     ) -> Result<
         (
-            String,
+            Option<String>,
             CoreRateLimitSnapshot,
             HashMap<String, CoreRateLimitSnapshot>,
             Option<RateLimitResetCreditsSummary>,
@@ -1255,10 +1255,9 @@ impl AccountRequestProcessor {
                 "chatgpt authentication required to read rate limits",
             ));
         }
-        let account_id = auth.get_account_id().ok_or_else(|| {
-            invalid_request("chatgpt account identity required to read rate limits")
-        })?;
-        let account_identity_fingerprint = codex_login::account_identity_fingerprint(&account_id);
+        let account_identity_fingerprint = auth
+            .get_account_id()
+            .map(|account_id| codex_login::account_identity_fingerprint(&account_id));
 
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
             .map_err(|err| internal_error(format!("failed to construct backend client: {err}")))?;
@@ -1267,12 +1266,16 @@ impl AccountRequestProcessor {
             .get_rate_limits_with_reset_credits()
             .await
             .map_err(|err| internal_error(format!("failed to fetch codex rate limits: {err}")))?;
-        let reset_credits = account_rate_limit_resets::enrich_summary(
-            &client,
-            rate_limits.rate_limit_reset_credits,
-            include_reset_credit_details,
-        )
-        .await;
+        let reset_credits = if account_identity_fingerprint.is_some() {
+            account_rate_limit_resets::enrich_summary(
+                &client,
+                rate_limits.rate_limit_reset_credits,
+                include_reset_credit_details,
+            )
+            .await
+        } else {
+            None
+        };
         let snapshots = rate_limits.rate_limits;
         if snapshots.is_empty() {
             return Err(internal_error(

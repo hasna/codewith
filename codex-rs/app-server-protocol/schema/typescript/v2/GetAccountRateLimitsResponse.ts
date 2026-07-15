@@ -6,10 +6,12 @@ import type { RateLimitSnapshot } from "./RateLimitSnapshot";
 
 export type GetAccountRateLimitsResponse = {
 /**
- * Opaque equality-only SHA-256 fingerprint of the authenticated account.
- * Clients must not display or log it and must treat its representation as opaque.
+ * Process-scoped opaque fingerprint of the authenticated account.
+ *
+ * `null` means the current ChatGPT credentials do not expose an account identifier. Clients
+ * must not display or log this value and must treat its representation as opaque.
  */
-accountIdentityFingerprint: string,
+accountIdentityFingerprint: string | null,
 /**
  * Backward-compatible single-bucket view; mirrors the historical payload.
  */

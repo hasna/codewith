@@ -361,9 +361,11 @@ impl Serialize for GetAccountRateLimitsParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct GetAccountRateLimitsResponse {
-    /// Opaque equality-only SHA-256 fingerprint of the authenticated account.
-    /// Clients must not display or log it and must treat its representation as opaque.
-    pub account_identity_fingerprint: String,
+    /// Process-scoped opaque fingerprint of the authenticated account.
+    ///
+    /// `null` means the current ChatGPT credentials do not expose an account identifier. Clients
+    /// must not display or log this value and must treat its representation as opaque.
+    pub account_identity_fingerprint: Option<String>,
     /// Backward-compatible single-bucket view; mirrors the historical payload.
     pub rate_limits: RateLimitSnapshot,
     /// Multi-bucket view keyed by metered `limit_id` (for example, `codex`).

@@ -26,6 +26,7 @@ impl ChatWidget {
             return;
         }
         let generation = self.advance_rate_limit_reset_generation();
+        self.manual_rate_limit_reset_authority = None;
         self.pending_rate_limit_reset_picker = Some(generation);
         self.add_info_message(
             "Refreshing available usage limit resets…".to_string(),
@@ -96,6 +97,11 @@ impl ChatWidget {
             return;
         };
         let generation = self.rate_limit_reset_generation;
+        self.manual_rate_limit_reset_authority = Some(ManualRateLimitResetAuthority {
+            generation,
+            auth_profile: auth_profile.clone(),
+            account_identity_fingerprint: account_identity_fingerprint.clone(),
+        });
         let mut items = Vec::with_capacity(credits.len() + 1);
         for credit in credits {
             let credit_id = credit.id.clone();
@@ -133,10 +139,14 @@ impl ChatWidget {
                 ..Default::default()
             });
         }
+        let cancel_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+            tx.send(AppEvent::CancelRateLimitResetCreditSelection { generation });
+        })];
         items.push(SelectionItem {
             name: "Cancel".to_string(),
             display_shortcut: Some(key_hint::plain(KeyCode::Char('n'))),
             is_default: true,
+            actions: cancel_actions,
             dismiss_on_select: true,
             ..Default::default()
         });
@@ -153,6 +163,9 @@ impl ChatWidget {
             footer_hint: Some(standard_popup_hint_line()),
             items,
             initial_selected_idx: Some(selected),
+            on_cancel: Some(Box::new(move |tx| {
+                tx.send(AppEvent::CancelRateLimitResetCreditSelection { generation });
+            })),
             ..Default::default()
         });
     }

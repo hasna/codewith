@@ -349,6 +349,7 @@ impl ChatWidget {
         self.announced_rate_limit_reset_available_count = None;
         self.advance_rate_limit_reset_generation();
         self.pending_rate_limit_reset_consumption = None;
+        self.manual_rate_limit_reset_authority = None;
         self.rate_limit_reset_in_flight = None;
         self.rate_limit_reset_retry = None;
         self.pending_rate_limit_reset_picker = None;

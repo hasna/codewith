@@ -183,7 +183,7 @@ pub(crate) enum RateLimitRefreshTarget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RateLimitRefreshData {
-    pub(crate) account_identity_fingerprint: String,
+    pub(crate) account_identity_fingerprint: Option<String>,
     pub(crate) snapshots: Vec<RateLimitSnapshot>,
     pub(crate) reset_credits: Option<RateLimitResetCreditsSummary>,
 }
@@ -205,6 +205,13 @@ pub(crate) struct RateLimitResetAttempt {
     pub(crate) trigger_key: Option<String>,
     pub(crate) retry_count: u8,
     pub(crate) verification: RateLimitResetVerification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManualRateLimitResetAuthority {
+    pub(crate) generation: u64,
+    pub(crate) auth_profile: Option<String>,
+    pub(crate) account_identity_fingerprint: String,
 }
 
 impl RateLimitRefreshTarget {
@@ -411,6 +418,11 @@ pub(crate) enum AppEvent {
     /// Consume one available usage-limit reset.
     ConsumeRateLimitResetCredit {
         attempt: RateLimitResetAttempt,
+    },
+
+    /// Revoke a manual reset picker after cancellation or dismissal.
+    CancelRateLimitResetCreditSelection {
+        generation: u64,
     },
 
     /// Result of consuming one available usage-limit reset.

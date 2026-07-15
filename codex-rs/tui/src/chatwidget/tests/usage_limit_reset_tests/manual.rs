@@ -200,11 +200,7 @@ async fn manual_reset_picker_never_owns_a_failed_automatic_turn() {
 async fn manual_reset_consumption_never_owns_a_failed_automatic_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     configure_usage_limit_self_heal(&mut chat);
-    let mut attempt = reset_attempt();
-    attempt.auth_profile = chat.config.selected_auth_profile.clone();
-    attempt.automatic = false;
-    attempt.trigger_key = None;
-    assert!(chat.start_rate_limit_reset_consumption(&attempt));
+    let _attempt = start_manual_reset_consumption(&mut chat);
 
     submit_failed_weekly_turn(&mut chat, &mut op_rx, "recover during manual reset");
 
@@ -313,7 +309,7 @@ async fn manual_reset_states_do_not_suppress_profile_fallback_for_failed_turn() 
                 chat.pending_rate_limit_reset_picker = Some(chat.rate_limit_reset_generation);
             }
             ManualResetState::Consumption => {
-                assert!(chat.start_rate_limit_reset_consumption(&attempt));
+                let _attempt = start_manual_reset_consumption(&mut chat);
             }
             ManualResetState::Retry => {
                 chat.rate_limit_reset_retry = Some(attempt);
