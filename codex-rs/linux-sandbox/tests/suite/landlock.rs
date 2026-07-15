@@ -67,8 +67,10 @@ fn preserve_bazel_bwrap_env(env: &mut HashMap<String, String>) {
 }
 
 fn codex_linux_sandbox_exe() -> PathBuf {
-    let sandbox_program = cargo_bin("codex-linux-sandbox")
-        .expect("resolve codex-linux-sandbox binary for integration test");
+    let sandbox_program = match cargo_bin("codex-linux-sandbox") {
+        Ok(path) => path,
+        Err(err) => panic!("resolve codex-linux-sandbox binary for integration test: {err}"),
+    };
     match sandbox_program.canonicalize() {
         Ok(path) => path,
         Err(_) => sandbox_program,

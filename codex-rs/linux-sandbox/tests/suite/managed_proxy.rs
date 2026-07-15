@@ -68,8 +68,10 @@ fn preserve_bazel_bwrap_env(env: &mut HashMap<String, String>) {
 }
 
 fn codex_linux_sandbox_exe() -> PathBuf {
-    cargo_bin("codex-linux-sandbox")
-        .expect("resolve codex-linux-sandbox binary for integration test")
+    match cargo_bin("codex-linux-sandbox") {
+        Ok(path) => path,
+        Err(err) => panic!("resolve codex-linux-sandbox binary for integration test: {err}"),
+    }
 }
 
 fn strip_proxy_env(env: &mut HashMap<String, String>) {
