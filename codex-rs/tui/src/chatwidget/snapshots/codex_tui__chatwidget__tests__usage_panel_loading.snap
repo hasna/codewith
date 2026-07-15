@@ -6,13 +6,13 @@ expression: loading_popup
 
   [Usage]
 
-     Account         dev@example.com
      Plan            Pro
      Model           gpt-5.6
      Provider        openai
      Context         34% used · 52K / 128K
      Tokens          52K total · 50K input · 2K output
      Account limits  refreshing account limits...
+     Usage reset     availability unknown until limits refresh · auto off
 › 1. Refresh         refreshing usage data
 
   Press enter to confirm or esc to go back

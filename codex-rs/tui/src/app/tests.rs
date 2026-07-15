@@ -5002,10 +5002,10 @@ async fn same_generation_wrong_phase_auto_reset_refresh_never_applies_payload() 
 #[tokio::test]
 async fn account_updated_invalidates_same_profile_reset_generation() {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
-    app.chat_widget.handle_thread_session(test_thread_session(
-        ThreadId::new(),
-        test_path_buf("/tmp/project"),
-    ));
+    let mut session = test_thread_session(ThreadId::new(), test_path_buf("/tmp/project"));
+    session.model_provider_id = codex_model_provider_info::OPENAI_PROVIDER_ID.to_string();
+    app.chat_widget.handle_thread_session(session);
+    set_chatgpt_auth(&mut app.chat_widget);
     while op_rx.try_recv().is_ok() {}
     app.chat_widget.apply_config_popup_value(
         "usage_limit.auto_reset_enabled",
