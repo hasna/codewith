@@ -562,7 +562,11 @@ wire_api = "responses"
         data.iter()
             .map(|model| (model.id.as_str(), model.is_default))
             .collect::<Vec<_>>(),
-        vec![("gpt-oss-120b", true), ("zai-glm-4.7", false)]
+        vec![
+            ("gpt-oss-120b", true),
+            ("zai-glm-4.7", false),
+            ("gemma-4-31b", false),
+        ],
     );
     assert!(next_cursor.is_none());
     Ok(())
