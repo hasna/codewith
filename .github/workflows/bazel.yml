@@ -56,6 +56,22 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      - name: Free Linux runner disk for Bazel tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          docker system prune -af --volumes || true
+          sudo apt-get clean || true
+          df -h
+
       - name: Check rusty_v8 MODULE.bazel checksums
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -70,6 +86,21 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
           install-test-prereqs: "true"
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Verify Windows-cross host tool resolution
+        if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: python3 .github/scripts/check_windows_bazel_host_tools.py
+
       - name: Check MODULE.bazel.lock is up to date
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -179,8 +210,8 @@ jobs:
 
   test-windows-shard:
     # Split the Windows Bazel test leg across separate Windows
-    # hosts. Each shard still uses Linux RBE for build actions, but the test
-    # execution itself happens on its own Windows runner.
+    # hosts. Each shard cross-compiles the gnullvm target with Windows-hosted
+    # tools and executes the tests on its own Windows runner.
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -424,6 +455,15 @@ jobs:
           restore-keys: |
             bazel-disk-${{ github.job }}-${{ matrix.target }}-
 
+      - name: Free Linux runner disk for Bazel clippy
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h
+
       - name: bazel build --config=clippy lint targets
         # Bounded below the job timeout-minutes so a cold keyless build that
         # overruns fails THIS STEP (a failure) instead of the JOB (a
@@ -443,19 +483,14 @@ jobs:
           bazel_wrapper_args=()
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # Keep this aligned with the fast Windows Bazel test job: use
-            # Linux RBE for clippy build actions while targeting Windows
-            # gnullvm. Fork/community PRs without the BuildBuddy secret fall
-            # back inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # Keep this aligned with the fast Windows Bazel test job: use a
+            # Windows exec host while targeting Windows gnullvm. The generated
+            # clippy list can include explicit targets that are incompatible
+            # with the Windows host platform, so keep Bazel from failing after
+            # successfully building the compatible subset.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
-            if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-              # The fork fallback can see incompatible explicit Windows-cross
-              # internal test binaries in the generated target list. Preserve
-              # the old local-fallback behavior there.
-              bazel_clippy_args+=(--skip_incompatible_explicit_targets)
-            fi
+            bazel_clippy_args+=(--skip_incompatible_explicit_targets)
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
@@ -582,11 +617,8 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # This is build-only signal, so use the same Linux-RBE
-            # cross-compile path as the fast Windows test and clippy jobs.
-            # Fork/community PRs without the BuildBuddy secret fall back
-            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # Use the same Windows-hosted cross-compile path as the fast
+            # Windows test and clippy jobs.
             bazel_wrapper_args+=(--windows-cross-compile)
           fi
 
