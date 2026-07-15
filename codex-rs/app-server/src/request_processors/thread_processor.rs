@@ -246,7 +246,7 @@ fn permission_profile_from_history(
         InitialHistory::Resumed(resumed) => {
             permission_profile_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => permission_profile_from_items(items, None),
+        InitialHistory::Forked(items) => permission_profile_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -280,7 +280,7 @@ fn approval_policy_from_history(
         InitialHistory::Resumed(resumed) => {
             approval_policy_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => approval_policy_from_items(items, None),
+        InitialHistory::Forked(items) => approval_policy_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -314,7 +314,7 @@ fn approvals_reviewer_from_history(
         InitialHistory::Resumed(resumed) => {
             approvals_reviewer_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, None),
+        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -341,7 +341,7 @@ fn cwd_from_history(thread_history: &InitialHistory) -> Option<PathBuf> {
         InitialHistory::Resumed(resumed) => {
             cwd_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => cwd_from_items(items, None),
+        InitialHistory::Forked(items) => cwd_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -375,7 +375,7 @@ fn workspace_roots_from_history(thread_history: &InitialHistory) -> Option<Vec<A
         InitialHistory::Resumed(resumed) => {
             workspace_roots_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => workspace_roots_from_items(items, None),
+        InitialHistory::Forked(items) => workspace_roots_from_items(items, /*thread_id*/ None),
     }
 }
 
