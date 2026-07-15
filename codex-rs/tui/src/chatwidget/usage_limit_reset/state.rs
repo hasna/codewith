@@ -88,20 +88,20 @@ impl ChatWidget {
         self.rate_limit_reset_credits = reset_credits;
 
         match available_count {
-            Some(count) if count > 0 => {
-                if self.announced_rate_limit_reset_available_count != Some(count) {
-                    self.announced_rate_limit_reset_available_count = Some(count);
-                    self.add_info_message(
-                        format!(
-                            "You have {count} {} available. Run /usage to use one.",
-                            reset_label(count)
-                        ),
-                        /*hint*/ None,
-                    );
-                }
+            Some(count) if count <= 0 => {
+                self.announced_rate_limit_reset_available_count = None;
             }
-            Some(_) => self.announced_rate_limit_reset_available_count = None,
-            None => {}
+            Some(count) if self.announced_rate_limit_reset_available_count != Some(count) => {
+                self.announced_rate_limit_reset_available_count = Some(count);
+                self.add_info_message(
+                    format!(
+                        "You have {count} {} available. Run /usage to use one.",
+                        reset_label(count)
+                    ),
+                    /*hint*/ None,
+                );
+            }
+            Some(_) | None => {}
         }
 
         self.refresh_usage_panel_if_active();
