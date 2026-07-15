@@ -32,14 +32,8 @@ jobs:
       - name: Test npm package staging metadata
         run: python3 -m unittest codex-cli/scripts/test_build_npm_package.py
 
-      - name: Test Bazel CI local fallback
-        run: python3 .github/scripts/test_run_bazel_ci.py
-
-      - name: Test Bazel workflow matrix
-        run: python3 .github/scripts/test_bazel_workflow.py
-
-      - name: Test SDK workflow budget
-        run: python3 .github/scripts/test_sdk_workflow.py
+      - name: Test GitHub workflow helpers
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5

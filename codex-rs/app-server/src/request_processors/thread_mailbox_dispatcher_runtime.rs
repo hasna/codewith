@@ -330,7 +330,7 @@ impl ThreadMailboxDispatcherRuntime {
             claim,
             error,
             |_| codex_state::MailboxFailDisposition::Terminal,
-            None,
+            /*retry_at*/ None,
             "failed to mark mailbox message terminal after dispatch miss",
         )
         .await

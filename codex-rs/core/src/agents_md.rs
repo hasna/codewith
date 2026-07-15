@@ -122,7 +122,7 @@ impl<'a> AgentsMdManager<'a> {
             let loaded = match read_instruction_roots(
                 fs,
                 vec![root],
-                None,
+                /*max_total_bytes*/ None,
                 TrimInstructionEntries::Yes,
                 startup_warnings,
                 "Global",
