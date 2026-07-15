@@ -510,22 +510,23 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
     "${bazel_args[@]}"
     "--config=${ci_config}"
   )
-  if [[ "${RUNNER_OS:-}" == "Windows" \
-    && $windows_cross_compile -eq 1 \
-    && $windows_rbe_host_platform -eq 0 ]]; then
-    # Local Windows execution still uses BuildBuddy's remote cache. Resolve the
-    # tenant with the same trust boundary as the generic Bazel wrapper, but do
-    # not select an -rbe config or remote executor.
-    buildbuddy_cache_config="$(
+  if [[ "${RUNNER_OS:-}" != "Windows" \
+    || $windows_cross_compile -ne 1 \
+    || $windows_rbe_host_platform -eq 0 ]]; then
+    # Resolve the tenant with the same trust boundary as the generic Bazel
+    # wrapper. Linux/macOS/v8 CI configs get the -rbe form so they actually
+    # select remote execution platforms; Windows-cross stays cache-only unless
+    # the caller explicitly opts into an RBE host platform.
+    buildbuddy_config="$(
       python3 "$(dirname "${BASH_SOURCE[0]}")/run_bazel_with_buildbuddy.py" \
-        --print-cache-config
+        --print-config-for "--config=${ci_config}"
     )"
-    case "$buildbuddy_cache_config" in
-      buildbuddy-generic | buildbuddy-openai)
-        bazel_run_args+=("--config=${buildbuddy_cache_config}")
+    case "$buildbuddy_config" in
+      buildbuddy-generic | buildbuddy-openai | buildbuddy-generic-rbe | buildbuddy-openai-rbe)
+        bazel_run_args+=("--config=${buildbuddy_config}")
         ;;
       *)
-        echo "Unable to select a cache-only BuildBuddy configuration." >&2
+        echo "Unable to select a BuildBuddy configuration." >&2
         exit 1
         ;;
     esac

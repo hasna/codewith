@@ -167,6 +167,12 @@ def main() -> None:
             raise SystemExit("BuildBuddy key unavailable")
         print(config)
         return
+    if len(sys.argv) == 3 and sys.argv[1] == "--print-config-for":
+        config = remote_config(["build", sys.argv[2]], os.environ)
+        if config is None:
+            raise SystemExit("BuildBuddy key unavailable")
+        print(config)
+        return
 
     config = remote_config(sys.argv[1:], os.environ)
     if config is None:

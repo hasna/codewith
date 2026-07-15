@@ -529,14 +529,22 @@ class RunBazelCiTest(unittest.TestCase):
         self.assertEqual(bazel_args, [])
         self.assertIn("requires a value", result.stderr)
 
-    def test_keyed_linux_configuration_is_unchanged(self) -> None:
+    def test_keyed_linux_uses_buildbuddy_rbe_configuration(self) -> None:
         result, bazel_args = self.run_wrapper(
             runner_os="Linux",
             buildbuddy_api_key="x",
         )
 
         self.assert_success(result)
+        self.assertIn("using keyed Bazel configuration", result.stdout)
         self.assertIn("--config=ci-linux", bazel_args)
+        self.assertIn("--config=buildbuddy-generic-rbe", bazel_args)
+        self.assertTrue(
+            any(
+                arg.startswith("--remote_header=x-buildbuddy-api-key=")
+                for arg in bazel_args
+            )
+        )
         self.assertNotIn("--host_platform=//:local_windows_msvc", bazel_args)
         self.assertNotIn("--host_platform=//:rbe", bazel_args)
 
