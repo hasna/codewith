@@ -7,7 +7,7 @@ expression: popup
   [Usage]
 
 ›    Account         API key
-     Model           gpt-5.5
+     Model           gpt-5.6
      Provider        openai
      Context         26% used · 42K / 128K
      Tokens          42K total · 35K input · 7K output
