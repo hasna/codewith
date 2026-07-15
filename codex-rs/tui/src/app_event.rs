@@ -1319,6 +1319,7 @@ pub(crate) enum AppEvent {
     AuthProfileReloginFinished {
         profile: String,
         result: Result<(), String>,
+        reset_generation: u64,
     },
 
     /// Prompt for creating and logging in a new saved auth profile.
@@ -1329,12 +1330,14 @@ pub(crate) enum AppEvent {
     /// Prompt for naming a new saved auth profile after a provider is selected.
     OpenAuthProfileNamePrompt {
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     },
 
     /// Start creating and logging in a new saved auth profile.
     LoginNewAuthProfile {
         profile: String,
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     },
 
     /// A background new-profile login attempt completed.
@@ -1342,17 +1345,20 @@ pub(crate) enum AppEvent {
         profile: String,
         success: bool,
         error: Option<String>,
+        reset_generation: u64,
     },
 
     /// Rename a saved auth profile.
     RenameAuthProfile {
         old_name: String,
         new_name: String,
+        reset_generation: u64,
     },
 
     /// Delete a saved auth profile.
     DeleteAuthProfile {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Move a saved auth profile within the manually ordered profile list.
@@ -1778,6 +1784,54 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
     },
+}
+
+impl AppEvent {
+    /// Returns the usage-limit recovery generation that owns a profile workflow event.
+    ///
+    /// Every manual profile popup mutation, including popup continuations and background login
+    /// completions, must retain its originating generation so the app can reject it after reset
+    /// recovery starts or advances. `SwitchAuthProfile` keeps its separate reason-aware guard so
+    /// automatic fallback switches remain possible during recovery.
+    pub(crate) fn auth_profile_action_reset_generation(&self) -> Option<u64> {
+        match self {
+            Self::OpenAuthProfileRenamePrompt {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileSettings {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileDeleteConfirm {
+                reset_generation, ..
+            }
+            | Self::ReloginAuthProfile {
+                reset_generation, ..
+            }
+            | Self::AuthProfileReloginFinished {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileLoginPrompt { reset_generation }
+            | Self::OpenAuthProfileNamePrompt {
+                reset_generation, ..
+            }
+            | Self::LoginNewAuthProfile {
+                reset_generation, ..
+            }
+            | Self::AuthProfileLoginCompleted {
+                reset_generation, ..
+            }
+            | Self::RenameAuthProfile {
+                reset_generation, ..
+            }
+            | Self::DeleteAuthProfile {
+                reset_generation, ..
+            }
+            | Self::MoveAuthProfile {
+                reset_generation, ..
+            } => Some(*reset_generation),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

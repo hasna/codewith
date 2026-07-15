@@ -260,7 +260,11 @@ impl ChatWidget {
         }
     }
 
-    pub(crate) fn open_auth_profile_settings_popup(&mut self, profile: String) {
+    pub(crate) fn open_auth_profile_settings_popup(
+        &mut self,
+        profile: String,
+        reset_generation: u64,
+    ) {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Profile settings".bold()));
         header.push(Line::from(
@@ -269,7 +273,6 @@ impl ChatWidget {
 
         let rename_profile = profile.clone();
         let delete_profile = profile.clone();
-        let reset_generation = self.rate_limit_reset_generation;
         let rename_reset_generation = reset_generation;
         let delete_reset_generation = reset_generation;
 
@@ -312,7 +315,11 @@ impl ChatWidget {
         });
     }
 
-    pub(crate) fn open_auth_profile_rename_prompt(&mut self, profile: String) {
+    pub(crate) fn open_auth_profile_rename_prompt(
+        &mut self,
+        profile: String,
+        reset_generation: u64,
+    ) {
         let tx = self.app_event_tx.clone();
         let view = CustomPromptView::new(
             "Rename profile".to_string(),
@@ -329,13 +336,14 @@ impl ChatWidget {
                 tx.send(AppEvent::RenameAuthProfile {
                     old_name: profile.clone(),
                     new_name,
+                    reset_generation,
                 });
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
     }
 
-    pub(crate) fn open_auth_profile_login_prompt(&mut self) {
+    pub(crate) fn open_auth_profile_login_prompt(&mut self, reset_generation: u64) {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Choose subscription".bold()));
         header.push(Line::from(
@@ -345,7 +353,7 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
             header: Box::new(header),
-            items: auth_profile_subscription_provider_items(),
+            items: auth_profile_subscription_provider_items(reset_generation),
             initial_selected_idx: Some(0),
             ..Default::default()
         });
@@ -354,6 +362,7 @@ impl ChatWidget {
     pub(crate) fn open_auth_profile_name_prompt(
         &mut self,
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     ) {
         let tx = self.app_event_tx.clone();
         let provider_label = subscription_provider.label();
@@ -366,6 +375,7 @@ impl ChatWidget {
                 tx.send(AppEvent::LoginNewAuthProfile {
                     profile: profile.trim().to_string(),
                     subscription_provider,
+                    reset_generation,
                 });
             }),
         );
@@ -474,7 +484,11 @@ impl ChatWidget {
             .insert(profile, Instant::now());
     }
 
-    pub(crate) fn open_auth_profile_delete_confirm(&mut self, profile: String) {
+    pub(crate) fn open_auth_profile_delete_confirm(
+        &mut self,
+        profile: String,
+        reset_generation: u64,
+    ) {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Delete profile".bold()));
         header.push(Line::from(
@@ -486,6 +500,7 @@ impl ChatWidget {
         let delete_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::DeleteAuthProfile {
                 profile: delete_profile.clone(),
+                reset_generation,
             });
         })];
 
@@ -515,6 +530,7 @@ impl ChatWidget {
         &mut self,
         profile: String,
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     ) {
         if let Err(err) = codex_login::validate_auth_profile_name(&profile) {
             self.add_error_message(format!("Invalid auth profile name: {err}"));
@@ -566,6 +582,7 @@ impl ChatWidget {
                 profile,
                 success: true,
                 error: None,
+                reset_generation,
             });
             return;
         }
@@ -629,6 +646,7 @@ impl ChatWidget {
                 profile,
                 success: error.is_none(),
                 error,
+                reset_generation,
             });
         });
     }
@@ -656,7 +674,7 @@ impl ChatWidget {
     }
 }
 
-fn auth_profile_subscription_provider_items() -> Vec<SelectionItem> {
+fn auth_profile_subscription_provider_items(reset_generation: u64) -> Vec<SelectionItem> {
     [
         (
             AuthProfileSubscriptionProvider::ChatGpt,
@@ -679,6 +697,7 @@ fn auth_profile_subscription_provider_items() -> Vec<SelectionItem> {
         let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::OpenAuthProfileNamePrompt {
                 subscription_provider,
+                reset_generation,
             });
         })];
         SelectionItem {

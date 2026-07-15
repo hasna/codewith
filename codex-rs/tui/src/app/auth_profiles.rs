@@ -3,7 +3,7 @@ use super::*;
 const AUTH_PROFILE_RELOGIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10 * 60);
 
 impl App {
-    pub(super) fn relogin_auth_profile(&mut self, profile: String) {
+    pub(super) fn relogin_auth_profile(&mut self, profile: String, reset_generation: u64) {
         match codex_login::load_auth_profile_metadata(&self.config.codex_home, profile.as_str()) {
             Ok(metadata)
                 if metadata.subscription_provider
@@ -110,7 +110,11 @@ impl App {
                         Err("Login timed out".to_string())
                     }
                 };
-            app_event_tx.send(AppEvent::AuthProfileReloginFinished { profile, result });
+            app_event_tx.send(AppEvent::AuthProfileReloginFinished {
+                profile,
+                result,
+                reset_generation,
+            });
         });
     }
 

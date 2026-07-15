@@ -4568,16 +4568,80 @@ async fn queued_manual_profile_switch_is_rejected_after_automatic_reset_takes_ow
     assert!(op_rx.try_recv().is_err());
 }
 
+fn profile_popup_workflow_events(reset_generation: u64) -> Vec<AppEvent> {
+    let profile = "work".to_string();
+    vec![
+        AppEvent::OpenAuthProfileRenamePrompt {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileSettings {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileDeleteConfirm {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::ReloginAuthProfile {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::AuthProfileReloginFinished {
+            profile: profile.clone(),
+            result: Ok(()),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileLoginPrompt { reset_generation },
+        AppEvent::OpenAuthProfileNamePrompt {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
+        AppEvent::LoginNewAuthProfile {
+            profile: profile.clone(),
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
+        AppEvent::AuthProfileLoginCompleted {
+            profile: profile.clone(),
+            success: true,
+            error: None,
+            reset_generation,
+        },
+        AppEvent::RenameAuthProfile {
+            old_name: profile.clone(),
+            new_name: "renamed".to_string(),
+            reset_generation,
+        },
+        AppEvent::DeleteAuthProfile {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::MoveAuthProfile {
+            profile,
+            direction: codex_login::AuthProfileMoveDirection::Up,
+            reset_generation,
+        },
+    ]
+}
+
 #[tokio::test]
 async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ownership() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let initial_generation = 0;
-    assert!(app.auth_profile_popup_action_is_current(initial_generation));
+    let initial_events = profile_popup_workflow_events(initial_generation);
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| app.auth_profile_event_is_current(event))
+    );
     while app_event_rx.try_recv().is_ok() {}
 
     app.chat_widget.start_rate_limit_reset_picker();
     assert!(
-        !app.auth_profile_popup_action_is_current(initial_generation),
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
         "manual reset ownership must block every profile popup action"
     );
     app.chat_widget
@@ -4600,8 +4664,11 @@ async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ow
             _ => None,
         })
         .expect("automatic reset refresh");
+    let automatic_events = profile_popup_workflow_events(automatic_generation);
     assert!(
-        !app.auth_profile_popup_action_is_current(automatic_generation),
+        automatic_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
         "automatic reset ownership must block every profile popup action"
     );
     app.chat_widget.finish_usage_limit_auto_reset_check(
@@ -4609,8 +4676,24 @@ async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ow
         Err("recovery completed".to_string()),
     );
     assert!(
-        !app.auth_profile_popup_action_is_current(initial_generation),
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
         "an action queued before automatic recovery must remain stale after completion"
+    );
+}
+
+#[test]
+fn every_profile_popup_workflow_event_exposes_its_originating_reset_generation() {
+    let reset_generation = 29;
+    let events = profile_popup_workflow_events(reset_generation);
+
+    assert_eq!(
+        events
+            .iter()
+            .map(AppEvent::auth_profile_action_reset_generation)
+            .collect::<Vec<_>>(),
+        vec![Some(reset_generation); events.len()]
     );
 }
 

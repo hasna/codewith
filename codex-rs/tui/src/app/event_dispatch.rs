@@ -50,7 +50,7 @@ impl App {
             .await;
     }
 
-    pub(super) fn auth_profile_popup_action_is_current(&mut self, reset_generation: u64) -> bool {
+    pub(super) fn auth_profile_action_is_current(&mut self, reset_generation: u64) -> bool {
         if self
             .chat_widget
             .is_rate_limit_reset_generation_current(reset_generation)
@@ -64,6 +64,12 @@ impl App {
         self.chat_widget
             .add_error_message("Profile action expired during usage-limit recovery.".to_string());
         false
+    }
+
+    pub(super) fn auth_profile_event_is_current(&mut self, event: &AppEvent) -> bool {
+        event
+            .auth_profile_action_reset_generation()
+            .is_none_or(|reset_generation| self.auth_profile_action_is_current(reset_generation))
     }
 
     fn active_config_profile(&self) -> Option<&str> {
@@ -149,6 +155,9 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if !self.auth_profile_event_is_current(&event) {
+            return Ok(AppRunControl::Continue);
+        }
         match event {
             AppEvent::NewSession => {
                 self.start_fresh_session_with_summary_hint(
@@ -1610,76 +1619,85 @@ impl App {
                 profile,
                 reset_generation,
             } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.chat_widget.open_auth_profile_rename_prompt(profile);
-                }
+                self.chat_widget
+                    .open_auth_profile_rename_prompt(profile, reset_generation);
             }
             AppEvent::OpenAuthProfileSettings {
                 profile,
                 reset_generation,
             } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.chat_widget.open_auth_profile_settings_popup(profile);
-                }
+                self.chat_widget
+                    .open_auth_profile_settings_popup(profile, reset_generation);
             }
             AppEvent::OpenAuthProfileDeleteConfirm {
                 profile,
                 reset_generation,
             } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.chat_widget.open_auth_profile_delete_confirm(profile);
-                }
+                self.chat_widget
+                    .open_auth_profile_delete_confirm(profile, reset_generation);
             }
             AppEvent::ReloginAuthProfile {
                 profile,
                 reset_generation,
             } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.relogin_auth_profile(profile);
-                }
+                self.relogin_auth_profile(profile, reset_generation);
             }
-            AppEvent::AuthProfileReloginFinished { profile, result } => {
+            AppEvent::AuthProfileReloginFinished {
+                profile,
+                result,
+                reset_generation: _,
+            } => {
                 self.finish_auth_profile_relogin(profile, result);
             }
             AppEvent::OpenAuthProfileLoginPrompt { reset_generation } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.chat_widget.open_auth_profile_login_prompt();
-                }
+                self.chat_widget
+                    .open_auth_profile_login_prompt(reset_generation);
             }
             AppEvent::OpenAuthProfileNamePrompt {
                 subscription_provider,
+                reset_generation,
             } => {
                 self.chat_widget
-                    .open_auth_profile_name_prompt(subscription_provider);
+                    .open_auth_profile_name_prompt(subscription_provider, reset_generation);
             }
             AppEvent::LoginNewAuthProfile {
                 profile,
                 subscription_provider,
+                reset_generation,
             } => {
-                self.chat_widget
-                    .start_auth_profile_login(profile, subscription_provider);
+                self.chat_widget.start_auth_profile_login(
+                    profile,
+                    subscription_provider,
+                    reset_generation,
+                );
             }
             AppEvent::AuthProfileLoginCompleted {
                 profile,
                 success,
                 error,
+                reset_generation: _,
             } => {
                 self.complete_auth_profile_login(profile, success, error);
             }
-            AppEvent::RenameAuthProfile { old_name, new_name } => {
+            AppEvent::RenameAuthProfile {
+                old_name,
+                new_name,
+                reset_generation: _,
+            } => {
                 self.rename_auth_profile(old_name, new_name);
             }
-            AppEvent::DeleteAuthProfile { profile } => {
+            AppEvent::DeleteAuthProfile {
+                profile,
+                reset_generation: _,
+            } => {
                 self.delete_auth_profile(profile);
             }
             AppEvent::MoveAuthProfile {
                 profile,
                 direction,
-                reset_generation,
+                reset_generation: _,
             } => {
-                if self.auth_profile_popup_action_is_current(reset_generation) {
-                    self.move_auth_profile(profile, direction);
-                }
+                self.move_auth_profile(profile, direction);
             }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);

@@ -15,6 +15,7 @@ mod action_boundary;
 mod automatic;
 mod coordination;
 mod manual;
+mod profile_workflows;
 
 fn exact_reset_summary() -> RateLimitResetCreditsSummary {
     RateLimitResetCreditsSummary {
