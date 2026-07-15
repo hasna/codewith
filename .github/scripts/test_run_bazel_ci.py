@@ -442,19 +442,19 @@ class RunBazelCiTest(unittest.TestCase):
                 self.assertEqual(bazel_args, [])
                 self.assertIn("RBE-compatible execution platform", result.stderr)
 
-    def test_rbe_execution_platform_requires_rbe_host_and_endpoint(self) -> None:
+    def test_incomplete_rbe_execution_topologies_are_rejected(self) -> None:
         env = {"CODEX_BAZEL_WINDOWS_PATH": r"C:\bazel;C:\Windows\System32"}
         for topology_args, expected_error in (
             (
                 ("--extra_execution_platforms=//:rbe",),
-                "requires a final RBE host platform override",
+                "requires a complete RBE topology",
             ),
             (
                 (
                     "--config=buildbuddy-generic-rbe",
                     "--extra_execution_platforms=//:rbe",
                 ),
-                "requires a final RBE host platform override",
+                "requires a complete RBE topology",
             ),
             (
                 (
@@ -463,7 +463,7 @@ class RunBazelCiTest(unittest.TestCase):
                     "--remote_executor=grpcs://remote.example.test",
                     "--extra_execution_platforms=//:rbe",
                 ),
-                "requires a final RBE host platform override",
+                "requires a complete RBE topology",
             ),
             (
                 (
