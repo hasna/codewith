@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -18,6 +21,75 @@ UPSTREAM_OR_NON_MACOS_IF = "${{ github.repository == 'openai/codex' || startsWit
 
 
 class BazelWorkflowTest(unittest.TestCase):
+    def test_linux_bazel_test_setup_enables_unprivileged_user_namespaces(self) -> None:
+        workflow = yaml.safe_load(BAZEL_WORKFLOW.read_text(encoding="utf-8"))
+        namespace_steps = [
+            (job_name, step)
+            for job_name, job in workflow["jobs"].items()
+            for step in job.get("steps", [])
+            if "kernel.unprivileged_userns_clone" in str(step.get("run", ""))
+            or "kernel.apparmor_restrict_unprivileged_userns"
+            in str(step.get("run", ""))
+        ]
+
+        self.assertEqual(["test"], [job_name for job_name, _ in namespace_steps])
+        step = namespace_steps[0][1]
+        self.assertEqual("Enable unprivileged user namespaces (Linux)", step.get("name"))
+
+        self.assertEqual("runner.os == 'Linux'", step.get("if"))
+        self.assertEqual("bash", step.get("shell"))
+        run = step.get("run", "")
+        self.assertIn("sudo sysctl -w kernel.unprivileged_userns_clone=1", run)
+        self.assertIn(
+            "[[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]",
+            run,
+        )
+        self.assertNotIn("sysctl -a", run)
+        self.assertIn(
+            "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+            run,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            apparmor_setting = temp_path / "apparmor_restrict_unprivileged_userns"
+            apparmor_setting.touch()
+            sudo_log = temp_path / "sudo.log"
+            mock_sudo = temp_path / "sudo"
+            mock_sudo.write_text(
+                '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$MOCK_SUDO_LOG"\n',
+                encoding="utf-8",
+            )
+            mock_sudo.chmod(0o755)
+            runnable = run.replace(
+                "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+                str(apparmor_setting),
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{temp_path}:{env['PATH']}"
+            env["MOCK_SUDO_LOG"] = str(sudo_log)
+            subprocess.run(
+                ["bash", "-eo", "pipefail", "-c", runnable],
+                check=True,
+                env=env,
+            )
+
+            self.assertEqual(
+                [
+                    "sysctl -w kernel.unprivileged_userns_clone=1",
+                    "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+                ],
+                sudo_log.read_text(encoding="utf-8").splitlines(),
+            )
+
+        disk_cleanup_steps = [
+            step
+            for step in workflow["jobs"]["test"]["steps"]
+            if step.get("name") == "Free Linux runner disk for Bazel tests"
+        ]
+        self.assertEqual(1, len(disk_cleanup_steps))
+        self.assertEqual("runner.os == 'Linux'", disk_cleanup_steps[0].get("if"))
+
     def test_host_tool_aquery_runs_once_on_the_primary_linux_leg(self) -> None:
         workflow = yaml.safe_load(BAZEL_WORKFLOW.read_text(encoding="utf-8"))
         steps = workflow["jobs"]["test"]["steps"]
