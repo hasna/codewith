@@ -313,7 +313,7 @@ async fn v2_recovers_from_mixed_stream_and_overflow_within_request_budget() -> R
     .await?;
     let codex = harness.test().codex.clone();
     codex
-        .inject_response_items(long_injected_history(12))
+        .inject_response_items(long_injected_history(/*item_count*/ 12))
         .await?;
 
     let responses_mock = responses::mount_response_sequence(
@@ -433,7 +433,7 @@ async fn v1_recovers_from_transport_and_overflow_within_request_budget() -> Resu
     .await?;
     let codex = harness.test().codex.clone();
     codex
-        .inject_response_items(long_injected_history(12))
+        .inject_response_items(long_injected_history(/*item_count*/ 12))
         .await?;
 
     let compact_mock = responses::mount_compact_response_sequence(
