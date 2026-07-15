@@ -10654,11 +10654,8 @@
             ]
           },
           "expectedAccountIdentityFingerprint": {
-            "description": "Opaque account fingerprint from the read that selected this reset credit.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "description": "Required opaque account fingerprint from the read that selected this reset credit.",
+            "type": "string"
           },
           "idempotencyKey": {
             "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
@@ -10666,6 +10663,7 @@
           }
         },
         "required": [
+          "expectedAccountIdentityFingerprint",
           "idempotencyKey"
         ],
         "title": "ConsumeAccountRateLimitResetCreditParams",

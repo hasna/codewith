@@ -637,7 +637,7 @@ pub(crate) struct ChatWidget {
     pending_post_reset_refresh: Option<RateLimitResetAttempt>,
     automatic_reset_opted_out_generation: Option<u64>,
     usage_limit_auto_reset_key: Option<String>,
-    auth_profile_credential_mutations_in_flight: HashSet<String>,
+    auth_profile_credential_mutations_in_flight: HashMap<String, usize>,
     next_status_refresh_request_id: u64,
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,

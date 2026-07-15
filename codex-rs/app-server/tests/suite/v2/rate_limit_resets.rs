@@ -1,6 +1,9 @@
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
+use app_test_support::ChatGptIdTokenClaims;
 use app_test_support::TestAppServer;
+use app_test_support::encode_id_token;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditOutcome;
@@ -170,6 +173,59 @@ async fn rate_limit_read_preserves_count_only_summary_when_reset_details_fail() 
             credits: None,
         })
     );
+    server.verify().await;
+    Ok(())
+}
+
+#[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
+#[tokio::test]
+async fn rate_limit_read_on_overridden_backend_suppresses_reset_capabilities() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-token")
+            .account_id("account-123")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, Some(3)).await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut mcp = TestAppServer::new_with_env_and_plugin_startup_tasks(
+        codex_home.path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+            ("OPENAI_API_KEY", None),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let request_id = mcp.send_get_account_rate_limits_request().await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let received: GetAccountRateLimitsResponse = to_response(response)?;
+
+    assert_eq!(
+        received
+            .rate_limits
+            .primary
+            .as_ref()
+            .map(|window| window.used_percent),
+        Some(100)
+    );
+    assert_eq!(received.account_identity_fingerprint, None);
+    assert_eq!(received.rate_limit_reset_credits, None);
     server.verify().await;
     Ok(())
 }
@@ -345,8 +401,8 @@ async fn consume_rate_limit_reset_credit_rejects_invalid_auth_profile_name() -> 
 
 #[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
 #[tokio::test]
-async fn consume_rate_limit_reset_credit_rejects_changed_account_without_backend_post() -> Result<()>
-{
+async fn consume_rate_limit_reset_credit_requires_account_binding_without_backend_post()
+-> Result<()> {
     let codex_home = TempDir::new()?;
     write_chatgpt_auth(
         codex_home.path(),
@@ -355,9 +411,102 @@ async fn consume_rate_limit_reset_credit_rejects_changed_account_without_backend
             .plan_type("pro"),
         AuthCredentialsStoreMode::File,
     )?;
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut mcp = test_app_server(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let request_id = mcp
+        .send_consume_account_rate_limit_reset_credit_request_without_account_binding("redeem-123")
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "Invalid request: missing field `expectedAccountIdentityFingerprint`"
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
+#[tokio::test]
+async fn consume_rate_limit_reset_credit_rejects_overridden_chatgpt_backend_without_post()
+-> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("current-token")
+            .account_id("current-account")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    Mock::given(method("POST"))
+        .and(path("/api/codex/rate-limit-reset-credits/consume"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut mcp = TestAppServer::new_with_env_and_plugin_startup_tasks(
+        codex_home.path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+            ("OPENAI_API_KEY", None),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let request_id = mcp
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("redeem-123").with_expected_account("current-account"),
+        )
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "usage limit resets require the canonical ChatGPT backend"
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[cfg_attr(target_os = "windows", ignore = "covered by Linux and macOS CI")]
+#[tokio::test]
+async fn consume_rate_limit_reset_credit_rejects_stale_binding_after_account_a_to_b_login()
+-> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("account-a-token")
+            .account_id("account-a")
+            .plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, Some(1)).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .respond_with(ResponseTemplate::new(500))
@@ -367,10 +516,33 @@ async fn consume_rate_limit_reset_credit_rejects_changed_account_without_backend
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let account_a_fingerprint = read_account_identity(&mut mcp, None).await?;
+    let account_b_token = encode_id_token(
+        &ChatGptIdTokenClaims::new()
+            .email("account-b@example.com")
+            .plan_type("pro")
+            .chatgpt_account_id("account-b"),
+    )?;
+
+    let login_request_id = mcp
+        .send_chatgpt_auth_tokens_login_request(
+            account_b_token,
+            "account-b".to_string(),
+            Some("pro".to_string()),
+        )
+        .await?;
+    let login_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(login_request_id)),
+    )
+    .await??;
+    let login: LoginAccountResponse = to_response(login_response)?;
+    assert_eq!(login, LoginAccountResponse::ChatgptAuthTokens {});
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
-            consume_reset_params("redeem-123").with_expected_account("previous-account"),
+            consume_reset_params("redeem-123")
+                .with_expected_fingerprint(account_a_fingerprint.clone()),
         )
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -379,14 +551,15 @@ async fn consume_rate_limit_reset_credit_rejects_changed_account_without_backend
     )
     .await??;
     let received: ConsumeAccountRateLimitResetCreditResponse = to_response(response)?;
-    assert_opaque_account_identity(&received.account_identity_fingerprint, "current-account");
-    let account_identity_fingerprint = received.account_identity_fingerprint.clone();
+    assert_opaque_account_identity(&received.account_identity_fingerprint, "account-b");
+    assert_ne!(received.account_identity_fingerprint, account_a_fingerprint);
+    let account_b_fingerprint = received.account_identity_fingerprint.clone();
 
     assert_eq!(
         received,
         ConsumeAccountRateLimitResetCreditResponse {
             outcome: ConsumeAccountRateLimitResetCreditOutcome::AccountChanged,
-            account_identity_fingerprint,
+            account_identity_fingerprint: account_b_fingerprint,
         }
     );
     server.verify().await;
@@ -463,7 +636,7 @@ async fn consume_rate_limit_reset_credit_uses_named_auth_profile_and_selected_cr
     let mut params = consume_reset_params("redeem-123")
         .with_credit_id("credit-123")
         .with_auth_profile(Some("work"));
-    params.expected_account_identity_fingerprint = Some(account_identity_fingerprint);
+    params.expected_account_identity_fingerprint = account_identity_fingerprint;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(params)
@@ -511,6 +684,7 @@ async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_p
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, None).await;
 
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
@@ -535,10 +709,13 @@ async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_p
     )
     .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let account_identity_fingerprint = read_account_identity(&mut mcp, Some(None)).await?;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
-            consume_reset_params("root-redeem").with_auth_profile(None),
+            consume_reset_params("root-redeem")
+                .with_auth_profile(None)
+                .with_expected_fingerprint(account_identity_fingerprint),
         )
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -570,6 +747,7 @@ async fn consume_rate_limit_reset_credit_maps_no_credit_outcome() -> Result<()> 
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -580,9 +758,13 @@ async fn consume_rate_limit_reset_credit_maps_no_credit_outcome() -> Result<()> 
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
 
     let request_id = mcp
-        .send_consume_account_rate_limit_reset_credit_request(consume_reset_params("redeem-123"))
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("redeem-123")
+                .with_expected_fingerprint(account_identity_fingerprint),
+        )
         .await?;
     let response: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -613,6 +795,7 @@ async fn consume_rate_limit_reset_credit_surfaces_backend_failure() -> Result<()
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -621,9 +804,13 @@ async fn consume_rate_limit_reset_credit_surfaces_backend_failure() -> Result<()
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
 
     let request_id = mcp
-        .send_consume_account_rate_limit_reset_credit_request(consume_reset_params("redeem-123"))
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("redeem-123")
+                .with_expected_fingerprint(account_identity_fingerprint),
+        )
         .await?;
     let error: JSONRPCError = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -655,6 +842,7 @@ async fn consume_rate_limit_reset_credit_timeout_releases_later_request() -> Res
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    mount_usage_response(&server, None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .and(wiremock::matchers::body_json(json!({
@@ -691,9 +879,13 @@ async fn consume_rate_limit_reset_credit_timeout_releases_later_request() -> Res
     )
     .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
 
     let request_id = mcp
-        .send_consume_account_rate_limit_reset_credit_request(consume_reset_params("slow-redeem"))
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("slow-redeem")
+                .with_expected_fingerprint(account_identity_fingerprint.clone()),
+        )
         .await?;
     let error: JSONRPCError = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -704,7 +896,10 @@ async fn consume_rate_limit_reset_credit_timeout_releases_later_request() -> Res
     assert_eq!(error.error.message, "usage limit reset request timed out");
 
     let request_id = mcp
-        .send_consume_account_rate_limit_reset_credit_request(consume_reset_params("fast-redeem"))
+        .send_consume_account_rate_limit_reset_credit_request(
+            consume_reset_params("fast-redeem")
+                .with_expected_fingerprint(account_identity_fingerprint),
+        )
         .await?;
     let response: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -725,7 +920,7 @@ fn consume_reset_params(idempotency_key: &str) -> ConsumeAccountRateLimitResetCr
         idempotency_key: idempotency_key.to_string(),
         credit_id: None,
         auth_profile: None,
-        expected_account_identity_fingerprint: None,
+        expected_account_identity_fingerprint: "opaque:test-binding".to_string(),
     }
 }
 
@@ -739,6 +934,7 @@ trait ConsumeResetParamsExt {
     fn with_credit_id(self, credit_id: &str) -> Self;
     fn with_auth_profile(self, profile: Option<&str>) -> Self;
     fn with_expected_account(self, account_id: &str) -> Self;
+    fn with_expected_fingerprint(self, fingerprint: String) -> Self;
 }
 
 impl ConsumeResetParamsExt for ConsumeAccountRateLimitResetCreditParams {
@@ -754,9 +950,35 @@ impl ConsumeResetParamsExt for ConsumeAccountRateLimitResetCreditParams {
 
     fn with_expected_account(mut self, account_id: &str) -> Self {
         self.expected_account_identity_fingerprint =
-            Some(codex_login::account_identity_fingerprint(account_id));
+            codex_login::account_identity_fingerprint(account_id);
         self
     }
+
+    fn with_expected_fingerprint(mut self, fingerprint: String) -> Self {
+        self.expected_account_identity_fingerprint = fingerprint;
+        self
+    }
+}
+
+async fn read_account_identity(
+    mcp: &mut TestAppServer,
+    auth_profile: Option<Option<String>>,
+) -> Result<String> {
+    let request_id = mcp
+        .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
+            auth_profile,
+            ..Default::default()
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let rate_limits: GetAccountRateLimitsResponse = to_response(response)?;
+    rate_limits
+        .account_identity_fingerprint
+        .context("authenticated account fingerprint missing from rate-limit response")
 }
 
 async fn login_with_api_key(mcp: &mut TestAppServer, api_key: &str) -> Result<()> {

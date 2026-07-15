@@ -155,6 +155,49 @@ async fn auto_reset_requires_canonical_provider_id_and_effective_endpoint() {
 }
 
 #[tokio::test]
+async fn built_in_openai_default_without_a_resolved_model_url_can_reset() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.usage_limit.auto_reset_enabled = true;
+    chat.config.model_provider_id = codex_model_provider_info::OPENAI_PROVIDER_ID.to_string();
+    chat.config.model_provider =
+        codex_model_provider_info::ModelProviderInfo::create_openai_provider(
+            /*base_url*/ None,
+        );
+    chat.runtime_model_provider_base_url = None;
+
+    assert_eq!(
+        chat.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+}
+
+#[tokio::test]
+async fn explicit_model_or_chatgpt_backend_override_blocks_reset() {
+    let (mut model_override, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    model_override.config.usage_limit.auto_reset_enabled = true;
+    model_override.config.model_provider_id =
+        codex_model_provider_info::OPENAI_PROVIDER_ID.to_string();
+    model_override.config.model_provider =
+        codex_model_provider_info::ModelProviderInfo::create_openai_provider(Some(
+            "https://example.test/v1".to_string(),
+        ));
+    model_override.runtime_model_provider_base_url = None;
+    assert_eq!(
+        model_override.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Unavailable
+    );
+
+    let (mut backend_override, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    backend_override.config.usage_limit.auto_reset_enabled = true;
+    set_canonical_reset_provider(&mut backend_override);
+    backend_override.config.chatgpt_base_url = "https://example.test/backend-api".to_string();
+    assert_eq!(
+        backend_override.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Unavailable
+    );
+}
+
+#[tokio::test]
 async fn dismissed_manual_selection_cannot_spend_but_a_new_selection_can() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
@@ -249,6 +292,46 @@ async fn selecting_a_profile_with_relogin_in_flight_blocks_reset() {
     assert!(chat.selected_auth_profile_credential_mutation_in_flight());
     chat.start_rate_limit_reset_picker();
     assert!(chat.pending_rate_limit_reset_picker.is_none());
+}
+
+#[tokio::test]
+async fn overlapping_relogins_remain_blocking_until_every_attempt_finishes() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("work".to_string());
+
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.finish_selected_auth_profile_credential_mutation(
+        "work", /*credentials_changed*/ false,
+    );
+    assert!(chat.selected_auth_profile_credential_mutation_in_flight());
+
+    chat.finish_selected_auth_profile_credential_mutation(
+        "work", /*credentials_changed*/ false,
+    );
+    assert!(!chat.selected_auth_profile_credential_mutation_in_flight());
+}
+
+#[tokio::test]
+async fn stale_cancel_cannot_dismiss_a_newer_manual_reset_selection() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.rate_limit_reset_generation = 2;
+    chat.on_rate_limit_account_identity(Some("sha256:account-b".to_string()));
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.open_rate_limit_reset_confirm();
+    assert!(chat.manual_usage_limit_reset_is_active());
+
+    chat.cancel_manual_rate_limit_reset_selection(/*generation*/ 1);
+    assert!(chat.manual_usage_limit_reset_is_active());
+    assert_eq!(
+        chat.manual_rate_limit_reset_authority
+            .as_ref()
+            .map(|authority| authority.generation),
+        Some(2)
+    );
+
+    chat.cancel_manual_rate_limit_reset_selection(/*generation*/ 2);
+    assert!(!chat.manual_usage_limit_reset_is_active());
 }
 
 #[tokio::test]

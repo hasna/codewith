@@ -438,9 +438,8 @@ pub struct ConsumeAccountRateLimitResetCreditParams {
     )]
     #[ts(optional = nullable, type = "string | null")]
     pub auth_profile: Option<Option<String>>,
-    /// Opaque account fingerprint from the read that selected this reset credit.
-    #[ts(optional = nullable)]
-    pub expected_account_identity_fingerprint: Option<String>,
+    /// Required opaque account fingerprint from the read that selected this reset credit.
+    pub expected_account_identity_fingerprint: String,
 }
 
 impl Serialize for ConsumeAccountRateLimitResetCreditParams {
@@ -455,9 +454,7 @@ impl Serialize for ConsumeAccountRateLimitResetCreditParams {
         if self.auth_profile.is_some() {
             len += 1;
         }
-        if self.expected_account_identity_fingerprint.is_some() {
-            len += 1;
-        }
+        len += 1;
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry("idempotencyKey", &self.idempotency_key)?;
         if let Some(credit_id) = &self.credit_id {
@@ -466,14 +463,10 @@ impl Serialize for ConsumeAccountRateLimitResetCreditParams {
         if let Some(auth_profile) = &self.auth_profile {
             map.serialize_entry("authProfile", auth_profile)?;
         }
-        if let Some(expected_account_identity_fingerprint) =
-            &self.expected_account_identity_fingerprint
-        {
-            map.serialize_entry(
-                "expectedAccountIdentityFingerprint",
-                expected_account_identity_fingerprint,
-            )?;
-        }
+        map.serialize_entry(
+            "expectedAccountIdentityFingerprint",
+            &self.expected_account_identity_fingerprint,
+        )?;
         map.end()
     }
 }

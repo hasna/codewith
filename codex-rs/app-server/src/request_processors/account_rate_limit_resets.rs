@@ -14,12 +14,36 @@ use codex_backend_client::ConsumeRateLimitResetCreditCode;
 use codex_backend_client::RateLimitResetCreditDetails as BackendRateLimitResetCreditDetails;
 use codex_backend_client::RateLimitResetCreditsDetails as BackendRateLimitResetCreditsDetails;
 use codex_backend_client::RateLimitResetCreditsSummary as BackendRateLimitResetCreditsSummary;
+use codex_model_provider_info::provider_base_url_is_loopback;
+use codex_model_provider_info::provider_base_url_matches;
 use tokio::time::Duration;
 
+const CHATGPT_BACKEND_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 10);
 const ACCOUNT_RATE_LIMIT_RESET_DETAILS_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 5);
 const ACCOUNT_RATE_LIMIT_RESET_CONSUME_TIMEOUT_MS_ENV_VAR: &str =
     "CODEX_TEST_ACCOUNT_RATE_LIMIT_RESET_TIMEOUT_MS";
+pub(super) fn ensure_canonical_backend(
+    base_url: &str,
+    allow_loopback_for_tests: bool,
+) -> Result<(), JSONRPCErrorError> {
+    if backend_supports_usage_resets(base_url, allow_loopback_for_tests) {
+        return Ok(());
+    }
+    Err(invalid_request(
+        "usage limit resets require the canonical ChatGPT backend",
+    ))
+}
+
+pub(super) fn backend_supports_usage_resets(
+    base_url: &str,
+    allow_loopback_for_tests: bool,
+) -> bool {
+    provider_base_url_matches(base_url, CHATGPT_BACKEND_BASE_URL)
+        || (cfg!(debug_assertions)
+            && allow_loopback_for_tests
+            && provider_base_url_is_loopback(base_url))
+}
 
 pub(super) fn validated_idempotency_key(value: &str) -> Result<&str, JSONRPCErrorError> {
     let value = value.trim();
@@ -226,5 +250,23 @@ mod tests {
     fn rejects_empty_reset_identifiers() {
         assert!(validated_idempotency_key(" ").is_err());
         assert!(validated_credit_id(Some(" ")).is_err());
+    }
+
+    #[test]
+    fn accepts_only_the_canonical_backend_without_the_test_escape() {
+        assert!(
+            ensure_canonical_backend(
+                "https://chatgpt.com/backend-api/",
+                /*allow_loopback_for_tests*/ false,
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_canonical_backend(
+                "https://example.test/backend-api",
+                /*allow_loopback_for_tests*/ false,
+            )
+            .is_err()
+        );
     }
 }

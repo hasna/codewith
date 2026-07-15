@@ -457,6 +457,18 @@ impl TestAppServer {
             .await
     }
 
+    /// Sends a reset-credit request that intentionally omits the mandatory account binding.
+    pub async fn send_consume_account_rate_limit_reset_credit_request_without_account_binding(
+        &mut self,
+        idempotency_key: &str,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "account/rateLimitResetCredit/consume",
+            Some(serde_json::json!({ "idempotencyKey": idempotency_key })),
+        )
+        .await
+    }
+
     /// Send an `account/sendAddCreditsNudgeEmail` JSON-RPC request.
     pub async fn send_add_credits_nudge_email_request(
         &mut self,

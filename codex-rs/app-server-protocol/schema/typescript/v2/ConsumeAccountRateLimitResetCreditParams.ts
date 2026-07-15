@@ -19,6 +19,6 @@ creditId?: string | null,
  */
 authProfile?: string | null,
 /**
- * Opaque account fingerprint from the read that selected this reset credit.
+ * Required opaque account fingerprint from the read that selected this reset credit.
  */
-expectedAccountIdentityFingerprint?: string | null, };
+expectedAccountIdentityFingerprint: string, };

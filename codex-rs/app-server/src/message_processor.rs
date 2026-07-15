@@ -423,6 +423,8 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            cfg!(debug_assertions)
+                && matches!(plugin_startup_tasks, crate::PluginStartupTasks::Skip),
         );
         let active_session_processor = ActiveSessionRequestProcessor::new(
             Arc::clone(&thread_manager),

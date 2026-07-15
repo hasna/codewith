@@ -2580,7 +2580,8 @@ Field notes:
 - `idempotencyKey` is required and must be non-empty; reuse it only when retrying the same logical reset attempt.
 - `authProfile` follows `account/rateLimits/read`: omit it for the selected auth profile, set a profile name, or set `null` for root auth.
 - `creditId` is optional; when omitted, the backend chooses an available reset credit.
-- `expectedAccountIdentityFingerprint` binds the mutation to the account resolved by the preceding read. If it no longer matches, the app-server returns `accountChanged` without sending the consume request to the backend.
+- `expectedAccountIdentityFingerprint` is required and binds the mutation to the account resolved by the preceding read. Omission is rejected; if it no longer matches, the app-server returns `accountChanged` without sending the consume request to the backend.
+- On a noncanonical ChatGPT backend, `account/rateLimits/read` still returns ordinary limits but suppresses reset-credit fields and the account fingerprint; reset consumption is rejected.
 - `accountIdentityFingerprint` is returned for equality checks only and must never be displayed or logged.
 - `outcome` is one of `reset`, `nothingToReset`, `noCredit`, `alreadyRedeemed`, `accountChanged`, or `unknown`.
 

@@ -145,7 +145,7 @@ impl App {
                 attempt.idempotency_key.clone(),
                 Some(attempt.credit_id.clone()),
                 Some(attempt.auth_profile.clone()),
-                Some(attempt.account_identity_fingerprint.clone()),
+                attempt.account_identity_fingerprint.clone(),
             )
             .await
             .map_err(|err| err.to_string());
@@ -902,7 +902,7 @@ async fn consume_rate_limit_reset_credit_request(
     idempotency_key: String,
     credit_id: Option<String>,
     auth_profile: Option<Option<String>>,
-    expected_account_identity_fingerprint: Option<String>,
+    expected_account_identity_fingerprint: String,
 ) -> Result<ConsumeAccountRateLimitResetCreditResponse> {
     let request_id = RequestId::String(format!("rate-limit-reset-{}", Uuid::new_v4()));
     request_handle

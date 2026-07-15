@@ -3360,7 +3360,7 @@ mod tests {
                 idempotency_key: "redeem-123".to_string(),
                 credit_id: None,
                 auth_profile: Some(Some("work".to_string())),
-                expected_account_identity_fingerprint: None,
+                expected_account_identity_fingerprint: "opaque:account".to_string(),
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3372,6 +3372,7 @@ mod tests {
                 "params": {
                     "idempotencyKey": "redeem-123",
                     "authProfile": "work",
+                    "expectedAccountIdentityFingerprint": "opaque:account",
                 },
             }),
             serde_json::to_value(&request)?,

@@ -151,7 +151,7 @@ impl ChatWidget {
             pending_post_reset_refresh: None,
             automatic_reset_opted_out_generation: None,
             usage_limit_auto_reset_key: None,
-            auth_profile_credential_mutations_in_flight: HashSet::new(),
+            auth_profile_credential_mutations_in_flight: HashMap::new(),
             next_status_refresh_request_id: 0,
             plan_type: initial_plan_type,
             codex_rate_limit_reached_type: None,

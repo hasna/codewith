@@ -64,6 +64,7 @@ pub(crate) struct AccountRequestProcessor {
     config: Arc<Config>,
     config_manager: ConfigManager,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
+    allow_loopback_reset_backend_for_tests: bool,
 }
 
 impl AccountRequestProcessor {
@@ -73,6 +74,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        allow_loopback_reset_backend_for_tests: bool,
     ) -> Self {
         Self {
             auth_manager,
@@ -81,6 +83,7 @@ impl AccountRequestProcessor {
             config,
             config_manager,
             active_login: Arc::new(Mutex::new(None)),
+            allow_loopback_reset_backend_for_tests,
         }
     }
 
@@ -1166,6 +1169,10 @@ impl AccountRequestProcessor {
             account_rate_limit_resets::validated_idempotency_key(&idempotency_key)?.to_string();
         let credit_id = account_rate_limit_resets::validated_credit_id(credit_id.as_deref())?
             .map(str::to_string);
+        account_rate_limit_resets::ensure_canonical_backend(
+            &self.config.chatgpt_base_url,
+            self.allow_loopback_reset_backend_for_tests,
+        )?;
         let auth_manager = self.auth_manager_for_auth_profile(auth_profile).await?;
 
         let Some(auth) = auth_manager.auth().await else {
@@ -1184,10 +1191,7 @@ impl AccountRequestProcessor {
             invalid_request("chatgpt account identity required to reset usage limits")
         })?;
         let account_identity_fingerprint = codex_login::account_identity_fingerprint(&account_id);
-        if expected_account_identity_fingerprint
-            .as_deref()
-            .is_some_and(|expected| expected != account_identity_fingerprint)
-        {
+        if expected_account_identity_fingerprint != account_identity_fingerprint {
             return Ok(ConsumeAccountRateLimitResetCreditResponse {
                 outcome: ConsumeAccountRateLimitResetCreditOutcome::AccountChanged,
                 account_identity_fingerprint,
@@ -1244,6 +1248,11 @@ impl AccountRequestProcessor {
         ),
         JSONRPCErrorError,
     > {
+        let backend_supports_usage_resets =
+            account_rate_limit_resets::backend_supports_usage_resets(
+                &self.config.chatgpt_base_url,
+                self.allow_loopback_reset_backend_for_tests,
+            );
         let Some(auth) = auth_manager.auth().await else {
             return Err(invalid_request(
                 "codex account authentication required to read rate limits",
@@ -1255,8 +1264,9 @@ impl AccountRequestProcessor {
                 "chatgpt authentication required to read rate limits",
             ));
         }
-        let account_identity_fingerprint = auth
-            .get_account_id()
+        let account_identity_fingerprint = backend_supports_usage_resets
+            .then(|| auth.get_account_id())
+            .flatten()
             .map(|account_id| codex_login::account_identity_fingerprint(&account_id));
 
         let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
