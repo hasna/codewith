@@ -193,7 +193,7 @@ async fn fetch_profile_health(
                     health: usage_health_for_snapshots(
                         &shared_snapshots,
                         &config.auth_profile_auto_switch,
-                        None,
+                        /*trigger_window_label*/ None,
                         /*is_fresh*/ true,
                     ),
                     exhausted_cooldown: exhausted_profile_cooldown_key(
