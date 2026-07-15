@@ -3350,6 +3350,8 @@ async fn config_popup_snapshot_and_toggle() {
     );
     let account_popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_account_automation_popup", account_popup);
+    assert!(account_popup.contains("Use a usage limit reset"));
+    assert!(account_popup.contains("Usage limit auto-reset"));
     assert!(account_popup.contains("Update checks"));
     assert!(account_popup.contains("Codewith"));
     assert!(account_popup.contains("Auth profile auto-switch"));
@@ -3375,6 +3377,7 @@ async fn config_popup_snapshot_and_toggle() {
     chat.open_config_section_popup(
         crate::common_config_options::CommonConfigSection::AccountAutomation,
     );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert_matches!(

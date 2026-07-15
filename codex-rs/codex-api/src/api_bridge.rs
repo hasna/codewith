@@ -59,16 +59,26 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 if status == http::StatusCode::BAD_REQUEST {
                     if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
                         && let Some(error) = parsed.get("error")
-                        && error.get("code").and_then(Value::as_str)
-                            == Some(CYBER_POLICY_ERROR_CODE)
                     {
-                        let message = error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .filter(|message| !message.trim().is_empty())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
-                        CodexErr::CyberPolicy { message }
+                        match error.get("code").and_then(Value::as_str) {
+                            Some("context_length_exceeded") => CodexErr::ContextWindowExceeded,
+                            Some(CYBER_POLICY_ERROR_CODE) => {
+                                let message = error
+                                    .get("message")
+                                    .and_then(Value::as_str)
+                                    .filter(|message| !message.trim().is_empty())
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
+                                CodexErr::CyberPolicy { message }
+                            }
+                            _ if body_text.contains(
+                                "The image data you provided does not represent a valid image",
+                            ) =>
+                            {
+                                CodexErr::InvalidImageRequest()
+                            }
+                            _ => CodexErr::InvalidRequest(body_text),
+                        }
                     } else if body_text
                         .contains("The image data you provided does not represent a valid image")
                     {

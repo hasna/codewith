@@ -4,18 +4,28 @@
 use codex_core::exec_env::create_env;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::models::PermissionProfile;
+use codex_utils_cargo_bin::cargo_bin;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "bubblewrap is unavailable: no system bwrap was found";
+const BAZEL_BWRAP_ENV_KEYS: &[&str] = &[
+    "CARGO_BIN_EXE_bwrap",
+    "RUNFILES_DIR",
+    "RUNFILES_MANIFEST_FILE",
+    "RUNFILES_MANIFEST_ONLY",
+    "TEST_SRCDIR",
+    "TEST_WORKSPACE",
+];
 const NETWORK_TIMEOUT_MS: u64 = 4_000;
 const MANAGED_PROXY_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "loopback: Failed RTM_NEWADDR",
@@ -44,7 +54,24 @@ const PROXY_ENV_KEYS: &[&str] = &[
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
-    create_env(&policy, /*thread_id*/ None)
+    let mut env = create_env(&policy, /*thread_id*/ None);
+    preserve_bazel_bwrap_env(&mut env);
+    env
+}
+
+fn preserve_bazel_bwrap_env(env: &mut HashMap<String, String>) {
+    for key in BAZEL_BWRAP_ENV_KEYS {
+        if let Ok(value) = std::env::var(key) {
+            env.insert((*key).to_string(), value);
+        }
+    }
+}
+
+fn codex_linux_sandbox_exe() -> PathBuf {
+    match cargo_bin("codex-linux-sandbox") {
+        Ok(path) => path,
+        Err(err) => panic!("resolve codex-linux-sandbox binary for integration test: {err}"),
+    }
 }
 
 fn strip_proxy_env(env: &mut HashMap<String, String>) {
@@ -140,7 +167,7 @@ async fn run_linux_sandbox_direct(
     args.push("--".to_string());
     args.extend(command.iter().map(|entry| (*entry).to_string()));
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    let mut cmd = Command::new(codex_linux_sandbox_exe());
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()

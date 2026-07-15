@@ -3151,7 +3151,7 @@ async fn insert_initial_goal_for_background_thread(
             thread_id,
             objective.as_str(),
             codex_state::ThreadGoalStatus::Active,
-            None,
+            /*token_budget*/ None,
         )
     })
     .await?
@@ -3317,7 +3317,7 @@ async fn handle_background_agent_event(
                         "itemId": delta.item_id,
                         "delta": delta.delta,
                     }),
-                    false,
+                    /*allow_terminal_current*/ false,
                 )
                 .await,
                 run_id,
@@ -3337,7 +3337,7 @@ async fn handle_background_agent_event(
                         "itemId": delta.item_id,
                         "delta": delta.delta,
                     }),
-                    false,
+                    /*allow_terminal_current*/ false,
                 )
                 .await,
                 run_id,
@@ -3357,7 +3357,7 @@ async fn handle_background_agent_event(
                         "itemId": delta.item_id,
                         "delta": delta.delta,
                     }),
-                    false,
+                    /*allow_terminal_current*/ false,
                 )
                 .await,
                 run_id,
@@ -3660,7 +3660,7 @@ async fn handle_background_agent_event(
                     generation,
                     event_type,
                     &json!({}),
-                    false,
+                    /*allow_terminal_current*/ false,
                 )
                 .await,
                 run_id,
