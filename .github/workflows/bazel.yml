@@ -430,6 +430,15 @@ jobs:
           restore-keys: |
             bazel-disk-${{ github.job }}-${{ matrix.target }}-
 
+      - name: Free Linux runner disk for Bazel clippy
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h
+
       - name: bazel build --config=clippy lint targets
         # Bounded below the job timeout-minutes so a cold keyless build that
         # overruns fails THIS STEP (a failure) instead of the JOB (a
@@ -450,15 +459,13 @@ jobs:
           bazel_target_list_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             # Keep this aligned with the fast Windows Bazel test job: use a
-            # Windows exec host while targeting Windows gnullvm.
+            # Windows exec host while targeting Windows gnullvm. The generated
+            # clippy list can include explicit targets that are incompatible
+            # with the Windows host platform, so keep Bazel from failing after
+            # successfully building the compatible subset.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
-            if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-              # The fork fallback can see incompatible explicit Windows-cross
-              # internal test binaries in the generated target list. Preserve
-              # the old local-fallback behavior there.
-              bazel_clippy_args+=(--skip_incompatible_explicit_targets)
-            fi
+            bazel_clippy_args+=(--skip_incompatible_explicit_targets)
           fi
 
           bazel_target_lines="$(./scripts/list-bazel-clippy-targets.sh "${bazel_target_list_args[@]}")"
