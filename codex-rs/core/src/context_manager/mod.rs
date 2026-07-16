@@ -1,6 +1,5 @@
 mod history;
 mod normalize;
-mod pair_boundary;
 pub(crate) mod updates;
 
 pub(crate) use history::ContextManager;
