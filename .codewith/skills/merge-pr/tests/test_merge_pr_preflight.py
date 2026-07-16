@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -61,7 +62,7 @@ class MergePrPreflightTests(unittest.TestCase):
             "repository": "hasna/codewith",
             "pr_number": 215,
             "head_sha": "1111111111111111111111111111111111111111",
-            "timestamp": "2099-01-01T00:00:00Z",
+            "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "verdict": "PASS",
             "checked_risks_summary": "exact head, diff scope, checks, and secret posture reviewed",
             "blocking_findings": [],
