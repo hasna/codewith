@@ -48,7 +48,7 @@ use wiremock::ResponseTemplate;
 
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
-const MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS: usize = 4;
+const LONG_OVERFLOW_HISTORY_ITEMS: usize = 32;
 
 fn approx_token_count(text: &str) -> i64 {
     i64::try_from(text.len().saturating_add(3) / 4).unwrap_or(i64::MAX)
@@ -171,6 +171,39 @@ fn long_injected_history(item_count: usize) -> Vec<ResponseItem> {
             phase: None,
         })
         .collect()
+}
+
+fn long_history_messages(item_count: usize) -> Vec<(String, String)> {
+    (0..item_count)
+        .map(|index| ("user".to_string(), format!("INJECTED_HISTORY_{index:03}")))
+        .collect()
+}
+
+fn request_messages_with_prefix(
+    request: &responses::ResponsesRequest,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let mut messages = Vec::new();
+    for item in request.input() {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(role) = item.get("role").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let Some(text) = content_item.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            if text.starts_with(prefix) {
+                messages.push((role.to_string(), text.to_string()));
+            }
+        }
+    }
+    messages
 }
 
 fn paired_injected_history() -> Vec<ResponseItem> {
@@ -1085,7 +1118,7 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_retries_context_window_overflow_with_less_history() -> Result<()> {
+async fn remote_compact_v2_context_overflow_preserves_full_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1111,16 +1144,6 @@ async fn remote_compact_v2_retries_context_window_overflow_with_less_history() -
                     "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
                 }
             })),
-            responses::sse_response(responses::sse(vec![
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "item": {
-                        "type": "compaction",
-                        "encrypted_content": "RETRIED_V2_COMPACT_SUMMARY",
-                    }
-                }),
-                responses::ev_completed("resp-compact-retry"),
-            ])),
             responses::sse_response(responses::sse(vec![
                 responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
                 responses::ev_completed("resp-2"),
@@ -1163,25 +1186,19 @@ async fn remote_compact_v2_retries_context_window_overflow_with_less_history() -
     wait_for_turn_complete(&codex).await;
 
     let response_requests = responses_mock.requests();
-    assert_eq!(response_requests.len(), 4);
+    assert_eq!(response_requests.len(), 3);
     assert!(
-        estimate_compact_payload_tokens(&response_requests[2])
-            < estimate_compact_payload_tokens(&response_requests[1]),
-        "the v2 retry should remove old history before resubmitting remote compaction"
-    );
-    assert!(
-        response_requests[3]
+        response_requests[2]
             .body_json()
             .to_string()
-            .contains("RETRIED_V2_COMPACT_SUMMARY")
+            .contains("hello remote compact")
     );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_stops_retrying_context_overflow_after_history_exhaustion() -> Result<()>
-{
+async fn remote_compact_v2_stops_after_first_context_overflow() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1198,7 +1215,7 @@ async fn remote_compact_v2_stops_retrying_context_overflow_after_history_exhaust
         responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
         responses::ev_completed("resp-1"),
     ]))];
-    response_sequence.extend((0..4).map(|_| {
+    response_sequence.extend((0..1).map(|_| {
         ResponseTemplate::new(400).set_body_json(serde_json::json!({
             "error": {
                 "code": "context_length_exceeded",
@@ -1235,14 +1252,9 @@ async fn remote_compact_v2_stops_retrying_context_overflow_after_history_exhaust
     let response_requests = responses_mock.requests();
     assert_eq!(
         response_requests.len(),
-        5,
-        "expected the initial turn followed by one compact request per remaining history item"
+        2,
+        "expected the initial turn followed by one compact request"
     );
-    let compact_requests = &response_requests[1..];
-    assert!(compact_requests.windows(2).all(|requests| {
-        estimate_compact_payload_tokens(&requests[1])
-            < estimate_compact_payload_tokens(&requests[0])
-    }));
     assert!(
         error_message.to_lowercase().contains("context window"),
         "expected context window failure to surface, got {error_message}"
@@ -1252,7 +1264,7 @@ async fn remote_compact_v2_stops_retrying_context_overflow_after_history_exhaust
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_never_retries_with_empty_paired_history() -> Result<()> {
+async fn remote_compact_v2_context_overflow_preserves_paired_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1270,11 +1282,7 @@ async fn remote_compact_v2_never_retries_with_empty_paired_history() -> Result<(
 
     let responses_mock = responses::mount_response_sequence(
         harness.server(),
-        vec![
-            context_window_exceeded_response(),
-            context_window_exceeded_response(),
-            context_window_exceeded_response(),
-        ],
+        vec![context_window_exceeded_response()],
     )
     .await;
 
@@ -1287,11 +1295,11 @@ async fn remote_compact_v2_never_retries_with_empty_paired_history() -> Result<(
     wait_for_turn_complete(&codex).await;
 
     let requests = responses_mock.requests();
-    assert_eq!(requests.len(), 3);
-    let retry_body = requests[2].body_json().to_string();
-    assert!(!retry_body.contains("OLD_PAIR_PREFIX"));
-    assert!(retry_body.contains("paired-call"));
-    assert!(retry_body.contains("PAIRED_TOOL_OUTPUT"));
+    assert_eq!(requests.len(), 1);
+    let compact_body = requests[0].body_json().to_string();
+    assert!(compact_body.contains("OLD_PAIR_PREFIX"));
+    assert!(compact_body.contains("paired-call"));
+    assert!(compact_body.contains("PAIRED_TOOL_OUTPUT"));
 
     let follow_up_mock = responses::mount_sse_once(
         harness.server(),
@@ -1324,7 +1332,7 @@ async fn remote_compact_v2_never_retries_with_empty_paired_history() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v1_never_retries_with_empty_paired_history() -> Result<()> {
+async fn remote_compact_v1_context_overflow_preserves_paired_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1338,11 +1346,7 @@ async fn remote_compact_v1_never_retries_with_empty_paired_history() -> Result<(
 
     let compact_mock = responses::mount_compact_response_sequence(
         harness.server(),
-        vec![
-            context_window_exceeded_response(),
-            context_window_exceeded_response(),
-            context_window_exceeded_response(),
-        ],
+        vec![context_window_exceeded_response()],
     )
     .await;
 
@@ -1355,11 +1359,11 @@ async fn remote_compact_v1_never_retries_with_empty_paired_history() -> Result<(
     wait_for_turn_complete(&codex).await;
 
     let requests = compact_mock.requests();
-    assert_eq!(requests.len(), 3);
-    let retry_body = requests[2].body_json().to_string();
-    assert!(!retry_body.contains("OLD_PAIR_PREFIX"));
-    assert!(retry_body.contains("paired-call"));
-    assert!(retry_body.contains("PAIRED_TOOL_OUTPUT"));
+    assert_eq!(requests.len(), 1);
+    let compact_body = requests[0].body_json().to_string();
+    assert!(compact_body.contains("OLD_PAIR_PREFIX"));
+    assert!(compact_body.contains("paired-call"));
+    assert!(compact_body.contains("PAIRED_TOOL_OUTPUT"));
 
     let follow_up_mock = responses::mount_sse_once(
         harness.server(),
@@ -1392,7 +1396,7 @@ async fn remote_compact_v1_never_retries_with_empty_paired_history() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v2_caps_context_overflow_requests_for_long_history() -> Result<()> {
+async fn remote_compact_v2_context_overflow_does_not_delete_long_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1404,14 +1408,12 @@ async fn remote_compact_v2_caps_context_overflow_requests_for_long_history() -> 
     )
     .await?;
     let codex = harness.test().codex.clone();
-    let injected_item_count = MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS * 8;
+    let injected_item_count = LONG_OVERFLOW_HISTORY_ITEMS;
     codex
         .inject_response_items(long_injected_history(injected_item_count))
         .await?;
 
-    let response_sequence = (0..MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS)
-        .map(|_| context_window_exceeded_response())
-        .collect::<Vec<_>>();
+    let response_sequence = vec![context_window_exceeded_response()];
     let responses_mock =
         responses::mount_response_sequence(harness.server(), response_sequence).await;
 
@@ -1429,8 +1431,8 @@ async fn remote_compact_v2_caps_context_overflow_requests_for_long_history() -> 
     );
     assert_eq!(
         responses_mock.requests().len(),
-        MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS,
-        "v2 remote compaction must have a hard request ceiling independent of history length"
+        1,
+        "v2 remote compaction must not retry after deleting history"
     );
 
     let follow_up_mock = responses::mount_sse_once(
@@ -1457,15 +1459,16 @@ async fn remote_compact_v2_caps_context_overflow_requests_for_long_history() -> 
     wait_for_turn_complete(&codex).await;
 
     let follow_up = follow_up_mock.single_request();
-    let follow_up_body = follow_up.body_json().to_string();
-    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
-    assert!(follow_up_body.contains(&format!("INJECTED_HISTORY_{:03}", injected_item_count - 1)));
+    assert_eq!(
+        request_messages_with_prefix(&follow_up, "INJECTED_HISTORY_"),
+        long_history_messages(injected_item_count)
+    );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_v1_caps_context_overflow_requests_for_long_history() -> Result<()> {
+async fn remote_compact_v1_context_overflow_does_not_delete_long_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -1473,16 +1476,14 @@ async fn remote_compact_v1_caps_context_overflow_requests_for_long_history() -> 
     )
     .await?;
     let codex = harness.test().codex.clone();
-    let injected_item_count = MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS * 8;
+    let injected_item_count = LONG_OVERFLOW_HISTORY_ITEMS;
     codex
         .inject_response_items(long_injected_history(injected_item_count))
         .await?;
 
     let compact_mock = responses::mount_compact_response_sequence(
         harness.server(),
-        (0..MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS)
-            .map(|_| context_window_exceeded_response())
-            .collect(),
+        vec![context_window_exceeded_response()],
     )
     .await;
     let follow_up_mock = responses::mount_sse_once(
@@ -1508,8 +1509,8 @@ async fn remote_compact_v1_caps_context_overflow_requests_for_long_history() -> 
     );
     assert_eq!(
         compact_mock.requests().len(),
-        MAX_REMOTE_COMPACTION_OVERFLOW_REQUESTS,
-        "v1 remote compaction must have a hard request ceiling independent of history length"
+        1,
+        "v1 remote compaction must not retry after deleting history"
     );
 
     codex
@@ -1528,9 +1529,10 @@ async fn remote_compact_v1_caps_context_overflow_requests_for_long_history() -> 
     wait_for_turn_complete(&codex).await;
 
     let follow_up = follow_up_mock.single_request();
-    let follow_up_body = follow_up.body_json().to_string();
-    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
-    assert!(follow_up_body.contains(&format!("INJECTED_HISTORY_{:03}", injected_item_count - 1)));
+    assert_eq!(
+        request_messages_with_prefix(&follow_up, "INJECTED_HISTORY_"),
+        long_history_messages(injected_item_count)
+    );
 
     Ok(())
 }
@@ -4034,16 +4036,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
 
     let compact_mock = responses::mount_compact_response_sequence(
         harness.server(),
-        (0..4)
-            .map(|_| {
-                ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                    "error": {
-                        "code": "context_length_exceeded",
-                        "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
-                    }
-                }))
-            })
-            .collect(),
+        vec![context_window_exceeded_response()],
     )
     .await;
     let post_compact_turn_mock = responses::mount_sse_once(
@@ -4092,8 +4085,8 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
 
     assert_eq!(
         compact_mock.requests().len(),
-        4,
-        "expected retries to stop after the final history item is rejected"
+        1,
+        "expected compaction to stop without deleting history"
     );
     let requests = responses_mock.requests();
     assert_eq!(
@@ -4130,8 +4123,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_context_window_exceed
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_pre_turn_compaction_retries_context_window_overflow_with_less_history() -> Result<()>
-{
+async fn remote_pre_turn_compaction_context_overflow_does_not_delete_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -4146,36 +4138,15 @@ async fn remote_pre_turn_compaction_retries_context_window_overflow_with_less_hi
 
     let responses_mock = responses::mount_sse_sequence(
         harness.server(),
-        vec![
-            responses::sse(vec![
-                responses::ev_assistant_message("m1", "REMOTE_FIRST_REPLY"),
-                responses::ev_completed_with_tokens("r1", /*total_tokens*/ 500),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("m2", "REMOTE_POST_COMPACT_REPLY"),
-                responses::ev_completed_with_tokens("r2", /*total_tokens*/ 80),
-            ]),
-        ],
+        vec![responses::sse(vec![
+            responses::ev_assistant_message("m1", "REMOTE_FIRST_REPLY"),
+            responses::ev_completed_with_tokens("r1", /*total_tokens*/ 500),
+        ])],
     )
     .await;
     let compact_mock = responses::mount_compact_response_sequence(
         harness.server(),
-        vec![
-            ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                "error": {
-                    "code": "context_length_exceeded",
-                    "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
-                }
-            })),
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_json(serde_json::json!({
-                    "output": [{
-                        "type": "compaction",
-                        "encrypted_content": "RETRIED_REMOTE_COMPACT_SUMMARY"
-                    }]
-                })),
-        ],
+        vec![context_window_exceeded_response()],
     )
     .await;
 
@@ -4207,21 +4178,19 @@ async fn remote_pre_turn_compaction_retries_context_window_overflow_with_less_hi
             thread_settings: Default::default(),
         })
         .await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let compact_requests = compact_mock.requests();
-    assert_eq!(compact_requests.len(), 2);
-    assert!(
-        estimate_compact_payload_tokens(&compact_requests[1])
-            < estimate_compact_payload_tokens(&compact_requests[0]),
-        "the retry should remove old history before resubmitting remote compaction"
-    );
+    assert_eq!(compact_requests.len(), 1);
 
     let response_requests = responses_mock.requests();
-    assert_eq!(response_requests.len(), 2);
-    let follow_up_body = response_requests[1].body_json().to_string();
-    assert!(follow_up_body.contains("RETRIED_REMOTE_COMPACT_SUMMARY"));
-    assert!(follow_up_body.contains("USER_TWO"));
+    assert_eq!(response_requests.len(), 1);
+    assert!(error_message.to_lowercase().contains("context window"));
 
     Ok(())
 }

@@ -1,5 +1,4 @@
 use crate::context_manager::normalize;
-use crate::context_manager::pair_boundary;
 use crate::event_mapping::has_non_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_user_message_content;
@@ -187,49 +186,6 @@ impl ContextManager {
             // running a full normalization pass.
             normalize::remove_corresponding_for(&mut self.items, &removed);
         }
-    }
-
-    /// Removes an oldest prefix without splitting call/output pairs or deleting all history.
-    ///
-    /// The requested item count is rounded up to the next pair-safe boundary when possible. If
-    /// that would consume the entire transcript, the nearest earlier safe boundary is used. The
-    /// pair scan and the single `drain` are linear in the number of history items.
-    pub(crate) fn remove_oldest_items_preserving_pairs(&mut self, requested_items: usize) -> usize {
-        let removal_count =
-            pair_boundary::oldest_pair_safe_removal_count(&self.items, requested_items);
-        if removal_count > 0 {
-            self.items.drain(..removal_count);
-        }
-        removal_count
-    }
-
-    /// Bulk-removes the smallest pair-safe oldest prefix estimated to fit the token budget.
-    pub(crate) fn remove_oldest_items_to_fit_token_budget_preserving_pairs(
-        &mut self,
-        base_instructions: &BaseInstructions,
-        token_budget: i64,
-    ) -> usize {
-        let Some(estimated_tokens) =
-            self.estimate_token_count_with_base_instructions(base_instructions)
-        else {
-            return 0;
-        };
-        let tokens_to_remove = estimated_tokens.saturating_sub(token_budget);
-        if tokens_to_remove <= 0 {
-            return 0;
-        }
-
-        let mut removable_tokens = 0i64;
-        let requested_items = self
-            .items
-            .iter()
-            .enumerate()
-            .find_map(|(index, item)| {
-                removable_tokens = removable_tokens.saturating_add(estimate_item_token_count(item));
-                (removable_tokens >= tokens_to_remove).then_some(index + 1)
-            })
-            .unwrap_or(self.items.len());
-        self.remove_oldest_items_preserving_pairs(requested_items)
     }
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {

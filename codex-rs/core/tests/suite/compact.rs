@@ -957,7 +957,7 @@ async fn manual_compact_emits_context_compaction_items() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compact_runs_mid_turn_after_token_limit_hit() {
+async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -974,22 +974,40 @@ async fn auto_compact_runs_mid_turn_after_token_limit_hit() {
         .codex;
 
     let user_message = "create an app";
-    let first_summary_text = "The task is to create an app. I started to create a react app.";
     let over_limit_tokens = 270_000;
     let under_limit_tokens = 80_000;
 
-    let model_reasoning_response_sse = sse(vec![
+    let first_model_response = sse(vec![
         ev_reasoning_item("m1", &["I will create a react app"], &[]),
         ev_shell_command_call("r1-shell", "echo make-react"),
         ev_completed_with_tokens("r1", over_limit_tokens),
     ]);
-    let model_compact_response_sse = sse(vec![
-        ev_assistant_message("m2", first_summary_text),
+    let first_compact_response = sse(vec![
+        ev_assistant_message("m2", "FIRST_MID_TURN_SUMMARY"),
         ev_completed_with_tokens("r2", under_limit_tokens),
+    ]);
+    let second_model_response = sse(vec![
+        ev_reasoning_item("m3", &["I will create a node app"], &[]),
+        ev_shell_command_call("r3-shell", "echo make-node"),
+        ev_completed_with_tokens("r3", over_limit_tokens),
+    ]);
+    let second_compact_response = sse(vec![
+        ev_assistant_message("m4", "SECOND_MID_TURN_SUMMARY"),
+        ev_completed_with_tokens("r4", under_limit_tokens),
+    ]);
+    let final_model_response = sse(vec![
+        ev_assistant_message("m5", "FINAL_RESPONSE_AFTER_TWO_COMPACTIONS"),
+        ev_completed_with_tokens("r5", under_limit_tokens),
     ]);
     let request_log = mount_sse_sequence(
         &server,
-        vec![model_reasoning_response_sse, model_compact_response_sse],
+        vec![
+            first_model_response,
+            first_compact_response,
+            second_model_response,
+            second_compact_response,
+            final_model_response,
+        ],
     )
     .await;
 
@@ -1012,33 +1030,42 @@ async fn auto_compact_runs_mid_turn_after_token_limit_hit() {
     let requests = request_log.requests();
     assert_eq!(
         requests.len(),
-        2,
-        "expected the initial model request and one mid-turn auto-compact request",
+        5,
+        "expected the turn to continue through two mid-turn compactions",
     );
-
-    let initial_body = requests[0].body_json().to_string();
+    let request_bodies = requests
+        .iter()
+        .map(|request| request.body_json().to_string())
+        .collect::<Vec<_>>();
     assert!(
-        body_contains_text(&initial_body, user_message),
+        body_contains_text(&request_bodies[0], user_message),
         "initial request should include the user message",
     );
     assert!(
-        !body_contains_text(&initial_body, SUMMARIZATION_PROMPT),
-        "initial request should not include the compaction prompt",
-    );
-
-    let compact_body = requests[1].body_json().to_string();
-    assert!(
-        body_contains_text(&compact_body, user_message),
-        "auto-compact request should include the user message being compacted",
+        body_contains_text(&request_bodies[1], user_message),
+        "first auto-compact request should include the user message being compacted",
     );
     assert!(
-        body_contains_text(&compact_body, SUMMARIZATION_PROMPT),
-        "auto-compact request should include the summarization prompt",
+        body_contains_text(&request_bodies[1], "I will create a react app"),
+        "first auto-compact request should include the reasoning that pushed the turn over limit",
     );
-    assert!(
-        body_contains_text(&compact_body, "I will create a react app"),
-        "auto-compact request should include the reasoning item that pushed the turn over limit",
-    );
+    for (request_index, should_compact) in
+        [(0, false), (1, true), (2, false), (3, true), (4, false)]
+    {
+        assert_eq!(
+            body_contains_text(&request_bodies[request_index], SUMMARIZATION_PROMPT),
+            should_compact,
+            "summarization prompt mismatch for request {request_index}",
+        );
+    }
+    assert!(body_contains_text(
+        &request_bodies[2],
+        "FIRST_MID_TURN_SUMMARY"
+    ));
+    assert!(body_contains_text(
+        &request_bodies[4],
+        "SECOND_MID_TURN_SUMMARY"
+    ));
 }
 
 // Windows CI only: bump to 4 workers to prevent SSE/event starvation and test timeouts.

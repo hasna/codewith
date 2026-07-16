@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::config_types::ModelProviderAuthInfo;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
@@ -117,6 +118,67 @@ fn long_injected_history(item_count: usize) -> Vec<ResponseItem> {
         .collect()
 }
 
+fn semantic_injected_history(item_count: usize) -> Vec<ResponseItem> {
+    (0..item_count)
+        .map(|index| ResponseItem::Message {
+            id: None,
+            role: if index % 2 == 0 {
+                "user".to_string()
+            } else {
+                "assistant".to_string()
+            },
+            content: vec![if index % 2 == 0 {
+                ContentItem::InputText {
+                    text: format!("SEMANTIC_HISTORY_{index:03}"),
+                }
+            } else {
+                ContentItem::OutputText {
+                    text: format!("SEMANTIC_HISTORY_{index:03}"),
+                }
+            }],
+            phase: None,
+        })
+        .collect()
+}
+
+fn semantic_history_messages(item_count: usize) -> Vec<(String, String)> {
+    (0..item_count)
+        .map(|index| {
+            (
+                if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                format!("SEMANTIC_HISTORY_{index:03}"),
+            )
+        })
+        .collect()
+}
+
+fn request_messages_with_prefix(
+    request: &responses::ResponsesRequest,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let mut messages = Vec::new();
+    for item in request.input() {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(role) = item.get("role").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(content) = item.get("content").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let Some(text) = content_item.get("text").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if text.starts_with(prefix) {
+                messages.push((role.to_string(), text.to_string()));
+            }
+        }
+    }
+    messages
+}
+
 fn context_window_exceeded_response() -> ResponseTemplate {
     ResponseTemplate::new(400).set_body_json(serde_json::json!({
         "error": {
@@ -124,27 +186,6 @@ fn context_window_exceeded_response() -> ResponseTemplate {
             "message": "Your input exceeds the context window of this model. Please adjust your input and try again."
         }
     }))
-}
-
-fn compacted_summary_only_output(summary: &str) -> Vec<ResponseItem> {
-    vec![ResponseItem::Compaction {
-        encrypted_content: format!("summary:\n{summary}"),
-    }]
-}
-
-fn approx_token_count(text: &str) -> i64 {
-    i64::try_from(text.len().saturating_add(3) / 4).unwrap_or(i64::MAX)
-}
-
-fn estimate_compact_payload_tokens(request: &responses::ResponsesRequest) -> i64 {
-    request
-        .input()
-        .into_iter()
-        .map(|item| approx_token_count(&item.to_string()))
-        .fold(
-            approx_token_count(&request.instructions_text()),
-            i64::saturating_add,
-        )
 }
 
 async fn wait_for_turn_complete(codex: &codex_core::CodexThread) {
@@ -166,6 +207,248 @@ async fn submit_follow_up(codex: &codex_core::CodexThread, text: &str) -> Result
         })
         .await?;
     wait_for_turn_complete(codex).await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn semantic_history_overflow_fails_without_mutating_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    codex
+        .inject_response_items(semantic_injected_history(/*item_count*/ 8))
+        .await?;
+
+    let compact_mock = responses::mount_v2_compaction_response_sequence_up_to(
+        harness.server(),
+        vec![
+            context_window_exceeded_response(),
+            responses::sse_response(responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "UNSAFE_SUFFIX_ONLY_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("resp-unsafe-suffix-only"),
+            ])),
+        ],
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(error_message.to_lowercase().contains("context window"));
+    assert_eq!(compact_mock.requests().len(), 1);
+
+    let follow_up_mock = responses::mount_sse_once(
+        harness.server(),
+        responses::sse(vec![
+            responses::ev_assistant_message("m-after-semantic-overflow", "HISTORY_PRESERVED_REPLY"),
+            responses::ev_completed("resp-after-semantic-overflow"),
+        ]),
+    )
+    .await;
+    submit_follow_up(&codex, "after semantic overflow").await?;
+    let follow_up_request = follow_up_mock.single_request();
+    assert_eq!(
+        request_messages_with_prefix(&follow_up_request, "SEMANTIC_HISTORY_"),
+        semantic_history_messages(/*item_count*/ 8)
+    );
+    assert!(
+        !follow_up_request
+            .body_json()
+            .to_string()
+            .contains("UNSAFE_SUFFIX_ONLY_SUMMARY")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn irreducible_semantic_item_overflow_fails_without_mutating_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(|config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+    let irreducible_sentinel = format!("IRREDUCIBLE_SEMANTIC_ITEM_{}", "x".repeat(128_000));
+    codex
+        .inject_response_items(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: irreducible_sentinel.clone(),
+            }],
+            phase: None,
+        }])
+        .await?;
+
+    let compact_mock = responses::mount_v2_compaction_response_sequence_up_to(
+        harness.server(),
+        vec![
+            context_window_exceeded_response(),
+            responses::sse_response(responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "UNSAFE_IRREDUCIBLE_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("resp-unsafe-irreducible"),
+            ])),
+        ],
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(error_message.to_lowercase().contains("context window"));
+    assert_eq!(compact_mock.requests().len(), 1);
+
+    let follow_up_mock = responses::mount_sse_once(
+        harness.server(),
+        responses::sse(vec![
+            responses::ev_assistant_message("m-after-irreducible", "HISTORY_PRESERVED_REPLY"),
+            responses::ev_completed("resp-after-irreducible"),
+        ]),
+    )
+    .await;
+    submit_follow_up(&codex, "after irreducible overflow").await?;
+    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
+    assert!(follow_up_body.contains(&irreducible_sentinel));
+    assert!(!follow_up_body.contains("UNSAFE_IRREDUCIBLE_SUMMARY"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_base_and_tool_overhead_fails_without_mutating_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let oversized_base = format!("OVERSIZED_BASE_INSTRUCTIONS_{}", "b".repeat(128_000));
+    let oversized_tool_description = format!("OVERSIZED_TOOL_DESCRIPTION_{}", "t".repeat(128_000));
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config({
+            let oversized_base = oversized_base.clone();
+            move |config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                config.base_instructions = Some(oversized_base);
+                config.model_provider.request_max_retries = Some(0);
+                config.model_provider.stream_max_retries = Some(0);
+            }
+        });
+    let mut test = builder.build(&server).await?;
+    let new_thread = test
+        .thread_manager
+        .start_thread_with_tools(
+            test.config.clone(),
+            vec![DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
+                name: "oversized_invariant_tool".to_string(),
+                description: oversized_tool_description,
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                    },
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+            }],
+        )
+        .await?;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
+    let codex = test.codex.clone();
+    codex
+        .inject_response_items(semantic_injected_history(/*item_count*/ 4))
+        .await?;
+
+    let compact_mock = responses::mount_v2_compaction_response_sequence_up_to(
+        &server,
+        vec![
+            context_window_exceeded_response(),
+            responses::sse_response(responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "compaction",
+                        "encrypted_content": "UNSAFE_OVERHEAD_SUMMARY",
+                    }
+                }),
+                responses::ev_completed("resp-unsafe-overhead"),
+            ])),
+        ],
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
+    wait_for_turn_complete(&codex).await;
+
+    assert!(error_message.to_lowercase().contains("context window"));
+    let compact_request = compact_mock.single_request();
+    let compact_body = compact_request.body_json().to_string();
+    assert!(
+        compact_request
+            .instructions_text()
+            .contains("OVERSIZED_BASE_INSTRUCTIONS")
+    );
+    assert!(compact_body.contains("OVERSIZED_TOOL_DESCRIPTION"));
+
+    let follow_up_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("m-after-overhead", "HISTORY_PRESERVED_REPLY"),
+            responses::ev_completed("resp-after-overhead"),
+        ]),
+    )
+    .await;
+    submit_follow_up(&codex, "after invariant overhead overflow").await?;
+    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
+    assert!(follow_up_body.contains("SEMANTIC_HISTORY_000"));
+    assert!(follow_up_body.contains("SEMANTIC_HISTORY_003"));
+    assert!(!follow_up_body.contains("UNSAFE_OVERHEAD_SUMMARY"));
+
     Ok(())
 }
 
@@ -220,7 +503,7 @@ async fn v2_mixed_stream_and_overflow_retries_share_request_budget() -> Result<(
     );
     assert_eq!(
         responses_mock.requests().len(),
-        MAX_REMOTE_COMPACTION_REQUESTS
+        MAX_REMOTE_COMPACTION_REQUESTS - 1
     );
 
     let follow_up_mock = responses::mount_sse_once(
@@ -298,7 +581,7 @@ async fn v2_auth_recovery_provider_and_overflow_retries_share_request_budget() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v2_recovers_from_mixed_stream_and_overflow_within_request_budget() -> Result<()> {
+async fn v2_mixed_stream_and_overflow_failure_preserves_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -322,16 +605,6 @@ async fn v2_recovers_from_mixed_stream_and_overflow_within_request_budget() -> R
             ResponseTemplate::new(500).set_body_string("compact open failed"),
             context_window_exceeded_response(),
             responses::sse_response(responses::sse(vec![
-                serde_json::json!({
-                    "type": "response.output_item.done",
-                    "item": {
-                        "type": "compaction",
-                        "encrypted_content": "MIXED_V2_RECOVERY_SUMMARY",
-                    }
-                }),
-                responses::ev_completed("resp-mixed-v2-recovery"),
-            ])),
-            responses::sse_response(responses::sse(vec![
                 responses::ev_assistant_message("m-after-mixed-v2", "AFTER_RECOVERY_REPLY"),
                 responses::ev_completed("resp-after-mixed-v2"),
             ])),
@@ -340,21 +613,19 @@ async fn v2_recovers_from_mixed_stream_and_overflow_within_request_budget() -> R
     .await;
 
     codex.submit(Op::Compact).await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
     wait_for_turn_complete(&codex).await;
     submit_follow_up(&codex, "after mixed v2 recovery").await?;
 
     let requests = responses_mock.requests();
-    assert_eq!(requests.len(), MAX_REMOTE_COMPACTION_REQUESTS);
-    assert!(
-        estimate_compact_payload_tokens(&requests[2])
-            < estimate_compact_payload_tokens(&requests[1])
-    );
-    assert!(
-        requests[3]
-            .body_json()
-            .to_string()
-            .contains("MIXED_V2_RECOVERY_SUMMARY")
-    );
+    assert_eq!(requests.len(), MAX_REMOTE_COMPACTION_REQUESTS - 1);
+    assert!(error_message.to_lowercase().contains("context window"));
+    let follow_up_body = requests[2].body_json().to_string();
+    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
 
     Ok(())
 }
@@ -398,7 +669,7 @@ async fn v1_transport_and_overflow_retries_share_request_budget() -> Result<()> 
     assert!(error_message.to_lowercase().contains("context window"));
     assert_eq!(
         compact_mock.requests().len(),
-        MAX_REMOTE_COMPACTION_REQUESTS
+        MAX_REMOTE_COMPACTION_REQUESTS - 1
     );
 
     let follow_up_mock = responses::mount_sse_once(
@@ -422,7 +693,7 @@ async fn v1_transport_and_overflow_retries_share_request_budget() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v1_recovers_from_transport_and_overflow_within_request_budget() -> Result<()> {
+async fn v1_transport_and_overflow_failure_preserves_history() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
@@ -441,9 +712,6 @@ async fn v1_recovers_from_transport_and_overflow_within_request_budget() -> Resu
         vec![
             ResponseTemplate::new(500).set_body_string("compact transport failed"),
             context_window_exceeded_response(),
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "output": compacted_summary_only_output("MIXED_V1_RECOVERY_SUMMARY"),
-            })),
         ],
     )
     .await;
@@ -457,22 +725,20 @@ async fn v1_recovers_from_transport_and_overflow_within_request_budget() -> Resu
     .await;
 
     codex.submit(Op::Compact).await?;
+    let error_message = wait_for_event_match(&codex, |event| match event {
+        EventMsg::Error(err) => Some(err.message.clone()),
+        _ => None,
+    })
+    .await;
     wait_for_turn_complete(&codex).await;
     submit_follow_up(&codex, "after mixed v1 recovery").await?;
 
     let compact_requests = compact_mock.requests();
-    assert_eq!(compact_requests.len(), 3);
-    assert!(
-        estimate_compact_payload_tokens(&compact_requests[2])
-            < estimate_compact_payload_tokens(&compact_requests[1])
-    );
-    assert!(
-        follow_up_mock
-            .single_request()
-            .body_json()
-            .to_string()
-            .contains("MIXED_V1_RECOVERY_SUMMARY")
-    );
+    assert_eq!(compact_requests.len(), 2);
+    assert!(error_message.to_lowercase().contains("context window"));
+    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
+    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
+    assert!(!follow_up_body.contains("MIXED_V1_RECOVERY_SUMMARY"));
 
     Ok(())
 }

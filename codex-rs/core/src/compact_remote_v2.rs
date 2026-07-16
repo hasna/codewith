@@ -12,7 +12,6 @@ use crate::compact_remote::log_remote_compact_failure;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
 use crate::compact_remote::trim_function_call_history_to_fit_context_window;
-use crate::compact_remote::trim_history_for_remote_compaction_retry;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -247,65 +246,49 @@ async fn run_remote_compact_task_inner_impl(
         }
     };
     let request_budget = RemoteCompactionRequestBudget::new();
-    let (trace_input_history, prompt_input, compaction_output, token_usage) = loop {
-        let prompt_input = history
-            .clone()
-            .for_prompt(&turn_context.model_info.input_modalities);
-        let mut input = prompt_input.clone();
-        input.push(ResponseItem::CompactionTrigger);
-        let prompt = Prompt {
-            input,
-            tools: tool_router.model_visible_specs(),
-            parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
-            base_instructions: base_instructions.clone(),
-            personality: turn_context.personality,
-            output_schema: None,
-            output_schema_strict: true,
-        };
-        let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
-            "model": turn_context.model_info.slug.as_str(),
-            "instructions": prompt.base_instructions.text.as_str(),
-            "input": &prompt.input,
-            "parallel_tool_calls": prompt.parallel_tool_calls,
-        }));
-        let result = run_remote_compaction_request_v2(
-            sess,
-            turn_context,
-            client_session,
-            &prompt,
-            turn_metadata_header.as_deref(),
-            &request_budget,
-        )
-        .await;
-        trace_attempt.record_result(
-            result
-                .as_ref()
-                .map(|output| std::slice::from_ref(&output.compaction_output)),
-        );
-
-        match result {
-            Ok(RemoteCompactionV2Output {
-                compaction_output,
-                token_usage,
-            }) => {
-                break (
-                    history.raw_items().to_vec(),
-                    prompt_input,
-                    compaction_output,
-                    token_usage,
-                );
-            }
-            Err(CodexErr::ContextWindowExceeded)
-                if trim_history_for_remote_compaction_retry(
-                    &mut history,
-                    turn_context,
-                    &base_instructions,
-                    request_budget.remaining(),
-                ) => {}
-            Err(err) => {
-                log_remote_compaction_request_failure(sess, turn_context, &prompt, &err).await;
-                return Err(err);
-            }
+    let trace_input_history = history.raw_items().to_vec();
+    let prompt_input = history
+        .clone()
+        .for_prompt(&turn_context.model_info.input_modalities);
+    let mut input = prompt_input.clone();
+    input.push(ResponseItem::CompactionTrigger);
+    let prompt = Prompt {
+        input,
+        tools: tool_router.model_visible_specs(),
+        parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
+        base_instructions: base_instructions.clone(),
+        personality: turn_context.personality,
+        output_schema: None,
+        output_schema_strict: true,
+    };
+    let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
+        "model": turn_context.model_info.slug.as_str(),
+        "instructions": prompt.base_instructions.text.as_str(),
+        "input": &prompt.input,
+        "parallel_tool_calls": prompt.parallel_tool_calls,
+    }));
+    let result = run_remote_compaction_request_v2(
+        sess,
+        turn_context,
+        client_session,
+        &prompt,
+        turn_metadata_header.as_deref(),
+        &request_budget,
+    )
+    .await;
+    trace_attempt.record_result(
+        result
+            .as_ref()
+            .map(|output| std::slice::from_ref(&output.compaction_output)),
+    );
+    let RemoteCompactionV2Output {
+        compaction_output,
+        token_usage,
+    } = match result {
+        Ok(output) => output,
+        Err(err) => {
+            log_remote_compaction_request_failure(sess, turn_context, &prompt, &err).await;
+            return Err(err);
         }
     };
     if let Some(token_usage) = token_usage {
