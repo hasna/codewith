@@ -31,9 +31,8 @@ Known evidence gaps:
   `npm view @hasna/codewith versions` currently starts at `0.1.2`.
 - `0.1.27`, `0.1.28`, and `0.1.46` live on release branches, not
   `origin/main`; `0.1.46` was cut from `fix/loops-runtime-0.1.46`.
-- `origin/main` now carries the `rust-v0.1.60` release tag. Earlier notes about
-  `origin/main` lagging at `0.1.45` were superseded by the 0.1.57-0.1.60
-  release train.
+- `origin/main` now carries the `rust-v0.1.66` release tag. Earlier notes about
+  `origin/main` lagging at `0.1.45` were superseded by later release trains.
 - The `rust-v0.1.46` GitHub Release is metadata-only and is not marked latest;
   use a later full asset-bearing release once platform assets are available for
   that tag.
