@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AccountTokenUsageDailyBucket": {
       "properties": {
         "startDate": {
@@ -58,10 +57,11 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "dailyUsageBuckets": {
       "items": {
-        "$ref": "#/definitions/AccountTokenUsageDailyBucket"
+        "$ref": "#/$defs/AccountTokenUsageDailyBucket"
       },
       "type": [
         "array",
@@ -69,7 +69,7 @@
       ]
     },
     "summary": {
-      "$ref": "#/definitions/AccountTokenUsageSummary"
+      "$ref": "#/$defs/AccountTokenUsageSummary"
     }
   },
   "required": [

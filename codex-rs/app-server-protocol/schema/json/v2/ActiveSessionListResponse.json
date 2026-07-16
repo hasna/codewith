@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "ActiveSessionCapability": {
@@ -31,23 +30,19 @@
           ]
         },
         "authProfileKind": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AuthProfileKind"
-            }
-          ],
+          "$ref": "#/$defs/AuthProfileKind",
           "default": "unknown",
           "description": "Whether `authProfile` is the default root profile or a named profile."
         },
         "capabilities": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/ActiveSessionCapability"
+            "$ref": "#/$defs/ActiveSessionCapability"
           },
           "type": "array"
         },
         "cwd": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "displayName": {
           "type": [
@@ -56,11 +51,7 @@
           ]
         },
         "kind": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ActiveSessionPeerKind"
-            }
-          ],
+          "$ref": "#/$defs/ActiveSessionPeerKind",
           "default": "codewithSession"
         },
         "lastSeenAt": {
@@ -69,12 +60,12 @@
         },
         "peerId": {
           "default": "",
-          "description": "Active peer routing key returned by activeSession/list. For local Codewith sessions this matches thread_id; bridge peers may use a transport-scoped id.",
+          "description": "Active peer routing key returned by activeSession/list. For local\nCodewith sessions this matches thread_id; bridge peers may use a\ntransport-scoped id.",
           "type": "string"
         },
         "sessionId": {
           "default": "",
-          "description": "Live session instance id for the loaded thread. This is not a durable mailbox or remote machine id.",
+          "description": "Live session instance id for the loaded thread. This is not a durable\nmailbox or remote machine id.",
           "type": "string"
         },
         "threadId": {
@@ -83,9 +74,9 @@
         }
       },
       "required": [
+        "threadId",
         "cwd",
-        "lastSeenAt",
-        "threadId"
+        "lastSeenAt"
       ],
       "type": "object"
     },
@@ -100,38 +91,33 @@
     "AuthProfileKind": {
       "oneOf": [
         {
+          "const": "unknown",
           "description": "The source did not record auth profile selection.",
-          "enum": [
-            "unknown"
-          ],
           "type": "string"
         },
         {
+          "const": "default",
           "description": "The default root auth profile was selected explicitly or by runtime default.",
-          "enum": [
-            "default"
-          ],
           "type": "string"
         },
         {
+          "const": "named",
           "description": "A named auth profile was selected.",
-          "enum": [
-            "named"
-          ],
           "type": "string"
         }
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ActiveSessionPeer"
+        "$ref": "#/$defs/ActiveSessionPeer"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item.\nif None, there are no more items to return.",
       "type": [
         "string",
         "null"

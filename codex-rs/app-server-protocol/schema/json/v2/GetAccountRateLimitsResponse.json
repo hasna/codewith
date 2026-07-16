@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -72,10 +71,10 @@
           "type": "string"
         },
         "resetType": {
-          "$ref": "#/definitions/RateLimitResetType"
+          "$ref": "#/$defs/RateLimitResetType"
         },
         "status": {
-          "$ref": "#/definitions/RateLimitResetCreditStatus"
+          "$ref": "#/$defs/RateLimitResetCreditStatus"
         },
         "title": {
           "type": [
@@ -85,10 +84,10 @@
         }
       },
       "required": [
-        "grantedAt",
         "id",
         "resetType",
-        "status"
+        "status",
+        "grantedAt"
       ],
       "type": "object"
     },
@@ -110,7 +109,7 @@
         "credits": {
           "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known.",
           "items": {
-            "$ref": "#/definitions/RateLimitResetCredit"
+            "$ref": "#/$defs/RateLimitResetCredit"
           },
           "type": [
             "array",
@@ -135,7 +134,7 @@
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CreditsSnapshot"
+              "$ref": "#/$defs/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -145,7 +144,7 @@
         "individualLimit": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SpendControlLimitSnapshot"
+              "$ref": "#/$defs/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -167,7 +166,7 @@
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PlanType"
+              "$ref": "#/$defs/PlanType"
             },
             {
               "type": "null"
@@ -177,7 +176,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -187,7 +186,7 @@
         "rateLimitReachedType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitReachedType"
+              "$ref": "#/$defs/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -197,7 +196,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -252,16 +251,17 @@
       },
       "required": [
         "limit",
+        "used",
         "remainingPercent",
-        "resetsAt",
-        "used"
+        "resetsAt"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "accountIdentityFingerprint": {
-      "description": "Process-scoped opaque fingerprint of the authenticated account.\n\n`null` means the current ChatGPT credentials do not expose an account identifier. Clients must not display or log this value and must treat its representation as opaque.",
+      "description": "Process-scoped opaque fingerprint of the authenticated account.\n\n`null` means the current ChatGPT credentials do not expose an account identifier. Clients\nmust not display or log this value and must treat its representation as opaque.",
       "type": [
         "string",
         "null"
@@ -270,7 +270,7 @@
     "rateLimitResetCredits": {
       "anyOf": [
         {
-          "$ref": "#/definitions/RateLimitResetCreditsSummary"
+          "$ref": "#/$defs/RateLimitResetCreditsSummary"
         },
         {
           "type": "null"
@@ -278,16 +278,12 @@
       ]
     },
     "rateLimits": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/RateLimitSnapshot"
-        }
-      ],
+      "$ref": "#/$defs/RateLimitSnapshot",
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."
     },
     "rateLimitsByLimitId": {
       "additionalProperties": {
-        "$ref": "#/definitions/RateLimitSnapshot"
+        "$ref": "#/$defs/RateLimitSnapshot"
       },
       "description": "Multi-bucket view keyed by metered `limit_id` (for example, `codex`).",
       "type": [

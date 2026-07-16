@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ActiveSessionMessageDelivery": {
       "enum": [
         "queueOnly",
@@ -9,11 +8,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "delivery": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ActiveSessionMessageDelivery"
+          "$ref": "#/$defs/ActiveSessionMessageDelivery"
         },
         {
           "type": "null"
@@ -31,7 +31,7 @@
       ]
     },
     "senderThreadId": {
-      "description": "Claimed sender thread for attribution only. activeSession/send does not treat this as authentication or authorization.",
+      "description": "Claimed sender thread for attribution only. activeSession/send does not\ntreat this as authentication or authorization.",
       "type": [
         "string",
         "null"
@@ -45,7 +45,7 @@
       ]
     },
     "targetThreadId": {
-      "description": "Legacy local Codewith-thread target. target_peer_id is preferred for peers returned by activeSession/list.",
+      "description": "Legacy local Codewith-thread target. target_peer_id is preferred for\npeers returned by activeSession/list.",
       "type": [
         "string",
         "null"

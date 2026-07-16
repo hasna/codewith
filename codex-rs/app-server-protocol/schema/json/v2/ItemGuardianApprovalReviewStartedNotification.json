@@ -1,15 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/definitions/FileSystemSandboxEntry"
+            "$ref": "#/$defs/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -18,7 +17,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1.0,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -27,7 +26,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -37,7 +36,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -71,19 +70,17 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "path"
-              ],
+              "const": "path",
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -94,16 +91,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "glob_pattern"
-              ],
+              "const": "glob_pattern",
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "pattern",
-            "type"
+            "type",
+            "pattern"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -111,14 +106,12 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "special"
-              ],
+              "const": "special",
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/definitions/FileSystemSpecialPath"
+              "$ref": "#/$defs/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -133,15 +126,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/definitions/FileSystemAccessMode"
+          "$ref": "#/$defs/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/definitions/FileSystemPath"
+          "$ref": "#/$defs/FileSystemPath"
         }
       },
       "required": [
-        "access",
-        "path"
+        "path",
+        "access"
       ],
       "type": "object"
     },
@@ -150,9 +143,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "root"
-              ],
+              "const": "root",
               "type": "string"
             }
           },
@@ -165,9 +156,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "minimal"
-              ],
+              "const": "minimal",
               "type": "string"
             }
           },
@@ -180,9 +169,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "project_roots"
-              ],
+              "const": "project_roots",
               "type": "string"
             },
             "subpath": {
@@ -201,9 +188,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "tmpdir"
-              ],
+              "const": "tmpdir",
               "type": "string"
             }
           },
@@ -216,9 +201,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "slash_tmp"
-              ],
+              "const": "slash_tmp",
               "type": "string"
             }
           },
@@ -231,9 +214,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "type": "string"
             },
             "path": {
@@ -255,7 +236,7 @@
       ]
     },
     "GuardianApprovalReview": {
-      "description": "[UNSTABLE] Temporary approval auto-review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
+      "description": "[UNSTABLE] Temporary approval auto-review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
       "properties": {
         "rationale": {
           "type": [
@@ -266,7 +247,7 @@
         "riskLevel": {
           "anyOf": [
             {
-              "$ref": "#/definitions/GuardianRiskLevel"
+              "$ref": "#/$defs/GuardianRiskLevel"
             },
             {
               "type": "null"
@@ -274,12 +255,12 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/GuardianApprovalReviewStatus"
+          "$ref": "#/$defs/GuardianApprovalReviewStatus"
         },
         "userAuthorization": {
           "anyOf": [
             {
-              "$ref": "#/definitions/GuardianUserAuthorization"
+              "$ref": "#/$defs/GuardianUserAuthorization"
             },
             {
               "type": "null"
@@ -300,24 +281,22 @@
               "type": "string"
             },
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "source": {
-              "$ref": "#/definitions/GuardianCommandSource"
+              "$ref": "#/$defs/GuardianCommandSource"
             },
             "type": {
-              "enum": [
-                "command"
-              ],
+              "const": "command",
               "title": "CommandGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "command",
-            "cwd",
+            "type",
             "source",
-            "type"
+            "command",
+            "cwd"
           ],
           "title": "CommandGuardianApprovalReviewAction",
           "type": "object"
@@ -331,28 +310,26 @@
               "type": "array"
             },
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "program": {
               "type": "string"
             },
             "source": {
-              "$ref": "#/definitions/GuardianCommandSource"
+              "$ref": "#/$defs/GuardianCommandSource"
             },
             "type": {
-              "enum": [
-                "execve"
-              ],
+              "const": "execve",
               "title": "ExecveGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "argv",
-            "cwd",
-            "program",
+            "type",
             "source",
-            "type"
+            "program",
+            "argv",
+            "cwd"
           ],
           "title": "ExecveGuardianApprovalReviewAction",
           "type": "object"
@@ -360,26 +337,24 @@
         {
           "properties": {
             "cwd": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "files": {
               "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             },
             "type": {
-              "enum": [
-                "applyPatch"
-              ],
+              "const": "applyPatch",
               "title": "ApplyPatchGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "cwd",
-            "files",
-            "type"
+            "files"
           ],
           "title": "ApplyPatchGuardianApprovalReviewAction",
           "type": "object"
@@ -391,29 +366,28 @@
             },
             "port": {
               "format": "uint16",
-              "minimum": 0.0,
+              "maximum": 65535,
+              "minimum": 0,
               "type": "integer"
             },
             "protocol": {
-              "$ref": "#/definitions/NetworkApprovalProtocol"
+              "$ref": "#/$defs/NetworkApprovalProtocol"
             },
             "target": {
               "type": "string"
             },
             "type": {
-              "enum": [
-                "networkAccess"
-              ],
+              "const": "networkAccess",
               "title": "NetworkAccessGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "host",
-            "port",
-            "protocol",
+            "type",
             "target",
-            "type"
+            "host",
+            "protocol",
+            "port"
           ],
           "title": "NetworkAccessGuardianApprovalReviewAction",
           "type": "object"
@@ -445,17 +419,15 @@
               ]
             },
             "type": {
-              "enum": [
-                "mcpToolCall"
-              ],
+              "const": "mcpToolCall",
               "title": "McpToolCallGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "server",
-            "toolName",
-            "type"
+            "toolName"
           ],
           "title": "McpToolCallGuardianApprovalReviewAction",
           "type": "object"
@@ -463,7 +435,7 @@
         {
           "properties": {
             "permissions": {
-              "$ref": "#/definitions/RequestPermissionProfile"
+              "$ref": "#/$defs/RequestPermissionProfile"
             },
             "reason": {
               "type": [
@@ -472,16 +444,14 @@
               ]
             },
             "type": {
-              "enum": [
-                "requestPermissions"
-              ],
+              "const": "requestPermissions",
               "title": "RequestPermissionsGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "permissions",
-            "type"
+            "type",
+            "permissions"
           ],
           "title": "RequestPermissionsGuardianApprovalReviewAction",
           "type": "object"
@@ -541,7 +511,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -551,7 +521,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalNetworkPermissions"
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -562,13 +532,14 @@
       "type": "object"
     }
   },
-  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This\nshape is expected to change soon.",
   "properties": {
     "action": {
-      "$ref": "#/definitions/GuardianApprovalReviewAction"
+      "$ref": "#/$defs/GuardianApprovalReviewAction"
     },
     "review": {
-      "$ref": "#/definitions/GuardianApprovalReview"
+      "$ref": "#/$defs/GuardianApprovalReview"
     },
     "reviewId": {
       "description": "Stable identifier for this review.",
@@ -580,7 +551,7 @@
       "type": "integer"
     },
     "targetItemId": {
-      "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are - execve reviews, where a single command may contain multiple execve calls to review (only possible when using the shell_zsh_fork feature) - network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a target_item_id set to the CommandExecution item would be misleading because the review is about the network call, not the command execution. Therefore, target_item_id is set to None for network policy reviews.",
+      "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
       "type": [
         "string",
         "null"
@@ -594,12 +565,12 @@
     }
   },
   "required": [
-    "action",
-    "review",
-    "reviewId",
-    "startedAtMs",
     "threadId",
-    "turnId"
+    "turnId",
+    "startedAtMs",
+    "reviewId",
+    "review",
+    "action"
   ],
   "title": "ItemGuardianApprovalReviewStartedNotification",
   "type": "object"
