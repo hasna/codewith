@@ -24,8 +24,13 @@ pub(crate) fn prepare_realtime_backend_prompt(
 }
 
 fn current_user_first_name() -> String {
-    [whoami::realname(), whoami::username()]
+    first_name_from_results([whoami::realname(), whoami::username()])
+}
+
+fn first_name_from_results<E>(names: impl IntoIterator<Item = Result<String, E>>) -> String {
+    names
         .into_iter()
+        .filter_map(Result::ok)
         .filter_map(|name| name.split_whitespace().next().map(str::to_string))
         .find(|name| !name.is_empty())
         .unwrap_or_else(|| DEFAULT_USER_FIRST_NAME.to_string())
@@ -33,7 +38,10 @@ fn current_user_first_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::DEFAULT_USER_FIRST_NAME;
+    use super::first_name_from_results;
     use super::prepare_realtime_backend_prompt;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn prepare_realtime_backend_prompt_prefers_config_override() {
@@ -78,5 +86,15 @@ mod tests {
         assert!(prompt.contains("You are Codewith, a Hasna general-purpose agentic assistant"));
         assert!(prompt.contains("The user's name is "));
         assert!(!prompt.contains("{{ user_first_name }}"));
+    }
+
+    #[test]
+    fn user_first_name_falls_back_when_lookups_fail() {
+        let names = [
+            Err::<String, _>("real name unavailable"),
+            Err("username unavailable"),
+        ];
+
+        assert_eq!(first_name_from_results(names), DEFAULT_USER_FIRST_NAME);
     }
 }

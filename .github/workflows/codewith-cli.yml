@@ -63,6 +63,9 @@ jobs:
 
           cargo_args=(build --locked -p codex-cli --bin codewith)
           if [[ "${BUILD_PROFILE}" == "release" ]]; then
+            # Match the canonical release workflow's resource-safe Cargo defaults.
+            export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
             cargo_args+=(--release)
           fi
           cargo "${cargo_args[@]}"
