@@ -564,8 +564,9 @@ impl Codex {
         {
             let _ = models_manager.list_models(refresh_strategy).await;
         }
+        let models_manager_config = config.to_models_manager_config();
         let model = models_manager
-            .get_default_model(&config.model, refresh_strategy)
+            .get_default_model(&config.model, &models_manager_config, refresh_strategy)
             .await;
 
         // Resolve base instructions for the session. Priority order:
@@ -573,7 +574,7 @@ impl Codex {
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
         let model_info = models_manager
-            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .get_model_info(model.as_str(), &models_manager_config)
             .await;
         let multi_agent_version =
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);

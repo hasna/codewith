@@ -172,19 +172,25 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         Ok(self.build_available_models(remote_models))
     }
 
+    /// Resolve compatibility aliases whose effective target depends on provider and auth mode.
+    fn resolve_model_for_auth(&self, model: &str, config: &ModelsManagerConfig) -> String {
+        effective_model_for_auth(model, config, self.auth_manager()).to_string()
+    }
+
     // todo(aibrahim): should be visible to core only and sent on session_configured event
     /// Get the model identifier to use, refreshing according to the specified strategy.
     ///
-    /// If `model` is provided, returns it directly. Otherwise selects the default based on
-    /// auth mode and available models.
+    /// If `model` is provided, resolves any auth-scoped compatibility alias. Otherwise selects
+    /// the default based on auth mode and available models.
     async fn get_default_model(
         &self,
         model: &Option<String>,
+        config: &ModelsManagerConfig,
         refresh_strategy: RefreshStrategy,
     ) -> String {
         async move {
             if let Some(model) = model.as_ref() {
-                return model.to_string();
+                return self.resolve_model_for_auth(model, config);
             }
             default_model_from_available(self.list_models(refresh_strategy).await)
         }
@@ -201,7 +207,9 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     async fn get_model_info(&self, model: &str, config: &ModelsManagerConfig) -> ModelInfo {
         async move {
             let remote_models = self.get_remote_models().await;
-            let model_info = construct_model_info_from_candidates(model, &remote_models, config);
+            let effective_model = self.resolve_model_for_auth(model, config);
+            let model_info =
+                construct_model_info_from_candidates(&effective_model, &remote_models, config);
             if self
                 .auth_manager()
                 .and_then(AuthManager::auth_mode)
@@ -220,6 +228,23 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     ///
     /// Uses `Online` strategy to fetch latest models when ETags differ.
     async fn refresh_if_new_etag(&self, etag: String);
+}
+
+fn effective_model_for_auth<'a>(
+    model: &'a str,
+    config: &ModelsManagerConfig,
+    auth_manager: Option<&AuthManager>,
+) -> &'a str {
+    if model == "gpt-5.6"
+        && config.model_provider_id.as_deref() == Some("openai")
+        && auth_manager
+            .and_then(AuthManager::auth_mode)
+            .is_some_and(AuthMode::has_chatgpt_account)
+    {
+        "gpt-5.6-sol"
+    } else {
+        model
+    }
 }
 
 /// Shared model manager handle used across runtime services.
@@ -398,6 +423,7 @@ impl OpenAiModelsManager {
             });
         if should_use_remote_models_only {
             let mut models = models;
+            models.retain(|model| model.slug != "gpt-5.6");
             model_info::ensure_required_local_models(&mut models);
             *self.remote_models.write().await = models;
             return;

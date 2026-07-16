@@ -4088,6 +4088,44 @@ async fn turn_context_with_model_updates_model_fields() {
     );
 }
 
+#[tokio::test]
+async fn turn_context_with_bare_gpt_5_6_applies_auth_scoped_resolution() {
+    let (chatgpt_session, chatgpt_turn, _rx_event) =
+        make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |_config| {},
+        )
+        .await;
+    let chatgpt_updated = chatgpt_turn
+        .with_model(
+            "gpt-5.6".to_string(),
+            &chatgpt_session.services.models_manager,
+        )
+        .await;
+    let persisted_chatgpt_turn = chatgpt_updated.to_turn_context_item();
+
+    assert_eq!(chatgpt_updated.config.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(chatgpt_updated.collaboration_mode.model(), "gpt-5.6-sol");
+    assert_eq!(chatgpt_updated.model_info.slug, "gpt-5.6-sol");
+    assert_eq!(persisted_chatgpt_turn.model, "gpt-5.6-sol");
+    assert_eq!(
+        persisted_chatgpt_turn
+            .collaboration_mode
+            .as_ref()
+            .map(CollaborationMode::model),
+        Some("gpt-5.6-sol")
+    );
+
+    let (api_session, api_turn) = make_session_and_context().await;
+    let api_updated = api_turn
+        .with_model("gpt-5.6".to_string(), &api_session.services.models_manager)
+        .await;
+    assert_eq!(api_updated.config.model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(api_updated.collaboration_mode.model(), "gpt-5.6");
+    assert_eq!(api_updated.model_info.slug, "gpt-5.6");
+}
+
 #[test]
 fn falls_back_to_content_when_structured_is_null() {
     let ctr = McpCallToolResult {
