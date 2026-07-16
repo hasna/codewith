@@ -226,7 +226,7 @@ async fn semantic_history_overflow_fails_without_mutating_history() -> Result<()
     .await?;
     let codex = harness.test().codex.clone();
     codex
-        .inject_response_items(semantic_injected_history(8))
+        .inject_response_items(semantic_injected_history(/*item_count*/ 8))
         .await?;
 
     let compact_mock = responses::mount_v2_compaction_response_sequence_up_to(
@@ -396,7 +396,7 @@ async fn oversized_base_and_tool_overhead_fails_without_mutating_history() -> Re
     test.session_configured = new_thread.session_configured;
     let codex = test.codex.clone();
     codex
-        .inject_response_items(semantic_injected_history(4))
+        .inject_response_items(semantic_injected_history(/*item_count*/ 4))
         .await?;
 
     let compact_mock = responses::mount_v2_compaction_response_sequence_up_to(
