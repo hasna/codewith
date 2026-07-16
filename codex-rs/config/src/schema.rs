@@ -89,7 +89,10 @@ pub fn config_schema() -> Schema {
     let mut value = schema.to_value();
     remove_optional_null_types(&mut value);
     restore_flattened_config_maps(&mut value);
-    Schema::try_from(value).expect("config schema should remain a valid JSON schema")
+    match Schema::try_from(value) {
+        Ok(schema) => schema,
+        Err(error) => panic!("config schema should remain a valid JSON schema: {error}"),
+    }
 }
 
 fn restore_flattened_config_maps(value: &mut Value) {
