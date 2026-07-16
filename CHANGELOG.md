@@ -42,6 +42,30 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.66] - 2026-07-16
+
+Tag: `rust-v0.1.66`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.66>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66>
+Release status: prepared; tag and npm publication pending.
+
+Hotfix release for banked usage-limit resets and remote-compaction history
+preservation.
+
+### Added
+
+- Usage limits: `/usage` can now redeem an available banked reset, and a new
+  default-off `/config` toggle can automatically redeem an exact weekly reset
+  after Codewith revalidates the account, profile, credit, exhaustion window,
+  and reset generation immediately before consumption.
+
+### Fixed
+
+- Compaction: V1 and V2 remote compaction now stop when the provider rejects
+  the request for context overflow, preserving the complete unsummarized
+  semantic history and leaving live history unchanged instead of deleting an
+  older prefix before retrying.
+
 ## [0.1.65] - 2026-07-14
 
 Tag: `rust-v0.1.65`

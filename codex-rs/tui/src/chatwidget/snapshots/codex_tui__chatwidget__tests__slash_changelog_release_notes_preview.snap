@@ -6,10 +6,11 @@ expression: preview
 
   ## [Unreleased]
 
-  ## [0.1.65] - 2026-07-14
+  ## [0.1.66] - 2026-07-16
 
-  Tag: rust-v0.1.65
-  npm: https://www.npmjs.com/package/@hasna/codewith/v/0.1.65
-  (https://www.npmjs.com/package/@hasna/codewith/v/0.1.65)
-  Compare: https://github.com/hasna/codewith/compare/rust-v0.1.64...rust-v0.1.65
-  (https://github.com/hasna/codewith/compare/rust-v0.1.64...rust-v0.1.65)
+  Tag: rust-v0.1.66
+  npm: https://www.npmjs.com/package/@hasna/codewith/v/0.1.66
+  (https://www.npmjs.com/package/@hasna/codewith/v/0.1.66)
+  Compare: https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66
+  (https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66)
+  Release status: prepared; tag and npm publication pending.
