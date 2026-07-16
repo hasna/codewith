@@ -572,14 +572,14 @@ async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_au
         ..Default::default()
     };
 
-    for slug in [
-        "gpt-5.4",
-        "gpt-5.5",
-        "gpt-5.6",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "openai/gpt-5.5",
+    for (slug, expected_fallback_metadata) in [
+        ("gpt-5.4", false),
+        ("gpt-5.5", false),
+        ("gpt-5.6", true),
+        ("gpt-5.6-sol", false),
+        ("gpt-5.6-terra", false),
+        ("gpt-5.6-luna", false),
+        ("openai/gpt-5.5", false),
     ] {
         let model_info = manager.get_model_info(slug, &config).await;
         assert_eq!(
@@ -592,7 +592,10 @@ async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_au
             Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
             "{slug} should use the subscription-sized default max context window"
         );
-        assert!(!model_info.used_fallback_model_metadata);
+        assert_eq!(
+            model_info.used_fallback_model_metadata, expected_fallback_metadata,
+            "{slug} fallback metadata state"
+        );
     }
 }
 
@@ -930,6 +933,39 @@ async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_remo
     let models = manager.get_remote_models().await;
     assert_models_contain(&models, &remote_models);
     assert_required_bundled_models_available_once(&models, &required_models);
+}
+
+#[tokio::test]
+async fn chatgpt_remote_catalog_omission_injects_only_supported_gpt_5_6_variants() {
+    let remote_models = vec![remote_model(
+        "chatgpt-authoritative-model-info",
+        "ChatGPT Model Info",
+        /*priority*/ 10,
+    )];
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let gpt_5_6_models = manager
+        .list_models(RefreshStrategy::Offline)
+        .await
+        .into_iter()
+        .filter(|model| model.model.starts_with("gpt-5.6"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        gpt_5_6_models
+            .iter()
+            .map(|model| model.model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    );
+    assert!(gpt_5_6_models[0].is_default);
 }
 
 #[tokio::test]
