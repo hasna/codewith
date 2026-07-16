@@ -243,6 +243,7 @@ mod status_and_layout;
 mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
+mod usage_limit_reset_tests;
 mod webhook;
 mod worktree_display;
 

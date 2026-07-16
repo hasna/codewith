@@ -4485,6 +4485,16 @@
         }
       ]
     },
+    "UsageLimitToml": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_reset_enabled": {
+          "description": "When true, Codewith may consume one available reset credit after it confirms the weekly usage limit is exhausted.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "UsageSelfHealToml": {
       "additionalProperties": false,
       "properties": {
@@ -5592,6 +5602,15 @@
         }
       ],
       "description": "Collection of settings that are specific to the TUI."
+    },
+    "usage_limit": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/UsageLimitToml"
+        }
+      ],
+      "default": null,
+      "description": "Usage-limit reset behavior."
     },
     "usage_self_heal": {
       "allOf": [

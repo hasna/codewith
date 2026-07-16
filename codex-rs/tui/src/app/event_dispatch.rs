@@ -5,7 +5,10 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::app_event::AuthProfileSwitchReason;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
+use crate::app_event::RateLimitRefreshData;
+use crate::chatwidget::RateLimitResetCompletion;
 use crate::config_update::format_config_error;
 use crate::style::accent_color;
 #[cfg(target_os = "windows")]
@@ -15,6 +18,69 @@ use codex_model_provider_info::model_gateway_for_provider;
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    pub(super) async fn handle_auth_profile_switch_event(
+        &mut self,
+        profile: Option<String>,
+        reason: AuthProfileSwitchReason,
+        resume_queued_input: bool,
+        reset_generation: u64,
+    ) {
+        if !self
+            .chat_widget
+            .is_rate_limit_reset_generation_current(reset_generation)
+        {
+            self.chat_widget.add_error_message(
+                "Profile switch request expired during usage-limit recovery.".to_string(),
+            );
+            return;
+        }
+        if matches!(reason, AuthProfileSwitchReason::Manual)
+            && (self
+                .chat_widget
+                .automatic_usage_limit_reset_owns_failed_turn()
+                || self.chat_widget.manual_usage_limit_reset_is_active())
+        {
+            self.chat_widget.add_error_message(
+                "Profile switching is disabled while usage-limit reset recovery is in progress."
+                    .to_string(),
+            );
+            return;
+        }
+        self.submit_auth_profile_switch(profile, &reason, resume_queued_input)
+            .await;
+    }
+
+    pub(super) fn auth_profile_action_is_current(&mut self, reset_generation: u64) -> bool {
+        if self
+            .chat_widget
+            .is_rate_limit_reset_generation_current(reset_generation)
+            && !self
+                .chat_widget
+                .automatic_usage_limit_reset_owns_failed_turn()
+            && !self.chat_widget.manual_usage_limit_reset_is_active()
+        {
+            return true;
+        }
+        self.chat_widget
+            .add_error_message("Profile action expired during usage-limit recovery.".to_string());
+        false
+    }
+
+    pub(super) fn auth_profile_event_is_current(&mut self, event: &AppEvent) -> bool {
+        let is_current = event
+            .auth_profile_action_reset_generation()
+            .is_none_or(|reset_generation| self.auth_profile_action_is_current(reset_generation));
+        if !is_current
+            && let AppEvent::AuthProfileReloginFinished {
+                profile, result, ..
+            } = event
+        {
+            self.chat_widget
+                .finish_selected_auth_profile_credential_mutation(profile, result.is_ok());
+        }
+        is_current
+    }
+
     fn active_config_profile(&self) -> Option<&str> {
         match &self.config.config_layer_stack.get_active_user_layer()?.name {
             codex_app_server_protocol::ConfigLayerSource::User {
@@ -98,6 +164,9 @@ impl App {
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if !self.auth_profile_event_is_current(&event) {
+            return Ok(AppRunControl::Continue);
+        }
         match event {
             AppEvent::NewSession => {
                 self.start_fresh_session_with_summary_hint(
@@ -1391,6 +1460,40 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
+            AppEvent::OpenRateLimitResetConfirm => {
+                self.chat_widget.start_rate_limit_reset_picker();
+            }
+            AppEvent::ConsumeRateLimitResetCredit { attempt } => {
+                if self
+                    .chat_widget
+                    .start_rate_limit_reset_consumption(&attempt)
+                {
+                    self.consume_rate_limit_reset_credit(app_server, attempt);
+                }
+            }
+            AppEvent::CancelRateLimitResetCreditSelection { generation } => {
+                self.chat_widget
+                    .cancel_manual_rate_limit_reset_selection(generation);
+            }
+            AppEvent::RateLimitResetCreditConsumed { attempt, result } => match self
+                .chat_widget
+                .finish_rate_limit_reset_consumption(attempt, result)
+            {
+                RateLimitResetCompletion::Ignore => {}
+                RateLimitResetCompletion::Retry(attempt) => {
+                    self.app_event_tx
+                        .send(AppEvent::ConsumeRateLimitResetCredit { attempt });
+                }
+                RateLimitResetCompletion::Verify(attempt) => {
+                    self.refresh_rate_limits(
+                        app_server,
+                        RateLimitRefreshOrigin::PostReset {
+                            generation: attempt.generation,
+                        },
+                        RateLimitRefreshTarget::Selected,
+                    );
+                }
+            },
             AppEvent::RateLimitsLoaded {
                 origin,
                 target,
@@ -1515,55 +1618,98 @@ impl App {
                 profile,
                 reason,
                 resume_queued_input,
+                reset_generation,
             } => {
-                self.submit_auth_profile_switch(profile, &reason, resume_queued_input)
-                    .await;
+                self.handle_auth_profile_switch_event(
+                    profile,
+                    reason,
+                    resume_queued_input,
+                    reset_generation,
+                )
+                .await;
             }
-            AppEvent::OpenAuthProfileRenamePrompt { profile } => {
-                self.chat_widget.open_auth_profile_rename_prompt(profile);
+            AppEvent::OpenAuthProfileRenamePrompt {
+                profile,
+                reset_generation,
+            } => {
+                self.chat_widget
+                    .open_auth_profile_rename_prompt(profile, reset_generation);
             }
-            AppEvent::OpenAuthProfileSettings { profile } => {
-                self.chat_widget.open_auth_profile_settings_popup(profile);
+            AppEvent::OpenAuthProfileSettings {
+                profile,
+                reset_generation,
+            } => {
+                self.chat_widget
+                    .open_auth_profile_settings_popup(profile, reset_generation);
             }
-            AppEvent::OpenAuthProfileDeleteConfirm { profile } => {
-                self.chat_widget.open_auth_profile_delete_confirm(profile);
+            AppEvent::OpenAuthProfileDeleteConfirm {
+                profile,
+                reset_generation,
+            } => {
+                self.chat_widget
+                    .open_auth_profile_delete_confirm(profile, reset_generation);
             }
-            AppEvent::ReloginAuthProfile { profile } => {
-                self.relogin_auth_profile(profile);
+            AppEvent::ReloginAuthProfile {
+                profile,
+                reset_generation,
+            } => {
+                self.relogin_auth_profile(profile, reset_generation);
             }
-            AppEvent::AuthProfileReloginFinished { profile, result } => {
+            AppEvent::AuthProfileReloginFinished {
+                profile,
+                result,
+                reset_generation: _,
+            } => {
                 self.finish_auth_profile_relogin(profile, result);
             }
-            AppEvent::OpenAuthProfileLoginPrompt => {
-                self.chat_widget.open_auth_profile_login_prompt();
+            AppEvent::OpenAuthProfileLoginPrompt { reset_generation } => {
+                self.chat_widget
+                    .open_auth_profile_login_prompt(reset_generation);
             }
             AppEvent::OpenAuthProfileNamePrompt {
                 subscription_provider,
+                reset_generation,
             } => {
                 self.chat_widget
-                    .open_auth_profile_name_prompt(subscription_provider);
+                    .open_auth_profile_name_prompt(subscription_provider, reset_generation);
             }
             AppEvent::LoginNewAuthProfile {
                 profile,
                 subscription_provider,
+                reset_generation,
             } => {
-                self.chat_widget
-                    .start_auth_profile_login(profile, subscription_provider);
+                self.chat_widget.start_auth_profile_login(
+                    profile,
+                    subscription_provider,
+                    reset_generation,
+                );
             }
             AppEvent::AuthProfileLoginCompleted {
                 profile,
                 success,
                 error,
+                reset_generation: _,
             } => {
                 self.complete_auth_profile_login(profile, success, error);
             }
-            AppEvent::RenameAuthProfile { old_name, new_name } => {
+            AppEvent::RenameAuthProfile {
+                old_name,
+                new_name,
+                reset_generation: _,
+            } => {
                 self.rename_auth_profile(old_name, new_name);
             }
-            AppEvent::DeleteAuthProfile { profile } => {
+            AppEvent::DeleteAuthProfile {
+                profile,
+                reset_generation: _,
+            } => {
                 self.delete_auth_profile(profile);
             }
-            AppEvent::MoveAuthProfile { profile, direction } => {
+            AppEvent::MoveAuthProfile {
+                profile,
+                direction,
+                reset_generation: _,
+            } => {
                 self.move_auth_profile(profile, direction);
             }
             AppEvent::UpdatePersonality(personality) => {
@@ -3162,7 +3308,7 @@ impl App {
         origin: RateLimitRefreshOrigin,
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<RateLimitRefreshData, String>,
     ) -> RateLimitRefreshCompletion {
         let is_current_profile = auth_profile == self.config.selected_auth_profile;
         let heartbeat_profile = matches!(origin, RateLimitRefreshOrigin::Heartbeat)
@@ -3176,6 +3322,16 @@ impl App {
             tracing::debug!(
                 request_id,
                 "discarding superseded /usage rate-limit refresh result"
+            );
+            return RateLimitRefreshCompletion::None;
+        }
+        if !self
+            .chat_widget
+            .is_rate_limit_reset_refresh_current(&origin)
+        {
+            tracing::debug!(
+                ?origin,
+                "discarding stale or wrong-phase rate-limit reset refresh result"
             );
             return RateLimitRefreshCompletion::None;
         }
@@ -3202,17 +3358,74 @@ impl App {
                 RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
                     RateLimitRefreshCompletion::None
                 }
+                RateLimitRefreshOrigin::ResetPicker { generation } => {
+                    self.chat_widget.finish_rate_limit_reset_picker(
+                        generation,
+                        Err("Reset refresh was superseded by an auth profile change".to_string()),
+                    );
+                    RateLimitRefreshCompletion::None
+                }
+                RateLimitRefreshOrigin::AutoResetCheck { generation } => {
+                    self.chat_widget.finish_usage_limit_auto_reset_check(
+                        generation,
+                        Err("Reset check was superseded by an auth profile change".to_string()),
+                    );
+                    RateLimitRefreshCompletion::None
+                }
+                RateLimitRefreshOrigin::PostReset { generation } => {
+                    self.chat_widget.finish_post_reset_refresh(
+                        generation,
+                        Err(
+                            "Reset verification was superseded by an auth profile change"
+                                .to_string(),
+                        ),
+                    );
+                    RateLimitRefreshCompletion::None
+                }
             };
             return completion;
         }
 
         match result {
-            Ok(snapshots) => {
+            Ok(data) => {
                 if matches!(origin, RateLimitRefreshOrigin::Heartbeat) {
                     self.chat_widget
                         .record_auth_profile_usage_heartbeat_success(heartbeat_profile);
                 }
+                if is_current_profile
+                    && !self
+                        .chat_widget
+                        .rate_limit_reset_refresh_account_is_current(
+                            &origin,
+                            data.account_identity_fingerprint.as_deref(),
+                        )
+                {
+                    if let RateLimitRefreshOrigin::PostReset { generation } = origin {
+                        self.chat_widget.finish_post_reset_refresh(
+                            generation,
+                            Err(
+                                "Reset verification was superseded by an authenticated account change"
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                    return RateLimitRefreshCompletion::None;
+                }
+                let account_identity_fingerprint = data.account_identity_fingerprint;
+                let reset_credits = data.reset_credits.clone();
+                let snapshots = data.snapshots;
                 if is_current_profile {
+                    self.chat_widget
+                        .on_rate_limit_account_identity(account_identity_fingerprint);
+                    if matches!(
+                        origin,
+                        RateLimitRefreshOrigin::AutoResetCheck { .. }
+                            | RateLimitRefreshOrigin::PostReset { .. }
+                    ) {
+                        self.chat_widget
+                            .begin_authoritative_selected_rate_limit_refresh();
+                    }
+                    self.chat_widget.on_rate_limit_reset_credits(reset_credits);
                     for snapshot in snapshots {
                         self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                     }
@@ -3234,6 +3447,21 @@ impl App {
                         self.chat_widget
                             .finish_status_rate_limit_refresh(request_id);
                         RateLimitRefreshCompletion::None
+                    }
+                    RateLimitRefreshOrigin::ResetPicker { generation } => {
+                        self.chat_widget
+                            .finish_rate_limit_reset_picker(generation, Ok(()));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::AutoResetCheck { generation } => {
+                        self.chat_widget
+                            .finish_usage_limit_auto_reset_check(generation, Ok(()));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::PostReset { generation } => {
+                        self.chat_widget
+                            .finish_post_reset_refresh(generation, Ok(()));
+                        RateLimitRefreshCompletion::ScheduleFrame
                     }
                 }
             }
@@ -3267,6 +3495,21 @@ impl App {
                     }
                     RateLimitRefreshOrigin::StartupPrefetch | RateLimitRefreshOrigin::Heartbeat => {
                         RateLimitRefreshCompletion::None
+                    }
+                    RateLimitRefreshOrigin::ResetPicker { generation } => {
+                        self.chat_widget
+                            .finish_rate_limit_reset_picker(generation, Err(err));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::AutoResetCheck { generation } => {
+                        self.chat_widget
+                            .finish_usage_limit_auto_reset_check(generation, Err(err));
+                        RateLimitRefreshCompletion::ScheduleFrame
+                    }
+                    RateLimitRefreshOrigin::PostReset { generation } => {
+                        self.chat_widget
+                            .finish_post_reset_refresh(generation, Err(err));
+                        RateLimitRefreshCompletion::ScheduleFrame
                     }
                 }
             }

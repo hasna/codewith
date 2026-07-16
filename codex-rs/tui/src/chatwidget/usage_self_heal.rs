@@ -20,6 +20,7 @@ pub(super) struct UsageSelfHealState {
 struct UsageSelfHealSubmittedTurn {
     user_message: UserMessage,
     history_record: UserMessageHistoryRecord,
+    shell_escape_policy: ShellEscapePolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -39,10 +40,20 @@ impl ChatWidget {
         &mut self,
         user_message: &UserMessage,
         history_record: &UserMessageHistoryRecord,
+        shell_escape_policy: ShellEscapePolicy,
     ) {
+        if self.pending_usage_limit_auto_reset_check.is_none()
+            && self.pending_rate_limit_reset_consumption.is_none()
+            && self.rate_limit_reset_in_flight.is_none()
+            && self.rate_limit_reset_retry.is_none()
+            && self.pending_post_reset_refresh.is_none()
+        {
+            self.automatic_reset_opted_out_generation = None;
+        }
         self.usage_self_heal.last_submitted_turn = Some(UsageSelfHealSubmittedTurn {
             user_message: user_message.clone(),
             history_record: history_record.clone(),
+            shell_escape_policy,
         });
     }
 
@@ -50,6 +61,30 @@ impl ChatWidget {
         self.usage_self_heal.last_submitted_turn = None;
         self.usage_self_heal.pending_retry = None;
         self.usage_self_heal.consecutive_retries = 0;
+    }
+
+    pub(super) fn prepare_for_usage_limit_reset(&mut self) {
+        self.usage_self_heal.pending_retry = None;
+    }
+
+    pub(super) fn resume_after_usage_limit_reset(&mut self) -> bool {
+        let Some(submitted) = self.usage_self_heal.last_submitted_turn.take() else {
+            return false;
+        };
+        self.usage_self_heal.pending_retry = None;
+        self.usage_self_heal.consecutive_retries = 0;
+        self.input_queue.queued_user_messages.push_front(
+            QueuedUserMessage::new_with_shell_escape_policy(
+                submitted.user_message,
+                QueuedInputAction::Plain,
+                submitted.shell_escape_policy,
+            ),
+        );
+        self.input_queue
+            .queued_user_message_history_records
+            .push_front(submitted.history_record);
+        self.refresh_pending_input_preview();
+        self.maybe_send_next_queued_input()
     }
 
     pub(super) fn maybe_schedule_usage_self_heal_retry(
@@ -110,12 +145,13 @@ impl ChatWidget {
         }
 
         self.usage_self_heal.last_submitted_turn = Some(pending.submitted.clone());
-        self.input_queue
-            .queued_user_messages
-            .push_front(QueuedUserMessage::new(
+        self.input_queue.queued_user_messages.push_front(
+            QueuedUserMessage::new_with_shell_escape_policy(
                 pending.submitted.user_message,
                 QueuedInputAction::Plain,
-            ));
+                pending.submitted.shell_escape_policy,
+            ),
+        );
         self.input_queue
             .queued_user_message_history_records
             .push_front(pending.submitted.history_record);

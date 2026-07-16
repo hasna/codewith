@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ConsumeAccountRateLimitResetCreditOutcome": {
+      "oneOf": [
+        {
+          "description": "A reset credit was consumed and the eligible rate-limit windows were reset.",
+          "enum": [
+            "reset"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No current rate-limit window is eligible for a reset.",
+          "enum": [
+            "nothingToReset"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The account has no earned reset credits available.",
+          "enum": [
+            "noCredit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The same idempotency key already completed a reset successfully.",
+          "enum": [
+            "alreadyRedeemed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The authenticated account no longer matches the account that selected the credit.",
+          "enum": [
+            "accountChanged"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The backend returned an unrecognized reset outcome.",
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "accountIdentityFingerprint": {
+      "description": "Opaque equality-only fingerprint of the account resolved for this request.",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/definitions/ConsumeAccountRateLimitResetCreditOutcome"
+    }
+  },
+  "required": [
+    "accountIdentityFingerprint",
+    "outcome"
+  ],
+  "title": "ConsumeAccountRateLimitResetCreditResponse",
+  "type": "object"
+}
