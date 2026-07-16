@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_login::CodexAuth;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::ByteRange;
@@ -464,5 +465,96 @@ async fn resume_model_switch_is_not_duplicated_after_pre_turn_override() -> Resu
         .count();
     assert_eq!(model_switch_count, 1);
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chatgpt_resume_migrates_legacy_bare_gpt_5_6_to_sol() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut legacy_builder = test_codex().with_model("gpt-5.6");
+    let legacy = legacy_builder.build(&server).await?;
+    assert_eq!(legacy.session_configured.model, "gpt-5.6");
+
+    let legacy_request = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-legacy-gpt-5.6"),
+            ev_assistant_message("msg-legacy-gpt-5.6", "Legacy bare model"),
+            ev_completed("resp-legacy-gpt-5.6"),
+        ]),
+    )
+    .await;
+    legacy
+        .codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "Persist the legacy model".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&legacy.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(
+        legacy_request.single_request().body_json()["model"],
+        "gpt-5.6"
+    );
+
+    let home = legacy.home.clone();
+    let rollout_path = legacy
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    drop(legacy);
+
+    let mut resume_builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model("gpt-5.6");
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+
+    assert_eq!(resumed.session_configured.model, "gpt-5.6-sol");
+
+    let request_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resumed-gpt-5.6-sol"),
+            ev_assistant_message("msg-resumed-gpt-5.6-sol", "Resumed with Sol"),
+            ev_completed("resp-resumed-gpt-5.6-sol"),
+        ]),
+    )
+    .await;
+    resumed
+        .codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "Use the migrated model".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(
+        request_mock.single_request().body_json()["model"],
+        "gpt-5.6-sol"
+    );
     Ok(())
 }

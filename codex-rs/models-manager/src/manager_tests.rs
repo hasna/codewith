@@ -285,6 +285,94 @@ fn openai_manager_for_tests_with_provider_key(
     )
 }
 
+#[tokio::test]
+async fn chatgpt_explicit_bare_gpt_5_6_resolves_to_sol() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6-sol");
+}
+
+#[tokio::test]
+async fn api_key_explicit_bare_gpt_5_6_remains_unchanged() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests_with_auth(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6");
+}
+
+#[tokio::test]
+async fn chatgpt_model_resolution_only_migrates_exact_bare_openai_gpt_5_6() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+    let openai_config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let migrated = manager.get_model_info("gpt-5.6", &openai_config).await;
+    assert_eq!(migrated.slug, "gpt-5.6-sol");
+
+    for model in [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6",
+    ] {
+        let resolved = manager.get_model_info(model, &openai_config).await;
+        assert_eq!(resolved.slug, model);
+    }
+
+    let custom_config = ModelsManagerConfig {
+        model_provider_id: Some("custom-openai-compatible".to_string()),
+        ..Default::default()
+    };
+    let custom_default = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &custom_config,
+            RefreshStrategy::Offline,
+        )
+        .await;
+    assert_eq!(custom_default, "gpt-5.6");
+    let custom_info = manager.get_model_info("gpt-5.6", &custom_config).await;
+    assert_eq!(custom_info.slug, "gpt-5.6");
+}
+
 fn openai_manager_for_tests_with_provider_key_and_catalog(
     codex_home: std::path::PathBuf,
     provider_cache_key: String,
@@ -575,7 +663,7 @@ async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_au
     for (slug, expected_fallback_metadata) in [
         ("gpt-5.4", false),
         ("gpt-5.5", false),
-        ("gpt-5.6", true),
+        ("gpt-5.6", false),
         ("gpt-5.6-sol", false),
         ("gpt-5.6-terra", false),
         ("gpt-5.6-luna", false),
