@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(QWEN_PROVIDER_ID, "qwen");
         assert_eq!(
             QWEN_BASE_URL,
-            "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1"
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
         );
         assert_eq!(XAI_PROVIDER_ID, "xai");
         assert_eq!(XAI_BASE_URL, "https://api.x.ai/v1");

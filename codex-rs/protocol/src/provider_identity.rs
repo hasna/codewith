@@ -34,8 +34,7 @@ pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub const QWEN_PROVIDER_ID: &str = "qwen";
-pub const QWEN_BASE_URL: &str =
-    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+pub const QWEN_BASE_URL: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 
 pub const XAI_PROVIDER_ID: &str = "xai";
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
