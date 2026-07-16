@@ -85,7 +85,7 @@ impl JsonSchema for ReasoningEffort {
                 ),
             );
             schema.insert("minLength".to_string(), Value::Number(1.into()));
-            schema.into()
+            Schema::from(schema)
         }
     }
 }
@@ -735,7 +735,7 @@ mod tests {
                 ),
             );
             schema.insert("minLength".to_string(), Value::Number(1.into()));
-            schema.into()
+            Schema::from(schema)
         });
     }
 

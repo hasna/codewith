@@ -2756,6 +2756,28 @@
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
+              "const": "account/rateLimitResetCredit/consume",
+              "title": "Account/rateLimitResetCredit/consumeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ConsumeAccountRateLimitResetCreditParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Account/rateLimitResetCredit/consumeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
               "const": "account/usage/read",
               "title": "Account/usage/readRequestMethod",
               "type": "string"
@@ -10003,6 +10025,92 @@
         ],
         "type": "object"
       },
+      "ConsumeAccountRateLimitResetCreditOutcome": {
+        "oneOf": [
+          {
+            "const": "reset",
+            "description": "A reset credit was consumed and the eligible rate-limit windows were reset.",
+            "type": "string"
+          },
+          {
+            "const": "nothingToReset",
+            "description": "No current rate-limit window is eligible for a reset.",
+            "type": "string"
+          },
+          {
+            "const": "noCredit",
+            "description": "The account has no earned reset credits available.",
+            "type": "string"
+          },
+          {
+            "const": "alreadyRedeemed",
+            "description": "The same idempotency key already completed a reset successfully.",
+            "type": "string"
+          },
+          {
+            "const": "accountChanged",
+            "description": "The authenticated account no longer matches the account that selected the credit.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "The backend returned an unrecognized reset outcome.",
+            "type": "string"
+          }
+        ]
+      },
+      "ConsumeAccountRateLimitResetCreditParams": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "authProfile": {
+            "default": null,
+            "description": "Auth profile used for this reset. `null` selects the default root auth;\nomission leaves the app-server's selected auth profile unchanged.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "creditId": {
+            "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedAccountIdentityFingerprint": {
+            "description": "Required opaque account fingerprint from the read that selected this reset credit.",
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "expectedAccountIdentityFingerprint"
+        ],
+        "title": "ConsumeAccountRateLimitResetCreditParams",
+        "type": "object"
+      },
+      "ConsumeAccountRateLimitResetCreditResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "accountIdentityFingerprint": {
+            "description": "Opaque equality-only fingerprint of the account resolved for this request.",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/definitions/v2/ConsumeAccountRateLimitResetCreditOutcome"
+          }
+        },
+        "required": [
+          "outcome",
+          "accountIdentityFingerprint"
+        ],
+        "title": "ConsumeAccountRateLimitResetCreditResponse",
+        "type": "object"
+      },
       "ContentItem": {
         "oneOf": [
           {
@@ -11271,6 +11379,10 @@
               "string",
               "null"
             ]
+          },
+          "includeResetCreditDetails": {
+            "description": "Include detailed reset-credit rows even when no credits remain available.",
+            "type": "boolean"
           }
         },
         "title": "GetAccountRateLimitsParams",
@@ -11279,6 +11391,23 @@
       "GetAccountRateLimitsResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "accountIdentityFingerprint": {
+            "description": "Process-scoped opaque fingerprint of the authenticated account.\n\n`null` means the current ChatGPT credentials do not expose an account identifier. Clients\nmust not display or log this value and must treat its representation as opaque.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rateLimitResetCredits": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/RateLimitResetCreditsSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "rateLimits": {
             "$ref": "#/definitions/v2/RateLimitSnapshot",
             "description": "Backward-compatible single-bucket view; mirrors the historical payload."
@@ -15957,6 +16086,87 @@
           "workspace_member_credits_depleted",
           "workspace_owner_usage_limit_reached",
           "workspace_member_usage_limit_reached"
+        ],
+        "type": "string"
+      },
+      "RateLimitResetCredit": {
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "grantedAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "resetType": {
+            "$ref": "#/definitions/v2/RateLimitResetType"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/RateLimitResetCreditStatus"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "resetType",
+          "status",
+          "grantedAt"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetCreditStatus": {
+        "enum": [
+          "available",
+          "redeeming",
+          "redeemed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "RateLimitResetCreditsSummary": {
+        "properties": {
+          "availableCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "credits": {
+            "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known.",
+            "items": {
+              "$ref": "#/definitions/v2/RateLimitResetCredit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "availableCount"
+        ],
+        "type": "object"
+      },
+      "RateLimitResetType": {
+        "enum": [
+          "codexRateLimits",
+          "unknown"
         ],
         "type": "string"
       },

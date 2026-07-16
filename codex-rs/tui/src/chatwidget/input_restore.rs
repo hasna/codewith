@@ -170,7 +170,11 @@ impl ChatWidget {
             if !pending_steers.is_empty() {
                 let (user_message, history_record) =
                     merge_user_messages_with_history_record(pending_steers);
-                self.resubmit_queued_user_message_with_history_record(user_message, history_record);
+                self.resubmit_queued_user_message_with_history_record(
+                    user_message,
+                    history_record,
+                    ShellEscapePolicy::Allow,
+                );
             } else if let Some(combined) = self.drain_pending_messages_for_restore() {
                 self.restore_user_message_to_composer(combined);
             }

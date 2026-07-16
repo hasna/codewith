@@ -248,7 +248,9 @@ pub(super) async fn make_chatwidget_manual(
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        runtime_model_provider_base_url: None,
+        runtime_model_provider_base_url: Some(
+            codex_model_provider_info::CHATGPT_CODEX_BASE_URL.to_string(),
+        ),
         initial_plan_type: None,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
@@ -257,6 +259,7 @@ pub(super) async fn make_chatwidget_manual(
         session_telemetry,
     };
     let mut widget = ChatWidget::new_with_op_target(common, super::CodexOpTarget::Direct(op_tx));
+    widget.rate_limit_reset_account_identity_fingerprint = Some("sha256:test-account".to_string());
     widget.transcript.active_cell = None;
     widget.transcript.active_cell_revision = 0;
     widget.normal_placeholder_text = "Ask Codewith to do anything".to_string();

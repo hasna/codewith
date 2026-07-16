@@ -878,6 +878,38 @@
       ],
       "type": "object"
     },
+    "ConsumeAccountRateLimitResetCreditParams": {
+      "properties": {
+        "authProfile": {
+          "default": null,
+          "description": "Auth profile used for this reset. `null` selects the default root auth;\nomission leaves the app-server's selected auth profile unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "creditId": {
+          "description": "Opaque reset-credit identifier to redeem. When omitted, the backend selects the next\navailable credit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedAccountIdentityFingerprint": {
+          "description": "Required opaque account fingerprint from the read that selected this reset credit.",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when\nretrying that attempt.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "expectedAccountIdentityFingerprint"
+      ],
+      "type": "object"
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -1661,6 +1693,10 @@
             "string",
             "null"
           ]
+        },
+        "includeResetCreditDetails": {
+          "description": "Include detailed reset-credit rows even when no credits remain available.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -8993,6 +9029,28 @@
         "id"
       ],
       "title": "Account/rateLimits/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "account/rateLimitResetCredit/consume",
+          "title": "Account/rateLimitResetCredit/consumeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ConsumeAccountRateLimitResetCreditParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Account/rateLimitResetCredit/consumeRequest",
       "type": "object"
     },
     {

@@ -344,6 +344,22 @@ impl SlashCommand {
         }
     }
 
+    /// Whether this command is read-only and safe while an automatic usage-limit reset owns the
+    /// failed turn.
+    pub fn available_during_usage_limit_reset(self) -> bool {
+        matches!(
+            self,
+            SlashCommand::Copy
+                | SlashCommand::Diff
+                | SlashCommand::Status
+                | SlashCommand::Usage
+                | SlashCommand::Stats
+                | SlashCommand::Changelog
+                | SlashCommand::DebugConfig
+                | SlashCommand::Rollout
+        )
+    }
+
     /// If this command is a backwards-compatible duplicate, return the visible command it aliases.
     pub fn hidden_alias_target(self) -> Option<SlashCommand> {
         match self {
@@ -383,6 +399,7 @@ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
 mod tests {
     use pretty_assertions::assert_eq;
     use std::str::FromStr;
+    use strum::IntoEnumIterator;
 
     use super::SlashCommand;
 
@@ -602,6 +619,29 @@ mod tests {
         assert!(SlashCommand::Recap.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
         assert!(SlashCommand::Webhook.available_during_task());
+    }
+
+    #[test]
+    fn automatic_usage_limit_reset_allows_only_read_only_commands() {
+        let available = [
+            SlashCommand::Copy,
+            SlashCommand::Diff,
+            SlashCommand::Status,
+            SlashCommand::Usage,
+            SlashCommand::Stats,
+            SlashCommand::Changelog,
+            SlashCommand::DebugConfig,
+            SlashCommand::Rollout,
+        ];
+
+        for command in SlashCommand::iter() {
+            assert_eq!(
+                command.available_during_usage_limit_reset(),
+                available.contains(&command),
+                "unexpected automatic-reset availability for /{}",
+                command.command()
+            );
+        }
     }
 
     #[test]

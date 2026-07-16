@@ -26,7 +26,7 @@ fn enable_test_ambient_pet(chat: &mut ChatWidget) {
     chat.install_test_ambient_pet_for_tests(/*animations_enabled*/ false);
 }
 
-fn save_test_auth_profile(chat: &ChatWidget, name: &str) {
+pub(super) fn save_test_auth_profile(chat: &ChatWidget, name: &str) {
     save_auth_profile(
         &chat.config.codex_home,
         AuthCredentialsStoreMode::File,
@@ -148,7 +148,7 @@ fn status_line_test_schedule_run(
     }
 }
 
-fn configure_test_session(chat: &mut ChatWidget) {
+pub(super) fn configure_test_session(chat: &mut ChatWidget) {
     let rollout_file = NamedTempFile::new().unwrap();
     chat.handle_thread_session(crate::session_state::ThreadSessionState {
         thread_id: ThreadId::new(),
@@ -1436,6 +1436,7 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1596,6 +1597,7 @@ async fn cached_exhausted_limit_auto_switches_before_next_prompt_after_being_ena
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1664,6 +1666,7 @@ async fn stopped_usage_limited_turn_auto_switches_before_next_prompt_after_being
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1810,6 +1813,7 @@ async fn exhausted_limit_before_session_configured_auto_switches_when_prompt_dra
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1858,6 +1862,7 @@ async fn auth_profile_auto_switch_without_alternate_does_not_consume_cached_trig
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1942,6 +1947,7 @@ async fn exhausted_weekly_limit_auto_switches_to_next_auth_profile() {
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
@@ -1994,6 +2000,7 @@ async fn exhausted_auto_switch_uses_enabled_window_when_earlier_exhausted_window
             profile,
             reason,
             resume_queued_input,
+            ..
         }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
             assert_eq!(
