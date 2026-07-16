@@ -42,6 +42,24 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.67] - 2026-07-16
+
+Tag: `rust-v0.1.67`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.67>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.66...rust-v0.1.67>
+
+Hotfix release for ChatGPT subscription GPT-5.6 model compatibility. This
+release carries forward the banked usage-reset controls and remote-compaction
+history preservation shipped in `0.1.66`.
+
+### Fixed
+
+- Model selection: removed the unsupported bare `gpt-5.6` entry from ChatGPT
+  model catalogs and defaults, and normalized exact legacy ChatGPT/OpenAI
+  selections to `gpt-5.6-sol` across startup, resume, per-turn switching, and
+  spawned agents. OpenAI API-key profiles and custom-provider model semantics
+  remain unchanged.
+
 ## [0.1.66] - 2026-07-16
 
 Tag: `rust-v0.1.66`
