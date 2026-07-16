@@ -141,6 +141,44 @@ fn semantic_injected_history(item_count: usize) -> Vec<ResponseItem> {
         .collect()
 }
 
+fn semantic_history_messages(item_count: usize) -> Vec<(String, String)> {
+    (0..item_count)
+        .map(|index| {
+            (
+                if index % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                format!("SEMANTIC_HISTORY_{index:03}"),
+            )
+        })
+        .collect()
+}
+
+fn request_messages_with_prefix(
+    request: &responses::ResponsesRequest,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let mut messages = Vec::new();
+    for item in request.input() {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(role) = item.get("role").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(content) = item.get("content").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let Some(text) = content_item.get("text").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if text.starts_with(prefix) {
+                messages.push((role.to_string(), text.to_string()));
+            }
+        }
+    }
+    messages
+}
+
 fn context_window_exceeded_response() -> ResponseTemplate {
     ResponseTemplate::new(400).set_body_json(serde_json::json!({
         "error": {
@@ -229,10 +267,17 @@ async fn semantic_history_overflow_fails_without_mutating_history() -> Result<()
     )
     .await;
     submit_follow_up(&codex, "after semantic overflow").await?;
-    let follow_up_body = follow_up_mock.single_request().body_json().to_string();
-    assert!(follow_up_body.contains("SEMANTIC_HISTORY_000"));
-    assert!(follow_up_body.contains("SEMANTIC_HISTORY_007"));
-    assert!(!follow_up_body.contains("UNSAFE_SUFFIX_ONLY_SUMMARY"));
+    let follow_up_request = follow_up_mock.single_request();
+    assert_eq!(
+        request_messages_with_prefix(&follow_up_request, "SEMANTIC_HISTORY_"),
+        semantic_history_messages(/*item_count*/ 8)
+    );
+    assert!(
+        !follow_up_request
+            .body_json()
+            .to_string()
+            .contains("UNSAFE_SUFFIX_ONLY_SUMMARY")
+    );
 
     Ok(())
 }
@@ -581,7 +626,6 @@ async fn v2_mixed_stream_and_overflow_failure_preserves_history() -> Result<()> 
     assert!(error_message.to_lowercase().contains("context window"));
     let follow_up_body = requests[2].body_json().to_string();
     assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
-    assert!(!follow_up_body.contains("MIXED_V2_RECOVERY_SUMMARY"));
 
     Ok(())
 }

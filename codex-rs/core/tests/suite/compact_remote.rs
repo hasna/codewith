@@ -173,6 +173,39 @@ fn long_injected_history(item_count: usize) -> Vec<ResponseItem> {
         .collect()
 }
 
+fn long_history_messages(item_count: usize) -> Vec<(String, String)> {
+    (0..item_count)
+        .map(|index| ("user".to_string(), format!("INJECTED_HISTORY_{index:03}")))
+        .collect()
+}
+
+fn request_messages_with_prefix(
+    request: &responses::ResponsesRequest,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let mut messages = Vec::new();
+    for item in request.input() {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(role) = item.get("role").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let Some(text) = content_item.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            if text.starts_with(prefix) {
+                messages.push((role.to_string(), text.to_string()));
+            }
+        }
+    }
+    messages
+}
+
 fn paired_injected_history() -> Vec<ResponseItem> {
     vec![
         ResponseItem::Message {
@@ -1426,9 +1459,10 @@ async fn remote_compact_v2_context_overflow_does_not_delete_long_history() -> Re
     wait_for_turn_complete(&codex).await;
 
     let follow_up = follow_up_mock.single_request();
-    let follow_up_body = follow_up.body_json().to_string();
-    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
-    assert!(follow_up_body.contains(&format!("INJECTED_HISTORY_{:03}", injected_item_count - 1)));
+    assert_eq!(
+        request_messages_with_prefix(&follow_up, "INJECTED_HISTORY_"),
+        long_history_messages(injected_item_count)
+    );
 
     Ok(())
 }
@@ -1495,9 +1529,10 @@ async fn remote_compact_v1_context_overflow_does_not_delete_long_history() -> Re
     wait_for_turn_complete(&codex).await;
 
     let follow_up = follow_up_mock.single_request();
-    let follow_up_body = follow_up.body_json().to_string();
-    assert!(follow_up_body.contains("INJECTED_HISTORY_000"));
-    assert!(follow_up_body.contains(&format!("INJECTED_HISTORY_{:03}", injected_item_count - 1)));
+    assert_eq!(
+        request_messages_with_prefix(&follow_up, "INJECTED_HISTORY_"),
+        long_history_messages(injected_item_count)
+    );
 
     Ok(())
 }

@@ -1037,13 +1037,31 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         .iter()
         .map(|request| request.body_json().to_string())
         .collect::<Vec<_>>();
-    assert!(body_contains_text(&request_bodies[0], user_message));
-    assert!(body_contains_text(&request_bodies[1], SUMMARIZATION_PROMPT));
+    assert!(
+        body_contains_text(&request_bodies[0], user_message),
+        "initial request should include the user message",
+    );
+    assert!(
+        body_contains_text(&request_bodies[1], user_message),
+        "first auto-compact request should include the user message being compacted",
+    );
+    assert!(
+        body_contains_text(&request_bodies[1], "I will create a react app"),
+        "first auto-compact request should include the reasoning that pushed the turn over limit",
+    );
+    for (request_index, should_compact) in
+        [(0, false), (1, true), (2, false), (3, true), (4, false)]
+    {
+        assert_eq!(
+            body_contains_text(&request_bodies[request_index], SUMMARIZATION_PROMPT),
+            should_compact,
+            "summarization prompt mismatch for request {request_index}",
+        );
+    }
     assert!(body_contains_text(
         &request_bodies[2],
         "FIRST_MID_TURN_SUMMARY"
     ));
-    assert!(body_contains_text(&request_bodies[3], SUMMARIZATION_PROMPT));
     assert!(body_contains_text(
         &request_bodies[4],
         "SECOND_MID_TURN_SUMMARY"
