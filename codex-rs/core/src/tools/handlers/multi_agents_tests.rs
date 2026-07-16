@@ -6,6 +6,7 @@ use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
@@ -240,6 +241,63 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_bare_gpt_5_6_override_applies_auth_scoped_resolution() {
+    let (chatgpt_session, chatgpt_turn, _rx_event) =
+        make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |_config| {},
+        )
+        .await;
+    let mut chatgpt_child_config = (*chatgpt_turn.config).clone();
+
+    apply_requested_spawn_agent_model_overrides(
+        &chatgpt_session,
+        &chatgpt_turn,
+        &mut chatgpt_child_config,
+        Some("gpt-5.6"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect("ChatGPT spawn should resolve the legacy bare model to Sol");
+
+    assert_eq!(chatgpt_child_config.model.as_deref(), Some("gpt-5.6-sol"));
+
+    let (api_session, api_turn) = make_session_and_context().await;
+    let mut api_child_config = (*api_turn.config).clone();
+
+    apply_requested_spawn_agent_model_overrides(
+        &api_session,
+        &api_turn,
+        &mut api_child_config,
+        Some("gpt-5.6"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect("API-key spawn should preserve the explicitly requested bare model");
+
+    assert_eq!(api_child_config.model.as_deref(), Some("gpt-5.6"));
+
+    let mut custom_child_config = (*chatgpt_turn.config).clone();
+    custom_child_config.model_provider_id = "custom-openai-compatible".to_string();
+
+    let custom_error = apply_requested_spawn_agent_model_overrides(
+        &chatgpt_session,
+        &chatgpt_turn,
+        &mut custom_child_config,
+        Some("gpt-5.6"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect_err("custom-provider spawn should keep enforcing its advertised model catalog");
+
+    let FunctionCallError::RespondToModel(message) = custom_error else {
+        panic!("expected an unknown-model response, got {custom_error:?}");
+    };
+    assert!(message.contains("Unknown model `gpt-5.6` for spawn_agent"));
 }
 
 #[tokio::test]

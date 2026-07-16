@@ -1025,11 +1025,14 @@ async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_remo
 
 #[tokio::test]
 async fn chatgpt_remote_catalog_omission_injects_only_supported_gpt_5_6_variants() {
-    let remote_models = vec![remote_model(
-        "chatgpt-authoritative-model-info",
-        "ChatGPT Model Info",
-        /*priority*/ 10,
-    )];
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 1),
+        remote_model(
+            "chatgpt-authoritative-model-info",
+            "ChatGPT Model Info",
+            /*priority*/ 10,
+        ),
+    ];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(vec![remote_models]);
     let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
@@ -1162,11 +1165,14 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
 
 #[tokio::test]
 async fn refresh_available_models_uses_provider_catalog_without_bundled_fallback() {
-    let remote_models = vec![remote_model(
-        "provider-visible-remote",
-        "Provider Visible",
-        /*priority*/ 0,
-    )];
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 0),
+        remote_model(
+            "provider-visible-remote",
+            "Provider Visible",
+            /*priority*/ 1,
+        ),
+    ];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
         has_provider_auth: true,

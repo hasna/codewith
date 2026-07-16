@@ -172,6 +172,11 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         Ok(self.build_available_models(remote_models))
     }
 
+    /// Resolve compatibility aliases whose effective target depends on provider and auth mode.
+    fn resolve_model_for_auth(&self, model: &str, config: &ModelsManagerConfig) -> String {
+        effective_model_for_auth(model, config, self.auth_manager()).to_string()
+    }
+
     // todo(aibrahim): should be visible to core only and sent on session_configured event
     /// Get the model identifier to use, refreshing according to the specified strategy.
     ///
@@ -185,7 +190,7 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     ) -> String {
         async move {
             if let Some(model) = model.as_ref() {
-                return effective_model_for_auth(model, config, self.auth_manager()).to_string();
+                return self.resolve_model_for_auth(model, config);
             }
             default_model_from_available(self.list_models(refresh_strategy).await)
         }
@@ -202,9 +207,9 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     async fn get_model_info(&self, model: &str, config: &ModelsManagerConfig) -> ModelInfo {
         async move {
             let remote_models = self.get_remote_models().await;
-            let effective_model = effective_model_for_auth(model, config, self.auth_manager());
+            let effective_model = self.resolve_model_for_auth(model, config);
             let model_info =
-                construct_model_info_from_candidates(effective_model, &remote_models, config);
+                construct_model_info_from_candidates(&effective_model, &remote_models, config);
             if self
                 .auth_manager()
                 .and_then(AuthManager::auth_mode)
@@ -418,6 +423,7 @@ impl OpenAiModelsManager {
             });
         if should_use_remote_models_only {
             let mut models = models;
+            models.retain(|model| model.slug != "gpt-5.6");
             model_info::ensure_required_local_models(&mut models);
             *self.remote_models.write().await = models;
             return;

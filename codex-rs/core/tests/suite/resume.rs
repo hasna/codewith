@@ -517,9 +517,8 @@ async fn chatgpt_resume_migrates_legacy_bare_gpt_5_6_to_sol() -> Result<()> {
         .expect("rollout path");
     drop(legacy);
 
-    let mut resume_builder = test_codex()
-        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_model("gpt-5.6");
+    let mut resume_builder =
+        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let resumed = resume_builder.resume(&server, home, rollout_path).await?;
 
     assert_eq!(resumed.session_configured.model, "gpt-5.6-sol");

@@ -2,12 +2,12 @@
 source: tui/src/chatwidget/tests/status_command_tests.rs
 expression: "render_bottom_popup(&chat, 100)"
 ---
-  gpt-5.6
+  gpt-5.6-sol
 
   [Overview]  Usage  Tools  Session
 
   Search
-› Model      gpt-5.6
+› Model      gpt-5.6-sol
   Provider   openai
   Directory  /tmp/project
   Version    <test-version>
