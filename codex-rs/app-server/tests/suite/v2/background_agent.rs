@@ -2465,7 +2465,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "later work\n",
-        std::fs::read_to_string(codex_home.path().join("later.txt"))?
+        std::fs::read_to_string(repo_path.join("later.txt"))?
     );
 
     let race_create_request_id = mcp
@@ -2501,12 +2501,12 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         WorktreeMergeCandidateStatus::Open,
         race_refreshed.candidate.status
     );
-    std::fs::write(
-        codex_home.path().join("main-advanced.txt"),
-        "main advanced\n",
+    std::fs::write(repo_path.join("main-advanced.txt"), "main advanced\n")?;
+    git(repo_path.as_path(), &["add", "main-advanced.txt"])?;
+    git(
+        repo_path.as_path(),
+        &["commit", "-m", "advance merge target"],
     )?;
-    git(codex_home.path(), &["add", "main-advanced.txt"])?;
-    git(codex_home.path(), &["commit", "-m", "advance merge target"])?;
     let target_changed_apply_error = raw_request_error(
         &mut mcp,
         "worktree/mergeCandidate/apply",
@@ -2542,7 +2542,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "main advanced\n",
-        std::fs::read_to_string(codex_home.path().join("main-advanced.txt"))?
+        std::fs::read_to_string(repo_path.join("main-advanced.txt"))?
     );
 
     let dismiss_applied_error = raw_request_error(

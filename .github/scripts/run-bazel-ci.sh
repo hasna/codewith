@@ -253,13 +253,147 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # Fork PRs do not receive the BuildBuddy secret needed for the remote
-  # cross-compile config. Preserve the previous local Windows build shape.
+windows_rbe_host_platform=0
+windows_host_platform_override=""
+windows_execution_platform_override=""
+windows_rbe_endpoint_configured=0
+windows_rbe_execution_platform=0
+windows_rbe_config_requested=0
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+  # The target remains windows-gnullvm, but the default exec host must match
+  # the Windows runner. Selecting the Linux RBE platform without an active
+  # remote executor makes Bazel run Linux LLVM helpers locally on Windows.
   windows_msvc_host_platform=1
+  bazel_arg_index=0
+  while [[ $bazel_arg_index -lt ${#bazel_args[@]} ]]; do
+    arg="${bazel_args[$bazel_arg_index]}"
+    option_name=""
+    option_value=""
+    case "$arg" in
+      --host_platform | --remote_executor | --config | --extra_execution_platforms)
+        option_name="$arg"
+        value_index=$((bazel_arg_index + 1))
+        if [[ $value_index -ge ${#bazel_args[@]} \
+          || "${bazel_args[$value_index]}" == --* ]]; then
+          echo "${option_name} requires a value" >&2
+          exit 1
+        fi
+        option_value="${bazel_args[$value_index]}"
+        bazel_arg_index=$((bazel_arg_index + 2))
+        ;;
+      --host_platform=* | --remote_executor=* | --config=* | --extra_execution_platforms=*)
+        option_name="${arg%%=*}"
+        option_value="${arg#*=}"
+        bazel_arg_index=$((bazel_arg_index + 1))
+        ;;
+      *)
+        bazel_arg_index=$((bazel_arg_index + 1))
+        continue
+        ;;
+    esac
+
+    if [[ "$option_name" != "--remote_executor" && -z "$option_value" ]]; then
+      echo "${option_name} requires a non-empty value" >&2
+      exit 1
+    fi
+
+    case "$option_name" in
+      --host_platform)
+        # Bazel uses the last host-platform option. Preserve that ordering when
+        # repeating the caller's choice after the expanded CI configuration.
+        windows_msvc_host_platform=0
+        windows_host_platform_override="--host_platform=${option_value}"
+        # `bazel query` confirms that @codex//:rbe is the main module's
+        # apparent form and @@//:rbe is its canonical form. Keep the match
+        # exact so an external repository with its own :rbe target cannot opt
+        # this wrapper into remote execution.
+        case "$option_value" in
+          //:rbe | @//:rbe | @@//:rbe | @codex//:rbe)
+            windows_rbe_host_platform=1
+            ;;
+          *)
+            windows_rbe_host_platform=0
+            ;;
+        esac
+        ;;
+      --config)
+        case "$option_value" in
+          buildbuddy-generic-rbe | buildbuddy-openai-rbe)
+            windows_rbe_endpoint_configured=1
+            windows_rbe_config_requested=1
+            ;;
+        esac
+        ;;
+      --remote_executor)
+        if [[ -n "$option_value" ]]; then
+          windows_rbe_endpoint_configured=1
+        else
+          windows_rbe_endpoint_configured=0
+        fi
+        ;;
+      --extra_execution_platforms)
+        # Repeat the caller's final override after ci-windows-cross expands so
+        # both Bazel spellings retain true command-line last-one-wins behavior.
+        windows_execution_platform_override="--extra_execution_platforms=${option_value}"
+        windows_rbe_execution_platform=0
+        IFS=',' read -r -a execution_platforms <<< "$option_value"
+        for execution_platform in "${execution_platforms[@]}"; do
+          case "$execution_platform" in
+            //:rbe | @//:rbe | @@//:rbe | @codex//:rbe)
+              windows_rbe_execution_platform=1
+              ;;
+          esac
+        done
+        ;;
+    esac
+  done
+
+  if [[ -z "$windows_execution_platform_override" \
+    && $windows_rbe_config_requested -eq 1 ]]; then
+    # The remote config expands to --extra_execution_platforms=//:rbe. An
+    # explicit execution-platform override is repeated after configs below and
+    # therefore owns the effective list; otherwise account for that expansion
+    # during validation rather than waiting for Bazel to mix it with a local
+    # Windows host.
+    windows_rbe_execution_platform=1
+  fi
+
+  if [[ $windows_rbe_host_platform -eq 0 \
+    && $windows_rbe_execution_platform -eq 1 ]]; then
+    echo "Windows RBE execution platform requires a complete RBE topology: recognized RBE host platform and nonempty remote execution endpoint." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_host_platform -eq 0 \
+    && $windows_rbe_endpoint_configured -eq 1 ]]; then
+    echo "Windows remote execution endpoint requires a complete RBE topology: recognized RBE host and RBE-compatible execution platforms." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_host_platform -eq 1 && $windows_rbe_endpoint_configured -eq 0 ]]; then
+    echo "Windows RBE host platform requires an endpoint-bearing remote execution config or --remote_executor." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_execution_platform -eq 1 && $windows_rbe_host_platform -eq 0 ]]; then
+    echo "Windows RBE execution platform requires a final RBE host platform override." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_execution_platform -eq 1 && $windows_rbe_endpoint_configured -eq 0 ]]; then
+    echo "Windows RBE execution platform requires an endpoint-bearing remote execution config or --remote_executor." >&2
+    exit 1
+  fi
+  if [[ $windows_rbe_host_platform -eq 1 \
+    && -n "$windows_execution_platform_override" \
+    && $windows_rbe_execution_platform -eq 0 ]]; then
+    echo "Windows RBE host platform requires a final RBE-compatible execution platform override." >&2
+    exit 1
+  fi
 fi
 
 post_config_bazel_args=()
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+  # Keep the target explicit in every keyed and keyless cross-compile path.
+  # Host/execution-platform overrides below remain independent and last.
+  post_config_bazel_args+=(--platforms=//:windows_x86_64_gnullvm)
+fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
@@ -284,22 +418,36 @@ if [[ $remote_download_toplevel -eq 1 ]]; then
   post_config_bazel_args+=(--remote_download_toplevel)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # `--enable_platform_specific_config` expands `common:windows` on Windows
-  # hosts after ordinary rc configs, which can override `ci-windows-cross`'s
-  # RBE host platform. Repeat the host platform on the command line so V8 and
-  # other genrules execute on Linux RBE workers instead of Git Bash locally.
-  #
+if [[ -n "$windows_host_platform_override" ]]; then
+  # Repeat explicit overrides after the CI config so they win over the
+  # Windows-local default in .bazelrc.
+  post_config_bazel_args+=("$windows_host_platform_override")
+fi
+
+if [[ -n "$windows_execution_platform_override" ]]; then
+  post_config_bazel_args+=("$windows_execution_platform_override")
+  if [[ $windows_rbe_host_platform -eq 1 ]]; then
+    post_config_bazel_args+=(--shell_executable=/bin/bash)
+  fi
+elif [[ $windows_rbe_host_platform -eq 1 ]]; then
   # Bazel also derives the default genrule shell from the client host. Without
   # an explicit shell executable, remote Linux actions can be asked to run
   # `C:\Program Files\Git\usr\bin\bash.exe`.
-  post_config_bazel_args+=(--host_platform=//:rbe --shell_executable=/bin/bash)
+  post_config_bazel_args+=(
+    --extra_execution_platforms=//:rbe,//:windows_x86_64_msvc
+    --shell_executable=/bin/bash
+  )
+elif [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+  # `ci-windows-cross` historically listed Linux RBE first. Bazel selects the
+  # first compatible execution platform, independently of --host_platform, so
+  # replace (rather than append to) that list for local Windows execution.
+  # Bazel documents this option as last-one-wins.
+  post_config_bazel_args+=(--extra_execution_platforms=//:windows_x86_64_msvc)
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on remote execution. Fork PRs do
-  # not receive the BuildBuddy secret, so fall back to the existing local build
-  # shape and keep its lower concurrency cap.
+  # Keep keyless Windows cross-builds on their established lower local
+  # concurrency cap.
   post_config_bazel_args+=(--jobs=8)
 fi
 
@@ -322,7 +470,7 @@ fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   pass_windows_build_env=1
-  if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ $windows_rbe_host_platform -eq 1 ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
     # runner's build environment there makes Bazel genrules try to execute
     # C:\Program Files\Git\usr\bin\bash.exe on Linux.
@@ -362,7 +510,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
       "--action_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}"
       "--host_action_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}"
     )
-  elif [[ $windows_cross_compile -eq 1 ]]; then
+  elif [[ $windows_rbe_host_platform -eq 1 ]]; then
     # Remote build actions run on Linux RBE workers. Give their shell snippets
     # a Linux PATH while preserving CODEX_BAZEL_WINDOWS_PATH below for local
     # Windows test execution.
@@ -383,16 +531,45 @@ if (( ${#bazel_startup_args[@]} > 0 )); then
 fi
 
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-  echo "BuildBuddy API key is available; using remote Bazel configuration."
+  echo "BuildBuddy API key is available; using keyed Bazel configuration."
   # Work around Bazel 9 remote repo contents cache / overlay materialization failures
   # seen in CI (for example "is not a symlink" or permission errors while
-  # materializing external repos such as rules_perl). We still use BuildBuddy for
-  # remote execution/cache; this only disables the startup-level repo contents cache.
+  # materializing external repos such as rules_perl). Keyed configs can use
+  # BuildBuddy services; this only disables the startup-level repo contents cache.
+  buildbuddy_config=""
+  if [[ "${RUNNER_OS:-}" != "Windows" \
+    || $windows_cross_compile -ne 1 \
+    || $windows_rbe_host_platform -eq 0 ]]; then
+    # Resolve the tenant with the same trust boundary as the generic Bazel
+    # wrapper. OpenAI CI configs get the -rbe form so they actually select
+    # remote execution platforms; generic Hasna runs use cache/BES/download
+    # services because that BuildBuddy host has no registered executors.
+    buildbuddy_config="$(
+      python3 "$(dirname "${BASH_SOURCE[0]}")/run_bazel_with_buildbuddy.py" \
+        --print-config-for "--config=${ci_config}"
+    )"
+    case "$buildbuddy_config" in
+      buildbuddy-generic | buildbuddy-openai | buildbuddy-generic-rbe | buildbuddy-openai-rbe)
+        bazel_run_args+=("--config=${buildbuddy_config}")
+        ;;
+      *)
+        echo "Unable to select a BuildBuddy configuration." >&2
+        exit 1
+        ;;
+    esac
+  fi
+  ci_config_for_bazel="$ci_config"
+  if [[ "$buildbuddy_config" == "buildbuddy-generic" && "$ci_config" == "ci-linux" ]]; then
+    ci_config_for_bazel="ci-keyless"
+  fi
   bazel_run_args=(
     "${bazel_args[@]}"
-    "--config=${ci_config}"
-    "--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}"
+    "--config=${ci_config_for_bazel}"
   )
+  if [[ -n "$buildbuddy_config" ]]; then
+    bazel_run_args+=("--config=${buildbuddy_config}")
+  fi
+  bazel_run_args+=("--remote_header=x-buildbuddy-api-key=${BUILDBUDDY_API_KEY}")
   if (( ${#post_config_bazel_args[@]} > 0 )); then
     bazel_run_args+=("${post_config_bazel_args[@]}")
   fi
@@ -431,9 +608,18 @@ else
   bazel_run_args=(
     "${bazel_args[@]}"
     --remote_cache=
-    --remote_executor=
     --experimental_remote_downloader=
   )
+  if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 ]]; then
+    # The cross config is required even when a keyless caller supplies its own
+    # validated RBE endpoint and therefore owns --remote_executor.
+    bazel_run_args+=("--config=${ci_config}")
+  fi
+  if [[ $windows_rbe_host_platform -eq 0 ]]; then
+    # An explicit, validated Windows RBE opt-in owns its executor setting.
+    # Every ordinary keyless invocation still clears remote execution.
+    bazel_run_args+=(--remote_executor=)
+  fi
   if [[ "${ci_config}" == "ci-linux" ]]; then
     # Keyless Linux: opt into the `ci-keyless` config (see .bazelrc), which
     # re-enables a bounded, workflow-persisted local disk cache so action
