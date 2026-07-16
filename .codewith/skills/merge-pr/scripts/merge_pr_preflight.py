@@ -189,7 +189,8 @@ def artifact_decision(
             blockers.append(f"{prefix}_stale_timestamp")
         if not artifact.get("checked_risks_summary"):
             blockers.append(f"{prefix}_missing_checked_risks_summary")
-        if artifact.get("verdict") not in {"approve", "approved", "pass", "no_blockers"}:
+        verdict = str(artifact.get("verdict") or "").strip().lower()
+        if verdict not in {"approve", "approved", "pass", "no_blockers"}:
             blockers.append(f"{prefix}_non_passing_verdict")
         if artifact.get("blocking_findings"):
             blockers.append(f"{prefix}_blocking_findings")
