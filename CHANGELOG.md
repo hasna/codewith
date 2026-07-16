@@ -47,7 +47,6 @@ Known evidence gaps:
 Tag: `rust-v0.1.66`
 npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.66>
 Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66>
-Release status: prepared; tag and npm publication pending.
 
 Hotfix release for banked usage-limit resets and remote-compaction history
 preservation.
