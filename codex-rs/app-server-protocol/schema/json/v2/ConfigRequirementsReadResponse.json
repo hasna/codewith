@@ -93,15 +93,6 @@
             "null"
           ]
         },
-        "allowedApprovalsReviewers": {
-          "items": {
-            "$ref": "#/$defs/ApprovalsReviewer"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "allowedPermissionProfiles": {
           "additionalProperties": {
             "type": "boolean"
@@ -171,26 +162,6 @@
           "type": [
             "object",
             "null"
-          ]
-        },
-        "hooks": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ManagedHooksRequirements"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "network": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NetworkRequirements"
-            },
-            {
-              "type": "null"
-            }
           ]
         }
       },

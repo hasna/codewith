@@ -206,81 +206,6 @@
       },
       "type": "object"
     },
-    "AgentAttachParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        },
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
-    },
-    "AgentDaemonDiagnosticsParams": {
-      "type": "object"
-    },
-    "AgentDeleteParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
-    },
-    "AgentDetachParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
-    },
-    "AgentEventsListParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        },
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
-    },
     "AgentExecutionContextParams": {
       "properties": {
         "approvalPolicy": {
@@ -365,25 +290,6 @@
       },
       "type": "object"
     },
-    "AgentListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -406,27 +312,6 @@
         }
       ]
     },
-    "AgentPendingInteractionRespondParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        },
-        "interactionId": {
-          "type": "string"
-        },
-        "response": true,
-        "terminalStatus": {
-          "$ref": "#/$defs/AgentPendingInteractionTerminalStatus"
-        }
-      },
-      "required": [
-        "agentId",
-        "interactionId",
-        "response",
-        "terminalStatus"
-      ],
-      "type": "object"
-    },
     "AgentPendingInteractionTerminalStatus": {
       "enum": [
         "responded",
@@ -436,146 +321,6 @@
         "workerNoLongerWaiting"
       ],
       "type": "string"
-    },
-    "AgentReadParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
-    },
-    "AgentStartParams": {
-      "properties": {
-        "authProfileRef": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "configFingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "executionContext": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AgentExecutionContextParams"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "idempotencyKey": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "initialGoalObjective": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "inputSnapshotRef": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "parentAgentRunId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "parentThreadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "prompt": {
-          "type": "string"
-        },
-        "promptSnapshotRef": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "requestId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "rolloutPath": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "spawnLinkage": true,
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "threadStoreId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "threadStoreKind": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "versionFingerprint": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "prompt"
-      ],
-      "type": "object"
-    },
-    "AgentStopParams": {
-      "properties": {
-        "agentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "agentId"
-      ],
-      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
@@ -777,10 +522,6 @@
       ],
       "type": "object"
     },
-    "CollaborationModeListParams": {
-      "description": "EXPERIMENTAL - list collaboration mode presets.",
-      "type": "object"
-    },
     "CommandExecParams": {
       "description": "Run a standalone command (argv vector) in the server sandbox without\ncreating a thread or turn.\n\nThe final `command/exec` response is deferred until the process exits and is\nsent only after all `command/exec/outputDelta` notifications for that\nconnection have been emitted.",
       "properties": {
@@ -825,13 +566,6 @@
           "minimum": 0,
           "type": [
             "integer",
-            "null"
-          ]
-        },
-        "permissionProfile": {
-          "description": "Optional active permissions profile id for this command.\n\nDefaults to the user's configured permissions when omitted. Cannot be\ncombined with `sandboxPolicy`.",
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -1275,21 +1009,6 @@
         "name",
         "description",
         "inputSchema"
-      ],
-      "type": "object"
-    },
-    "EnvironmentAddParams": {
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        },
-        "execServerUrl": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId",
-        "execServerUrl"
       ],
       "type": "object"
     },
@@ -1924,50 +1643,6 @@
       ],
       "type": "object"
     },
-    "FuzzyFileSearchSessionStartParams": {
-      "properties": {
-        "roots": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "roots"
-      ],
-      "type": "object"
-    },
-    "FuzzyFileSearchSessionStopParams": {
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    },
-    "FuzzyFileSearchSessionUpdateParams": {
-      "properties": {
-        "query": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "query"
-      ],
-      "type": "object"
-    },
     "GetAccountParams": {
       "properties": {
         "refreshToken": {
@@ -1988,62 +1663,6 @@
           ]
         }
       },
-      "type": "object"
-    },
-    "GetAuthStatusParams": {
-      "properties": {
-        "includeToken": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "refreshToken": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "GetConversationSummaryParams": {
-      "anyOf": [
-        {
-          "properties": {
-            "rolloutPath": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "rolloutPath"
-          ],
-          "title": "RolloutPathGetConversationSummaryParams",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "conversationId": {
-              "$ref": "#/$defs/ThreadId"
-            }
-          },
-          "required": [
-            "conversationId"
-          ],
-          "title": "ConversationIdGetConversationSummaryParams",
-          "type": "object"
-        }
-      ]
-    },
-    "GitDiffToRemoteParams": {
-      "properties": {
-        "cwd": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "cwd"
-      ],
       "type": "object"
     },
     "GrantedPermissionProfile": {
@@ -2184,88 +1803,6 @@
             "string",
             "null"
           ]
-        }
-      },
-      "type": "object"
-    },
-    "LocalSessionListParams": {
-      "properties": {
-        "archived": {
-          "description": "Optional archived filter; when set to true, only archived sessions are\nreturned. If false or null, only non-archived sessions are returned.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "cursor": {
-          "description": "Opaque pagination cursor returned by a previous call.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "cwd": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThreadListCwdFilter"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional cwd filter or filters; when set, only sessions whose captured\ncwd exactly matches one of these paths are returned."
-        },
-        "limit": {
-          "description": "Optional page size; defaults to a reasonable server-side value.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "searchTerm": {
-          "description": "Optional substring filter for the extracted thread title.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sortDirection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SortDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional sort direction; defaults to descending (newest first)."
-        },
-        "sortKey": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThreadSortKey"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional sort key; defaults to created_at."
-        },
-        "statuses": {
-          "description": "Optional runtime status filter. When omitted or empty, all local session\nstates are returned.",
-          "items": {
-            "$ref": "#/$defs/LocalSessionStatus"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "useStateDbOnly": {
-          "description": "If true, return from the state DB without scanning JSONL rollouts to\nrepair thread metadata. Omitted or false preserves scan-and-repair\nbehavior.",
-          "type": "boolean"
         }
       },
       "type": "object"
@@ -2435,189 +1972,6 @@
           "type": "object"
         }
       ]
-    },
-    "MachineRegistryDisableParams": {
-      "properties": {
-        "machineId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "machineId"
-      ],
-      "type": "object"
-    },
-    "MachineRegistryEndpointTransport": {
-      "enum": [
-        "lan",
-        "tailscale",
-        "manual",
-        "remoteControl",
-        "adapter"
-      ],
-      "type": "string"
-    },
-    "MachineRegistryEndpointUpsert": {
-      "properties": {
-        "address": {
-          "type": "string"
-        },
-        "capabilities": true,
-        "displayAddress": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "endpointId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lastError": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lastSuccessAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "priority": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "transport": {
-          "$ref": "#/$defs/MachineRegistryEndpointTransport"
-        }
-      },
-      "required": [
-        "transport",
-        "address",
-        "capabilities"
-      ],
-      "type": "object"
-    },
-    "MachineRegistryForgetParams": {
-      "properties": {
-        "machineId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "machineId"
-      ],
-      "type": "object"
-    },
-    "MachineRegistryListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "includeDisabled": {
-          "type": "boolean"
-        },
-        "includeForgotten": {
-          "type": "boolean"
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "MachineRegistryReadParams": {
-      "properties": {
-        "machineId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "machineId"
-      ],
-      "type": "object"
-    },
-    "MachineRegistryTrustState": {
-      "enum": [
-        "local",
-        "trusted",
-        "untrusted",
-        "disabled",
-        "revoked"
-      ],
-      "type": "string"
-    },
-    "MachineRegistryUpdateTrustParams": {
-      "properties": {
-        "machineId": {
-          "type": "string"
-        },
-        "trustState": {
-          "$ref": "#/$defs/MachineRegistryTrustState"
-        }
-      },
-      "required": [
-        "machineId",
-        "trustState"
-      ],
-      "type": "object"
-    },
-    "MachineRegistryUpsertParams": {
-      "properties": {
-        "capabilities": true,
-        "displayName": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "endpoints": {
-          "items": {
-            "$ref": "#/$defs/MachineRegistryEndpointUpsert"
-          },
-          "type": "array"
-        },
-        "installationId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "lastSeenAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "machineId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "capabilities",
-        "endpoints"
-      ],
-      "type": "object"
     },
     "MarketplaceAddParams": {
       "properties": {
@@ -3026,18 +2380,6 @@
         "terminalStatus",
         "response"
       ],
-      "type": "object"
-    },
-    "MockExperimentalMethodParams": {
-      "properties": {
-        "value": {
-          "description": "Test-only payload field.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
       "type": "object"
     },
     "ModeKind": {
@@ -3480,116 +2822,6 @@
       ],
       "type": "object"
     },
-    "ProcessKillParams": {
-      "description": "Terminate a running `process/spawn` session.",
-      "properties": {
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "processHandle"
-      ],
-      "type": "object"
-    },
-    "ProcessResizePtyParams": {
-      "description": "Resize a running PTY-backed `process/spawn` session.",
-      "properties": {
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        },
-        "size": {
-          "$ref": "#/$defs/ProcessTerminalSize",
-          "description": "New PTY size in character cells."
-        }
-      },
-      "required": [
-        "processHandle",
-        "size"
-      ],
-      "type": "object"
-    },
-    "ProcessSpawnParams": {
-      "description": "Spawn a standalone process (argv vector) without a Codewith sandbox on the host\nwhere the app server is running.\n\n`process/spawn` returns after the process has started and the connection-scoped\n`processHandle` has been registered. Process output and exit are reported via\n`process/outputDelta` and `process/exited` notifications.",
-      "properties": {
-        "command": {
-          "description": "Command argv vector. Empty arrays are rejected.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "cwd": {
-          "$ref": "#/$defs/AbsolutePathBuf",
-          "description": "Absolute working directory for the process."
-        },
-        "env": {
-          "additionalProperties": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "description": "Optional environment overrides merged into the app-server process\nenvironment.\n\nMatching names override inherited values. Set a key to `null` to unset\nan inherited variable.",
-          "type": [
-            "object",
-            "null"
-          ]
-        },
-        "outputBytesCap": {
-          "description": "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Set to `null` to disable the\ncap.",
-          "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped process handle.\n\nDuplicate active handles are rejected on the same connection. The same\nhandle can be reused after the prior process exits.",
-          "type": "string"
-        },
-        "size": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProcessTerminalSize"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional initial PTY size in character cells. Only valid when `tty` is\ntrue."
-        },
-        "streamStdin": {
-          "description": "Allow follow-up `process/writeStdin` requests to write stdin bytes.",
-          "type": "boolean"
-        },
-        "streamStdoutStderr": {
-          "description": "Stream stdout/stderr via `process/outputDelta` notifications.\n\nStreamed bytes are not duplicated into the `process/exited` notification.",
-          "type": "boolean"
-        },
-        "timeoutMs": {
-          "description": "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Set to `null` to disable the\ntimeout.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "tty": {
-          "description": "Enable PTY mode.\n\nThis implies `streamStdin` and `streamStdoutStderr`.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "command",
-        "processHandle",
-        "cwd"
-      ],
-      "type": "object"
-    },
     "ProcessTerminalSize": {
       "description": "PTY size in character cells for `process/spawn` PTY sessions.",
       "properties": {
@@ -3611,30 +2843,6 @@
       "required": [
         "rows",
         "cols"
-      ],
-      "type": "object"
-    },
-    "ProcessWriteStdinParams": {
-      "description": "Write stdin bytes to a running `process/spawn` session, close stdin, or\nboth.",
-      "properties": {
-        "closeStdin": {
-          "description": "Close stdin after writing `deltaBase64`, if present.",
-          "type": "boolean"
-        },
-        "deltaBase64": {
-          "description": "Optional base64-encoded stdin bytes to write.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "processHandle": {
-          "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "processHandle"
       ],
       "type": "object"
     },
@@ -3753,459 +2961,6 @@
           "type": "string"
         }
       ]
-    },
-    "RemoteControlClientsListOrder": {
-      "enum": [
-        "asc",
-        "desc"
-      ],
-      "type": "string"
-    },
-    "RemoteControlClientsListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environmentId": {
-          "type": "string"
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "order": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RemoteControlClientsListOrder"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "environmentId"
-      ],
-      "type": "object"
-    },
-    "RemoteControlClientsRevokeParams": {
-      "properties": {
-        "clientId": {
-          "type": "string"
-        },
-        "environmentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId",
-        "clientId"
-      ],
-      "type": "object"
-    },
-    "RemoteControlPairingStartParams": {
-      "properties": {
-        "manualCode": {
-          "type": "boolean"
-        }
-      },
-      "type": "object"
-    },
-    "RemoteControlPairingStatusParams": {
-      "properties": {
-        "manualPairingCode": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "pairingCode": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "RemoteDispatchCapability": {
-      "enum": [
-        "protocolNegotiation",
-        "trustAuthorization",
-        "durableMailboxEnqueue",
-        "mailboxReceiptRead",
-        "pendingInteractionList",
-        "pendingInteractionRead",
-        "pendingInteractionRespond",
-        "idempotency",
-        "auditReceipts"
-      ],
-      "type": "string"
-    },
-    "RemoteDispatchEnqueueInstructionParams": {
-      "properties": {
-        "expiresAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "maxAttempts": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "message": {
-          "type": "string"
-        },
-        "priority": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "resume": {
-          "type": "boolean"
-        },
-        "senderLabel": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "senderThreadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "message"
-      ],
-      "type": "object"
-    },
-    "RemoteDispatchListPendingInteractionsParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kinds": {
-          "items": {
-            "$ref": "#/$defs/ThreadPendingInteractionKind"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "statuses": {
-          "items": {
-            "$ref": "#/$defs/ThreadPendingInteractionStatus"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "RemoteDispatchMailboxReceiptsParams": {
-      "properties": {
-        "messageId": {
-          "type": "string"
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "messageId"
-      ],
-      "type": "object"
-    },
-    "RemoteDispatchNegotiateParams": {
-      "properties": {
-        "protocolVersion": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "requestedCapabilities": {
-          "items": {
-            "$ref": "#/$defs/RemoteDispatchCapability"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "sourceMachineId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "targetMachineId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "RemoteDispatchOperation": {
-      "oneOf": [
-        {
-          "properties": {
-            "params": {
-              "$ref": "#/$defs/RemoteDispatchEnqueueInstructionParams"
-            },
-            "type": {
-              "const": "enqueueInstruction",
-              "title": "EnqueueInstructionRemoteDispatchOperationType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "params"
-          ],
-          "title": "EnqueueInstructionRemoteDispatchOperation",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "params": {
-              "$ref": "#/$defs/RemoteDispatchListPendingInteractionsParams"
-            },
-            "type": {
-              "const": "listPendingInteractions",
-              "title": "ListPendingInteractionsRemoteDispatchOperationType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "params"
-          ],
-          "title": "ListPendingInteractionsRemoteDispatchOperation",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "params": {
-              "$ref": "#/$defs/RemoteDispatchReadPendingInteractionParams"
-            },
-            "type": {
-              "const": "readPendingInteraction",
-              "title": "ReadPendingInteractionRemoteDispatchOperationType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "params"
-          ],
-          "title": "ReadPendingInteractionRemoteDispatchOperation",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "params": {
-              "$ref": "#/$defs/RemoteDispatchRespondInteractionParams"
-            },
-            "type": {
-              "const": "respondInteraction",
-              "title": "RespondInteractionRemoteDispatchOperationType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "params"
-          ],
-          "title": "RespondInteractionRemoteDispatchOperation",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "params": {
-              "$ref": "#/$defs/RemoteDispatchMailboxReceiptsParams"
-            },
-            "type": {
-              "const": "mailboxReceipts",
-              "title": "MailboxReceiptsRemoteDispatchOperationType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "params"
-          ],
-          "title": "MailboxReceiptsRemoteDispatchOperation",
-          "type": "object"
-        }
-      ]
-    },
-    "RemoteDispatchReadPendingInteractionParams": {
-      "properties": {
-        "interactionId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "interactionId"
-      ],
-      "type": "object"
-    },
-    "RemoteDispatchReceiptReadParams": {
-      "properties": {
-        "idempotencyKey": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "requestId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sourceMachineId": {
-          "type": "string"
-        },
-        "targetMachineId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sourceMachineId",
-        "targetMachineId"
-      ],
-      "type": "object"
-    },
-    "RemoteDispatchRespondInteractionParams": {
-      "properties": {
-        "interactionId": {
-          "type": "string"
-        },
-        "response": {
-          "$ref": "#/$defs/ThreadPendingInteractionResponsePayload"
-        },
-        "terminalStatus": {
-          "$ref": "#/$defs/ThreadPendingInteractionTerminalStatus"
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "interactionId",
-        "terminalStatus",
-        "response"
-      ],
-      "type": "object"
-    },
-    "RemoteDispatchSubmitParams": {
-      "properties": {
-        "capabilityVersion": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "dryRun": {
-          "type": "boolean"
-        },
-        "expiresAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "idempotencyKey": {
-          "type": "string"
-        },
-        "operation": {
-          "$ref": "#/$defs/RemoteDispatchOperation"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "requestedAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sourceMachineId": {
-          "type": "string"
-        },
-        "targetMachineId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "requestId",
-        "sourceMachineId",
-        "targetMachineId",
-        "idempotencyKey",
-        "operation"
-      ],
-      "type": "object"
     },
     "RequestId": {
       "anyOf": [
@@ -5209,17 +3964,6 @@
       ],
       "type": "object"
     },
-    "ThreadBackgroundTerminalsCleanParams": {
-      "properties": {
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
     "ThreadCompactStartParams": {
       "properties": {
         "threadId": {
@@ -5228,34 +3972,6 @@
       },
       "required": [
         "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadDecrementElicitationParams": {
-      "description": "Parameters for `thread/decrement_elicitation`.",
-      "properties": {
-        "threadId": {
-          "description": "Thread whose out-of-band elicitation counter should be decremented.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadExternalAgentCancelParams": {
-      "properties": {
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId"
       ],
       "type": "object"
     },
@@ -5272,53 +3988,6 @@
         "rejectOnce"
       ],
       "type": "string"
-    },
-    "ThreadExternalAgentPermissionRespondParams": {
-      "properties": {
-        "decision": {
-          "$ref": "#/$defs/ThreadExternalAgentPermissionOption"
-        },
-        "requestId": {
-          "description": "Echoes [`ThreadExternalAgentPermissionRequest::id`] from the request being answered.",
-          "type": "string"
-        },
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId",
-        "requestId",
-        "decision"
-      ],
-      "type": "object"
-    },
-    "ThreadExternalAgentStartParams": {
-      "properties": {
-        "mode": {
-          "$ref": "#/$defs/ThreadExternalAgentMode"
-        },
-        "runtimeId": {
-          "type": "string"
-        },
-        "task": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runtimeId",
-        "task",
-        "mode"
-      ],
-      "type": "object"
     },
     "ThreadForkParams": {
       "description": "There are two ways to fork a thread:\n1. By thread_id: load the thread from disk by thread_id and fork it into a new thread.\n2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored.\nEmpty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
@@ -5379,10 +4048,6 @@
         "ephemeral": {
           "type": "boolean"
         },
-        "excludeTurns": {
-          "description": "When true, return only thread metadata and live fork state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after forking.",
-          "type": "boolean"
-        },
         "model": {
           "description": "Configuration overrides for the forked thread, if any.",
           "type": [
@@ -5393,31 +4058,6 @@
         "modelProvider": {
           "type": [
             "string",
-            "null"
-          ]
-        },
-        "path": {
-          "default": null,
-          "description": "[UNSTABLE] Specify the rollout path to fork from.\nIf specified, the thread_id param will be ignored.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "permissions": {
-          "description": "Named profile id for the forked thread. Cannot be combined with\n`sandbox`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
-          "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
-          },
-          "type": [
-            "array",
             "null"
           ]
         },
@@ -5587,22 +4227,6 @@
       ],
       "type": "string"
     },
-    "ThreadId": {
-      "type": "string"
-    },
-    "ThreadIncrementElicitationParams": {
-      "description": "Parameters for `thread/increment_elicitation`.",
-      "properties": {
-        "threadId": {
-          "description": "Thread whose out-of-band elicitation counter should be incremented.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
     "ThreadInjectItemsParams": {
       "properties": {
         "items": {
@@ -5746,204 +4370,6 @@
       },
       "type": "object"
     },
-    "ThreadMailboxAckParams": {
-      "properties": {
-        "attemptId": {
-          "type": "string"
-        },
-        "leaseId": {
-          "type": "string"
-        },
-        "messageId": {
-          "type": "string"
-        },
-        "receipt": true,
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "messageId",
-        "attemptId",
-        "leaseId"
-      ],
-      "type": "object"
-    },
-    "ThreadMailboxClaimParams": {
-      "properties": {
-        "leaseOwner": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "leaseSeconds": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId"
-      ],
-      "type": "object"
-    },
-    "ThreadMailboxEnqueueParams": {
-      "properties": {
-        "expiresAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "idempotencyKey": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kind": {
-          "$ref": "#/$defs/ThreadMailboxMessageKind"
-        },
-        "maxAttempts": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "message": true,
-        "nextAttemptAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "preview": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "priority": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "senderLabel": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "senderThreadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "kind",
-        "message"
-      ],
-      "type": "object"
-    },
-    "ThreadMailboxFailDisposition": {
-      "enum": [
-        "retry",
-        "terminal"
-      ],
-      "type": "string"
-    },
-    "ThreadMailboxFailParams": {
-      "properties": {
-        "attemptId": {
-          "type": "string"
-        },
-        "disposition": {
-          "$ref": "#/$defs/ThreadMailboxFailDisposition"
-        },
-        "error": {
-          "type": "string"
-        },
-        "leaseId": {
-          "type": "string"
-        },
-        "messageId": {
-          "type": "string"
-        },
-        "retryAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "messageId",
-        "attemptId",
-        "leaseId",
-        "disposition",
-        "error"
-      ],
-      "type": "object"
-    },
-    "ThreadMailboxListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "statuses": {
-          "items": {
-            "$ref": "#/$defs/ThreadMailboxMessageStatus"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId"
-      ],
-      "type": "object"
-    },
     "ThreadMailboxMessageKind": {
       "enum": [
         "userInstruction",
@@ -5964,57 +4390,12 @@
       ],
       "type": "string"
     },
-    "ThreadMailboxReadParams": {
-      "properties": {
-        "messageId": {
-          "type": "string"
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "messageId"
-      ],
-      "type": "object"
-    },
-    "ThreadMailboxReceiptsListParams": {
-      "properties": {
-        "messageId": {
-          "type": "string"
-        },
-        "targetThreadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "targetThreadId",
-        "messageId"
-      ],
-      "type": "object"
-    },
     "ThreadMemoryMode": {
       "enum": [
         "enabled",
         "disabled"
       ],
       "type": "string"
-    },
-    "ThreadMemoryModeSetParams": {
-      "properties": {
-        "mode": {
-          "$ref": "#/$defs/ThreadMemoryMode"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "mode"
-      ],
-      "type": "object"
     },
     "ThreadMetadataGitInfoUpdateParams": {
       "properties": {
@@ -6231,91 +4612,6 @@
         "blocked"
       ],
       "type": "string"
-    },
-    "ThreadPendingInteractionListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "kinds": {
-          "items": {
-            "$ref": "#/$defs/ThreadPendingInteractionKind"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "statuses": {
-          "items": {
-            "$ref": "#/$defs/ThreadPendingInteractionStatus"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "ThreadPendingInteractionReadParams": {
-      "properties": {
-        "interactionId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "interactionId"
-      ],
-      "type": "object"
-    },
-    "ThreadPendingInteractionRespondParams": {
-      "properties": {
-        "interactionId": {
-          "type": "string"
-        },
-        "response": {
-          "$ref": "#/$defs/ThreadPendingInteractionResponsePayload"
-        },
-        "terminalStatus": {
-          "$ref": "#/$defs/ThreadPendingInteractionTerminalStatus"
-        },
-        "threadId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "interactionId",
-        "terminalStatus",
-        "response"
-      ],
-      "type": "object"
     },
     "ThreadPendingInteractionResponsePayload": {
       "oneOf": [
@@ -6578,38 +4874,6 @@
       ],
       "type": "object"
     },
-    "ThreadRealtimeAppendAudioParams": {
-      "description": "EXPERIMENTAL - append audio input to thread realtime.",
-      "properties": {
-        "audio": {
-          "$ref": "#/$defs/ThreadRealtimeAudioChunk"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "audio"
-      ],
-      "type": "object"
-    },
-    "ThreadRealtimeAppendTextParams": {
-      "description": "EXPERIMENTAL - append text input to thread realtime.",
-      "properties": {
-        "text": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "text"
-      ],
-      "type": "object"
-    },
     "ThreadRealtimeAudioChunk": {
       "description": "EXPERIMENTAL - thread realtime audio chunk.",
       "properties": {
@@ -6646,59 +4910,6 @@
         "data",
         "sampleRate",
         "numChannels"
-      ],
-      "type": "object"
-    },
-    "ThreadRealtimeListVoicesParams": {
-      "description": "EXPERIMENTAL - list voices supported by thread realtime.",
-      "type": "object"
-    },
-    "ThreadRealtimeStartParams": {
-      "description": "EXPERIMENTAL - start a thread-scoped realtime session.",
-      "properties": {
-        "outputModality": {
-          "$ref": "#/$defs/RealtimeOutputModality",
-          "description": "Selects text or audio output for the realtime session. Transport and voice stay\nindependent so clients can choose how they connect separately from what the model emits."
-        },
-        "prompt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "realtimeSessionId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "transport": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThreadRealtimeStartTransport"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "voice": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RealtimeVoice"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "threadId",
-        "outputModality"
       ],
       "type": "object"
     },
@@ -6739,18 +4950,6 @@
           "type": "object"
         }
       ]
-    },
-    "ThreadRealtimeStopParams": {
-      "description": "EXPERIMENTAL - stop thread realtime.",
-      "properties": {
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
     },
     "ThreadRecapParams": {
       "properties": {
@@ -6861,31 +5060,6 @@
             "null"
           ]
         },
-        "excludeTurns": {
-          "description": "When true, return only thread metadata and live-resume state without\npopulating `thread.turns`. This is useful when the client plans to call\n`thread/turns/list` immediately after resuming.",
-          "type": "boolean"
-        },
-        "history": {
-          "description": "[UNSTABLE] FOR CODEX CLOUD - DO NOT USE.\nIf specified, the thread will be resumed with the provided history\ninstead of loaded from disk.",
-          "items": {
-            "$ref": "#/$defs/ResponseItem"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "initialTurnsPage": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThreadResumeInitialTurnsPageParams"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "When present, include a `thread/turns/list` page in the resume response\nso clients can bootstrap recent turns without a second request."
-        },
         "model": {
           "description": "Configuration overrides for the resumed thread, if any.",
           "type": [
@@ -6899,21 +5073,6 @@
             "null"
           ]
         },
-        "path": {
-          "default": null,
-          "description": "[UNSTABLE] Specify the rollout path to resume from.\nIf specified for a non-running thread, the thread_id param will be ignored.\nIf thread_id identifies a running thread, the path must match the active\nrollout path.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "permissions": {
-          "description": "Named profile id for the resumed thread. Cannot be combined with\n`sandbox`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "personality": {
           "anyOf": [
             {
@@ -6922,16 +5081,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
-          "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
-          },
-          "type": [
-            "array",
-            "null"
           ]
         },
         "sandbox": {
@@ -7289,73 +5438,6 @@
       ],
       "type": "object"
     },
-    "ThreadSearchParams": {
-      "properties": {
-        "archived": {
-          "description": "Optional archived filter; when set to true, only archived threads are returned.\nIf false or null, only non-archived threads are returned.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "cursor": {
-          "description": "Opaque pagination cursor returned by a previous call.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "description": "Optional page size; defaults to a reasonable server-side value.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "searchTerm": {
-          "description": "Required substring/full-text query for thread search.",
-          "type": "string"
-        },
-        "sortDirection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SortDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional sort direction; defaults to descending (newest first)."
-        },
-        "sortKey": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThreadSortKey"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional sort key; defaults to created_at."
-        },
-        "sourceKinds": {
-          "description": "Optional source filter; when set, only sessions from these source kinds\nare returned. When omitted or empty, defaults to interactive sources.",
-          "items": {
-            "$ref": "#/$defs/ThreadSourceKind"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "searchTerm"
-      ],
-      "type": "object"
-    },
     "ThreadSetNameParams": {
       "properties": {
         "name": {
@@ -7368,154 +5450,6 @@
       "required": [
         "threadId",
         "name"
-      ],
-      "type": "object"
-    },
-    "ThreadSettingsUpdateParams": {
-      "properties": {
-        "approvalPolicy": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AskForApproval"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override the approval policy for subsequent turns."
-        },
-        "approvalsReviewer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ApprovalsReviewer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override where approval requests are routed for subsequent turns."
-        },
-        "authProfile": {
-          "description": "Override the auth profile for subsequent turns. `null` selects the\ndefault root auth; omission leaves it unchanged.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "collaborationMode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CollaborationMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "EXPERIMENTAL - Set a pre-set collaboration mode for subsequent turns.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means\n\"use the built-in instructions for the selected mode\"."
-        },
-        "cwd": {
-          "description": "Override the working directory for subsequent turns.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "effort": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ReasoningEffort"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override the reasoning effort for subsequent turns."
-        },
-        "model": {
-          "description": "Override the model for subsequent turns.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "modelProvider": {
-          "description": "Override the model provider for subsequent turns.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "permissions": {
-          "description": "Select a named permissions profile id for subsequent turns. Cannot be\ncombined with `sandboxPolicy`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "personality": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Personality"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override the personality for subsequent turns."
-        },
-        "sandboxPolicy": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SandboxPolicy"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override the sandbox policy for subsequent turns."
-        },
-        "serviceTier": {
-          "description": "Override the service tier for subsequent turns. `null` clears the\ncurrent service tier; omission leaves it unchanged.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sessionPrompt": {
-          "description": "Override the session-scoped extra prompt for subsequent turns. `null`\nclears the current prompt; omission leaves it unchanged.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "summary": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ReasoningSummary"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override the reasoning summary for subsequent turns."
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "worktreeMode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SessionWorktreeMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Override session-level managed worktree behavior."
-        }
-      },
-      "required": [
-        "threadId"
       ],
       "type": "object"
     },
@@ -7620,39 +5554,9 @@
             "null"
           ]
         },
-        "dynamicTools": {
-          "items": {
-            "$ref": "#/$defs/DynamicToolSpec"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "environments": {
-          "description": "Optional sticky environments for this thread.\n\nOmitted selects the default environment when environment access is\nenabled. Empty disables environment access for turns that do not\nprovide a turn override. Non-empty selects the first environment as the\ncurrent turn environment.",
-          "items": {
-            "$ref": "#/$defs/TurnEnvironmentParams"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
         "ephemeral": {
           "type": [
             "boolean",
-            "null"
-          ]
-        },
-        "experimentalRawEvents": {
-          "description": "If true, opt into emitting raw Responses API items on the event stream.\nThis is for internal use only (e.g. Codewith Cloud).",
-          "type": "boolean"
-        },
-        "mockExperimentalField": {
-          "description": "Test-only experimental field used to validate experimental gating and\nschema filtering behavior in a stable way.",
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -7675,13 +5579,6 @@
             "null"
           ]
         },
-        "permissions": {
-          "description": "Named profile id for this thread. Cannot be combined with `sandbox`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "personality": {
           "anyOf": [
             {
@@ -7690,16 +5587,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
-          "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
-          },
-          "type": [
-            "array",
-            "null"
           ]
         },
         "sandbox": {
@@ -7755,97 +5642,6 @@
       ],
       "type": "string"
     },
-    "ThreadTurnsItemsListParams": {
-      "properties": {
-        "cursor": {
-          "description": "Opaque cursor to pass to the next call to continue after the last item.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "description": "Optional item page size.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sortDirection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SortDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional item pagination direction; defaults to ascending."
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "turnId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "turnId"
-      ],
-      "type": "object"
-    },
-    "ThreadTurnsListParams": {
-      "properties": {
-        "cursor": {
-          "description": "Opaque cursor to pass to the next call to continue after the last turn.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "itemsView": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TurnItemsView"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "How much item detail to include for each returned turn; defaults to summary."
-        },
-        "limit": {
-          "description": "Optional turn page size.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "sortDirection": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SortDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional turn pagination direction; defaults to descending."
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
     "ThreadUnarchiveParams": {
       "properties": {
         "threadId": {
@@ -7865,179 +5661,6 @@
       },
       "required": [
         "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowCreateParams": {
-      "properties": {
-        "threadId": {
-          "type": "string"
-        },
-        "yaml": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "yaml"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowGetParams": {
-      "properties": {
-        "threadId": {
-          "type": "string"
-        },
-        "workflowRecordId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "workflowRecordId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunCancelParams": {
-      "properties": {
-        "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunGetParams": {
-      "properties": {
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunListParams": {
-      "properties": {
-        "cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunPauseParams": {
-      "properties": {
-        "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunResumeParams": {
-      "properties": {
-        "runId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "runId"
-      ],
-      "type": "object"
-    },
-    "ThreadWorkflowRunStartParams": {
-      "properties": {
-        "idempotencyKey": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "workflowRecordId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "threadId",
-        "workflowRecordId"
       ],
       "type": "object"
     },
@@ -8107,16 +5730,6 @@
     },
     "TurnStartParams": {
       "properties": {
-        "additionalContext": {
-          "additionalProperties": {
-            "$ref": "#/$defs/AdditionalContextEntry"
-          },
-          "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
-          "type": [
-            "object",
-            "null"
-          ]
-        },
         "approvalPolicy": {
           "anyOf": [
             {
@@ -8145,17 +5758,6 @@
             "null"
           ]
         },
-        "collaborationMode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CollaborationMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "EXPERIMENTAL - Set a pre-set collaboration mode.\nTakes precedence over model, reasoning_effort, and developer instructions if set.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means\n\"use the built-in instructions for the selected mode\"."
-        },
         "cwd": {
           "description": "Override the working directory for this turn and subsequent turns.",
           "type": [
@@ -8173,16 +5775,6 @@
             }
           ],
           "description": "Override the reasoning effort for this turn and subsequent turns."
-        },
-        "environments": {
-          "description": "Optional turn-scoped environments.\n\nOmitted uses the thread sticky environments. Empty disables\nenvironment access for this turn. Non-empty selects the first\nenvironment as the current turn environment for this turn.",
-          "items": {
-            "$ref": "#/$defs/TurnEnvironmentParams"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
         },
         "input": {
           "items": {
@@ -8207,13 +5799,6 @@
         "outputSchema": {
           "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
         },
-        "permissions": {
-          "description": "Select a named permissions profile id for this turn and subsequent\nturns. Cannot be combined with `sandboxPolicy`.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "personality": {
           "anyOf": [
             {
@@ -8224,26 +5809,6 @@
             }
           ],
           "description": "Override the personality for this turn and subsequent turns."
-        },
-        "responsesapiClientMetadata": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Optional turn-scoped Responses API client metadata.",
-          "type": [
-            "object",
-            "null"
-          ]
-        },
-        "runtimeWorkspaceRoots": {
-          "description": "Replace the thread's runtime workspace roots for this turn and\nsubsequent turns. Paths must be absolute.",
-          "items": {
-            "$ref": "#/$defs/AbsolutePathBuf"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
         },
         "sandboxPolicy": {
           "anyOf": [
@@ -8286,16 +5851,6 @@
     },
     "TurnSteerParams": {
       "properties": {
-        "additionalContext": {
-          "additionalProperties": {
-            "$ref": "#/$defs/AdditionalContextEntry"
-          },
-          "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
-          "type": [
-            "object",
-            "null"
-          ]
-        },
         "clientUserMessageId": {
           "type": [
             "string",
@@ -8311,16 +5866,6 @@
             "$ref": "#/$defs/UserInput"
           },
           "type": "array"
-        },
-        "responsesapiClientMetadata": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Optional turn-scoped Responses API client metadata.",
-          "type": [
-            "object",
-            "null"
-          ]
         },
         "threadId": {
           "type": "string"
