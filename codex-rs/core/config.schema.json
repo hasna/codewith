@@ -4557,7 +4557,7 @@
       "additionalProperties": false,
       "properties": {
         "auto_reset_enabled": {
-          "description": "When true, Codewith may consume one available reset credit after it confirms the weekly usage limit is exhausted.",
+          "description": "When true, Codewith may consume one available reset credit after it confirms the weekly\nusage limit is exhausted.",
           "type": "boolean"
         }
       },
@@ -5700,7 +5700,7 @@
       "description": "Collection of settings that are specific to the TUI."
     },
     "usage_limit": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/UsageLimitToml"
         }
