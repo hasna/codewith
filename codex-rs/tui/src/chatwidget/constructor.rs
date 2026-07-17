@@ -171,6 +171,7 @@ impl ChatWidget {
             cycle_permissions_binding,
             running_commands: HashMap::new(),
             collab_agent_metadata: HashMap::new(),
+            collab_wait_status: CollabWaitStatus::default(),
             pending_collab_spawn_requests: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
