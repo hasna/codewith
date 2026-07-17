@@ -3710,7 +3710,12 @@ dependencies = [
  "codex-core-skills",
  "codex-extension-api",
  "codex-protocol",
+ "codex-tools",
+ "codex-utils-output-truncation",
  "pretty_assertions",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
