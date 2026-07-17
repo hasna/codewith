@@ -39,7 +39,7 @@ pub(crate) fn available_skills_fragment(catalog: &SkillCatalog) -> Option<Availa
     for entry in catalog
         .entries
         .iter()
-        .filter(|entry| entry.enabled && entry.prompt_visible)
+        .filter(|entry| entry.is_prompt_visible())
     {
         let description = entry
             .short_description
