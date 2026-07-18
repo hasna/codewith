@@ -289,6 +289,115 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     Ok(())
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn thread_external_agent_claude_uses_captured_pathext_for_discovery() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+    let config_path = codex_home.join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!(
+            "{config}\n[shell_environment_policy]\ninherit = \"core\"\n\n[shell_environment_policy.set]\nPATHEXT = \".CMD\"\nANTHROPIC_API_KEY = \"test-value\"\n"
+        ),
+    )?;
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    write_fake_executable(&bin_dir, "claude")?;
+    let path = path_with_fake_bin(&bin_dir)?;
+
+    let mut mcp = McpProcess::new_with_env(
+        codex_home.as_path(),
+        &[("PATH", Some(path.as_str())), ("PATHEXT", Some(".EXE"))],
+    )
+    .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    let external_agent_id = mcp
+        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
+            thread_id: thread.id.clone(),
+            runtime_id: "claude".to_string(),
+            task: "inspect the source environment".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+        })
+        .await?;
+    let external_agent_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(external_agent_id)),
+    )
+    .await??;
+    let response: ThreadExternalAgentStartResponse = to_response(external_agent_resp)?;
+    assert_eq!(response.status, ThreadExternalAgentStartStatus::Started);
+    let run_id = response.run_id.expect("external-agent run id");
+
+    let started_notification = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/externalAgent/event"),
+    )
+    .await??;
+    let started: ThreadExternalAgentEventNotification = serde_json::from_value(
+        started_notification
+            .params
+            .expect("external-agent event params"),
+    )?;
+    assert_eq!(started.thread_id, thread.id);
+    assert_eq!(started.run_id, run_id);
+    assert_eq!(
+        started.event,
+        ThreadExternalAgentEvent::RunStarted {
+            runtime_id: "claude".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+            task: "inspect the source environment".to_string(),
+        }
+    );
+
+    let failed_notification = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/externalAgent/event"),
+    )
+    .await??;
+    let failed: ThreadExternalAgentEventNotification = serde_json::from_value(
+        failed_notification
+            .params
+            .expect("external-agent failure event params"),
+    )?;
+    assert_eq!(failed.thread_id, thread.id);
+    assert_eq!(failed.run_id, run_id);
+    let ThreadExternalAgentEvent::Failed { message } = failed.event else {
+        anyhow::bail!("expected external-agent failure event");
+    };
+    assert!(
+        message.contains("platform sandbox is not available"),
+        "unexpected failure message: {message}"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_external_agent_permission_respond_unknown_request_is_not_accepted() -> Result<()> {
     let tmp = TempDir::new()?;

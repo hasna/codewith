@@ -109,12 +109,17 @@ pub struct ClaudeEnvironmentPolicy {
 
 impl ClaudeEnvironmentPolicy {
     pub fn sanitized() -> Self {
-        Self {
-            inherited_vars: CLAUDE_SAFE_ENV_VARS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        }
+        let inherited_vars = CLAUDE_SAFE_ENV_VARS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        #[cfg(windows)]
+        let inherited_vars = {
+            let mut inherited_vars = inherited_vars;
+            inherited_vars.push("PATHEXT".to_string());
+            inherited_vars
+        };
+        Self { inherited_vars }
     }
 
     pub fn sanitize(
@@ -124,7 +129,7 @@ impl ClaudeEnvironmentPolicy {
     ) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
-            if let Some(value) = source.get(name) {
+            if let Some(value) = source_env_value(source, name) {
                 env.insert(name.clone(), value.clone());
             }
         }
@@ -132,6 +137,23 @@ impl ClaudeEnvironmentPolicy {
             env.insert(name.clone(), value.clone());
         }
         env
+    }
+}
+
+fn source_env_value<'a>(
+    source_env: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'a String> {
+    #[cfg(windows)]
+    {
+        source_env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    }
+    #[cfg(not(windows))]
+    {
+        source_env.get(name)
     }
 }
 
@@ -165,7 +187,7 @@ impl ClaudeCodeHarness {
     ) -> ExternalAgentReadiness {
         let program = match self.resolve_program_with_cwd(source_env, Path::new(".")) {
             Ok(program) => program,
-            Err(err) => return self.runtime_missing_readiness(err.to_string()),
+            Err(err) => return self.runtime_missing_readiness(err),
         };
 
         if has_agent_sdk_auth_env(source_env) {
@@ -250,7 +272,7 @@ impl ClaudeCodeHarness {
         self.resolve_program_with_cwd(source_env, &request.cwd)
             .map_err(|err| ExternalAgentError::NotReady {
                 runtime: request.runtime.as_str().to_string(),
-                reason: err.to_string(),
+                reason: err,
             })
     }
 
@@ -258,9 +280,21 @@ impl ClaudeCodeHarness {
         &self,
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
-    ) -> Result<PathBuf, which::Error> {
-        let path = source_env.get("PATH").map(String::as_str);
-        which::which_in(self.descriptor.command.program, path, cwd)
+    ) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        {
+            return resolve_windows_program_from_source_env(
+                self.descriptor.command.program,
+                source_env,
+                cwd,
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let path = source_env.get("PATH").map(String::as_str);
+            which::which_in(self.descriptor.command.program, path, cwd)
+                .map_err(|err| err.to_string())
+        }
     }
 
     fn validate_request(&self, request: &ExternalAgentRequest) -> Result<(), ExternalAgentError> {
@@ -671,7 +705,7 @@ fn copy_env_vars(
     names: &[&str],
 ) {
     for name in names {
-        if let Some(value) = source_env.get(*name)
+        if let Some(value) = source_env_value(source_env, name)
             && !value.trim().is_empty()
         {
             env.insert((*name).to_string(), value.clone());
@@ -680,16 +714,63 @@ fn copy_env_vars(
 }
 
 fn env_value_is_set(source_env: &BTreeMap<String, String>, name: &str) -> bool {
-    source_env
-        .get(name)
-        .is_some_and(|value| !value.trim().is_empty())
+    source_env_value(source_env, name).is_some_and(|value| !value.trim().is_empty())
 }
 
 fn env_flag_is_enabled(source_env: &BTreeMap<String, String>, name: &str) -> bool {
-    source_env.get(name).is_some_and(|value| {
+    source_env_value(source_env, name).is_some_and(|value| {
         let value = value.trim();
         !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
     })
+}
+
+#[cfg(windows)]
+fn resolve_windows_program_from_source_env(
+    program: &str,
+    source_env: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> Result<PathBuf, String> {
+    let path = source_env_value(source_env, "PATH")
+        .ok_or_else(|| format!("source environment does not define PATH for `{program}`"))?;
+    let path_extensions = source_env_value(source_env, "PATHEXT")
+        .map(String::as_str)
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
+        .split(';')
+        .filter(|extension| {
+            extension.len() > 1 && extension.starts_with('.') && !extension.contains(['/', '\\'])
+        })
+        .collect::<Vec<_>>();
+    let program_path = Path::new(program);
+    let bases = if program.contains(['/', '\\']) {
+        vec![if program_path.is_absolute() {
+            program_path.to_path_buf()
+        } else {
+            cwd.join(program_path)
+        }]
+    } else {
+        std::env::split_paths(path)
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.join(program_path))
+            .collect::<Vec<_>>()
+    };
+
+    for base in bases {
+        if base.is_file() {
+            return Ok(base);
+        }
+        if base.extension().is_none() {
+            for extension in &path_extensions {
+                let candidate = PathBuf::from(format!("{}{}", base.display(), extension));
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "could not resolve `{program}` from source PATH using source PATHEXT"
+    ))
 }
 
 fn validate_claude_system_event(
@@ -1059,6 +1140,72 @@ exit 2
         let readiness = harness.readiness_with_env(&env).await;
 
         assert_eq!(readiness.status, ExternalAgentReadinessStatus::MissingAuth);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn readiness_uses_source_pathext_for_claude_discovery() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let claude_path = bin_dir.join("claude.claudeext");
+        std::fs::write(&claude_path, "not executed").expect("write fake claude");
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), bin_dir.display().to_string()),
+            ("PathExt".to_string(), ".CLAUDEEXT".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("claude harness");
+
+        let readiness = harness.readiness_with_env(&source_env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+        assert_eq!(readiness.detail, Some(claude_path.display().to_string()));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn claude_cmd_receives_source_pathext_in_sanitized_environment() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let claude_path = bin_dir.join("claude.cmd");
+        std::fs::write(&claude_path, "@echo off\r\necho %PATHEXT%\r\nexit /b 0\r\n")
+            .expect("write fake claude");
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), bin_dir.display().to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("claude harness");
+        let request = ExternalAgentRequest::new(
+            "claude",
+            "inspect the environment",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let launch = harness.launch_spec(temp_dir.path(), &claude_path, &source_env);
+        let mut process = ClaudeCodeProcess::spawn(
+            ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
+            &request,
+        )
+        .expect("spawn fake claude");
+
+        assert_eq!(
+            process
+                .stdout
+                .next_line()
+                .await
+                .expect("read fake claude stdout"),
+            Some(".CMD".to_string())
+        );
+        assert!(
+            process
+                .wait_for_exit()
+                .await
+                .expect("wait for fake claude")
+                .success()
+        );
     }
 
     #[test]

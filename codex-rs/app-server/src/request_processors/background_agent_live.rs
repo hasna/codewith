@@ -337,6 +337,16 @@ impl ThreadRequestProcessor {
                     .materialize_project_roots_with_workspace_roots(std::slice::from_ref(
                         &absolute_worktree_path,
                     ));
+                let (file_system, network) = permission_profile.to_runtime_permissions();
+                let file_system = file_system.with_additional_legacy_workspace_writable_roots(
+                    std::slice::from_ref(&absolute_worktree_path),
+                );
+                let permission_profile =
+                    PermissionProfile::from_runtime_permissions_with_enforcement(
+                        permission_profile.enforcement(),
+                        &file_system,
+                        network,
+                    );
                 context.permission_profile =
                     Some(serde_json::to_value(permission_profile).map_err(|err| {
                         internal_error(format!(

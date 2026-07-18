@@ -521,6 +521,24 @@ async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
+    assert_agent_start_rebinds_workspace_write_permissions_to_managed_worktree(
+        /*execution_context_absent*/ true,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree_with_explicit_context()
+-> Result<()> {
+    assert_agent_start_rebinds_workspace_write_permissions_to_managed_worktree(
+        /*execution_context_absent*/ false,
+    )
+    .await
+}
+
+async fn assert_agent_start_rebinds_workspace_write_permissions_to_managed_worktree(
+    execution_context_absent: bool,
+) -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;
     let server = create_mock_responses_server_sequence_unchecked(vec![
@@ -555,7 +573,9 @@ exclude_slash_tmp = true
         Some("validated-managed-worktree-permissions".to_string()),
         codex_home.path(),
     );
-    params.execution_context = None;
+    if execution_context_absent {
+        params.execution_context = None;
+    }
     params.cwd = Some(created_worktree_path.clone());
 
     let start = start_agent(&mut mcp, params).await?;
