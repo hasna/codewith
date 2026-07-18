@@ -2470,7 +2470,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "later work\n",
-        std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
+        std::fs::read_to_string(repo_path.join("later.txt"))?
     );
     let race_create_request_id = mcp
         .send_raw_request(
@@ -2862,6 +2862,7 @@ async fn init_state_db(codex_home: &Path) -> Result<Arc<codex_state::StateRuntim
 
 fn init_git_repo(repo_path: &Path) -> Result<()> {
     git(repo_path, &["init"])?;
+    git(repo_path, &["config", "core.autocrlf", "false"])?;
     git(repo_path, &["config", "user.email", "codewith@example.com"])?;
     git(repo_path, &["config", "user.name", "Codewith Test"])?;
     std::fs::write(repo_path.join("README.md"), "worktree test\n")?;

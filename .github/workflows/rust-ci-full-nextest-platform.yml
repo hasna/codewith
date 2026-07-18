@@ -47,6 +47,10 @@ on:
         required: false
         default: false
         type: boolean
+      hosted_linux_disk_cleanup:
+        required: false
+        default: false
+        type: boolean
       archive_timeout_minutes:
         required: false
         default: 60
@@ -82,7 +86,7 @@ jobs:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ inputs.hosted_linux_disk_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -381,7 +385,7 @@ jobs:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ inputs.hosted_linux_disk_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail

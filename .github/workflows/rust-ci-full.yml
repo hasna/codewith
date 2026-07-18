@@ -456,6 +456,7 @@ jobs:
       artifact_id: linux-x64-remote
       remote_env: true
       use_sccache: true
+      hosted_linux_disk_cleanup: true
     secrets: inherit
 
   # Linux ARM remains covered by the lint_build matrix. The full nextest archive
