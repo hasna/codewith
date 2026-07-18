@@ -9,7 +9,7 @@ mod path_keys;
 pub(crate) use path_keys::managed_worktree_path_key_from_display;
 pub(crate) use path_keys::normalize_legacy_managed_worktree_paths;
 pub(crate) use path_keys::path_to_db_string;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use path_keys::path_to_string;
 
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
@@ -171,11 +171,22 @@ WHERE owner_thread_id = ?
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let base_repo_path = path_to_db_string(&params.base_repo_path);
         let worktree_path = path_to_db_string(&params.worktree_path);
-        // Keep this populated for both modes so create-time rows match the
-        // startup backfill. The database admission guard applies it only to
-        // isolated worktrees, and keys intentionally remain distinct from the
-        // display path on Windows.
-        let worktree_path_key = managed_worktree_path_key_from_display(worktree_path.as_str());
+        // Store the admission key so create-time rows match startup backfill:
+        // isolated worktrees are keyed by their worktree path, while shared
+        // repositories are keyed by their base repository path. Keys
+        // intentionally remain distinct from display paths on Windows.
+        let worktree_path_key = managed_worktree_path_key_from_display(
+            if params.mode == crate::ManagedWorktreeMode::SharedRepository {
+                base_repo_path.as_str()
+            } else {
+                worktree_path.as_str()
+            },
+        );
+        if params.mode == crate::ManagedWorktreeMode::IsolatedWorktree
+            && base_repo_path == worktree_path
+        {
+            anyhow::bail!("isolated managed worktree path cannot match the base repo path");
+        }
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (
@@ -1427,11 +1438,6 @@ fn validate_create_params(params: &ManagedWorktreeCreateParams) -> anyhow::Resul
     if !params.worktree_path.is_absolute() {
         anyhow::bail!("managed worktree path must be absolute");
     }
-    if params.mode == crate::ManagedWorktreeMode::IsolatedWorktree
-        && params.base_repo_path == params.worktree_path
-    {
-        anyhow::bail!("isolated managed worktree path cannot match the base repo path");
-    }
     if let Some(branch) = params.branch.as_deref()
         && branch.trim().is_empty()
     {
@@ -1725,6 +1731,7 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    #[cfg(unix)]
     use std::collections::BTreeSet;
 
     async fn test_runtime() -> Arc<StateRuntime> {
@@ -1859,7 +1866,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_repository_path_key_does_not_block_isolated_admission() -> anyhow::Result<()> {
+    async fn shared_repository_base_path_key_preserves_display_paths_and_does_not_block_isolated_admission()
+    -> anyhow::Result<()> {
         let runtime = test_runtime().await;
         let temp = test_temp_dir()?;
         let shared_base_repo_path = temp.join("shared-repo");
@@ -1869,15 +1877,25 @@ mod tests {
         std::fs::create_dir_all(&isolated_base_repo_path)?;
         let mut shared_params = create_params_for_paths(
             "shared",
-            shared_base_repo_path,
+            shared_base_repo_path.clone(),
             shared_worktree_path.clone(),
         );
         shared_params.mode = crate::ManagedWorktreeMode::SharedRepository;
         let store = runtime.managed_worktrees();
-        store.create_managed_worktree(shared_params).await?;
+        let shared = store.create_managed_worktree(shared_params).await?;
 
         assert_eq!(
-            Some(path_to_db_string(&shared_worktree_path)),
+            path_to_db_string(&shared_base_repo_path),
+            shared.base_repo_path.to_string_lossy()
+        );
+        assert_eq!(
+            path_to_db_string(&shared_worktree_path),
+            shared.worktree_path.to_string_lossy()
+        );
+        assert_eq!(
+            Some(managed_worktree_path_key_from_display(
+                path_to_db_string(&shared_base_repo_path).as_str()
+            )),
             worktree_path_key(runtime.as_ref(), "shared").await?
         );
         assert_eq!(
@@ -1890,6 +1908,32 @@ mod tests {
                 ))
                 .await?
                 .worktree_id
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_isolated_worktree_path_equal_to_normalized_base_repo_path()
+    -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = test_temp_dir()?.join("repo");
+        let child = base_repo_path.join("child");
+        std::fs::create_dir_all(&child)?;
+
+        let error = runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-normalized-base",
+                base_repo_path,
+                child.join(".."),
+            ))
+            .await
+            .expect_err("a normalized base-repository path cannot be an isolated worktree");
+        assert!(
+            error
+                .to_string()
+                .contains("isolated managed worktree path cannot match the base repo path"),
+            "unexpected admission error: {error:#}"
         );
         Ok(())
     }
@@ -1963,6 +2007,76 @@ mod tests {
             .expect_err("retained live legacy alias must block a new canonical worktree");
         assert!(
             format!("{error:#}").contains("normalized isolated worktree path is already live"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_active_shared_repository_alias_blocks_new_canonical_admission()
+    -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let codex_home = temp.join("codewith-home");
+        let repo = temp.join("repo");
+        let other_repo = temp.join("other-repo");
+        let legacy_repo = temp.join("repo-legacy");
+        std::fs::create_dir_all(&repo)?;
+        std::fs::create_dir_all(&other_repo)?;
+        symlink(&repo, &legacy_repo)?;
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        let mut canonical_params =
+            create_params_for_paths("shared-canonical", repo.clone(), repo.clone());
+        canonical_params.mode = crate::ManagedWorktreeMode::SharedRepository;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(canonical_params)
+            .await?;
+        let mut legacy_params =
+            create_params_for_paths("shared-legacy", other_repo.clone(), other_repo.clone());
+        legacy_params.mode = crate::ManagedWorktreeMode::SharedRepository;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(legacy_params)
+            .await?;
+        sqlx::query(
+            "UPDATE managed_worktrees SET base_repo_path = ?, worktree_path = ? WHERE worktree_id = ?",
+        )
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind("shared-legacy")
+        .execute(runtime.pool.as_ref())
+        .await?;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let retained_legacy = runtime
+            .managed_worktrees()
+            .get_managed_worktree("shared-legacy")
+            .await?
+            .expect("colliding legacy shared repository should remain readable");
+        assert_eq!(
+            legacy_repo.to_string_lossy().as_ref(),
+            path_to_string(&retained_legacy.base_repo_path)
+        );
+        runtime
+            .managed_worktrees()
+            .mark_managed_worktree_deleted("shared-canonical")
+            .await?
+            .expect("canonical shared repository should be marked deleted");
+
+        let mut new_params = create_params_for_paths("shared-new", repo.clone(), repo);
+        new_params.mode = crate::ManagedWorktreeMode::SharedRepository;
+        let error = runtime
+            .managed_worktrees()
+            .create_managed_worktree(new_params)
+            .await
+            .expect_err("retained active shared repository alias must block a new canonical row");
+        assert!(
+            format!("{error:#}").contains("normalized shared repository path is already active"),
             "unexpected admission error: {error:#}"
         );
         Ok(())

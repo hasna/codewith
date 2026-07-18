@@ -207,18 +207,23 @@ ORDER BY worktree_id ASC
     let mut transaction = pool.begin().await?;
     for (
         row,
-        _,
+        normalized_base_repo_path_key,
         normalized_worktree_path_key,
         normalized_base_repo_path,
         normalized_worktree_path,
     ) in normalized_rows
     {
+        let admission_path_key = if row.mode == ManagedWorktreeMode::SharedRepository.as_str() {
+            normalized_base_repo_path_key
+        } else {
+            normalized_worktree_path_key
+        };
         if collision_worktree_ids.contains(row.worktree_id.as_str()) {
-            if row.worktree_path_key.as_deref() != Some(normalized_worktree_path_key.as_str()) {
+            if row.worktree_path_key.as_deref() != Some(admission_path_key.as_str()) {
                 sqlx::query(
                     "UPDATE managed_worktrees SET worktree_path_key = ? WHERE worktree_id = ?",
                 )
-                .bind(normalized_worktree_path_key)
+                .bind(admission_path_key)
                 .bind(row.worktree_id.clone())
                 .execute(&mut *transaction)
                 .await?;
@@ -227,7 +232,7 @@ ORDER BY worktree_id ASC
         }
         if row.base_repo_path == normalized_base_repo_path
             && row.worktree_path == normalized_worktree_path
-            && row.worktree_path_key.as_deref() == Some(normalized_worktree_path_key.as_str())
+            && row.worktree_path_key.as_deref() == Some(admission_path_key.as_str())
         {
             continue;
         }
@@ -240,7 +245,7 @@ WHERE worktree_id = ?
         )
         .bind(normalized_base_repo_path)
         .bind(normalized_worktree_path)
-        .bind(normalized_worktree_path_key)
+        .bind(admission_path_key)
         .bind(row.worktree_id.clone())
         .execute(&mut *transaction)
         .await?;
@@ -275,10 +280,10 @@ pub(crate) fn path_to_string(path: &Path) -> String {
 
 #[cfg(windows)]
 fn strip_windows_verbatim_prefix(path: String) -> String {
-    if let Some(rest) = path.strip_prefix(r"\\\\?\\UNC\\") {
-        return format!(r"\\\\{rest}");
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
     }
-    if let Some(rest) = path.strip_prefix(r"\\\\?\\") {
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
         return rest.to_owned();
     }
     path
@@ -417,6 +422,7 @@ mod tests {
     fn windows_path_keys_fold_case_for_missing_leaves_drive_unc_and_verbatim_paths() {
         let drive_run_a = Path::new(r"C:\Managed-Worktrees\RunA\missing\leaf");
         let drive_runa = Path::new(r"c:\managed-worktrees\runa\missing\leaf");
+        let verbatim_drive_run_a = Path::new(r"\\?\C:\Managed-Worktrees\RunA\missing\leaf");
         assert_eq!(
             managed_worktree_path_key(drive_run_a),
             managed_worktree_path_key(drive_runa)
@@ -426,12 +432,24 @@ mod tests {
             managed_worktree_path_key(drive_run_a)
         );
         assert_eq!(r"c:\", managed_worktree_path_key(Path::new(r"C:\")));
+        assert_eq!(
+            path_to_db_string(drive_run_a),
+            path_to_db_string(verbatim_drive_run_a)
+        );
+        assert_eq!(
+            managed_worktree_path_key(drive_run_a),
+            managed_worktree_path_key(verbatim_drive_run_a)
+        );
 
         let unc_run_a = Path::new(r"\\Server\Share\RunA\missing");
         let verbatim_unc_runa = Path::new(r"\\?\UNC\server\share\runa\missing");
         assert_eq!(
             managed_worktree_path_key(unc_run_a),
             managed_worktree_path_key(verbatim_unc_runa)
+        );
+        assert_eq!(
+            r"\\server\share\runa\missing",
+            path_to_db_string(verbatim_unc_runa)
         );
         assert_eq!(
             managed_worktree_path_key(Path::new(r"C:\Managed-Worktrees\RÜN\missing")),
