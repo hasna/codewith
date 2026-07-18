@@ -1,6 +1,9 @@
 use super::*;
 use crate::model::ManagedWorktreeMergeCandidateRow;
 use crate::model::ManagedWorktreeRow;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -260,11 +263,6 @@ WHERE worktree_id = ?
         ));
         query.push_bind(include_deleted);
         query.push(" OR deleted_at_ms IS NULL)");
-        if let Some(base_repo_path) = base_repo_path {
-            query
-                .push(" AND base_repo_path = ")
-                .push_bind(path_to_db_string(base_repo_path));
-        }
         query.push(
             r#"
 ORDER BY
@@ -276,20 +274,35 @@ ORDER BY
     END,
     updated_at_ms DESC,
     worktree_id DESC
-LIMIT
 "#,
         );
-        query.push_bind(i64::from(limit) + 1);
-        query.push(" OFFSET ");
-        query.push_bind(i64::from(offset));
+        if base_repo_path.is_none() {
+            query.push(" LIMIT ");
+            query.push_bind(i64::from(limit) + 1);
+            query.push(" OFFSET ");
+            query.push_bind(i64::from(offset));
+        }
 
         let rows = query.build().fetch_all(self.pool.as_ref()).await?;
-        let has_more = rows.len() > limit as usize;
-        let data = rows
+        let normalized_base_repo_path = base_repo_path.map(path_to_db_string);
+        let rows = rows
             .into_iter()
-            .take(limit as usize)
             .map(|row| managed_worktree_from_row(&row))
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let rows = rows.into_iter().filter(|worktree| {
+            normalized_base_repo_path
+                .as_ref()
+                .is_none_or(|base_repo_path| {
+                    path_to_db_string(worktree.base_repo_path.as_path()) == *base_repo_path
+                })
+        });
+        let rows = if base_repo_path.is_some() {
+            rows.skip(offset as usize).collect::<Vec<_>>()
+        } else {
+            rows.collect::<Vec<_>>()
+        };
+        let has_more = rows.len() > limit as usize;
+        let data = rows.into_iter().take(limit as usize).collect::<Vec<_>>();
         let next_cursor = has_more.then(|| offset.saturating_add(limit).to_string());
         Ok(ManagedWorktreeListPage { data, next_cursor })
     }
@@ -1524,8 +1537,34 @@ pub(crate) fn path_to_db_string(path: &Path) -> String {
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let lexical_path = normalize_path_components(path);
+    let mut missing_suffix = Vec::<OsString>::new();
+    let mut existing_ancestor = lexical_path.as_path();
 
+    loop {
+        match std::fs::canonicalize(existing_ancestor) {
+            Ok(canonical_ancestor) => {
+                let mut normalized = normalize_path_components(&canonical_ancestor);
+                for component in missing_suffix.iter().rev() {
+                    normalized.push(component);
+                }
+                return normalized;
+            }
+            Err(_) => {
+                let Some(component) = existing_ancestor.file_name() else {
+                    return lexical_path;
+                };
+                let Some(parent) = existing_ancestor.parent() else {
+                    return lexical_path;
+                };
+                missing_suffix.push(component.to_os_string());
+                existing_ancestor = parent;
+            }
+        }
+    }
+}
+
+fn normalize_path_components(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1538,6 +1577,156 @@ fn normalize_path_for_db(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+struct LegacyManagedWorktreePathRow {
+    worktree_id: String,
+    mode: String,
+    base_repo_path: String,
+    worktree_path: String,
+    lifecycle_status: String,
+    released_at_ms: Option<i64>,
+    deleted_at_ms: Option<i64>,
+}
+
+/// Normalize legacy managed-worktree path keys before any path-keyed read can
+/// observe a row stored under a lexical alias such as macOS `/var`.
+///
+/// The unique indexes constrain live isolated worktree paths and active shared
+/// repository paths. Preflight every normalized key before updating so two
+/// legacy aliases are surfaced to the operator instead of being merged,
+/// deleted, or allowed to make shared-repository rejection ambiguous.
+pub(crate) async fn normalize_legacy_managed_worktree_paths(
+    pool: &SqlitePool,
+) -> anyhow::Result<()> {
+    let rows = sqlx::query(
+        r#"
+SELECT
+    worktree_id,
+    mode,
+    base_repo_path,
+    worktree_path,
+    lifecycle_status,
+    released_at_ms,
+    deleted_at_ms
+FROM managed_worktrees
+ORDER BY worktree_id ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok(LegacyManagedWorktreePathRow {
+            worktree_id: row.try_get("worktree_id")?,
+            mode: row.try_get("mode")?,
+            base_repo_path: row.try_get("base_repo_path")?,
+            worktree_path: row.try_get("worktree_path")?,
+            lifecycle_status: row.try_get("lifecycle_status")?,
+            released_at_ms: row.try_get("released_at_ms")?,
+            deleted_at_ms: row.try_get("deleted_at_ms")?,
+        })
+    })
+    .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let normalized_rows = rows
+        .iter()
+        .map(|row| {
+            (
+                row,
+                path_to_db_string(Path::new(&row.base_repo_path)),
+                path_to_db_string(Path::new(&row.worktree_path)),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut live_isolated_worktrees = BTreeMap::new();
+    let mut active_shared_repositories = BTreeMap::new();
+    for (row, normalized_base_repo_path, normalized_worktree_path) in &normalized_rows {
+        if row.mode == crate::ManagedWorktreeMode::IsolatedWorktree.as_str()
+            && row.deleted_at_ms.is_none()
+        {
+            collect_normalized_managed_worktree_path(
+                &mut live_isolated_worktrees,
+                normalized_worktree_path,
+                row.worktree_id.as_str(),
+            );
+        }
+        if row.mode == crate::ManagedWorktreeMode::SharedRepository.as_str()
+            && row.deleted_at_ms.is_none()
+            && row.released_at_ms.is_none()
+            && row.lifecycle_status == crate::ManagedWorktreeLifecycleStatus::Active.as_str()
+        {
+            collect_normalized_managed_worktree_path(
+                &mut active_shared_repositories,
+                normalized_base_repo_path,
+                row.worktree_id.as_str(),
+            );
+        }
+    }
+
+    let collisions = [
+        ("live isolated worktree path", live_isolated_worktrees),
+        ("active shared repository path", active_shared_repositories),
+    ]
+    .into_iter()
+    .flat_map(|(path_kind, paths)| {
+        paths
+            .into_iter()
+            .filter_map(move |(normalized_path, worktree_ids)| {
+                (worktree_ids.len() > 1).then_some((path_kind, normalized_path, worktree_ids))
+            })
+    })
+    .collect::<Vec<_>>();
+    let collision_worktree_ids = collisions
+        .iter()
+        .flat_map(|(_, _, worktree_ids)| worktree_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
+
+    let mut transaction = pool.begin().await?;
+    for (row, normalized_base_repo_path, normalized_worktree_path) in normalized_rows {
+        if collision_worktree_ids.contains(row.worktree_id.as_str()) {
+            continue;
+        }
+        if row.base_repo_path == normalized_base_repo_path
+            && row.worktree_path == normalized_worktree_path
+        {
+            continue;
+        }
+        sqlx::query(
+            r#"
+UPDATE managed_worktrees
+SET base_repo_path = ?, worktree_path = ?
+WHERE worktree_id = ?
+            "#,
+        )
+        .bind(normalized_base_repo_path)
+        .bind(normalized_worktree_path)
+        .bind(row.worktree_id.clone())
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    for (path_kind, normalized_path, worktree_ids) in collisions {
+        tracing::warn!(
+            %path_kind,
+            %normalized_path,
+            ?worktree_ids,
+            "managed worktree path normalization collision; retaining legacy rows without merging or deleting them"
+        );
+    }
+    Ok(())
+}
+
+fn collect_normalized_managed_worktree_path(
+    paths: &mut BTreeMap<String, Vec<String>>,
+    normalized_path: &str,
+    worktree_id: &str,
+) {
+    paths
+        .entry(normalized_path.to_string())
+        .or_default()
+        .push(worktree_id.to_string());
 }
 
 fn path_to_string(path: &Path) -> String {
@@ -1644,6 +1833,12 @@ mod tests {
             .expect("state db should initialize")
     }
 
+    fn test_temp_dir() -> anyhow::Result<PathBuf> {
+        let path = unique_temp_dir();
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
     fn repo_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "codewith-managed-worktrees-{}",
@@ -1657,6 +1852,14 @@ mod tests {
             .join(".codewith")
             .join("worktrees")
             .join(worktree_id);
+        create_params_for_paths(worktree_id, base_repo_path, worktree_path)
+    }
+
+    fn create_params_for_paths(
+        worktree_id: &str,
+        base_repo_path: PathBuf,
+        worktree_path: PathBuf,
+    ) -> ManagedWorktreeCreateParams {
         ManagedWorktreeCreateParams {
             worktree_id: Some(worktree_id.to_string()),
             identity: Some(format!("session:{worktree_id}")),
@@ -1674,6 +1877,227 @@ mod tests {
             owner_agent_run_id: None,
             cleanup_after: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_missing_leaves_from_the_deepest_existing_ancestor() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let target = temp.join("target");
+        let alias = temp.join("alias");
+        std::fs::create_dir_all(&target)?;
+        symlink(&target, &alias)?;
+
+        let missing_leaf = alias.join("missing").join("leaf");
+        let expected = std::fs::canonicalize(&target)?.join("missing").join("leaf");
+
+        assert_eq!(
+            path_to_db_string(&expected),
+            path_to_db_string(&missing_leaf)
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preserves_windows_verbatim_and_unc_paths_when_leaves_are_missing() {
+        assert_eq!(
+            r"C:\managed-worktrees\missing",
+            path_to_db_string(Path::new(r"\\?\C:\managed-worktrees\missing"))
+        );
+        assert_eq!(
+            r"\\server\share\managed-worktrees\missing",
+            path_to_db_string(Path::new(r"\\?\UNC\server\share\managed-worktrees\missing"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_normalizes_noncolliding_legacy_managed_worktree_paths() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let codex_home = temp.join("codewith-home");
+        let repo = temp.join("repo");
+        let legacy_repo = temp.join("repo-legacy");
+        std::fs::create_dir_all(&repo)?;
+        symlink(&repo, &legacy_repo)?;
+        let worktree = repo.join(".codewith").join("worktrees").join("wt-legacy");
+        let legacy_worktree = legacy_repo
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-legacy");
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-legacy",
+                repo.clone(),
+                worktree.clone(),
+            ))
+            .await?;
+        sqlx::query(
+            "UPDATE managed_worktrees SET base_repo_path = ?, worktree_path = ? WHERE worktree_id = ?",
+        )
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind(legacy_worktree.to_string_lossy().as_ref())
+        .bind("wt-legacy")
+        .execute(runtime.pool.as_ref())
+        .await?;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let normalized = runtime
+            .managed_worktrees()
+            .get_managed_worktree("wt-legacy")
+            .await?
+            .expect("legacy managed worktree should remain readable");
+        assert_eq!(
+            path_to_db_string(&repo),
+            path_to_string(&normalized.base_repo_path)
+        );
+        assert_eq!(
+            path_to_db_string(&worktree),
+            path_to_string(&normalized.worktree_path)
+        );
+        assert_eq!(
+            vec![normalized],
+            runtime
+                .managed_worktrees()
+                .list_managed_worktrees_page(
+                    Some(&repo),
+                    /*include_deleted*/ false,
+                    /*cursor*/ None,
+                    /*limit*/ 10,
+                )
+                .await?
+                .data
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_retains_colliding_legacy_paths_and_lists_each_row() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let codex_home = temp.join("codewith-home");
+        let repo = temp.join("repo");
+        let other_repo = temp.join("other-repo");
+        let legacy_repo = temp.join("repo-legacy");
+        std::fs::create_dir_all(&repo)?;
+        std::fs::create_dir_all(&other_repo)?;
+        symlink(&repo, &legacy_repo)?;
+        let worktree = repo.join(".codewith").join("worktrees").join("wt-a");
+        let legacy_worktree = legacy_repo.join(".codewith").join("worktrees").join("wt-a");
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths("wt-a", repo.clone(), worktree))
+            .await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-b",
+                other_repo.clone(),
+                other_repo.join(".codewith").join("worktrees").join("wt-b"),
+            ))
+            .await?;
+        sqlx::query(
+            "UPDATE managed_worktrees SET base_repo_path = ?, worktree_path = ? WHERE worktree_id = ?",
+        )
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind(legacy_worktree.to_string_lossy().as_ref())
+        .bind("wt-b")
+        .execute(runtime.pool.as_ref())
+        .await?;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let legacy = runtime
+            .managed_worktrees()
+            .get_managed_worktree("wt-b")
+            .await?
+            .expect("colliding legacy managed worktree should remain readable");
+        assert_eq!(
+            legacy_repo.to_string_lossy().as_ref(),
+            path_to_string(&legacy.base_repo_path)
+        );
+        assert_eq!(
+            legacy_worktree.to_string_lossy().as_ref(),
+            path_to_string(&legacy.worktree_path)
+        );
+        let page = runtime
+            .managed_worktrees()
+            .list_managed_worktrees_page(
+                Some(&repo),
+                /*include_deleted*/ false,
+                /*cursor*/ None,
+                /*limit*/ 10,
+            )
+            .await?;
+        let ids = page
+            .data
+            .iter()
+            .map(|worktree| worktree.worktree_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(BTreeSet::from(["wt-a", "wt-b"]), ids);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn startup_normalizes_macos_var_alias_rows() -> anyhow::Result<()> {
+        let temp = test_temp_dir()?;
+        let codex_home = temp.join("codewith-home");
+        let canonical_repo = std::fs::canonicalize(&temp)?;
+        let legacy_repo = Path::new("/var").join(
+            canonical_repo
+                .strip_prefix("/private/var")
+                .expect("macOS temporary directory should use the /private/var alias"),
+        );
+        let worktree = canonical_repo.join("missing-worktree");
+        let legacy_worktree = legacy_repo.join("missing-worktree");
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-var-alias",
+                canonical_repo.clone(),
+                worktree.clone(),
+            ))
+            .await?;
+        sqlx::query(
+            "UPDATE managed_worktrees SET base_repo_path = ?, worktree_path = ? WHERE worktree_id = ?",
+        )
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind(legacy_worktree.to_string_lossy().as_ref())
+        .bind("wt-var-alias")
+        .execute(runtime.pool.as_ref())
+        .await?;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let normalized = runtime
+            .managed_worktrees()
+            .get_managed_worktree("wt-var-alias")
+            .await?
+            .expect("legacy /var row should remain readable");
+        assert_eq!(
+            path_to_db_string(&canonical_repo),
+            path_to_string(&normalized.base_repo_path)
+        );
+        assert_eq!(
+            path_to_db_string(&worktree),
+            path_to_string(&normalized.worktree_path)
+        );
+        Ok(())
     }
 
     #[tokio::test]

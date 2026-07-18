@@ -4520,6 +4520,12 @@ done
         }
     }
 
+    impl Drop for TestWorkerFixture {
+        fn drop(&mut self) {
+            let _ = self.release();
+        }
+    }
+
     async fn wait_for_worker_process_exit(
         controller: &WorkerProcessController,
         handle: &WorkerProcessHandle,
@@ -4534,6 +4540,24 @@ done
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_worker_fixture_releases_process_on_drop() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let fixture = TestWorkerFixture::create(temp.path())?;
+        let controller = WorkerProcessController::default();
+        let handle = controller
+            .spawn(WorkerProcessCommand::new(
+                fixture.program.clone(),
+                temp.path().join("fixture-drop.stderr.log"),
+            ))
+            .await?;
+        fixture.wait_until_ready().await?;
+
+        drop(fixture);
+        wait_for_worker_process_exit(&controller, &handle).await?;
+        Ok(())
     }
 
     #[tokio::test]

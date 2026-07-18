@@ -492,6 +492,17 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let started = Instant::now();
+        let managed_worktree_path_normalization_result =
+            managed_worktrees::normalize_legacy_managed_worktree_paths(pool.as_ref()).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            "normalize_legacy_managed_worktree_paths",
+            started.elapsed(),
+            &managed_worktree_path_normalization_result,
+        );
+        managed_worktree_path_normalization_result?;
         let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator, telemetry_override).await
         {
             Ok(db) => Arc::new(db),
@@ -2049,6 +2060,7 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
         let expected = [
             "open_state",
             "migrate_state",
+            "normalize_legacy_managed_worktree_paths",
             "open_logs",
             "migrate_logs",
             "open_goals",
