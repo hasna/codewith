@@ -173,6 +173,7 @@ INSERT INTO managed_worktrees (
     mode,
     base_repo_path,
     worktree_path,
+    worktree_path_key,
     branch,
     base_sha,
     head_sha,
@@ -189,7 +190,7 @@ INSERT INTO managed_worktrees (
     released_at_ms,
     cleanup_after_ms,
     deleted_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
 {}
             "#,
@@ -200,6 +201,7 @@ RETURNING
             .bind(params.identity)
             .bind(params.mode.as_str())
             .bind(path_to_db_string(&params.base_repo_path))
+            .bind(path_to_db_string(&params.worktree_path))
             .bind(path_to_db_string(&params.worktree_path))
             .bind(params.branch)
             .bind(params.base_sha)
@@ -370,21 +372,7 @@ ORDER BY
 SELECT
 {}
 FROM managed_worktrees
-WHERE mode = 'isolated_worktree'
-  AND lifecycle_status = 'cleanup_pending'
-  AND released_at_ms IS NOT NULL
-  AND deleted_at_ms IS NULL
-  AND NOT EXISTS (
-    SELECT 1
-    FROM managed_worktree_assignments AS assignment
-    WHERE assignment.worktree_id = managed_worktrees.worktree_id
-      AND assignment.detached_at_ms IS NULL
-  )
-  AND (
-    cleanup_after_ms IS NULL
-    OR cleanup_after_ms <= ?
-    OR force_delete_requested = 1
-  )
+WHERE {}
 ORDER BY
     force_delete_requested DESC,
     COALESCE(cleanup_after_ms, updated_at_ms) ASC,
@@ -392,7 +380,8 @@ ORDER BY
     worktree_id ASC
 LIMIT ?
             "#,
-            managed_worktree_select_columns()
+            managed_worktree_select_columns(),
+            managed_worktree_cleanup_candidate_predicate()
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(datetime_to_epoch_millis(now))
@@ -402,6 +391,32 @@ LIMIT ?
         rows.into_iter()
             .map(|row| managed_worktree_from_row(&row))
             .collect()
+    }
+
+    /// Rechecks that a known cleanup candidate remains eligible immediately
+    /// before deleting its linked Git worktree.
+    pub async fn get_cleanup_candidate_for_execution(
+        &self,
+        worktree_id: &str,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<crate::ManagedWorktree>> {
+        let sql = format!(
+            r#"
+SELECT
+{}
+FROM managed_worktrees
+WHERE worktree_id = ?
+  AND {}
+            "#,
+            managed_worktree_select_columns(),
+            managed_worktree_cleanup_candidate_predicate()
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(worktree_id)
+            .bind(datetime_to_epoch_millis(now))
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+        row.map(|row| managed_worktree_from_row(&row)).transpose()
     }
 
     pub async fn active_thread_managed_worktree(
@@ -1636,11 +1651,50 @@ fn normalize_path_components(path: &Path) -> PathBuf {
     normalized
 }
 
+fn managed_worktree_cleanup_candidate_predicate() -> &'static str {
+    r#"
+mode = 'isolated_worktree'
+  AND lifecycle_status = 'cleanup_pending'
+  AND released_at_ms IS NOT NULL
+  AND deleted_at_ms IS NULL
+  AND worktree_path_key IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM managed_worktree_assignments AS assignment
+    WHERE assignment.worktree_id = managed_worktrees.worktree_id
+      AND assignment.detached_at_ms IS NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM managed_worktrees AS sibling
+    WHERE sibling.worktree_id != managed_worktrees.worktree_id
+      AND sibling.mode = 'isolated_worktree'
+      AND sibling.deleted_at_ms IS NULL
+      AND sibling.worktree_path_key = managed_worktrees.worktree_path_key
+      AND (
+        sibling.lifecycle_status = 'active'
+        OR EXISTS (
+          SELECT 1
+          FROM managed_worktree_assignments AS sibling_assignment
+          WHERE sibling_assignment.worktree_id = sibling.worktree_id
+            AND sibling_assignment.detached_at_ms IS NULL
+        )
+      )
+  )
+  AND (
+    cleanup_after_ms IS NULL
+    OR cleanup_after_ms <= ?
+    OR force_delete_requested = 1
+  )
+"#
+}
+
 struct LegacyManagedWorktreePathRow {
     worktree_id: String,
     mode: String,
     base_repo_path: String,
     worktree_path: String,
+    worktree_path_key: Option<String>,
     lifecycle_status: String,
     released_at_ms: Option<i64>,
     deleted_at_ms: Option<i64>,
@@ -1663,6 +1717,7 @@ SELECT
     mode,
     base_repo_path,
     worktree_path,
+    worktree_path_key,
     lifecycle_status,
     released_at_ms,
     deleted_at_ms
@@ -1679,6 +1734,7 @@ ORDER BY worktree_id ASC
             mode: row.try_get("mode")?,
             base_repo_path: row.try_get("base_repo_path")?,
             worktree_path: row.try_get("worktree_path")?,
+            worktree_path_key: row.try_get("worktree_path_key")?,
             lifecycle_status: row.try_get("lifecycle_status")?,
             released_at_ms: row.try_get("released_at_ms")?,
             deleted_at_ms: row.try_get("deleted_at_ms")?,
@@ -1743,21 +1799,32 @@ ORDER BY worktree_id ASC
     let mut transaction = pool.begin().await?;
     for (row, normalized_base_repo_path, normalized_worktree_path) in normalized_rows {
         if collision_worktree_ids.contains(row.worktree_id.as_str()) {
+            if row.worktree_path_key.as_deref() != Some(normalized_worktree_path.as_str()) {
+                sqlx::query(
+                    "UPDATE managed_worktrees SET worktree_path_key = ? WHERE worktree_id = ?",
+                )
+                .bind(normalized_worktree_path)
+                .bind(row.worktree_id.clone())
+                .execute(&mut *transaction)
+                .await?;
+            }
             continue;
         }
         if row.base_repo_path == normalized_base_repo_path
             && row.worktree_path == normalized_worktree_path
+            && row.worktree_path_key.as_deref() == Some(normalized_worktree_path.as_str())
         {
             continue;
         }
         sqlx::query(
             r#"
 UPDATE managed_worktrees
-SET base_repo_path = ?, worktree_path = ?
+SET base_repo_path = ?, worktree_path = ?, worktree_path_key = ?
 WHERE worktree_id = ?
             "#,
         )
         .bind(normalized_base_repo_path)
+        .bind(normalized_worktree_path.as_str())
         .bind(normalized_worktree_path)
         .bind(row.worktree_id.clone())
         .execute(&mut *transaction)
@@ -2118,7 +2185,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn startup_retains_colliding_legacy_paths_and_lists_each_row() -> anyhow::Result<()> {
+    async fn startup_retains_colliding_legacy_paths_and_blocks_alias_cleanup_while_owned()
+    -> anyhow::Result<()> {
         use std::os::unix::fs::symlink;
 
         let temp = test_temp_dir()?;
@@ -2184,6 +2252,102 @@ mod tests {
             .map(|worktree| worktree.worktree_id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(BTreeSet::from(["wt-a", "wt-b"]), ids);
+
+        let store = runtime.managed_worktrees();
+        let thread_id = ThreadId::new();
+        runtime
+            .upsert_thread(&test_thread_metadata(&temp, thread_id, repo.clone()))
+            .await?;
+        store
+            .attach_managed_worktree(ManagedWorktreeAttachParams {
+                worktree_id: "wt-b".to_string(),
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await?;
+        let stale_force_candidate = store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: "wt-a".to_string(),
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::ForceDelete,
+                force_delete: true,
+                status_snapshot_json: json!({"dirty": true}),
+                dirty: true,
+            })
+            .await?
+            .expect("stale worktree should be released for cleanup");
+        let unique = store
+            .create_managed_worktree(create_params_for_paths(
+                "wt-unique",
+                repo.clone(),
+                repo.join(".codewith").join("worktrees").join("wt-unique"),
+            ))
+            .await?;
+        let unique_force_candidate = store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: unique.worktree_id,
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::ForceDelete,
+                force_delete: true,
+                status_snapshot_json: json!({"dirty": true}),
+                dirty: true,
+            })
+            .await?
+            .expect("unique worktree should be released for cleanup");
+
+        assert_eq!(
+            vec![unique_force_candidate.clone()],
+            store
+                .list_cleanup_candidates(chrono::Utc::now(), /*limit*/ 10)
+                .await?
+        );
+        assert_eq!(
+            None,
+            store
+                .get_cleanup_candidate_for_execution(
+                    stale_force_candidate.worktree_id.as_str(),
+                    chrono::Utc::now(),
+                )
+                .await?
+        );
+        assert_eq!(
+            Some(unique_force_candidate.clone()),
+            store
+                .get_cleanup_candidate_for_execution(
+                    unique_force_candidate.worktree_id.as_str(),
+                    chrono::Utc::now(),
+                )
+                .await?
+        );
+
+        store
+            .detach_managed_worktree(ManagedWorktreeDetachParams {
+                worktree_id: "wt-b".to_string(),
+                target: ManagedWorktreeAssignmentTarget::Thread(thread_id),
+            })
+            .await?;
+        store
+            .release_managed_worktree(ManagedWorktreeReleaseParams {
+                worktree_id: "wt-b".to_string(),
+                cleanup_policy: crate::ManagedWorktreeCleanupPolicy::Retain,
+                force_delete: false,
+                status_snapshot_json: json!({"dirty": false}),
+                dirty: false,
+            })
+            .await?;
+        let candidate_ids = store
+            .list_cleanup_candidates(chrono::Utc::now(), /*limit*/ 10)
+            .await?
+            .into_iter()
+            .map(|worktree| worktree.worktree_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            BTreeSet::from(["wt-a".to_string(), "wt-unique".to_string()]),
+            candidate_ids
+        );
+        assert_eq!(
+            Some(stale_force_candidate),
+            store
+                .get_cleanup_candidate_for_execution("wt-a", chrono::Utc::now())
+                .await?
+        );
         Ok(())
     }
 

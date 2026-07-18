@@ -1997,6 +1997,13 @@ async fn cleanup_managed_worktree_candidate(
     state_db: &StateDbHandle,
     worktree: codex_state::ManagedWorktree,
 ) -> anyhow::Result<()> {
+    let Some(worktree) = state_db
+        .managed_worktrees()
+        .get_cleanup_candidate_for_execution(worktree.worktree_id.as_str(), Utc::now())
+        .await?
+    else {
+        return Ok(());
+    };
     if let Some(agent_run_id) = worktree.owner_agent_run_id.as_deref()
         && let Some(run) = state_db.get_run(agent_run_id).await?
         && !is_terminal_background_agent_status(run.status)

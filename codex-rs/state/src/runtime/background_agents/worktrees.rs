@@ -153,6 +153,7 @@ INSERT INTO managed_worktrees (
     mode,
     base_repo_path,
     worktree_path,
+    worktree_path_key,
     branch,
     base_sha,
     head_sha,
@@ -166,13 +167,14 @@ INSERT INTO managed_worktrees (
     created_at_ms,
     updated_at_ms,
     cleanup_after_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(params.id.as_str())
         .bind(params.identity.as_str())
         .bind(params.mode.as_str())
         .bind(base_repo_path.as_str())
+        .bind(worktree_path.as_str())
         .bind(worktree_path.as_str())
         .bind(params.branch.as_deref())
         .bind(params.head_sha.as_deref())
