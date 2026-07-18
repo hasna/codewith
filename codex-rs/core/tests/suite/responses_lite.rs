@@ -8,6 +8,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_image_generation_extension::install as install_image_generation_extension;
 use codex_login::CodexAuth;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::EventMsg;
@@ -31,6 +32,7 @@ fn responses_extensions(auth: &CodexAuth) -> Arc<ExtensionRegistry<Config>> {
 }
 
 fn configure_responses_tools(config: &mut Config) {
+    config.model_provider_id = OPENAI_PROVIDER_ID.to_string();
     assert!(config.web_search_mode.set(WebSearchMode::Live).is_ok());
     assert!(
         config
@@ -53,7 +55,8 @@ fn has_hosted_tool(tools: &[Value], tool_type: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Result<()> {
+async fn responses_lite_uses_standalone_web_search_and_hides_unavailable_image_generation()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -86,14 +89,11 @@ async fn responses_lite_uses_standalone_web_search_and_image_generation() -> Res
         request.header(RESPONSES_LITE_HEADER).as_deref(),
         Some("true")
     );
+    let body = request.body_json();
     request
         .tool_by_name("web", "run")
         .context("Responses Lite should expose standalone web search")?;
-    request
-        .tool_by_name("image_gen", "imagegen")
-        .context("Responses Lite should expose standalone image generation")?;
-
-    let body = request.body_json();
+    assert!(request.tool_by_name("image_gen", "imagegen").is_none());
     let tools = body["tools"]
         .as_array()
         .context("Responses request tools should be an array")?;
@@ -190,7 +190,7 @@ async fn responses_lite_omits_hosted_tools_without_standalone_extensions() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn non_lite_uses_hosted_tools_when_standalone_features_are_disabled() -> Result<()> {
+async fn non_lite_uses_hosted_web_search_and_hides_unavailable_image_generation() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -223,7 +223,7 @@ async fn non_lite_uses_hosted_tools_when_standalone_features_are_disabled() -> R
         .as_array()
         .context("Responses request tools should be an array")?;
     assert!(has_hosted_tool(tools, "web_search"));
-    assert!(has_hosted_tool(tools, "image_generation"));
+    assert!(!has_hosted_tool(tools, "image_generation"));
 
     Ok(())
 }

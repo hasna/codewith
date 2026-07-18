@@ -368,11 +368,7 @@ fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool
         return false;
     }
 
-    if turn_context.model_info.use_responses_lite {
-        return true;
-    }
-
-    turn_context.features.get().enabled(Feature::ImageGenExt)
+    turn_context.model_info.use_responses_lite
 }
 
 fn standalone_image_generation_available(
