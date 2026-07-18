@@ -7,6 +7,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use app_test_support::write_mock_provider_models_cache_with_auth;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
@@ -17,6 +18,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_models_manager::bundled_models_response;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -47,6 +49,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Result<()> {
     let call_id = "image-run-1";
     let server = responses::start_mock_server().await;
+    mount_imagegen_models(&server).await?;
     mount_image_response(&server).await;
 
     let response_mock = responses::mount_sse_sequence(
@@ -81,9 +84,17 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Resul
         ChatGptAuthFixture::new("access-chatgpt"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_mock_provider_models_cache_with_auth(codex_home.path()).await?;
 
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("OPENAI_API_KEY", None),
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+        ],
+    )
+    .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
     start_image_generation_turn(&mut mcp).await?;
 
@@ -145,6 +156,7 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Resul
 #[tokio::test]
 async fn standalone_image_generation_is_exposed_in_code_mode_only() -> Result<()> {
     let server = responses::start_mock_server().await;
+    mount_imagegen_models(&server).await?;
     let response_mock = responses::mount_sse_once(
         &server,
         responses::sse(vec![
@@ -165,9 +177,17 @@ async fn standalone_image_generation_is_exposed_in_code_mode_only() -> Result<()
         ChatGptAuthFixture::new("access-chatgpt"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_mock_provider_models_cache_with_auth(codex_home.path()).await?;
 
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("OPENAI_API_KEY", None),
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+        ],
+    )
+    .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
     start_image_generation_turn(&mut mcp).await?;
     timeout(
@@ -190,6 +210,7 @@ async fn standalone_image_generation_is_exposed_in_code_mode_only() -> Result<()
 async fn standalone_image_generation_is_callable_from_code_mode_only() -> Result<()> {
     let call_id = "code-mode-image-run-1";
     let server = responses::start_mock_server().await;
+    mount_imagegen_models(&server).await?;
     mount_image_response(&server).await;
 
     let response_mock = responses::mount_sse_sequence(
@@ -229,9 +250,17 @@ generatedImage(result);
         ChatGptAuthFixture::new("access-chatgpt"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_mock_provider_models_cache_with_auth(codex_home.path()).await?;
 
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("OPENAI_API_KEY", None),
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+        ],
+    )
+    .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
     start_image_generation_turn(&mut mcp).await?;
     timeout(
@@ -324,30 +353,48 @@ async fn mount_image_response(server: &MockServer) {
         .await;
 }
 
+async fn mount_imagegen_models(server: &MockServer) -> Result<()> {
+    let mut models = bundled_models_response()?;
+    let Some(mut lite_model) = models
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-5.4")
+        .cloned()
+    else {
+        anyhow::bail!("expected bundled gpt-5.4 model metadata");
+    };
+    lite_model.slug = "imagegen-lite-model".to_string();
+    lite_model.display_name = "Imagegen Lite Model".to_string();
+    lite_model.use_responses_lite = true;
+    models.models.push(lite_model);
+    responses::mount_models_once(server, models).await;
+    Ok(())
+}
+
 fn create_config_toml(
     codex_home: &Path,
     server_uri: &str,
     mode: ImagegenTestMode,
 ) -> std::io::Result<()> {
-    let code_mode_only = match mode {
-        ImagegenTestMode::Direct => "",
-        ImagegenTestMode::CodeModeOnly => "code_mode_only = true",
+    let (model, code_mode_only) = match mode {
+        ImagegenTestMode::Direct => ("imagegen-lite-model", ""),
+        ImagegenTestMode::CodeModeOnly => ("gpt-5.4", "code_mode_only = true"),
     };
     std::fs::write(
         codex_home.join("config.toml"),
         format!(
             r#"
-model = "mock-model"
+model = "{model}"
 approval_policy = "never"
 sandbox_mode = "read-only"
-model_provider = "openai-custom"
+model_provider = "mock_provider"
 chatgpt_base_url = "{server_uri}"
 
 [features]
 imagegenext = true
 {code_mode_only}
 
-[model_providers.openai-custom]
+[model_providers.mock_provider]
 name = "OpenAI"
 base_url = "{server_uri}/api/codex"
 wire_api = "responses"

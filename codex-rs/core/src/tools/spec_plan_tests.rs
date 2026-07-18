@@ -10,6 +10,7 @@ use codex_model_provider::create_model_provider_with_id;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::XAI_PROVIDER_ID;
@@ -36,6 +37,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 
 use crate::session::tests::make_session_and_context;
@@ -52,6 +54,8 @@ struct ToolPlanInputs {
     extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
     dynamic_tools: Vec<DynamicToolSpec>,
 }
+
+type TurnConfigurator = Box<dyn Fn(&mut TurnContext)>;
 
 struct ToolPlanProbe {
     visible_specs: Vec<ToolSpec>,
@@ -180,6 +184,11 @@ impl ToolPlanProbe {
             .exposures
             .get(name)
             .unwrap_or_else(|| panic!("expected registered tool `{name}`"))
+    }
+
+    fn serialized_tools(&self) -> Vec<Value> {
+        codex_tools::create_tools_json_for_responses_api(&self.visible_specs)
+            .expect("visible specs should serialize for the Responses API")
     }
 }
 
@@ -315,6 +324,14 @@ fn use_openrouter_provider(turn: &mut TurnContext) {
         turn,
         OPENROUTER_PROVIDER_ID,
         ModelProviderInfo::create_openrouter_provider(),
+    );
+}
+
+fn use_nvidia_provider(turn: &mut TurnContext) {
+    use_provider_with_id(
+        turn,
+        NVIDIA_PROVIDER_ID,
+        ModelProviderInfo::create_nvidia_provider(),
     );
 }
 
@@ -499,6 +516,33 @@ fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
         .expect("tool spec should serialize")
         .pointer(&format!("/parameters/properties/{parameter_name}"))
         .is_some()
+}
+
+fn has_serialized_tool_type(tools: &[Value], tool_type: &str) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.get("type").and_then(Value::as_str) == Some(tool_type))
+}
+
+fn has_serialized_namespace_function(
+    tools: &[Value],
+    namespace: &str,
+    function_name: &str,
+) -> bool {
+    tools.iter().any(|tool| {
+        tool.get("type").and_then(Value::as_str) == Some("namespace")
+            && tool.get("name").and_then(Value::as_str) == Some(namespace)
+            && tool
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|namespace_tools| {
+                    namespace_tools.iter().any(|namespace_tool| {
+                        namespace_tool.get("type").and_then(Value::as_str) == Some("function")
+                            && namespace_tool.get("name").and_then(Value::as_str)
+                                == Some(function_name)
+                    })
+                })
+    })
 }
 
 fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
@@ -1402,7 +1446,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     extension_flag_without_imagegen_tool.assert_visible_contains(&["image_generation"]);
     extension_flag_without_imagegen_tool.assert_visible_lacks(&["image_gen"]);
 
-    let standalone_imagegen = probe_with(
+    let non_lite_imagegen_extension = probe_with(
         |turn| {
             use_chatgpt_auth(turn);
             set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
@@ -1418,12 +1462,52 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
     )
     .await;
-    standalone_imagegen.assert_visible_lacks(&["image_generation"]);
+    non_lite_imagegen_extension.assert_visible_contains(&["image_generation"]);
+    non_lite_imagegen_extension.assert_visible_lacks(&["image_gen"]);
+    non_lite_imagegen_extension.assert_registered_lacks(&["image_genimagegen"]);
+
+    let responses_lite_imagegen_flag_disabled = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ false);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    responses_lite_imagegen_flag_disabled.assert_visible_lacks(&["image_generation", "image_gen"]);
+    responses_lite_imagegen_flag_disabled.assert_registered_lacks(&["image_genimagegen"]);
+
+    let responses_lite_standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    responses_lite_standalone_imagegen.assert_visible_lacks(&["image_generation"]);
     assert_eq!(
-        standalone_imagegen.namespace_function_names("image_gen"),
+        responses_lite_standalone_imagegen.namespace_function_names("image_gen"),
         &["imagegen".to_string()]
     );
-    let ToolSpec::Namespace(imagegen_namespace) = standalone_imagegen.visible_spec("image_gen")
+    let ToolSpec::Namespace(imagegen_namespace) =
+        responses_lite_standalone_imagegen.visible_spec("image_gen")
     else {
         panic!("expected image_gen namespace");
     };
@@ -1439,6 +1523,173 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         "Generates images and edits images from text prompts."
     );
     assert!(!imagegen_function.strict);
+
+    let code_mode_only_standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::CodeModeOnly,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeModeOnly);
+            turn.tool_mode = ToolMode::CodeModeOnly;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    code_mode_only_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
+    code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
+    code_mode_only_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
+
+    let code_mode_standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    code_mode_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
+    code_mode_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
+    code_mode_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
+    let serialized_tools = code_mode_standalone_imagegen.serialized_tools();
+    assert!(
+        !has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "normal CodeMode should not expose hosted image generation when nested imagegen is registered: {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "normal CodeMode should not expose reserved image_gen.imagegen top-level: {serialized_tools:?}"
+    );
+
+    let excluded_code_mode_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            update_config(turn, |config| {
+                config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+            });
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    excluded_code_mode_imagegen.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+        "image_generation",
+    ]);
+    excluded_code_mode_imagegen.assert_visible_lacks(&["image_gen"]);
+    excluded_code_mode_imagegen.assert_registered_lacks(&["image_genimagegen"]);
+    let ToolSpec::Freeform(exec) =
+        excluded_code_mode_imagegen.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
+    else {
+        panic!("expected code mode exec tool");
+    };
+    assert!(
+        !exec.description.contains("image_gen") && !exec.description.contains("imagegen"),
+        "excluded imagegen should not be registered as a CodeMode nested tool: {}",
+        exec.description
+    );
+    let serialized_tools = excluded_code_mode_imagegen.serialized_tools();
+    assert!(
+        has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "mixed CodeMode with excluded image_gen should fall back to hosted image generation: {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "mixed CodeMode with excluded image_gen should not expose reserved image_gen.imagegen: {serialized_tools:?}"
+    );
+
+    let excluded_code_mode_only_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::CodeModeOnly,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            update_config(turn, |config| {
+                config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+            });
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeModeOnly);
+            turn.tool_mode = ToolMode::CodeModeOnly;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    excluded_code_mode_only_imagegen.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+        "image_generation",
+    ]);
+    excluded_code_mode_only_imagegen.assert_visible_lacks(&["image_gen"]);
+    excluded_code_mode_only_imagegen.assert_registered_lacks(&["image_genimagegen"]);
+    let ToolSpec::Freeform(exec) =
+        excluded_code_mode_only_imagegen.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
+    else {
+        panic!("expected code mode exec tool");
+    };
+    assert!(
+        !exec.description.contains("image_gen") && !exec.description.contains("imagegen"),
+        "excluded imagegen should not be registered as a CodeModeOnly nested tool: {}",
+        exec.description
+    );
+    let serialized_tools = excluded_code_mode_only_imagegen.serialized_tools();
+    assert!(
+        has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "CodeModeOnly with excluded image_gen should fall back to hosted image generation: {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "CodeModeOnly with excluded image_gen should not expose reserved image_gen.imagegen: {serialized_tools:?}"
+    );
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
@@ -1618,4 +1869,232 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         zai_search.visible_spec("web_search"),
         &ToolSpec::ZaiWebSearch { .. }
     ));
+}
+
+#[derive(Clone, Copy)]
+enum ImageGenerationAuthMode {
+    ApiKey,
+    ChatGpt,
+}
+
+#[derive(Clone, Copy)]
+enum NamespaceToolSupport {
+    Supported,
+    Unsupported,
+}
+
+struct ImageGenerationMatrixCase {
+    name: &'static str,
+    auth_mode: ImageGenerationAuthMode,
+    responses_lite: bool,
+    imagegen_ext_enabled: bool,
+    namespace_tools: NamespaceToolSupport,
+    extension_present: bool,
+    expected_hosted: bool,
+    expected_standalone: bool,
+}
+
+#[tokio::test]
+async fn image_generation_serialized_tool_matrix_hides_reserved_namespace_when_unsupported() {
+    let cases = [
+        ImageGenerationMatrixCase {
+            name: "api key auth cannot expose hosted or standalone image generation",
+            auth_mode: ImageGenerationAuthMode::ApiKey,
+            responses_lite: false,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: true,
+            expected_hosted: false,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt non-lite without extension uses hosted image generation",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: false,
+            imagegen_ext_enabled: false,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: false,
+            expected_hosted: true,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt non-lite hides installed imagegen extension and uses hosted",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: false,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: true,
+            expected_hosted: true,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt non-lite feature flag without extension uses hosted",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: false,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: false,
+            expected_hosted: true,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt lite with installed extension uses standalone namespace",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: true,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: true,
+            expected_hosted: false,
+            expected_standalone: true,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt lite with imagegen flag disabled hides standalone namespace",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: true,
+            imagegen_ext_enabled: false,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: true,
+            expected_hosted: false,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt lite without extension fails closed",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: true,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: false,
+            expected_hosted: false,
+            expected_standalone: false,
+        },
+        ImageGenerationMatrixCase {
+            name: "namespace-unsupported provider hides standalone namespace",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: true,
+            imagegen_ext_enabled: true,
+            namespace_tools: NamespaceToolSupport::Unsupported,
+            extension_present: true,
+            expected_hosted: false,
+            expected_standalone: false,
+        },
+    ];
+
+    for case in cases {
+        let extension_tool_executors = if case.extension_present {
+            vec![Arc::new(ImagegenExtensionTool) as Arc<dyn ToolExecutor<ExtensionToolCall>>]
+        } else {
+            Vec::new()
+        };
+        let plan = probe_with(
+            |turn| {
+                match case.auth_mode {
+                    ImageGenerationAuthMode::ApiKey => {}
+                    ImageGenerationAuthMode::ChatGpt => use_chatgpt_auth(turn),
+                }
+                if matches!(case.namespace_tools, NamespaceToolSupport::Unsupported) {
+                    use_nvidia_provider(turn);
+                }
+                set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+                set_feature(turn, Feature::ImageGenExt, case.imagegen_ext_enabled);
+                turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+                turn.model_info.use_responses_lite = case.responses_lite;
+                turn.model_info.tool_mode = Some(ToolMode::Direct);
+                turn.tool_mode = ToolMode::Direct;
+            },
+            ToolPlanInputs {
+                extension_tool_executors,
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let serialized_tools = plan.serialized_tools();
+        assert_eq!(
+            has_serialized_tool_type(&serialized_tools, "image_generation"),
+            case.expected_hosted,
+            "hosted image_generation mismatch for {}: {serialized_tools:?}",
+            case.name
+        );
+        assert_eq!(
+            has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+            case.expected_standalone,
+            "standalone image_gen.imagegen mismatch for {}: {serialized_tools:?}",
+            case.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn code_mode_excluded_imagegen_follows_hosted_negative_gates() {
+    for tool_mode in [ToolMode::CodeMode, ToolMode::CodeModeOnly] {
+        let mut cases: Vec<(&str, TurnConfigurator)> = vec![
+            ("api key auth", Box::new(|_| {})),
+            (
+                "image generation feature disabled",
+                Box::new(|turn| {
+                    use_chatgpt_auth(turn);
+                    set_feature(turn, Feature::ImageGeneration, /*enabled*/ false);
+                }),
+            ),
+            (
+                "model without image input",
+                Box::new(|turn| {
+                    use_chatgpt_auth(turn);
+                    turn.model_info.input_modalities = vec![InputModality::Text];
+                }),
+            ),
+            (
+                "responses lite",
+                Box::new(|turn| {
+                    use_chatgpt_auth(turn);
+                    turn.model_info.use_responses_lite = true;
+                }),
+            ),
+            (
+                "provider without hosted image generation",
+                Box::new(|turn| {
+                    use_chatgpt_auth(turn);
+                    use_nvidia_provider(turn);
+                }),
+            ),
+        ];
+
+        for (case_name, configure_gate) in cases.drain(..) {
+            let plan = probe_with(
+                |turn| {
+                    set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+                    if tool_mode == ToolMode::CodeModeOnly {
+                        set_feature(turn, Feature::CodeModeOnly, /*enabled*/ true);
+                    }
+                    set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+                    set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
+                    update_config(turn, |config| {
+                        config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+                    });
+                    turn.model_info.input_modalities =
+                        vec![InputModality::Text, InputModality::Image];
+                    turn.model_info.use_responses_lite = false;
+                    turn.model_info.tool_mode = Some(tool_mode);
+                    turn.tool_mode = tool_mode;
+                    configure_gate(turn);
+                },
+                ToolPlanInputs {
+                    extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+                    ..Default::default()
+                },
+            )
+            .await;
+
+            let serialized_tools = plan.serialized_tools();
+            assert!(
+                !has_serialized_tool_type(&serialized_tools, "image_generation"),
+                "hosted image_generation should remain gated for {tool_mode:?} {case_name}: {serialized_tools:?}"
+            );
+            assert!(
+                !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+                "reserved image_gen.imagegen should stay hidden for {tool_mode:?} {case_name}: {serialized_tools:?}"
+            );
+            plan.assert_registered_lacks(&["image_genimagegen"]);
+        }
+    }
 }
