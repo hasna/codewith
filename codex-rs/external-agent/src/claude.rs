@@ -283,7 +283,7 @@ impl ClaudeCodeHarness {
     ) -> Result<PathBuf, String> {
         #[cfg(windows)]
         {
-            return resolve_windows_program_from_source_env(
+            resolve_windows_program_from_source_env(
                 self.descriptor.command.program,
                 source_env,
                 cwd,
