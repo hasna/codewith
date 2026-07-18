@@ -349,6 +349,50 @@ impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
     }
 }
 
+struct ImagegenExtensionTool;
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for ImagegenExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced("image_gen", "imagegen")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
+            name: "image_gen".to_string(),
+            description: codex_tools::default_namespace_description("image_gen"),
+            tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                name: "imagegen".to_string(),
+                description: "Generates images and edits images from text prompts.".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: codex_tools::JsonSchema::object(
+                    BTreeMap::from([
+                        (
+                            "prompt".to_string(),
+                            codex_tools::JsonSchema::string(/*description*/ None),
+                        ),
+                        (
+                            "action".to_string(),
+                            codex_tools::JsonSchema::string(/*description*/ None),
+                        ),
+                    ]),
+                    Some(vec!["prompt".to_string(), "action".to_string()]),
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            })],
+        })
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        panic!("spec planning should not execute extension tools")
+    }
+}
+
 struct DeferredExtensionTool;
 
 #[async_trait::async_trait]
@@ -1357,6 +1401,44 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     .await;
     extension_flag_without_imagegen_tool.assert_visible_contains(&["image_generation"]);
     extension_flag_without_imagegen_tool.assert_visible_lacks(&["image_gen"]);
+
+    let standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    standalone_imagegen.assert_visible_lacks(&["image_generation"]);
+    assert_eq!(
+        standalone_imagegen.namespace_function_names("image_gen"),
+        &["imagegen".to_string()]
+    );
+    let ToolSpec::Namespace(imagegen_namespace) = standalone_imagegen.visible_spec("image_gen")
+    else {
+        panic!("expected image_gen namespace");
+    };
+    let [ResponsesApiNamespaceTool::Function(imagegen_function)] =
+        imagegen_namespace.tools.as_slice()
+    else {
+        panic!("expected one image_gen function");
+    };
+    assert_eq!(imagegen_namespace.name, "image_gen");
+    assert_eq!(imagegen_function.name, "imagegen");
+    assert_eq!(
+        imagegen_function.description,
+        "Generates images and edits images from text prompts."
+    );
+    assert!(!imagegen_function.strict);
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
