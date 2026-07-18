@@ -585,8 +585,13 @@ exclude_slash_tmp = true
             .execution_snapshot
             .payload
             .get("permissionProfile")
-            .expect("execution snapshot should include permissionProfile")
-            .clone(),
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "execution snapshot should include permissionProfile: {}",
+                    start.execution_snapshot.payload
+                )
+            })?,
     )?;
     let file_system_policy = permission_profile.file_system_sandbox_policy();
     let worktree_path = Path::new(created_worktree_path.as_str());

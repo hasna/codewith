@@ -1148,7 +1148,7 @@ exit 2
         let temp_dir = tempfile::TempDir::new().expect("tempdir");
         let bin_dir = temp_dir.path().join("bin");
         std::fs::create_dir(&bin_dir).expect("create bin dir");
-        let claude_path = bin_dir.join("claude.claudeext");
+        let claude_path = bin_dir.join("claude.CLAUDEEXT");
         std::fs::write(&claude_path, "not executed").expect("write fake claude");
         let source_env = BTreeMap::from([
             ("Path".to_string(), bin_dir.display().to_string()),
