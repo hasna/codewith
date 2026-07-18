@@ -1093,7 +1093,7 @@ mod tests {
         let parent_response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 prompt: Some("Parent loop".to_string()),
                 schedule: Some(LoopScheduleSpecArg::Interval {
@@ -1113,7 +1113,7 @@ mod tests {
         let child_response = manage_loop(
             runtime.clone(),
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 parent_schedule_id: Some(parent_schedule_id.clone()),
                 prompt: Some("Child loop".to_string()),
@@ -1136,7 +1136,7 @@ mod tests {
         let err = manage_loop(
             runtime,
             thread_id,
-            None,
+            /*auth_profile*/ None,
             ManageLoopArgs {
                 parent_schedule_id: Some(parent_schedule_id),
                 prompt: Some("Same minute child".to_string()),

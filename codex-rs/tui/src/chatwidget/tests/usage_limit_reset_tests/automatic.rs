@@ -27,11 +27,17 @@ async fn auto_reset_refresh_error_hands_failed_turn_to_self_heal_once() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
 
-    chat.finish_usage_limit_auto_reset_check(1, Err("refresh failed".to_string()));
+    chat.finish_usage_limit_auto_reset_check(
+        /*generation*/ 1,
+        Err("refresh failed".to_string()),
+    );
     let retry_id = chat
         .pending_usage_self_heal_retry_id()
         .expect("failed auto-reset refresh should hand off to self-heal");
-    chat.finish_usage_limit_auto_reset_check(1, Err("duplicate refresh failure".to_string()));
+    chat.finish_usage_limit_auto_reset_check(
+        /*generation*/ 1,
+        Err("duplicate refresh failure".to_string()),
+    );
 
     assert_eq!(chat.pending_usage_self_heal_retry_id(), Some(retry_id));
 }
@@ -47,11 +53,11 @@ async fn repeated_same_window_auto_reset_hands_failed_turn_to_self_heal_once() {
         Some(123)
     ));
 
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
     let retry_id = chat
         .pending_usage_self_heal_retry_id()
         .expect("same-window attempt should hand off to self-heal");
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     assert_eq!(chat.pending_usage_self_heal_retry_id(), Some(retry_id));
     assert_no_reset_consumption(&mut rx);
@@ -63,11 +69,17 @@ async fn post_reset_refresh_error_hands_failed_turn_to_self_heal_once() {
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
     accept_automatic_reset(&mut chat, &mut rx);
 
-    chat.finish_post_reset_refresh(1, Err("verification failed".to_string()));
+    chat.finish_post_reset_refresh(
+        /*generation*/ 1,
+        Err("verification failed".to_string()),
+    );
     let retry_id = chat
         .pending_usage_self_heal_retry_id()
         .expect("failed verification should hand off to self-heal");
-    chat.finish_post_reset_refresh(1, Err("duplicate verification failure".to_string()));
+    chat.finish_post_reset_refresh(
+        /*generation*/ 1,
+        Err("duplicate verification failure".to_string()),
+    );
 
     assert_eq!(chat.pending_usage_self_heal_retry_id(), Some(retry_id));
 }
@@ -78,11 +90,11 @@ async fn still_exhausted_post_reset_hands_failed_turn_to_self_heal_once() {
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
     accept_automatic_reset(&mut chat, &mut rx);
 
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     let retry_id = chat
         .pending_usage_self_heal_retry_id()
         .expect("still-exhausted verification should hand off to self-heal");
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
 
     assert_eq!(chat.pending_usage_self_heal_retry_id(), Some(retry_id));
 }
@@ -97,7 +109,7 @@ async fn disabling_auto_reset_during_refresh_prevents_consumption() {
         "usage_limit.auto_reset_enabled",
         &serde_json::Value::Bool(false),
     );
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     assert!(!chat.config.usage_limit.auto_reset_enabled);
     assert_no_reset_consumption(&mut rx);
@@ -223,7 +235,7 @@ async fn disabling_auto_reset_during_post_reset_verification_never_resumes_after
         &serde_json::Value::Bool(true),
     );
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     chat.on_rate_limit_error(
         RateLimitErrorKind::UsageLimit,
         "Duplicate signal after opted-out verification.".to_string(),
@@ -244,7 +256,10 @@ async fn opted_out_post_reset_verification_error_never_falls_back_or_self_heals(
         &serde_json::Value::Bool(false),
     );
 
-    chat.finish_post_reset_refresh(1, Err("verification failed".to_string()));
+    chat.finish_post_reset_refresh(
+        /*generation*/ 1,
+        Err("verification failed".to_string()),
+    );
     chat.on_rate_limit_error(
         RateLimitErrorKind::UsageLimit,
         "Duplicate signal after opted-out verification error.".to_string(),
@@ -266,7 +281,7 @@ async fn opted_out_still_exhausted_verification_never_falls_back_or_self_heals()
         &serde_json::Value::Bool(false),
     );
 
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     chat.on_rate_limit_error(
         RateLimitErrorKind::UsageLimit,
         "Duplicate signal after opted-out still-exhausted verification.".to_string(),
@@ -298,7 +313,7 @@ async fn zero_available_count_with_available_detail_never_consumes() {
     summary.available_count = 0;
     chat.on_rate_limit_reset_credits(Some(summary));
 
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     assert_no_reset_consumption(&mut rx);
     assert!(
@@ -344,7 +359,7 @@ async fn automatic_reset_rechecks_exact_weekly_exhaustion_immediately_before_con
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
         chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-        chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+        chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
         let attempt = std::iter::from_fn(|| rx.try_recv().ok())
             .find_map(|event| match event {
                 AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -400,7 +415,7 @@ async fn automatic_reset_rechecks_selected_credit_immediately_before_consumption
         let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
         chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-        chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+        chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
         let attempt = std::iter::from_fn(|| rx.try_recv().ok())
             .find_map(|event| match event {
                 AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -498,7 +513,7 @@ async fn verified_reset_resumes_failed_turn_exactly_once() {
 
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
     chat.on_rate_limit_snapshot(Some(exhausted_weekly_snapshot()));
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
     let attempt = std::iter::from_fn(|| rx.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -519,9 +534,9 @@ async fn verified_reset_resumes_failed_turn_exactly_once() {
     ));
 
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     assert!(matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. }));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     assert!(
         op_rx.try_recv().is_err(),
         "failed turn must resume only once"

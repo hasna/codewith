@@ -124,7 +124,7 @@ async fn duplicate_limit_signal_waits_for_reset_and_resumes_failed_turn_once() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
     let attempt = std::iter::from_fn(|| rx.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -165,7 +165,7 @@ async fn duplicate_limit_signal_waits_for_reset_and_resumes_failed_turn_once() {
         RateLimitResetCompletion::Verify(_)
     ));
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
 
     assert!(matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. }));
     assert!(
@@ -262,7 +262,7 @@ async fn manual_reset_verification_preserves_the_failed_turn_fallback() {
     submit_failed_weekly_turn(&mut chat, &mut op_rx, "recover after manual verification");
 
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(0, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 0, Ok(()));
     assert_one_self_heal_retry(&mut chat, &mut rx, &mut op_rx).await;
 }
 

@@ -118,8 +118,8 @@ async fn loop_manager_nested_popup_snapshot() {
         thread_id,
         vec![
             test_schedule("sch_parent", ThreadScheduleStatus::Active),
-            test_nested_schedule("child_one", "sch_parent", 2),
-            test_nested_schedule("child_two", "sch_parent", 2),
+            test_nested_schedule("child_one", "sch_parent", /*nesting_depth*/ 2),
+            test_nested_schedule("child_two", "sch_parent", /*nesting_depth*/ 2),
         ],
     );
 
@@ -152,7 +152,7 @@ async fn loop_nested_actions_popup_snapshot() {
 
     chat.show_loop_schedule_actions(
         thread_id,
-        test_nested_schedule("child_one", "sch_parent", 2),
+        test_nested_schedule("child_one", "sch_parent", /*nesting_depth*/ 2),
     );
 
     assert_chatwidget_snapshot!(

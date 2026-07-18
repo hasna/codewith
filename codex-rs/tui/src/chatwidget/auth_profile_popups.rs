@@ -885,10 +885,17 @@ mod tests {
     fn compact_usage_hint_skips_empty_codex_snapshot() {
         let now = Local::now();
         let snapshots = BTreeMap::from([
-            ("codex".to_string(), snapshot(now, None, None)),
+            (
+                "codex".to_string(),
+                snapshot(now, /*primary*/ None, /*secondary*/ None),
+            ),
             (
                 "codex_model".to_string(),
-                snapshot(now, Some(window(42.0, 5 * 60)), None),
+                snapshot(
+                    now,
+                    Some(window(/*used_percent*/ 42.0, 5 * 60)),
+                    /*secondary*/ None,
+                ),
             ),
         ]);
 
@@ -898,7 +905,10 @@ mod tests {
     #[test]
     fn auth_profile_usage_freshness_requires_displayable_usage() {
         let now = Local::now();
-        let snapshots = BTreeMap::from([("codex".to_string(), snapshot(now, None, None))]);
+        let snapshots = BTreeMap::from([(
+            "codex".to_string(),
+            snapshot(now, /*primary*/ None, /*secondary*/ None),
+        )]);
 
         assert!(!auth_profile_usage_snapshots_are_fresh(
             &snapshots,
@@ -910,13 +920,16 @@ mod tests {
     fn auth_profile_usage_freshness_uses_displayable_snapshot() {
         let now = Local::now();
         let snapshots = BTreeMap::from([
-            ("codex".to_string(), snapshot(now, None, None)),
+            (
+                "codex".to_string(),
+                snapshot(now, /*primary*/ None, /*secondary*/ None),
+            ),
             (
                 "codex_model".to_string(),
                 snapshot(
                     now - ChronoDuration::seconds(30),
-                    Some(window(42.0, 5 * 60)),
-                    None,
+                    Some(window(/*used_percent*/ 42.0, 5 * 60)),
+                    /*secondary*/ None,
                 ),
             ),
         ]);

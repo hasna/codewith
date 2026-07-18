@@ -2683,7 +2683,7 @@ mod tests {
             &schedule.schedule_id,
             &retry_claim.run.run_id,
             "lease-retry",
-            None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -2765,7 +2765,7 @@ mod tests {
             &schedule.schedule_id,
             &claim.run.run_id,
             "lease-run",
-            None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -2853,7 +2853,7 @@ mod tests {
                     unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
                 }),
                 "UTC",
-                None,
+                /*scheduled_for*/ None,
                 at(/*seconds*/ 1_700_000_300),
             )
             .expect("next interval should compute")

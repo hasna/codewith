@@ -10238,7 +10238,7 @@ async fn try_start_turn_if_idle_bounds_headless_prompt_without_mutating_history(
             function_call(call_id),
             function_call_output(call_id, &long_output),
         ],
-        None,
+        /*reference_context_item*/ None,
     )
     .await;
 
@@ -10286,7 +10286,7 @@ async fn try_start_user_input_turn_if_idle_bounds_headless_prompt_without_mutati
             function_call(call_id),
             function_call_output(call_id, &long_output),
         ],
-        None,
+        /*reference_context_item*/ None,
     )
     .await;
 

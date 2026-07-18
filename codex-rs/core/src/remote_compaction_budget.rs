@@ -95,10 +95,19 @@ mod tests {
     fn configured_retries_are_capped_by_remaining_actual_requests() {
         let budget = RemoteCompactionRequestBudget::new();
 
-        assert_eq!(budget.max_retries_for_next_request(10), 3);
+        assert_eq!(
+            budget.max_retries_for_next_request(/*configured_max_retries*/ 10),
+            3
+        );
         assert!(budget.try_start_request());
         assert!(budget.try_start_request());
-        assert_eq!(budget.max_retries_for_next_request(10), 1);
-        assert_eq!(budget.max_retries_for_next_request(0), 0);
+        assert_eq!(
+            budget.max_retries_for_next_request(/*configured_max_retries*/ 10),
+            1
+        );
+        assert_eq!(
+            budget.max_retries_for_next_request(/*configured_max_retries*/ 0),
+            0
+        );
     }
 }

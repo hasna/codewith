@@ -466,7 +466,12 @@ mod tests {
                 remaining_percent: 20.0,
                 resets_at: Some(100),
             },
-            usage_health_for_snapshots(&[snapshot(10.0, 80.0)], &config())
+            usage_health_for_snapshots(
+                &[snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 80.0
+                )],
+                &config()
+            )
         );
     }
 
@@ -476,13 +481,23 @@ mod tests {
             AuthProfileUsageHealth::Exhausted {
                 retry_at: Some(100)
             },
-            usage_health_for_snapshots(&[snapshot(50.0, 100.0)], &config())
+            usage_health_for_snapshots(
+                &[snapshot(
+                    /*primary_used*/ 50.0, /*secondary_used*/ 100.0
+                )],
+                &config()
+            )
         );
         assert_eq!(
             AuthProfileUsageHealth::Exhausted {
                 retry_at: Some(200)
             },
-            usage_health_for_snapshots(&[snapshot(100.0, 20.0)], &config())
+            usage_health_for_snapshots(
+                &[snapshot(
+                    /*primary_used*/ 100.0, /*secondary_used*/ 20.0
+                )],
+                &config()
+            )
         );
     }
 
@@ -494,7 +509,12 @@ mod tests {
 
         assert_eq!(
             AuthProfileUsageHealth::Unknown,
-            usage_health_for_snapshots(&[snapshot(10.0, 10.0)], &disabled_config)
+            usage_health_for_snapshots(
+                &[snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 10.0
+                )],
+                &disabled_config
+            )
         );
         assert_eq!(
             AuthProfileUsageHealth::Unknown,
@@ -504,7 +524,7 @@ mod tests {
 
     #[test]
     fn usage_health_ignores_credit_snapshot_when_codex_windows_have_capacity() {
-        let mut credit_blocked = snapshot(10.0, 20.0);
+        let mut credit_blocked = snapshot(/*primary_used*/ 10.0, /*secondary_used*/ 20.0);
         credit_blocked.credits = Some(CreditsSnapshot {
             has_credits: false,
             unlimited: false,
@@ -521,7 +541,8 @@ mod tests {
 
     #[test]
     fn usage_health_detects_backend_reached_type_and_spend_control_blocks() {
-        let mut spend_control_blocked = snapshot(10.0, 20.0);
+        let mut spend_control_blocked =
+            snapshot(/*primary_used*/ 10.0, /*secondary_used*/ 20.0);
         spend_control_blocked.individual_limit = Some(SpendControlLimitSnapshot {
             limit: "100".to_string(),
             used: "100".to_string(),
@@ -535,7 +556,7 @@ mod tests {
             usage_health_for_snapshots(&[spend_control_blocked], &config())
         );
 
-        let mut reached = snapshot(10.0, 20.0);
+        let mut reached = snapshot(/*primary_used*/ 10.0, /*secondary_used*/ 20.0);
         reached.rate_limit_reached_type =
             Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted);
         assert_eq!(
@@ -792,7 +813,11 @@ mod tests {
 
     #[test]
     fn stale_capture_respects_freshness_window() {
-        assert!(!usage_capture_is_stale(100, 159, 60));
-        assert!(usage_capture_is_stale(100, 161, 60));
+        assert!(!usage_capture_is_stale(
+            /*captured_at*/ 100, /*now*/ 159, /*freshness_secs*/ 60
+        ));
+        assert!(usage_capture_is_stale(
+            /*captured_at*/ 100, /*now*/ 161, /*freshness_secs*/ 60
+        ));
     }
 }

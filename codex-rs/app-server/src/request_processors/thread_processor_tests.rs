@@ -1002,7 +1002,7 @@ mod thread_processor_behavior_tests {
         permission_profile: PermissionProfile,
     ) -> RolloutItem {
         let RolloutItem::TurnContext(mut turn_context) =
-            turn_context_with_auth_profile(thread_id, None)
+            turn_context_with_auth_profile(thread_id, /*auth_profile*/ None)
         else {
             unreachable!("helper returns turn context")
         };
@@ -1016,7 +1016,7 @@ mod thread_processor_behavior_tests {
         workspace_roots: Vec<AbsolutePathBuf>,
     ) -> RolloutItem {
         let RolloutItem::TurnContext(mut turn_context) =
-            turn_context_with_auth_profile(thread_id, None)
+            turn_context_with_auth_profile(thread_id, /*auth_profile*/ None)
         else {
             unreachable!("helper returns turn context")
         };
@@ -1030,7 +1030,7 @@ mod thread_processor_behavior_tests {
         approval_policy: AskForApproval,
     ) -> RolloutItem {
         let RolloutItem::TurnContext(mut turn_context) =
-            turn_context_with_auth_profile(thread_id, None)
+            turn_context_with_auth_profile(thread_id, /*auth_profile*/ None)
         else {
             unreachable!("helper returns turn context")
         };
@@ -1290,7 +1290,11 @@ mod thread_processor_behavior_tests {
         });
         let mut typesafe_overrides = ConfigOverrides::default();
 
-        merge_persisted_permission_profile_from_history(&mut typesafe_overrides, None, &history);
+        merge_persisted_permission_profile_from_history(
+            &mut typesafe_overrides,
+            /*request_overrides*/ None,
+            &history,
+        );
 
         assert_eq!(
             typesafe_overrides.permission_profile,
@@ -1314,7 +1318,11 @@ mod thread_processor_behavior_tests {
             ..Default::default()
         };
 
-        merge_persisted_permission_profile_from_history(&mut typesafe_overrides, None, &history);
+        merge_persisted_permission_profile_from_history(
+            &mut typesafe_overrides,
+            /*request_overrides*/ None,
+            &history,
+        );
 
         assert_eq!(typesafe_overrides.permission_profile, None);
         assert_eq!(
@@ -1340,7 +1348,11 @@ mod thread_processor_behavior_tests {
         });
         let mut typesafe_overrides = ConfigOverrides::default();
 
-        merge_persisted_approval_settings_from_history(&mut typesafe_overrides, None, &history);
+        merge_persisted_approval_settings_from_history(
+            &mut typesafe_overrides,
+            /*request_overrides*/ None,
+            &history,
+        );
 
         assert_eq!(
             typesafe_overrides.approval_policy,
@@ -1370,7 +1382,11 @@ mod thread_processor_behavior_tests {
             ..Default::default()
         };
 
-        merge_persisted_approval_settings_from_history(&mut typesafe_overrides, None, &history);
+        merge_persisted_approval_settings_from_history(
+            &mut typesafe_overrides,
+            /*request_overrides*/ None,
+            &history,
+        );
 
         assert_eq!(
             typesafe_overrides.approval_policy,
@@ -1469,7 +1485,7 @@ mod thread_processor_behavior_tests {
 
         merge_persisted_cwd_and_workspace_roots_from_history(
             &mut typesafe_overrides,
-            None,
+            /*request_overrides*/ None,
             &history,
         );
 

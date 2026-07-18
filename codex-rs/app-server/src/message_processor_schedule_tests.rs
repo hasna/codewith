@@ -1788,13 +1788,18 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
         let thread_id = thread.thread.id.clone();
 
         let root = harness
-            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .create_interval_thread_schedule(
+                &thread_id,
+                "root loop",
+                /*amount_minutes*/ 1,
+                /*parent_schedule_id*/ None,
+            )
             .await;
         let level_2 = harness
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 2 loop",
-                2,
+                /*amount_minutes*/ 2,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1802,7 +1807,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "branch level 2 loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1810,7 +1815,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 3 loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(level_2.schedule_id.clone()),
             )
             .await;
@@ -1818,7 +1823,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 4 loop",
-                4,
+                /*amount_minutes*/ 4,
                 Some(level_3.schedule_id.clone()),
             )
             .await;
@@ -1826,7 +1831,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 5 loop",
-                5,
+                /*amount_minutes*/ 5,
                 Some(level_4.schedule_id.clone()),
             )
             .await;
@@ -1889,13 +1894,18 @@ fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Resu
         let thread = harness.start_materialized_thread().await;
         let thread_id = thread.thread.id.clone();
         let root = harness
-            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .create_interval_thread_schedule(
+                &thread_id,
+                "root loop",
+                /*amount_minutes*/ 1,
+                /*parent_schedule_id*/ None,
+            )
             .await;
         let child = harness
             .create_interval_thread_schedule(
                 &thread_id,
                 "child loop",
-                2,
+                /*amount_minutes*/ 2,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1903,7 +1913,7 @@ fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Resu
             .create_interval_thread_schedule(
                 &thread_id,
                 "grandchild loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(child.schedule_id.clone()),
             )
             .await;
@@ -2296,7 +2306,7 @@ fn schedule_create_materializes_fresh_thread_rollout_before_first_user_turn() ->
         let rollout_path = codex_rollout::find_thread_path_by_id_str(
             harness._codex_home.path(),
             &thread_id,
-            Option::<&codex_state::StateRuntime>::None,
+            /*state_db_ctx*/ Option::<&codex_state::StateRuntime>::None,
         )
         .await?
         .expect("fresh scheduled thread should have a materialized rollout");

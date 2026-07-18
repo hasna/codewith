@@ -713,7 +713,9 @@ mod tests {
     fn usage_summary_maps_snapshots_to_health() {
         let captured_at = chrono::Utc::now().timestamp();
         let response = AuthProfileUsageSummary::from_snapshots(
-            &[snapshot(10.0, 80.0)],
+            &[snapshot(
+                /*primary_used*/ 10.0, /*secondary_used*/ 80.0,
+            )],
             &config(),
             captured_at,
         );
@@ -734,7 +736,7 @@ mod tests {
     #[test]
     fn usage_summary_ignores_empty_credits_when_codex_windows_are_healthy() {
         let captured_at = chrono::Utc::now().timestamp();
-        let mut snapshot = snapshot(4.0, 39.0);
+        let mut snapshot = snapshot(/*primary_used*/ 4.0, /*secondary_used*/ 39.0);
         snapshot.credits = Some(CreditsSnapshot {
             has_credits: false,
             unlimited: false,
@@ -769,20 +771,26 @@ mod tests {
             key.clone(),
             AuthProfileUsageCacheEntry {
                 captured_at: chrono::Utc::now().timestamp(),
-                snapshots: vec![snapshot(10.0, 20.0)],
+                snapshots: vec![snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 20.0,
+                )],
             },
         );
 
         assert_eq!(
             cached_rate_limit_snapshots(&key, &config()).await,
-            Some(vec![snapshot(10.0, 20.0)])
+            Some(vec![snapshot(
+                /*primary_used*/ 10.0, /*secondary_used*/ 20.0
+            )])
         );
 
         AUTH_PROFILE_USAGE_CACHE.lock().await.insert(
             key.clone(),
             AuthProfileUsageCacheEntry {
                 captured_at: 1,
-                snapshots: vec![snapshot(10.0, 20.0)],
+                snapshots: vec![snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 20.0,
+                )],
             },
         );
         assert!(cached_rate_limit_snapshots(&key, &config()).await.is_none());

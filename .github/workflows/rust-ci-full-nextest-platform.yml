@@ -148,6 +148,11 @@ jobs:
         with:
           targets: ${{ inputs.target }}
 
+      - name: Install cross Rust target
+        if: ${{ inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-pc-windows-msvc' }}
+        shell: bash
+        run: rustup target add ${{ inputs.target }}
+
       - name: Expose MSVC SDK environment (Windows)
         if: ${{ runner.os == 'Windows' && inputs.target == 'aarch64-pc-windows-msvc' }}
         uses: ./.github/actions/setup-msvc-env
@@ -391,6 +396,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ inputs.target }}
+
+      - name: Install cross Rust target
+        if: ${{ inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-pc-windows-msvc' }}
+        shell: bash
+        run: rustup target add ${{ inputs.target }}
 
       - uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
         with:

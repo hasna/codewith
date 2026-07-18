@@ -701,8 +701,8 @@ mod tests {
         assert_eq!(
             metadata_for_openai_compatible_response(
                 Some(OPENROUTER_PROVIDER_ID),
-                None,
-                None,
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
                 "anthropic/claude-sonnet-5",
             ),
             expected
@@ -734,8 +734,8 @@ mod tests {
         assert_eq!(
             metadata_for_openai_compatible_response(
                 Some(OPENROUTER_PROVIDER_ID),
-                None,
-                None,
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
                 "z-ai/glm-5.2-20260616",
             ),
             expected_metadata
@@ -746,13 +746,13 @@ mod tests {
         )));
         assert!(openai_compatible_provider_supports_reasoning_effort(
             Some(OPENROUTER_PROVIDER_ID),
-            None
+            /*provider_base_url*/ None
         ));
 
         let (default_reasoning, presets) = reasoning_levels_for_openai_compatible_response(
             Some(OPENROUTER_PROVIDER_ID),
-            None,
-            None,
+            /*provider_name*/ None,
+            /*provider_base_url*/ None,
             "z-ai/glm-5.2",
         );
         assert_eq!(default_reasoning, Some(ReasoningEffort::High));
@@ -968,17 +968,32 @@ mod tests {
             (GOOGLE_PROVIDER_ID, GOOGLE_BASE_URL),
         ] {
             assert!(
-                provider_matches(Some(provider_id), None, provider_id, base_url),
+                provider_matches(
+                    Some(provider_id),
+                    /*provider_base_url*/ None,
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match by provider id"
             );
             let uppercased = provider_id.to_ascii_uppercase();
             assert!(
-                provider_matches(Some(&uppercased), None, provider_id, base_url),
+                provider_matches(
+                    Some(&uppercased),
+                    /*provider_base_url*/ None,
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match case-insensitively by provider id"
             );
             let with_trailing_slash = format!("{base_url}/");
             assert!(
-                provider_matches(None, Some(&with_trailing_slash), provider_id, base_url),
+                provider_matches(
+                    /*provider_id*/ None,
+                    Some(&with_trailing_slash),
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match by base url ignoring a trailing slash"
             );
             assert!(

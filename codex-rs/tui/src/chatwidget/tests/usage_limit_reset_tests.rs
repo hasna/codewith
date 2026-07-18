@@ -153,7 +153,7 @@ fn finish_automatic_reset_and_assert_turn_order(
     queued_turn: &str,
 ) {
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     assert_user_turn_text(next_submit_op(op_rx), failed_turn);
     assert!(
         op_rx.try_recv().is_err(),
@@ -267,7 +267,7 @@ fn start_automatic_reset_consumption(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> RateLimitResetAttempt {
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
     let attempt = std::iter::from_fn(|| rx.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -282,7 +282,7 @@ async fn assert_workspace_limit_uses_exact_reset(reached_type: RateLimitReachedT
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, Some(reached_type));
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     assert!(
         std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(

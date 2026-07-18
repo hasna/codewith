@@ -265,7 +265,10 @@ async fn usage_command_opens_panel_refreshes_rate_limits_and_avoids_history() {
     );
     handle_token_count(
         &mut chat,
-        Some(usage_panel_token_info(50_000, 2_000, 128_000)),
+        Some(usage_panel_token_info(
+            /*input_tokens*/ 50_000, /*output_tokens*/ 2_000,
+            /*context_window*/ 128_000,
+        )),
     );
 
     chat.dispatch_command(SlashCommand::Usage);
@@ -303,7 +306,10 @@ async fn usage_command_marks_account_limits_unavailable_without_refresh() {
     );
     handle_token_count(
         &mut chat,
-        Some(usage_panel_token_info(35_000, 7_000, 128_000)),
+        Some(usage_panel_token_info(
+            /*input_tokens*/ 35_000, /*output_tokens*/ 7_000,
+            /*context_window*/ 128_000,
+        )),
     );
 
     chat.dispatch_command(SlashCommand::Usage);

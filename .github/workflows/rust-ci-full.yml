@@ -237,6 +237,11 @@ jobs:
           targets: ${{ matrix.target }}
           components: clippy
 
+      - name: Install cross Rust target
+        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'aarch64-pc-windows-msvc' }}
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
       - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
         shell: bash

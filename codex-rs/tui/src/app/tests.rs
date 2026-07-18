@@ -4920,7 +4920,7 @@ async fn stale_reset_generation_never_applies_credits_or_snapshots() {
     );
     while app_event_rx.try_recv().is_ok() {}
     app.chat_widget
-        .finish_usage_limit_auto_reset_check(1, Ok(()));
+        .finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     while let Ok(event) = app_event_rx.try_recv() {
         assert!(

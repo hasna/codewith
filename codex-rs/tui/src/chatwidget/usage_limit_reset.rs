@@ -240,7 +240,7 @@ mod tests {
         };
 
         assert_eq!(
-            available_reset_credits(&summary, 10)
+            available_reset_credits(&summary, /*now*/ 10)
                 .into_iter()
                 .map(|credit| credit.id.as_str())
                 .collect::<Vec<_>>(),
@@ -254,18 +254,26 @@ mod tests {
             available_count: 4,
             credits: None,
         };
-        assert!(available_reset_credits(&count_only, 0).is_empty());
+        assert!(available_reset_credits(&count_only, /*now*/ 0).is_empty());
 
         let mut credits = vec![
-            reset_credit("unknown", None, RateLimitResetCreditStatus::Unknown),
-            reset_credit("redeeming", None, RateLimitResetCreditStatus::Redeeming),
+            reset_credit(
+                "unknown",
+                /*expires_at*/ None,
+                RateLimitResetCreditStatus::Unknown,
+            ),
+            reset_credit(
+                "redeeming",
+                /*expires_at*/ None,
+                RateLimitResetCreditStatus::Redeeming,
+            ),
         ];
         credits[0].reset_type = RateLimitResetType::Unknown;
         let summary = RateLimitResetCreditsSummary {
             available_count: 2,
             credits: Some(credits),
         };
-        assert!(available_reset_credits(&summary, 0).is_empty());
+        assert!(available_reset_credits(&summary, /*now*/ 0).is_empty());
     }
 
     fn reset_credit(

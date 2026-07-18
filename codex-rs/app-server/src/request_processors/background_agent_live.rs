@@ -4640,7 +4640,9 @@ mod tests {
         assert_eq!(goal.objective, "Investigate flaky test");
         assert_eq!(goal.status, codex_state::ThreadGoalStatus::Active);
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let thread_id_string = thread_id.to_string();
         let initial_goal_events = events
@@ -4672,7 +4674,9 @@ mod tests {
         .await?;
 
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let initial_goal_event_count = events
             .iter()

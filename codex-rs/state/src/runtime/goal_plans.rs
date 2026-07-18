@@ -2848,7 +2848,7 @@ mod tests {
                 thread_id,
                 "Already finished.",
                 crate::ThreadGoalStatus::Complete,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("terminal goal should be created");
@@ -3111,7 +3111,7 @@ mod tests {
                 thread_id,
                 "Finish the standalone current goal.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("active goal should be created");

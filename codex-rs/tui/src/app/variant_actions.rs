@@ -233,7 +233,7 @@ mod tests {
             "parser-logging"
         );
         assert_eq!(
-            variant_slug(None, "Improve SQL/cache behavior"),
+            variant_slug(/*name*/ None, "Improve SQL/cache behavior"),
             "improve-sql-cache-behavior"
         );
         assert_eq!(variant_slug(Some("!!!"), "???"), "implementation");
@@ -242,11 +242,11 @@ mod tests {
     #[test]
     fn variant_branch_and_worktree_names_are_deterministic() {
         assert_eq!(
-            variant_branch("parser-logging", 3),
+            variant_branch("parser-logging", /*index*/ 3),
             "codewith/variant/parser-logging-v3"
         );
         assert_eq!(
-            variant_worktree_name("parser-logging", 3),
+            variant_worktree_name("parser-logging", /*index*/ 3),
             "variant-parser-logging-v3"
         );
     }
@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn variant_agent_prompt_contains_context_and_no_pr_instruction() {
         let prompt = variant_agent_prompt(
-            2,
-            4,
+            /*index*/ 2,
+            /*count*/ 4,
             "implement alternatives",
             "codewith/variant/parser-v2",
             "variant-parser-v2",

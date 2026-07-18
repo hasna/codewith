@@ -769,7 +769,7 @@ mod tests {
         state_db
             .upsert_thread(&builder.build("test-provider"))
             .await?;
-        let monitor = test_monitor_for_thread(thread_id, None);
+        let monitor = test_monitor_for_thread(thread_id, /*cwd*/ None);
 
         assert_eq!(monitor_thread_cwd(&state_db, &monitor).await?, thread_cwd);
         assert_ne!(

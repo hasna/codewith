@@ -400,7 +400,7 @@ mod tests {
             next_cursor: None,
         };
 
-        let compact = compact_monitor_read_response(&response, None);
+        let compact = compact_monitor_read_response(&response, /*limit*/ None);
 
         assert_eq!(compact["eventCount"], 1);
         assert!(

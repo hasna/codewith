@@ -27,7 +27,7 @@ async fn manual_reset_cannot_replace_a_pending_automatic_recovery() {
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
     chat.submit_user_message(UserMessage::from("queued behind automatic recovery"));
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
-    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+    chat.finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
     let automatic_attempt = std::iter::from_fn(|| rx.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::ConsumeRateLimitResetCredit { attempt } => Some(attempt),
@@ -118,7 +118,7 @@ async fn reset_queue_preserves_disallowed_shell_escape_policy() {
 
     accept_automatic_reset(&mut chat, &mut rx);
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     assert_user_turn_text(next_submit_op(&mut op_rx), "recover this failed turn");
     chat.on_task_started();
     chat.on_task_complete(
@@ -136,10 +136,10 @@ async fn opted_out_automatic_reset_drains_the_queued_follow_up() {
     start_auto_reset_failed_turn(&mut chat, &mut rx, &mut op_rx, /*reached_type*/ None);
     accept_automatic_reset(&mut chat, &mut rx);
     chat.submit_user_message(UserMessage::from("continue after opt out"));
-    chat.set_usage_limit_auto_reset_enabled(false);
+    chat.set_usage_limit_auto_reset_enabled(/*enabled*/ false);
 
     chat.on_rate_limit_snapshot(Some(non_exhausted_weekly_snapshot()));
-    chat.finish_post_reset_refresh(1, Ok(()));
+    chat.finish_post_reset_refresh(/*generation*/ 1, Ok(()));
     assert_user_turn_text(next_submit_op(&mut op_rx), "continue after opt out");
     assert!(op_rx.try_recv().is_err());
 }
@@ -173,7 +173,10 @@ async fn verification_failure_keeps_follow_up_behind_active_self_heal() {
     accept_automatic_reset(&mut chat, &mut rx);
     chat.submit_user_message(UserMessage::from("continue after self heal"));
 
-    chat.finish_post_reset_refresh(1, Err("verification failed".to_string()));
+    chat.finish_post_reset_refresh(
+        /*generation*/ 1,
+        Err("verification failed".to_string()),
+    );
     let retry_id = chat
         .pending_usage_self_heal_retry_id()
         .expect("failed reset verification should keep A ahead of B");
