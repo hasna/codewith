@@ -371,7 +371,7 @@ fn standalone_image_generation_available(
     turn_context: &TurnContext,
     extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
 ) -> bool {
-    if image_generation_excluded_from_mixed_code_mode(turn_context) {
+    if image_generation_excluded_from_code_mode(turn_context) {
         return false;
     }
 
@@ -396,14 +396,16 @@ fn standalone_image_generation_extension_registerable(turn_context: &TurnContext
             ))
 }
 
-fn image_generation_excluded_from_mixed_code_mode(turn_context: &TurnContext) -> bool {
-    turn_context.tool_mode == ToolMode::CodeMode
-        && turn_context
-            .config
-            .code_mode
-            .excluded_tool_namespaces
-            .iter()
-            .any(|namespace| namespace == IMAGE_GEN_NAMESPACE)
+fn image_generation_excluded_from_code_mode(turn_context: &TurnContext) -> bool {
+    matches!(
+        turn_context.tool_mode,
+        ToolMode::CodeMode | ToolMode::CodeModeOnly
+    ) && turn_context
+        .config
+        .code_mode
+        .excluded_tool_namespaces
+        .iter()
+        .any(|namespace| namespace == IMAGE_GEN_NAMESPACE)
 }
 
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
@@ -967,7 +969,7 @@ fn append_extension_tool_executors(
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
             && (!standalone_image_generation_extension_registerable(turn_context)
-                || image_generation_excluded_from_mixed_code_mode(turn_context))
+                || image_generation_excluded_from_code_mode(turn_context))
         {
             continue;
         }
