@@ -3,7 +3,6 @@ use crate::model::ManagedWorktreeMergeCandidateRow;
 use crate::model::ManagedWorktreeRow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::ffi::OsString;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -1590,31 +1589,36 @@ pub(crate) fn path_to_db_string(path: &Path) -> String {
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
-    let lexical_path = normalize_path_components(path);
-    let mut missing_suffix = Vec::<OsString>::new();
-    let mut existing_ancestor = lexical_path.as_path();
+    if let Ok(canonical_path) = std::fs::canonicalize(path) {
+        return normalize_path_components(&canonical_path);
+    }
 
-    loop {
-        match std::fs::canonicalize(existing_ancestor) {
-            Ok(canonical_ancestor) => {
-                let mut normalized = normalize_path_components(&canonical_ancestor);
-                for component in missing_suffix.iter().rev() {
-                    normalized.push(component);
+    let components = path.components().collect::<Vec<_>>();
+    for existing_component_count in (1..components.len()).rev() {
+        let mut existing_ancestor = PathBuf::new();
+        for component in &components[..existing_component_count] {
+            existing_ancestor.push(component.as_os_str());
+        }
+        let Ok(canonical_ancestor) = std::fs::canonicalize(existing_ancestor) else {
+            continue;
+        };
+
+        let mut normalized = normalize_path_components(&canonical_ancestor);
+        for component in &components[existing_component_count..] {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir | Component::Normal(_) => {
+                    normalized.push(component.as_os_str());
                 }
-                return normalized;
-            }
-            Err(_) => {
-                let Some(component) = existing_ancestor.file_name() else {
-                    return lexical_path;
-                };
-                let Some(parent) = existing_ancestor.parent() else {
-                    return lexical_path;
-                };
-                missing_suffix.push(component.to_os_string());
-                existing_ancestor = parent;
+                Component::RootDir | Component::Prefix(_) => {
+                    return normalize_path_components(path);
+                }
             }
         }
+        return normalized;
     }
+
+    normalize_path_components(path)
 }
 
 fn normalize_path_components(path: &Path) -> PathBuf {
@@ -1886,7 +1890,6 @@ mod tests {
             .expect("state db should initialize")
     }
 
-    #[cfg(unix)]
     fn test_temp_dir() -> anyhow::Result<PathBuf> {
         let path = unique_temp_dir();
         std::fs::create_dir_all(&path)?;
@@ -1933,19 +1936,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn normalizes_ordinary_parent_components() -> anyhow::Result<()> {
+        let temp = test_temp_dir()?;
+        let parent = temp.join("parent");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child)?;
+
+        assert_eq!(
+            path_to_db_string(&parent),
+            path_to_db_string(&child.join(".."))
+        );
+        assert_eq!(
+            path_to_db_string(&parent.join("missing")),
+            path_to_db_string(&child.join("..").join("missing"))
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
-    fn normalizes_missing_leaves_from_the_deepest_existing_ancestor() -> anyhow::Result<()> {
+    fn resolves_existing_symlink_parent_components_in_filesystem_order() -> anyhow::Result<()> {
         use std::os::unix::fs::symlink;
 
         let temp = test_temp_dir()?;
-        let target = temp.join("target");
+        let physical_parent = temp.join("physical-parent");
+        let target = physical_parent.join("target");
         let alias = temp.join("alias");
         std::fs::create_dir_all(&target)?;
         symlink(&target, &alias)?;
 
-        let missing_leaf = alias.join("missing").join("leaf");
-        let expected = std::fs::canonicalize(&target)?.join("missing").join("leaf");
+        let expected = std::fs::canonicalize(&physical_parent)?;
+        let symlink_parent = alias.join("..");
+
+        assert_eq!(
+            path_to_db_string(&expected),
+            path_to_db_string(&symlink_parent)
+        );
+        assert_ne!(path_to_db_string(&temp), path_to_db_string(&symlink_parent));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_missing_descendants_after_symlink_parent_components() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let physical_parent = temp.join("physical-parent");
+        let target = physical_parent.join("target");
+        let alias = temp.join("alias");
+        std::fs::create_dir_all(&target)?;
+        symlink(&target, &alias)?;
+
+        let missing_leaf = alias.join("..").join("missing").join("leaf");
+        let expected = std::fs::canonicalize(&physical_parent)?
+            .join("missing")
+            .join("leaf");
 
         assert_eq!(
             path_to_db_string(&expected),
@@ -1975,9 +2022,11 @@ mod tests {
         let temp = test_temp_dir()?;
         let codex_home = temp.join("codewith-home");
         let repo = temp.join("repo");
-        let legacy_repo = temp.join("repo-legacy");
-        std::fs::create_dir_all(&repo)?;
-        symlink(&repo, &legacy_repo)?;
+        let symlink_target = repo.join("symlink-target");
+        let legacy_alias = temp.join("repo-legacy");
+        std::fs::create_dir_all(&symlink_target)?;
+        symlink(&symlink_target, &legacy_alias)?;
+        let legacy_repo = legacy_alias.join("..");
         let worktree = repo.join(".codewith").join("worktrees").join("wt-legacy");
         let legacy_worktree = legacy_repo
             .join(".codewith")
@@ -2003,7 +2052,7 @@ mod tests {
         .await?;
         drop(runtime);
 
-        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
         let normalized = runtime
             .managed_worktrees()
             .get_managed_worktree("wt-legacy")
@@ -2018,7 +2067,7 @@ mod tests {
             path_to_string(&normalized.worktree_path)
         );
         assert_eq!(
-            vec![normalized],
+            vec![normalized.clone()],
             runtime
                 .managed_worktrees()
                 .list_managed_worktrees_page(
@@ -2029,6 +2078,17 @@ mod tests {
                 )
                 .await?
                 .data
+        );
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        assert_eq!(
+            normalized,
+            runtime
+                .managed_worktrees()
+                .get_managed_worktree("wt-legacy")
+                .await?
+                .expect("a second startup should retain the normalized row")
         );
         Ok(())
     }
