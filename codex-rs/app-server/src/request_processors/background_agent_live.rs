@@ -4468,6 +4468,25 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
+    #[cfg(unix)]
+    fn test_process_bin(temp_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_dir.join("successful-worker-process");
+        std::fs::write(&path, "#!/usr/bin/env sh\nexit 0\n")?;
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions)?;
+        Ok(path)
+    }
+
+    #[cfg(windows)]
+    fn test_process_bin(temp_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+        let path = temp_dir.join("successful-worker-process.cmd");
+        std::fs::write(&path, "@echo off\r\nexit /b 0\r\n")?;
+        Ok(path)
+    }
+
     #[tokio::test]
     async fn process_supervisor_spawns_worker_process_and_records_event() -> anyhow::Result<()> {
         let temp = TempDir::new()?;
@@ -4481,7 +4500,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
 
         reconcile_background_agent_worker_processes(
@@ -4700,7 +4719,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
         reconcile_background_agent_worker_processes(context.clone(), Some("finished-run".into()))
             .await?;
@@ -4793,7 +4812,7 @@ mod tests {
             supervisor_id: "new-process-supervisor".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
 
         reconcile_background_agent_worker_processes(context, Some("orphaned-run".to_string()))
@@ -4844,7 +4863,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
 
         reconcile_background_agent_worker_processes(context, Some("terminal-run".to_string()))
@@ -4917,7 +4936,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
 
         reconcile_background_agent_worker_processes(context, Some("stopping-run".to_string()))
@@ -4970,7 +4989,7 @@ mod tests {
         let controller = WorkerProcessController::default();
         let old_handle = controller
             .spawn(WorkerProcessCommand::new(
-                "/bin/true",
+                test_process_bin(temp.path())?,
                 temp.path().join("missing-stopping.stderr.log"),
             ))
             .await?;
@@ -5019,7 +5038,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: test_process_bin(temp.path())?,
         };
 
         reconcile_background_agent_worker_processes(

@@ -555,6 +555,7 @@ exclude_slash_tmp = true
         Some("validated-managed-worktree-permissions".to_string()),
         codex_home.path(),
     );
+    params.execution_context = None;
     params.cwd = Some(created_worktree_path.clone());
 
     let start = start_agent(&mut mcp, params).await?;
@@ -595,6 +596,13 @@ async fn agent_start_rejects_shared_repository_managed_worktree_cwd() -> Result<
         codex_state::ManagedWorktreeMode::SharedRepository,
     )
     .await?;
+    std::fs::create_dir_all(
+        codex_home
+            .path()
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-shared-agent-start"),
+    )?;
 
     let mut params = start_params(
         "run inside a shared-repository worktree",
@@ -1560,6 +1568,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
             "HEAD",
         ],
     )?;
+    let manual_protocol_path = protocol_path(std::fs::canonicalize(&manual_path)?.as_path());
     let reconcile_request_id = mcp
         .send_raw_request("worktree/reconcile", Some(json!({})))
         .await?;
@@ -1568,7 +1577,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert_eq!(1, reconciled.discovered);
     assert!(reconciled.updated >= 1);
     assert!(reconciled.data.iter().any(|worktree| {
-        worktree.worktree_path == protocol_path(&manual_path)
+        worktree.worktree_path == manual_protocol_path
             && worktree
                 .identity
                 .as_deref()
@@ -2463,11 +2472,6 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         "later work\n",
         std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
     );
-    assert_eq!(
-        "later work\n",
-        std::fs::read_to_string(repo_path.join("later.txt"))?
-    );
-
     let race_create_request_id = mcp
         .send_raw_request(
             "worktree/create",
