@@ -364,21 +364,33 @@ fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool {
-    if !image_generation_runtime_enabled(turn_context) || !namespace_tools_enabled(turn_context) {
-        return false;
-    }
-
-    turn_context.model_info.use_responses_lite
+    standalone_image_generation_runtime_available(turn_context)
+        && turn_context.model_info.use_responses_lite
 }
 
 fn standalone_image_generation_available(
     turn_context: &TurnContext,
     extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
 ) -> bool {
-    standalone_image_generation_model_visible(turn_context)
+    standalone_image_generation_extension_registerable(turn_context)
         && extension_tools.iter().any(|executor| {
             executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
         })
+}
+
+fn standalone_image_generation_runtime_available(turn_context: &TurnContext) -> bool {
+    image_generation_runtime_enabled(turn_context)
+        && namespace_tools_enabled(turn_context)
+        && turn_context.features.get().enabled(Feature::ImageGenExt)
+}
+
+fn standalone_image_generation_extension_registerable(turn_context: &TurnContext) -> bool {
+    standalone_image_generation_model_visible(turn_context)
+        || (standalone_image_generation_runtime_available(turn_context)
+            && matches!(
+                turn_context.tool_mode,
+                ToolMode::CodeMode | ToolMode::CodeModeOnly
+            ))
 }
 
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
@@ -932,7 +944,7 @@ fn append_extension_tool_executors(
             continue;
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
-            && !standalone_image_generation_model_visible(turn_context)
+            && !standalone_image_generation_extension_registerable(turn_context)
         {
             continue;
         }

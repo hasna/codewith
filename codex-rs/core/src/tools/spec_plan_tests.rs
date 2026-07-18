@@ -1462,12 +1462,32 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     .await;
     non_lite_imagegen_extension.assert_visible_contains(&["image_generation"]);
     non_lite_imagegen_extension.assert_visible_lacks(&["image_gen"]);
+    non_lite_imagegen_extension.assert_registered_lacks(&["image_genimagegen"]);
+
+    let responses_lite_imagegen_flag_disabled = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ false);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    responses_lite_imagegen_flag_disabled.assert_visible_lacks(&["image_generation", "image_gen"]);
+    responses_lite_imagegen_flag_disabled.assert_registered_lacks(&["image_genimagegen"]);
 
     let responses_lite_standalone_imagegen = probe_with(
         |turn| {
             use_chatgpt_auth(turn);
             set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
-            set_feature(turn, Feature::ImageGenExt, /*enabled*/ false);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
             turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
             turn.model_info.use_responses_lite = true;
             turn.model_info.tool_mode = Some(ToolMode::Direct);
@@ -1501,6 +1521,33 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         "Generates images and edits images from text prompts."
     );
     assert!(!imagegen_function.strict);
+
+    let code_mode_only_standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::CodeModeOnly,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeModeOnly);
+            turn.tool_mode = ToolMode::CodeModeOnly;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    code_mode_only_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
+    code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
+    code_mode_only_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
@@ -1752,11 +1799,21 @@ async fn image_generation_serialized_tool_matrix_hides_reserved_namespace_when_u
             name: "chatgpt lite with installed extension uses standalone namespace",
             auth_mode: ImageGenerationAuthMode::ChatGpt,
             responses_lite: true,
-            imagegen_ext_enabled: false,
+            imagegen_ext_enabled: true,
             namespace_tools: NamespaceToolSupport::Supported,
             extension_present: true,
             expected_hosted: false,
             expected_standalone: true,
+        },
+        ImageGenerationMatrixCase {
+            name: "chatgpt lite with imagegen flag disabled hides standalone namespace",
+            auth_mode: ImageGenerationAuthMode::ChatGpt,
+            responses_lite: true,
+            imagegen_ext_enabled: false,
+            namespace_tools: NamespaceToolSupport::Supported,
+            extension_present: true,
+            expected_hosted: false,
+            expected_standalone: false,
         },
         ImageGenerationMatrixCase {
             name: "chatgpt lite without extension fails closed",
