@@ -2,12 +2,15 @@ use super::*;
 use crate::model::ManagedWorktreeMergeCandidateRow;
 use crate::model::ManagedWorktreeRow;
 use anyhow::Context;
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
-use std::path::Component;
-use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
+
+mod path_keys;
+pub(crate) use path_keys::managed_worktree_path_key_from_display;
+pub(crate) use path_keys::normalize_legacy_managed_worktree_paths;
+pub(crate) use path_keys::path_to_db_string;
+#[cfg(test)]
+use path_keys::path_to_string;
 
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
@@ -170,8 +173,9 @@ WHERE owner_thread_id = ?
         let worktree_path = path_to_db_string(&params.worktree_path);
         // Keep this populated for both modes so create-time rows match the
         // startup backfill. The database admission guard applies it only to
-        // isolated worktrees.
-        let worktree_path_key = worktree_path.clone();
+        // isolated worktrees, and keys intentionally remain distinct from the
+        // display path on Windows.
+        let worktree_path_key = managed_worktree_path_key_from_display(worktree_path.as_str());
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (
@@ -1607,58 +1611,6 @@ WHERE owner_agent_run_id = ?
     Ok(())
 }
 
-pub(crate) fn path_to_db_string(path: &Path) -> String {
-    path_to_string(&normalize_path_for_db(path))
-}
-
-fn normalize_path_for_db(path: &Path) -> PathBuf {
-    if let Ok(canonical_path) = std::fs::canonicalize(path) {
-        return normalize_path_components(&canonical_path);
-    }
-
-    let components = path.components().collect::<Vec<_>>();
-    for existing_component_count in (1..components.len()).rev() {
-        let mut existing_ancestor = PathBuf::new();
-        for component in &components[..existing_component_count] {
-            existing_ancestor.push(component.as_os_str());
-        }
-        let Ok(canonical_ancestor) = std::fs::canonicalize(existing_ancestor) else {
-            continue;
-        };
-
-        let mut normalized = normalize_path_components(&canonical_ancestor);
-        for component in &components[existing_component_count..] {
-            match component {
-                Component::CurDir => {}
-                Component::ParentDir | Component::Normal(_) => {
-                    normalized.push(component.as_os_str());
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return normalize_path_components(path);
-                }
-            }
-        }
-        return normalize_path_components(&normalized);
-    }
-
-    normalize_path_components(path)
-}
-
-fn normalize_path_components(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-
 fn managed_worktree_cleanup_candidate_predicate() -> &'static str {
     r#"
 mode = 'isolated_worktree'
@@ -1695,191 +1647,6 @@ mode = 'isolated_worktree'
     OR force_delete_requested = 1
   )
 "#
-}
-
-struct LegacyManagedWorktreePathRow {
-    worktree_id: String,
-    mode: String,
-    base_repo_path: String,
-    worktree_path: String,
-    worktree_path_key: Option<String>,
-    lifecycle_status: String,
-    released_at_ms: Option<i64>,
-    deleted_at_ms: Option<i64>,
-}
-
-/// Normalize legacy managed-worktree path keys before any path-keyed read can
-/// observe a row stored under a lexical alias such as macOS `/var`.
-///
-/// The unique indexes constrain live isolated worktree paths and active shared
-/// repository paths. Preflight every normalized key before updating so two
-/// legacy aliases are surfaced to the operator instead of being merged,
-/// deleted, or allowed to make shared-repository rejection ambiguous.
-pub(crate) async fn normalize_legacy_managed_worktree_paths(
-    pool: &SqlitePool,
-) -> anyhow::Result<()> {
-    let rows = sqlx::query(
-        r#"
-SELECT
-    worktree_id,
-    mode,
-    base_repo_path,
-    worktree_path,
-    worktree_path_key,
-    lifecycle_status,
-    released_at_ms,
-    deleted_at_ms
-FROM managed_worktrees
-ORDER BY worktree_id ASC
-        "#,
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(|row| {
-        Ok(LegacyManagedWorktreePathRow {
-            worktree_id: row.try_get("worktree_id")?,
-            mode: row.try_get("mode")?,
-            base_repo_path: row.try_get("base_repo_path")?,
-            worktree_path: row.try_get("worktree_path")?,
-            worktree_path_key: row.try_get("worktree_path_key")?,
-            lifecycle_status: row.try_get("lifecycle_status")?,
-            released_at_ms: row.try_get("released_at_ms")?,
-            deleted_at_ms: row.try_get("deleted_at_ms")?,
-        })
-    })
-    .collect::<anyhow::Result<Vec<_>>>()?;
-
-    let normalized_rows = rows
-        .iter()
-        .map(|row| {
-            (
-                row,
-                path_to_db_string(Path::new(&row.base_repo_path)),
-                path_to_db_string(Path::new(&row.worktree_path)),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut live_isolated_worktrees = BTreeMap::new();
-    let mut active_shared_repositories = BTreeMap::new();
-    for (row, normalized_base_repo_path, normalized_worktree_path) in &normalized_rows {
-        if row.mode == crate::ManagedWorktreeMode::IsolatedWorktree.as_str()
-            && row.deleted_at_ms.is_none()
-        {
-            collect_normalized_managed_worktree_path(
-                &mut live_isolated_worktrees,
-                normalized_worktree_path,
-                row.worktree_id.as_str(),
-            );
-        }
-        if row.mode == crate::ManagedWorktreeMode::SharedRepository.as_str()
-            && row.deleted_at_ms.is_none()
-            && row.released_at_ms.is_none()
-            && row.lifecycle_status == crate::ManagedWorktreeLifecycleStatus::Active.as_str()
-        {
-            collect_normalized_managed_worktree_path(
-                &mut active_shared_repositories,
-                normalized_base_repo_path,
-                row.worktree_id.as_str(),
-            );
-        }
-    }
-
-    let collisions = [
-        ("live isolated worktree path", live_isolated_worktrees),
-        ("active shared repository path", active_shared_repositories),
-    ]
-    .into_iter()
-    .flat_map(|(path_kind, paths)| {
-        paths
-            .into_iter()
-            .filter_map(move |(normalized_path, worktree_ids)| {
-                (worktree_ids.len() > 1).then_some((path_kind, normalized_path, worktree_ids))
-            })
-    })
-    .collect::<Vec<_>>();
-    let collision_worktree_ids = collisions
-        .iter()
-        .flat_map(|(_, _, worktree_ids)| worktree_ids.iter().cloned())
-        .collect::<BTreeSet<_>>();
-
-    let mut transaction = pool.begin().await?;
-    for (row, normalized_base_repo_path, normalized_worktree_path) in normalized_rows {
-        if collision_worktree_ids.contains(row.worktree_id.as_str()) {
-            if row.worktree_path_key.as_deref() != Some(normalized_worktree_path.as_str()) {
-                sqlx::query(
-                    "UPDATE managed_worktrees SET worktree_path_key = ? WHERE worktree_id = ?",
-                )
-                .bind(normalized_worktree_path)
-                .bind(row.worktree_id.clone())
-                .execute(&mut *transaction)
-                .await?;
-            }
-            continue;
-        }
-        if row.base_repo_path == normalized_base_repo_path
-            && row.worktree_path == normalized_worktree_path
-            && row.worktree_path_key.as_deref() == Some(normalized_worktree_path.as_str())
-        {
-            continue;
-        }
-        sqlx::query(
-            r#"
-UPDATE managed_worktrees
-SET base_repo_path = ?, worktree_path = ?, worktree_path_key = ?
-WHERE worktree_id = ?
-            "#,
-        )
-        .bind(normalized_base_repo_path)
-        .bind(normalized_worktree_path.as_str())
-        .bind(normalized_worktree_path)
-        .bind(row.worktree_id.clone())
-        .execute(&mut *transaction)
-        .await?;
-    }
-    transaction.commit().await?;
-    for (path_kind, normalized_path, worktree_ids) in collisions {
-        tracing::warn!(
-            %path_kind,
-            %normalized_path,
-            ?worktree_ids,
-            "managed worktree path normalization collision; retaining legacy rows without merging or deleting them"
-        );
-    }
-    Ok(())
-}
-
-fn collect_normalized_managed_worktree_path(
-    paths: &mut BTreeMap<String, Vec<String>>,
-    normalized_path: &str,
-    worktree_id: &str,
-) {
-    paths
-        .entry(normalized_path.to_string())
-        .or_default()
-        .push(worktree_id.to_string());
-}
-
-fn path_to_string(path: &Path) -> String {
-    let path = path.to_string_lossy().into_owned();
-    strip_windows_verbatim_prefix(path)
-}
-
-#[cfg(windows)]
-fn strip_windows_verbatim_prefix(path: String) -> String {
-    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{rest}");
-    }
-    if let Some(rest) = path.strip_prefix(r"\\?\") {
-        return rest.to_owned();
-    }
-    path
-}
-
-#[cfg(not(windows))]
-fn strip_windows_verbatim_prefix(path: String) -> String {
-    path
 }
 
 pub(crate) fn managed_worktree_from_row(
@@ -1958,6 +1725,7 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     async fn test_runtime() -> Arc<StateRuntime> {
         StateRuntime::init(unique_temp_dir(), "test-provider".to_string())

@@ -1,5 +1,6 @@
 use super::*;
 use crate::BackgroundAgentWorkspaceMode;
+use crate::runtime::managed_worktrees::managed_worktree_path_key_from_display;
 use crate::runtime::managed_worktrees::path_to_db_string;
 use std::path::Path;
 
@@ -64,6 +65,7 @@ LIMIT ? OFFSET ?
         let now = Utc::now().timestamp();
         let base_repo_path = path_to_db_string(Path::new(params.base_repo_path.as_str()));
         let worktree_path = path_to_db_string(Path::new(params.worktree_path.as_str()));
+        let worktree_path_key = managed_worktree_path_key_from_display(worktree_path.as_str());
         let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
@@ -175,7 +177,7 @@ INSERT INTO managed_worktrees (
         .bind(params.mode.as_str())
         .bind(base_repo_path.as_str())
         .bind(worktree_path.as_str())
-        .bind(worktree_path.as_str())
+        .bind(worktree_path_key.as_str())
         .bind(params.branch.as_deref())
         .bind(params.head_sha.as_deref())
         .bind(params.head_sha.as_deref())
