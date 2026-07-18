@@ -65,50 +65,60 @@ LIMIT ? OFFSET ?
         let now = Utc::now().timestamp();
         let base_repo_path = path_to_db_string(Path::new(params.base_repo_path.as_str()));
         let worktree_path = path_to_db_string(Path::new(params.worktree_path.as_str()));
-        let worktree_path_key = managed_worktree_path_key_from_display(worktree_path.as_str());
+        // Match managed-worktree admission and startup reconciliation: shared
+        // repositories reserve their normalized base path, while isolated
+        // worktrees reserve their normalized worktree path.
+        let worktree_path_key = managed_worktree_path_key_from_display(
+            if params.mode == BackgroundAgentWorkspaceMode::SharedRepository {
+                base_repo_path.as_str()
+            } else {
+                worktree_path.as_str()
+            },
+        );
         let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
         if params.mode == BackgroundAgentWorkspaceMode::SharedRepository {
-            let active_shared_repo_lease: Option<(String,)> = sqlx::query_as(
+            let active_shared_repository: Option<(String,)> = sqlx::query_as(
                 r#"
-SELECT id
-FROM background_agent_worktree_leases
+SELECT worktree_id
+FROM managed_worktrees
 WHERE mode = 'shared_repository'
-  AND base_repo_path = ?
-  AND released_at IS NULL
-  AND deleted_at IS NULL
+  AND worktree_path_key = ?
+  AND released_at_ms IS NULL
+  AND deleted_at_ms IS NULL
+  AND lifecycle_status = 'active'
 LIMIT 1
             "#,
             )
-            .bind(base_repo_path.as_str())
+            .bind(worktree_path_key.as_str())
             .fetch_optional(&mut *tx)
             .await?;
-            if let Some((lease_id,)) = active_shared_repo_lease {
+            if let Some((worktree_id,)) = active_shared_repository {
                 tx.rollback().await?;
                 anyhow::bail!(
-                    "shared repository {base_repo_path} is already leased by background agent worktree lease {lease_id}"
+                    "shared repository {base_repo_path} is already leased by active managed worktree {worktree_id}"
                 );
             }
         }
         if params.mode == BackgroundAgentWorkspaceMode::IsolatedWorktree {
-            let active_path_lease: Option<(String,)> = sqlx::query_as(
+            let active_isolated_worktree: Option<(String,)> = sqlx::query_as(
                 r#"
-SELECT id
-FROM background_agent_worktree_leases
+SELECT worktree_id
+FROM managed_worktrees
 WHERE mode = 'isolated_worktree'
-  AND worktree_path = ?
-  AND deleted_at IS NULL
+  AND worktree_path_key = ?
+  AND deleted_at_ms IS NULL
 LIMIT 1
                 "#,
             )
-            .bind(worktree_path.as_str())
+            .bind(worktree_path_key.as_str())
             .fetch_optional(&mut *tx)
             .await?;
-            if let Some((lease_id,)) = active_path_lease {
+            if let Some((worktree_id,)) = active_isolated_worktree {
                 tx.rollback().await?;
                 anyhow::bail!(
-                    "isolated worktree path {worktree_path} is already leased by background agent worktree lease {lease_id}"
+                    "isolated worktree path {worktree_path} is already leased by active managed worktree {worktree_id}"
                 );
             }
         }

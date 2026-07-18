@@ -1585,7 +1585,13 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
     let repo = repo_path("/repo");
+    let repo_alias = repo.join("missing").join("..");
     let repo = path_to_db_string(&repo);
+    let repo_alias = path_to_db_string(&repo_alias);
+    let first_worktree = path_to_db_string(&worktree_path("shared-first"));
+    let second_worktree = path_to_db_string(&worktree_path("shared-second"));
+    assert_eq!(repo, repo_alias);
+    assert_ne!(first_worktree, second_worktree);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1594,7 +1600,7 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
             base_repo_path: repo.clone(),
-            worktree_path: repo.clone(),
+            worktree_path: first_worktree,
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1613,8 +1619,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: repo.clone(),
-            worktree_path: repo.clone(),
+            base_repo_path: repo_alias.clone(),
+            worktree_path: second_worktree.clone(),
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1641,8 +1647,8 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
             run_id: "run-2".to_string(),
             identity: "bg-run-2".to_string(),
             mode: BackgroundAgentWorkspaceMode::SharedRepository,
-            base_repo_path: repo.clone(),
-            worktree_path: repo,
+            base_repo_path: repo_alias,
+            worktree_path: second_worktree,
             branch: Some("main".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1655,6 +1661,115 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
         })
         .await?;
     assert_eq!(lease.run_id, "run-2");
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_repository_lease_rejects_active_normal_shared_worktree() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let repo = repo_path("/repo");
+    let repo_alias = repo.join("missing").join("..");
+    let normal_worktree_path = repo.join(".codewith").join("worktrees").join("normal");
+    let lease_worktree_path = repo.join(".codewith").join("worktrees").join("lease");
+
+    runtime
+        .managed_worktrees()
+        .create_managed_worktree(crate::ManagedWorktreeCreateParams {
+            worktree_id: Some("normal-shared".to_string()),
+            identity: Some("session:normal-shared".to_string()),
+            mode: crate::ManagedWorktreeMode::SharedRepository,
+            base_repo_path: repo.clone(),
+            worktree_path: normal_worktree_path,
+            branch: Some("main".to_string()),
+            base_sha: Some("base-sha".to_string()),
+            head_sha: Some("head-sha".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_policy: crate::ManagedWorktreeCleanupPolicy::Retain,
+            owner_kind: crate::ManagedWorktreeOwnerKind::MainSession,
+            owner_thread_id: None,
+            owner_agent_run_id: None,
+            cleanup_after: None,
+        })
+        .await?;
+
+    let error = runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-1".to_string(),
+            run_id: "run-1".to_string(),
+            identity: "bg-run-1".to_string(),
+            mode: BackgroundAgentWorkspaceMode::SharedRepository,
+            base_repo_path: path_to_db_string(&repo_alias),
+            worktree_path: path_to_db_string(&lease_worktree_path),
+            branch: Some("main".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await
+        .expect_err("active normal shared worktree must block a background-agent lease");
+    assert!(
+        error.to_string().contains("shared repository")
+            && error.to_string().contains("normal-shared"),
+        "unexpected admission error: {error:#}"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn shared_repository_lease_rejects_windows_case_aliases() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run_with_id(runtime.as_ref(), "run-1").await?;
+    create_run_with_id(runtime.as_ref(), "run-2").await?;
+    let base_repo_path = PathBuf::from(r"C:\Repo");
+    let base_repo_path_alias = PathBuf::from(r"c:\repo");
+    let first_worktree_path = PathBuf::from(r"C:\Repo\.codewith\worktrees\first");
+    let second_worktree_path = PathBuf::from(r"c:\repo\.codewith\worktrees\second");
+
+    assert_ne!(
+        path_to_db_string(&base_repo_path),
+        path_to_db_string(&base_repo_path_alias)
+    );
+
+    runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-1".to_string(),
+            run_id: "run-1".to_string(),
+            identity: "bg-run-1".to_string(),
+            mode: BackgroundAgentWorkspaceMode::SharedRepository,
+            base_repo_path: path_to_db_string(&base_repo_path),
+            worktree_path: path_to_db_string(&first_worktree_path),
+            branch: Some("main".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await?;
+
+    let error = runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-2".to_string(),
+            run_id: "run-2".to_string(),
+            identity: "bg-run-2".to_string(),
+            mode: BackgroundAgentWorkspaceMode::SharedRepository,
+            base_repo_path: path_to_db_string(&base_repo_path_alias),
+            worktree_path: path_to_db_string(&second_worktree_path),
+            branch: Some("main".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await
+        .expect_err("a Windows case alias must not bypass shared-repository admission");
+    assert!(
+        error.to_string().contains("shared repository"),
+        "unexpected admission error: {error:#}"
+    );
     Ok(())
 }
 

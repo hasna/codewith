@@ -171,19 +171,18 @@ WHERE owner_thread_id = ?
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let base_repo_path = path_to_db_string(&params.base_repo_path);
         let worktree_path = path_to_db_string(&params.worktree_path);
+        let base_repo_path_key = managed_worktree_path_key_from_display(base_repo_path.as_str());
         // Store the admission key so create-time rows match startup backfill:
         // isolated worktrees are keyed by their worktree path, while shared
         // repositories are keyed by their base repository path. Keys
         // intentionally remain distinct from display paths on Windows.
-        let worktree_path_key = managed_worktree_path_key_from_display(
-            if params.mode == crate::ManagedWorktreeMode::SharedRepository {
-                base_repo_path.as_str()
-            } else {
-                worktree_path.as_str()
-            },
-        );
+        let worktree_path_key = if params.mode == crate::ManagedWorktreeMode::SharedRepository {
+            base_repo_path_key.clone()
+        } else {
+            managed_worktree_path_key_from_display(worktree_path.as_str())
+        };
         if params.mode == crate::ManagedWorktreeMode::IsolatedWorktree
-            && base_repo_path == worktree_path
+            && base_repo_path_key == worktree_path_key
         {
             anyhow::bail!("isolated managed worktree path cannot match the base repo path");
         }
@@ -1817,13 +1816,29 @@ mod tests {
             .managed_worktrees()
             .create_managed_worktree(create_params_for_paths(
                 "wt-key",
-                base_repo_path,
+                base_repo_path.clone(),
                 requested_worktree_path,
             ))
             .await?;
 
+        let stored = runtime
+            .managed_worktrees()
+            .get_managed_worktree("wt-key")
+            .await?
+            .expect("worktree should be stored");
+        let expected_worktree_path_key = managed_worktree_path_key_from_display(
+            path_to_db_string(&canonical_worktree_path).as_str(),
+        );
         assert_eq!(
-            Some(path_to_db_string(&canonical_worktree_path)),
+            path_to_db_string(&base_repo_path),
+            stored.base_repo_path.to_string_lossy()
+        );
+        assert_eq!(
+            path_to_db_string(&canonical_worktree_path),
+            stored.worktree_path.to_string_lossy()
+        );
+        assert_eq!(
+            Some(expected_worktree_path_key),
             worktree_path_key(runtime.as_ref(), "wt-key").await?
         );
         Ok(())
@@ -1929,6 +1944,41 @@ mod tests {
             ))
             .await
             .expect_err("a normalized base-repository path cannot be an isolated worktree");
+        assert!(
+            error
+                .to_string()
+                .contains("isolated managed worktree path cannot match the base repo path"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn rejects_isolated_worktree_path_equal_to_case_aliased_base_repo_path()
+    -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = PathBuf::from(r"C:\Repo");
+        let worktree_path = PathBuf::from(r"c:\repo");
+
+        assert_ne!(
+            path_to_db_string(&base_repo_path),
+            path_to_db_string(&worktree_path)
+        );
+        assert_eq!(
+            managed_worktree_path_key_from_display(path_to_db_string(&base_repo_path).as_str()),
+            managed_worktree_path_key_from_display(path_to_db_string(&worktree_path).as_str())
+        );
+
+        let error = runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-case-aliased-base",
+                base_repo_path,
+                worktree_path,
+            ))
+            .await
+            .expect_err("a Windows base-repo case alias must fail closed");
         assert!(
             error
                 .to_string()
