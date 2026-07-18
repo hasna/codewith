@@ -287,7 +287,7 @@ impl ClaudeCodeHarness {
                 self.descriptor.command.program,
                 source_env,
                 cwd,
-            );
+            )
         }
         #[cfg(not(windows))]
         {
