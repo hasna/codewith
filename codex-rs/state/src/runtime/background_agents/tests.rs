@@ -1718,6 +1718,82 @@ async fn shared_repository_lease_rejects_active_normal_shared_worktree() -> anyh
     Ok(())
 }
 
+#[tokio::test]
+async fn isolated_worktree_lease_rejects_normalized_base_repo_path() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let base_repo_path = repo_path("/repo");
+    let worktree_path = base_repo_path.join("child").join("..");
+
+    assert_eq!(
+        path_to_db_string(&base_repo_path),
+        path_to_db_string(&worktree_path)
+    );
+
+    let error = runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-1".to_string(),
+            run_id: "run-1".to_string(),
+            identity: "bg-run-1".to_string(),
+            mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
+            base_repo_path: path_to_db_string(&base_repo_path),
+            worktree_path: path_to_db_string(&worktree_path),
+            branch: Some("codewith/bg-run-1".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await
+        .expect_err("a normalized base-repository path cannot be an isolated worktree");
+    assert!(
+        error
+            .to_string()
+            .contains("isolated managed worktree path cannot match the base repo path"),
+        "unexpected admission error: {error:#}"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn isolated_worktree_lease_rejects_windows_case_aliased_base_repo_path() -> anyhow::Result<()>
+{
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let base_repo_path = PathBuf::from(r"C:\Repo");
+    let worktree_path = PathBuf::from(r"c:\repo");
+
+    assert_ne!(
+        path_to_db_string(&base_repo_path),
+        path_to_db_string(&worktree_path)
+    );
+
+    let error = runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-1".to_string(),
+            run_id: "run-1".to_string(),
+            identity: "bg-run-1".to_string(),
+            mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
+            base_repo_path: path_to_db_string(&base_repo_path),
+            worktree_path: path_to_db_string(&worktree_path),
+            branch: Some("codewith/bg-run-1".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await
+        .expect_err("a Windows base-repo case alias must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("isolated managed worktree path cannot match the base repo path"),
+        "unexpected admission error: {error:#}"
+    );
+    Ok(())
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn shared_repository_lease_rejects_windows_case_aliases() -> anyhow::Result<()> {

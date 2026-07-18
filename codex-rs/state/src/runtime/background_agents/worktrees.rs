@@ -65,6 +65,7 @@ LIMIT ? OFFSET ?
         let now = Utc::now().timestamp();
         let base_repo_path = path_to_db_string(Path::new(params.base_repo_path.as_str()));
         let worktree_path = path_to_db_string(Path::new(params.worktree_path.as_str()));
+        let base_repo_path_key = managed_worktree_path_key_from_display(base_repo_path.as_str());
         // Match managed-worktree admission and startup reconciliation: shared
         // repositories reserve their normalized base path, while isolated
         // worktrees reserve their normalized worktree path.
@@ -75,6 +76,11 @@ LIMIT ? OFFSET ?
                 worktree_path.as_str()
             },
         );
+        if params.mode == BackgroundAgentWorkspaceMode::IsolatedWorktree
+            && base_repo_path_key == worktree_path_key
+        {
+            anyhow::bail!("isolated managed worktree path cannot match the base repo path");
+        }
         let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
