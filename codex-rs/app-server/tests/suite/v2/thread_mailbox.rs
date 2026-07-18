@@ -530,7 +530,7 @@ async fn thread_mailbox_dispatcher_resume_preserves_persisted_permissions() -> R
     create_config_toml_with_mailbox_dispatcher_and_sandbox(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
         "danger-full-access",
     )?;
 
