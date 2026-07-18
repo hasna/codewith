@@ -1524,10 +1524,7 @@ pub(crate) fn path_to_db_string(path: &Path) -> String {
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
-    #[cfg(windows)]
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    #[cfg(not(windows))]
-    let path = path.to_path_buf();
 
     let mut normalized = PathBuf::new();
     for component in path.components() {

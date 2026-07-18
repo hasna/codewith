@@ -596,28 +596,25 @@ async fn agent_start_rejects_shared_repository_managed_worktree_cwd() -> Result<
         codex_state::ManagedWorktreeMode::SharedRepository,
     )
     .await?;
-    std::fs::create_dir_all(
-        codex_home
-            .path()
-            .join(".codewith")
-            .join("worktrees")
-            .join("wt-shared-agent-start"),
-    )?;
+    let shared_worktree_path = codex_home
+        .path()
+        .join(".codewith")
+        .join("worktrees")
+        .join("wt-shared-agent-start");
+    std::fs::create_dir_all(&shared_worktree_path)?;
+    #[cfg(target_os = "macos")]
+    assert_ne!(
+        shared_worktree_path,
+        std::fs::canonicalize(&shared_worktree_path)?,
+        "macOS regression coverage requires the /var and /private/var path aliases"
+    );
 
     let mut params = start_params(
         "run inside a shared-repository worktree",
         Some("shared-repository-managed-worktree-cwd".to_string()),
         codex_home.path(),
     );
-    params.cwd = Some(
-        codex_home
-            .path()
-            .join(".codewith")
-            .join("worktrees")
-            .join("wt-shared-agent-start")
-            .display()
-            .to_string(),
-    );
+    params.cwd = Some(shared_worktree_path.display().to_string());
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let error = start_agent_error(&mut mcp, params).await?;
@@ -1530,6 +1527,12 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
             "HEAD",
         ],
     )?;
+    #[cfg(target_os = "macos")]
+    assert_ne!(
+        outside_root_path,
+        std::fs::canonicalize(&outside_root_path)?,
+        "macOS regression coverage requires the /var and /private/var path aliases"
+    );
     let state_db = init_state_db(codex_home.path()).await?;
     state_db
         .managed_worktrees()
@@ -2884,10 +2887,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn protocol_path(path: &Path) -> String {
-    #[cfg(windows)]
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    #[cfg(not(windows))]
-    let path = path.to_path_buf();
 
     let path = path.to_string_lossy().into_owned();
     strip_windows_verbatim_prefix(path)
