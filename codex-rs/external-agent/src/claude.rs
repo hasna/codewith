@@ -1182,7 +1182,7 @@ exit 2
             "claude",
             "inspect the environment",
             temp_dir.path(),
-            ExternalAgentMode::Plan,
+            crate::ExternalAgentMode::Plan,
         );
         let launch = harness.launch_spec(temp_dir.path(), &claude_path, &source_env);
         let mut process = ClaudeCodeProcess::spawn(

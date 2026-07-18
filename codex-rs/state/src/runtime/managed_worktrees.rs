@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
+const MANAGED_WORKTREE_LIST_SCAN_CHUNK_SIZE: u32 = DEFAULT_MANAGED_WORKTREE_LIST_LIMIT;
 
 #[derive(Clone)]
 pub struct ManagedWorktreeStore {
@@ -257,6 +258,73 @@ WHERE worktree_id = ?
     ) -> anyhow::Result<ManagedWorktreeListPage> {
         let offset = parse_managed_worktree_list_cursor(cursor)?;
         let limit = limit.clamp(1, MAX_MANAGED_WORKTREE_LIST_LIMIT);
+        let normalized_base_repo_path = base_repo_path.map(path_to_db_string);
+
+        if let Some(base_repo_path) = normalized_base_repo_path {
+            let mut scanned_rows = 0_i64;
+            let mut skipped_rows = 0;
+            let mut matching_rows = Vec::with_capacity(limit as usize + 1);
+
+            loop {
+                let mut query = QueryBuilder::<Sqlite>::new(format!(
+                    "SELECT {} FROM managed_worktrees WHERE (",
+                    managed_worktree_select_columns()
+                ));
+                query.push_bind(include_deleted);
+                query.push(" OR deleted_at_ms IS NULL)");
+                query.push(
+                    r#"
+ORDER BY
+    CASE lifecycle_status
+        WHEN 'active' THEN 1
+        WHEN 'cleanup_pending' THEN 2
+        WHEN 'released' THEN 3
+        WHEN 'deleted' THEN 4
+    END,
+    updated_at_ms DESC,
+    worktree_id DESC
+LIMIT
+"#,
+                );
+                query.push_bind(i64::from(MANAGED_WORKTREE_LIST_SCAN_CHUNK_SIZE));
+                query.push(" OFFSET ");
+                query.push_bind(scanned_rows);
+
+                let rows = query.build().fetch_all(self.pool.as_ref()).await?;
+                let row_count = rows.len();
+                for row in rows {
+                    let worktree = managed_worktree_from_row(&row)?;
+                    if path_to_db_string(worktree.base_repo_path.as_path()) != base_repo_path {
+                        continue;
+                    }
+                    if skipped_rows < offset {
+                        skipped_rows += 1;
+                        continue;
+                    }
+
+                    matching_rows.push(worktree);
+                    if matching_rows.len() > limit as usize {
+                        break;
+                    }
+                }
+
+                if matching_rows.len() > limit as usize
+                    || row_count < MANAGED_WORKTREE_LIST_SCAN_CHUNK_SIZE as usize
+                {
+                    break;
+                }
+                scanned_rows = scanned_rows.saturating_add(row_count as i64);
+            }
+
+            let has_more = matching_rows.len() > limit as usize;
+            let data = matching_rows
+                .into_iter()
+                .take(limit as usize)
+                .collect::<Vec<_>>();
+            let next_cursor = has_more.then(|| offset.saturating_add(limit).to_string());
+            return Ok(ManagedWorktreeListPage { data, next_cursor });
+        }
+
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT {} FROM managed_worktrees WHERE (",
             managed_worktree_select_columns()
@@ -276,31 +344,16 @@ ORDER BY
     worktree_id DESC
 "#,
         );
-        if base_repo_path.is_none() {
-            query.push(" LIMIT ");
-            query.push_bind(i64::from(limit) + 1);
-            query.push(" OFFSET ");
-            query.push_bind(i64::from(offset));
-        }
+        query.push(" LIMIT ");
+        query.push_bind(i64::from(limit) + 1);
+        query.push(" OFFSET ");
+        query.push_bind(i64::from(offset));
 
         let rows = query.build().fetch_all(self.pool.as_ref()).await?;
-        let normalized_base_repo_path = base_repo_path.map(path_to_db_string);
         let rows = rows
             .into_iter()
             .map(|row| managed_worktree_from_row(&row))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let rows = rows.into_iter().filter(|worktree| {
-            normalized_base_repo_path
-                .as_ref()
-                .is_none_or(|base_repo_path| {
-                    path_to_db_string(worktree.base_repo_path.as_path()) == *base_repo_path
-                })
-        });
-        let rows = if base_repo_path.is_some() {
-            rows.skip(offset as usize).collect::<Vec<_>>()
-        } else {
-            rows.collect::<Vec<_>>()
-        };
         let has_more = rows.len() > limit as usize;
         let data = rows.into_iter().take(limit as usize).collect::<Vec<_>>();
         let next_cursor = has_more.then(|| offset.saturating_add(limit).to_string());
@@ -1833,6 +1886,7 @@ mod tests {
             .expect("state db should initialize")
     }
 
+    #[cfg(unix)]
     fn test_temp_dir() -> anyhow::Result<PathBuf> {
         let path = unique_temp_dir();
         std::fs::create_dir_all(&path)?;
@@ -2157,6 +2211,67 @@ mod tests {
             .await?;
         assert_eq!(vec![expected], page.data);
         assert_eq!(None, page.next_cursor);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn paginates_normalized_managed_worktrees_across_sql_chunks() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params("wt-target-a", "/target-repo"))
+            .await?;
+        store
+            .create_managed_worktree(create_params("wt-target-b", "/target-repo"))
+            .await?;
+        for index in 0..=MANAGED_WORKTREE_LIST_SCAN_CHUNK_SIZE {
+            let worktree_id = format!("wt-nonmatching-{index:03}");
+            store
+                .create_managed_worktree(create_params(&worktree_id, "/other-repo"))
+                .await?;
+        }
+        sqlx::query("UPDATE managed_worktrees SET updated_at_ms = ? WHERE worktree_id LIKE ?")
+            .bind(2_000_000_000_000_i64)
+            .bind("wt-nonmatching-%")
+            .execute(runtime.pool.as_ref())
+            .await?;
+        sqlx::query("UPDATE managed_worktrees SET updated_at_ms = ? WHERE worktree_id IN (?, ?)")
+            .bind(1_000_000_000_000_i64)
+            .bind("wt-target-a")
+            .bind("wt-target-b")
+            .execute(runtime.pool.as_ref())
+            .await?;
+        let target_a = store
+            .get_managed_worktree("wt-target-a")
+            .await?
+            .expect("target worktree should exist");
+        let target_b = store
+            .get_managed_worktree("wt-target-b")
+            .await?
+            .expect("target worktree should exist");
+
+        let first_page = store
+            .list_managed_worktrees_page(
+                Some(repo_path("/target-repo").as_path()),
+                /*include_deleted*/ false,
+                /*cursor*/ None,
+                /*limit*/ 1,
+            )
+            .await?;
+        assert_eq!(vec![target_b], first_page.data);
+        assert_eq!(Some("1".to_string()), first_page.next_cursor);
+
+        let second_page = store
+            .list_managed_worktrees_page(
+                Some(repo_path("/target-repo").as_path()),
+                /*include_deleted*/ false,
+                first_page.next_cursor.as_deref(),
+                /*limit*/ 1,
+            )
+            .await?;
+        assert_eq!(vec![target_a], second_page.data);
+        assert_eq!(None, second_page.next_cursor);
 
         Ok(())
     }
