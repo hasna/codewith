@@ -33,6 +33,9 @@ fn responses_extensions(auth: &CodexAuth) -> Arc<ExtensionRegistry<Config>> {
 
 fn configure_responses_tools(config: &mut Config) {
     config.model_provider_id = OPENAI_PROVIDER_ID.to_string();
+    // Keep the fixture's dummy ChatGPT auth active even when a developer
+    // environment exports an auth profile. Hosted tool gates depend on auth mode.
+    config.selected_auth_profile = None;
     assert!(config.web_search_mode.set(WebSearchMode::Live).is_ok());
     assert!(
         config
@@ -190,7 +193,7 @@ async fn responses_lite_omits_hosted_tools_without_standalone_extensions() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn non_lite_uses_hosted_web_search_and_hides_unavailable_image_generation() -> Result<()> {
+async fn non_lite_uses_hosted_tools_when_standalone_features_are_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -223,7 +226,11 @@ async fn non_lite_uses_hosted_web_search_and_hides_unavailable_image_generation(
         .as_array()
         .context("Responses request tools should be an array")?;
     assert!(has_hosted_tool(tools, "web_search"));
-    assert!(!has_hosted_tool(tools, "image_generation"));
+    assert!(
+        has_hosted_tool(tools, "image_generation"),
+        "expected hosted image_generation for model {:?} in tools: {tools:?}",
+        body.get("model")
+    );
 
     Ok(())
 }
