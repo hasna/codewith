@@ -208,8 +208,7 @@ fn build_model_visible_specs_and_registry(
             continue;
         }
         let exposure = runtime.exposure();
-        if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
-        {
+        if exposure.is_direct() && !is_hidden_by_code_mode(turn_context, &tool_name, exposure) {
             let spec = runtime.spec();
             specs.push(spec_for_model_request(
                 turn_context,
@@ -431,16 +430,25 @@ fn agent_type_description(
     }
 }
 
-fn is_hidden_by_code_mode_only(
+fn is_hidden_by_code_mode(
     turn_context: &TurnContext,
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
-    turn_context.tool_mode == ToolMode::CodeModeOnly
-        && exposure != ToolExposure::DirectModelOnly
-        && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
-            tool_name,
-        ))
+    if exposure == ToolExposure::DirectModelOnly {
+        return false;
+    }
+
+    match turn_context.tool_mode {
+        ToolMode::CodeMode => {
+            tool_name == &ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+                && standalone_image_generation_extension_registerable(turn_context)
+        }
+        ToolMode::CodeModeOnly => codex_code_mode::is_code_mode_nested_tool(
+            &codex_tools::code_mode_name_for_tool_name(tool_name),
+        ),
+        ToolMode::Direct => false,
+    }
 }
 
 fn is_excluded_from_code_mode(turn_context: &TurnContext, tool_name: &ToolName) -> bool {

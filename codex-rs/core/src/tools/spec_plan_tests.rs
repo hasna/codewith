@@ -1549,6 +1549,41 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
     code_mode_only_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
 
+    let code_mode_standalone_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+    code_mode_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
+    code_mode_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
+    code_mode_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
+    let serialized_tools = code_mode_standalone_imagegen.serialized_tools();
+    assert!(
+        !has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "normal CodeMode should not expose hosted image generation when nested imagegen is registered: {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "normal CodeMode should not expose reserved image_gen.imagegen top-level: {serialized_tools:?}"
+    );
+
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
         turn.model_info.supports_search_tool = true;
