@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::ManagedWorktreeMergeCandidateRow;
 use crate::model::ManagedWorktreeRow;
+use anyhow::Context;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Component;
@@ -165,6 +166,12 @@ WHERE owner_thread_id = ?
         let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let base_repo_path = path_to_db_string(&params.base_repo_path);
+        let worktree_path = path_to_db_string(&params.worktree_path);
+        // Keep this populated for both modes so create-time rows match the
+        // startup backfill. The database admission guard applies it only to
+        // isolated worktrees.
+        let worktree_path_key = worktree_path.clone();
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (
@@ -200,9 +207,9 @@ RETURNING
             .bind(worktree_id)
             .bind(params.identity)
             .bind(params.mode.as_str())
-            .bind(path_to_db_string(&params.base_repo_path))
-            .bind(path_to_db_string(&params.worktree_path))
-            .bind(path_to_db_string(&params.worktree_path))
+            .bind(base_repo_path)
+            .bind(worktree_path)
+            .bind(worktree_path_key)
             .bind(params.branch)
             .bind(params.base_sha)
             .bind(params.head_sha)
@@ -224,7 +231,8 @@ RETURNING
             .bind(cleanup_after_ms)
             .bind(Option::<i64>::None)
             .fetch_one(self.pool.as_ref())
-            .await?;
+            .await
+            .context("managed worktree admission rejected")?;
 
         managed_worktree_from_row(&row)
     }
@@ -2001,6 +2009,240 @@ mod tests {
             owner_agent_run_id: None,
             cleanup_after: None,
         }
+    }
+
+    async fn worktree_path_key(
+        runtime: &StateRuntime,
+        worktree_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        sqlx::query_scalar("SELECT worktree_path_key FROM managed_worktrees WHERE worktree_id = ?")
+            .bind(worktree_id)
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .map_err(Into::into)
+    }
+
+    #[tokio::test]
+    async fn stores_normalized_worktree_path_key_on_create() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = test_temp_dir()?.join("repo");
+        let canonical_worktree_path = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-key");
+        let requested_worktree_path = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join("unused")
+            .join("..")
+            .join("wt-key");
+        std::fs::create_dir_all(&base_repo_path)?;
+
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-key",
+                base_repo_path,
+                requested_worktree_path,
+            ))
+            .await?;
+
+        assert_eq!(
+            Some(path_to_db_string(&canonical_worktree_path)),
+            worktree_path_key(runtime.as_ref(), "wt-key").await?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deleted_isolated_worktree_path_can_be_reused() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = test_temp_dir()?.join("repo");
+        let worktree_path = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join("reused");
+        std::fs::create_dir_all(&base_repo_path)?;
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params_for_paths(
+                "wt-deleted",
+                base_repo_path.clone(),
+                worktree_path.clone(),
+            ))
+            .await?;
+        store
+            .mark_managed_worktree_deleted("wt-deleted")
+            .await?
+            .expect("worktree should be marked deleted");
+
+        assert_eq!(
+            "wt-reused",
+            store
+                .create_managed_worktree(create_params_for_paths(
+                    "wt-reused",
+                    base_repo_path,
+                    worktree_path,
+                ))
+                .await?
+                .worktree_id
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_repository_path_key_does_not_block_isolated_admission() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let temp = test_temp_dir()?;
+        let shared_base_repo_path = temp.join("shared-repo");
+        let isolated_base_repo_path = temp.join("isolated-repo");
+        let shared_worktree_path = temp.join("shared-worktree-path");
+        std::fs::create_dir_all(&shared_base_repo_path)?;
+        std::fs::create_dir_all(&isolated_base_repo_path)?;
+        let mut shared_params = create_params_for_paths(
+            "shared",
+            shared_base_repo_path,
+            shared_worktree_path.clone(),
+        );
+        shared_params.mode = crate::ManagedWorktreeMode::SharedRepository;
+        let store = runtime.managed_worktrees();
+        store.create_managed_worktree(shared_params).await?;
+
+        assert_eq!(
+            Some(path_to_db_string(&shared_worktree_path)),
+            worktree_path_key(runtime.as_ref(), "shared").await?
+        );
+        assert_eq!(
+            "isolated",
+            store
+                .create_managed_worktree(create_params_for_paths(
+                    "isolated",
+                    isolated_base_repo_path,
+                    shared_worktree_path,
+                ))
+                .await?
+                .worktree_id
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retained_live_legacy_alias_blocks_new_canonical_admission() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let codex_home = temp.join("codewith-home");
+        let repo = temp.join("repo");
+        let other_repo = temp.join("other-repo");
+        let legacy_repo = temp.join("repo-legacy");
+        std::fs::create_dir_all(&repo)?;
+        std::fs::create_dir_all(&other_repo)?;
+        symlink(&repo, &legacy_repo)?;
+        let worktree_path = repo.join(".codewith").join("worktrees").join("wt-a");
+        let legacy_worktree_path = legacy_repo.join(".codewith").join("worktrees").join("wt-a");
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-a",
+                repo.clone(),
+                worktree_path.clone(),
+            ))
+            .await?;
+        runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths(
+                "wt-legacy",
+                other_repo.clone(),
+                other_repo
+                    .join(".codewith")
+                    .join("worktrees")
+                    .join("wt-legacy"),
+            ))
+            .await?;
+        sqlx::query(
+            "UPDATE managed_worktrees SET base_repo_path = ?, worktree_path = ? WHERE worktree_id = ?",
+        )
+        .bind(legacy_repo.to_string_lossy().as_ref())
+        .bind(legacy_worktree_path.to_string_lossy().as_ref())
+        .bind("wt-legacy")
+        .execute(runtime.pool.as_ref())
+        .await?;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let retained_legacy = runtime
+            .managed_worktrees()
+            .get_managed_worktree("wt-legacy")
+            .await?
+            .expect("colliding legacy worktree should remain readable");
+        assert_eq!(
+            legacy_worktree_path.to_string_lossy().as_ref(),
+            path_to_string(&retained_legacy.worktree_path)
+        );
+        runtime
+            .managed_worktrees()
+            .mark_managed_worktree_deleted("wt-a")
+            .await?
+            .expect("canonical worktree should be marked deleted");
+
+        let error = runtime
+            .managed_worktrees()
+            .create_managed_worktree(create_params_for_paths("wt-new", repo, worktree_path))
+            .await
+            .expect_err("retained live legacy alias must block a new canonical worktree");
+        assert!(
+            format!("{error:#}").contains("normalized isolated worktree path is already live"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn concurrent_alias_admission_is_rejected_at_the_sqlite_boundary() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let runtime = test_runtime().await;
+        let temp = test_temp_dir()?;
+        let repo = temp.join("repo");
+        let repo_alias = temp.join("repo-alias");
+        std::fs::create_dir_all(&repo)?;
+        symlink(&repo, &repo_alias)?;
+        let worktree_path = repo.join(".codewith").join("worktrees").join("wt-race");
+        let alias_worktree_path = repo_alias
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-race");
+        let store = runtime.managed_worktrees();
+        let (canonical_result, alias_result) = tokio::join!(
+            store.create_managed_worktree(create_params_for_paths(
+                "wt-canonical",
+                repo,
+                worktree_path,
+            )),
+            store.create_managed_worktree(create_params_for_paths(
+                "wt-alias",
+                repo_alias,
+                alias_worktree_path,
+            )),
+        );
+
+        assert_eq!(
+            1,
+            usize::from(canonical_result.is_ok()) + usize::from(alias_result.is_ok())
+        );
+        let error = canonical_result
+            .err()
+            .or_else(|| alias_result.err())
+            .expect("one concurrent admission must be rejected");
+        assert!(
+            format!("{error:#}").contains("normalized isolated worktree path is already live"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
     }
 
     #[test]
