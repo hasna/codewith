@@ -1615,7 +1615,7 @@ fn normalize_path_for_db(path: &Path) -> PathBuf {
                 }
             }
         }
-        return normalized;
+        return normalize_path_components(&normalized);
     }
 
     normalize_path_components(path)
@@ -1997,6 +1997,29 @@ mod tests {
         assert_eq!(
             path_to_db_string(&expected),
             path_to_db_string(&missing_leaf)
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_missing_suffix_parent_components_after_resolving_symlink() -> anyhow::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir()?;
+        let physical_parent = temp.join("physical-parent");
+        let target = physical_parent.join("target");
+        let alias = temp.join("alias");
+        std::fs::create_dir_all(&target)?;
+        symlink(&target, &alias)?;
+
+        assert_eq!(
+            path_to_db_string(&target.join("leaf")),
+            path_to_db_string(&alias.join("missing").join("..").join("leaf"))
+        );
+        assert_eq!(
+            path_to_db_string(&physical_parent.join("leaf")),
+            path_to_db_string(&alias.join("missing").join("..").join("..").join("leaf"))
         );
         Ok(())
     }
