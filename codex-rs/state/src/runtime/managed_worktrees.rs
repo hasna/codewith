@@ -165,11 +165,12 @@ WHERE owner_thread_id = ?
         let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
-        let base_repo_path = path_to_db_string(&params.base_repo_path);
-        let worktree_path = path_to_db_string(&params.worktree_path);
-        let base_repo_path_key =
-            path_keys::managed_worktree_path_key_from_db_string(&base_repo_path);
-        let worktree_path_key = path_keys::managed_worktree_path_key_from_db_string(&worktree_path);
+        let base_repo_path = normalize_path_for_db(&params.base_repo_path);
+        let worktree_path = normalize_path_for_db(&params.worktree_path);
+        let base_repo_path_key = path_keys::managed_worktree_path_key(&base_repo_path);
+        let worktree_path_key = path_keys::managed_worktree_path_key(&worktree_path);
+        let base_repo_path = path_to_string(&base_repo_path);
+        let worktree_path = path_to_string(&worktree_path);
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (

@@ -23,19 +23,19 @@ pub(super) fn managed_worktree_path_key_from_db_string(path: &str) -> Option<Vec
 }
 
 #[cfg(unix)]
-fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+pub(super) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
     unix_path_key(path.as_os_str())
 }
 
 #[cfg(windows)]
-fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+pub(super) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
     use std::os::windows::ffi::OsStrExt;
 
     windows_path_key(&path.as_os_str().encode_wide().collect::<Vec<_>>())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn managed_worktree_path_key(_path: &Path) -> Vec<u8> {
+pub(super) fn managed_worktree_path_key(_path: &Path) -> Vec<u8> {
     Vec::new()
 }
 
