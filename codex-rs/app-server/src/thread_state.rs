@@ -54,6 +54,7 @@ pub(crate) struct ScheduledThreadScheduleRun {
     pub(crate) schedule_id: String,
     pub(crate) run_id: String,
     pub(crate) lease_id: String,
+    pub(crate) goal_objective: Option<String>,
     pub(crate) state_db: StateDbHandle,
 }
 
