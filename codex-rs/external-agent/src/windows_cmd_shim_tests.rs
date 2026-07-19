@@ -105,7 +105,7 @@ fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
         .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
     write(
         &shim,
-        &npm_v9_direct("..\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
+        npm_v9_direct("..\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
     );
     write(&target, "fixture");
     std::os::windows::fs::symlink_file(&shim, &alias).expect("create alias");
@@ -141,7 +141,7 @@ fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() 
     let shim = temp.path().join("prefix/agent.cmd");
     let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
     let node = temp.path().join("trusted-node/node.EXE");
-    write(&shim, &released_cmd(CMD_SHIM_V9_NODE_GOLDEN));
+    write(&shim, released_cmd(CMD_SHIM_V9_NODE_GOLDEN));
     write(&target, "fixture");
     write(&node, "fixture");
     let args = [
@@ -188,7 +188,7 @@ fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
     ));
     let temp = tempfile::tempdir().expect("bounded reader tempdir");
     let shim = temp.path().join("prefix/bounded.cmd");
-    write(&shim, &"x".repeat(MAX_CMD_SHIM_BYTES));
+    write(&shim, "x".repeat(MAX_CMD_SHIM_BYTES));
     let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
         .expect_err("exactly bounded shim must reach classification");
     assert!(matches!(error, WindowsBatchLaunchError::UnsupportedShim));
@@ -281,7 +281,7 @@ fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() 
         "node_modules\\%PROGRAMFILES%\\agent.js",
     ] {
         let shim = temp.path().join(format!("prefix/{}.cmd", target.len()));
-        write(&shim, &v9_node_with_target(target));
+        write(&shim, v9_node_with_target(target));
         let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
             .expect_err("ambiguous target must fail before filesystem access");
         assert!(matches!(error, WindowsBatchLaunchError::InvalidShimTarget));
@@ -293,7 +293,7 @@ fn rejects_target_reparse_escape_after_canonicalization() {
     let shim = local_bin(temp.path(), "agent");
     let outside = temp.path().join("outside.js");
     let linked = temp.path().join("node_modules/agent/bin/agent.js");
-    write(&shim, &v9_node_with_target("..\\agent\\bin\\agent.js"));
+    write(&shim, v9_node_with_target("..\\agent\\bin\\agent.js"));
     write(&outside, "fixture");
     std::fs::create_dir_all(linked.parent().expect("linked parent")).expect("create linked parent");
     std::os::windows::fs::symlink_file(&outside, &linked).expect("create fixture symlink");
