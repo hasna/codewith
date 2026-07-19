@@ -2143,10 +2143,9 @@ mod tests {
             .expect("batch launch spec should build");
         assert_eq!(launch.program, PathBuf::from(comspec));
         assert_eq!(launch.args[3], "/c");
-        assert!(
-            launch.args[4]
-                .to_ascii_lowercase()
-                .contains(grok.to_string_lossy().to_ascii_lowercase().as_str())
+        assert_eq!(
+            launch.env.get("CODEWITH_BATCH_PROGRAM"),
+            Some(&grok.display().to_string())
         );
 
         let mut process = AcpStdioProcess::spawn(

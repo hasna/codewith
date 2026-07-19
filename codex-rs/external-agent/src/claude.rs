@@ -1230,7 +1230,10 @@ exit 2
         assert_eq!(launch.env.get("SYSTEMROOT"), None);
         assert_eq!(launch.program, PathBuf::from(comspec));
         assert_eq!(launch.args[3], "/c");
-        assert!(launch.args[4].contains(claude_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            launch.env.get("CODEWITH_BATCH_PROGRAM"),
+            Some(&claude_path.display().to_string())
+        );
         let mut process = ClaudeCodeProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
             &request,
