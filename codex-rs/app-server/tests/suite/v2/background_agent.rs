@@ -648,13 +648,13 @@ async fn assert_terminal_managed_worktree_replay_after_cleanup(
     .await?;
     let expected_agent = expected
         .agent
-        .expect("terminal agent record should persist");
+        .ok_or_else(|| anyhow::anyhow!("terminal agent record should persist"))?;
     let expected_status_snapshot = expected
         .status_snapshot
-        .expect("terminal status snapshot should persist");
+        .ok_or_else(|| anyhow::anyhow!("terminal status snapshot should persist"))?;
     let expected_execution_snapshot = expected
         .execution_snapshot
-        .expect("execution snapshot should persist");
+        .ok_or_else(|| anyhow::anyhow!("execution snapshot should persist"))?;
 
     let detached_request_id = mcp
         .send_raw_request(
@@ -667,13 +667,10 @@ async fn assert_terminal_managed_worktree_replay_after_cleanup(
         )
         .await?;
     let detached: WorktreeDetachResponse = read_response(&mut mcp, detached_request_id).await?;
-    assert_eq!(
-        detached
-            .worktree
-            .expect("terminal run detachment should return the managed worktree")
-            .owner_agent_run_id,
-        None
-    );
+    let detached_worktree = detached.worktree.ok_or_else(|| {
+        anyhow::anyhow!("terminal run detachment should return the managed worktree")
+    })?;
+    assert_eq!(detached_worktree.owner_agent_run_id, None);
 
     let cleanup_response = if expected_lifecycle_status == WorktreeLifecycleStatus::Released {
         let request_id = mcp
@@ -688,7 +685,7 @@ async fn assert_terminal_managed_worktree_replay_after_cleanup(
         let response: WorktreeReleaseResponse = read_response(&mut mcp, request_id).await?;
         response
             .worktree
-            .expect("release should return the managed worktree")
+            .ok_or_else(|| anyhow::anyhow!("release should return the managed worktree"))?
     } else {
         let request_id = mcp
             .send_raw_request(
@@ -702,7 +699,7 @@ async fn assert_terminal_managed_worktree_replay_after_cleanup(
         let response: WorktreeCleanupResponse = read_response(&mut mcp, request_id).await?;
         response
             .worktree
-            .expect("cleanup should return the managed worktree")
+            .ok_or_else(|| anyhow::anyhow!("cleanup should return the managed worktree"))?
     };
     assert_eq!(expected_lifecycle_status, cleanup_response.lifecycle_status);
 

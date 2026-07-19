@@ -966,15 +966,6 @@ mode = 'isolated_worktree'
       AND sibling.mode = 'isolated_worktree'
       AND sibling.deleted_at_ms IS NULL
       AND sibling.worktree_path_key = managed_worktrees.worktree_path_key
-      AND (
-        sibling.lifecycle_status = 'active'
-        OR EXISTS (
-          SELECT 1
-          FROM managed_worktree_assignments AS sibling_assignment
-          WHERE sibling_assignment.worktree_id = sibling.worktree_id
-            AND sibling_assignment.detached_at_ms IS NULL
-        )
-      )
   )
   AND (
     cleanup_after_ms IS NULL
@@ -1775,7 +1766,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn startup_retains_colliding_legacy_paths_and_blocks_alias_cleanup_while_owned()
+    async fn startup_retains_colliding_legacy_paths_and_blocks_alias_cleanup_while_retained()
     -> anyhow::Result<()> {
         use std::os::unix::fs::symlink;
 
@@ -1928,12 +1919,9 @@ mod tests {
             .into_iter()
             .map(|worktree| worktree.worktree_id)
             .collect::<BTreeSet<_>>();
+        assert_eq!(BTreeSet::from(["wt-unique".to_string()]), candidate_ids);
         assert_eq!(
-            BTreeSet::from(["wt-a".to_string(), "wt-unique".to_string()]),
-            candidate_ids
-        );
-        assert_eq!(
-            Some(stale_force_candidate),
+            None,
             store
                 .get_cleanup_candidate_for_execution("wt-a", chrono::Utc::now())
                 .await?

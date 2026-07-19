@@ -43,9 +43,7 @@ pub(crate) fn resolve_windows_program_from_source_env(
         .map(String::as_str)
         .unwrap_or(".COM;.EXE;.BAT;.CMD")
         .split(';')
-        .filter(|extension| {
-            extension.len() > 1 && extension.starts_with('.') && !extension.contains(['/', '\\'])
-        })
+        .filter(|extension| is_valid_windows_pathext(extension))
         .collect::<Vec<_>>();
     let program_path = Path::new(program);
     let bases = if program.contains(['/', '\\']) {
@@ -80,14 +78,22 @@ pub(crate) fn resolve_windows_program_from_source_env(
     ))
 }
 
+#[cfg(any(windows, test))]
+fn is_valid_windows_pathext(extension: &str) -> bool {
+    extension.len() > 1
+        && extension.starts_with('.')
+        && !extension.ends_with(['.', ' '])
+        && !extension.contains(['/', '\\'])
+}
+
 /// Rewrites a resolved `.cmd` or `.bat` program into a `cmd.exe /c` launch.
 ///
 /// `CreateProcess` does not provide the same executable contract for batch
 /// shims as it does for native binaries. Keep the resolved source-environment
 /// path, but execute it through the source `COMSPEC` (or `cmd.exe` when the
-/// source omits it). CMD uses syntactic quotes to group each argument. An
-/// embedded quote closes that group, emits a caret-escaped literal quote, and
-/// reopens the group; every command metacharacter therefore stays quoted.
+/// source omits it). `/s` strips the enclosing command-string quotes, so each
+/// argument remains syntactically quoted. An embedded literal quote is doubled
+/// without closing that quote group, so command metacharacters remain data.
 /// Delayed expansion remains disabled and `%` is doubled so caller-supplied
 /// environment references remain literal.
 #[cfg(windows)]
@@ -180,16 +186,15 @@ fn is_windows_batch_program(program: &Path) -> bool {
         })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn quote_windows_cmd_argument(argument: &str) -> String {
-    let argument = argument.replace('%', "%%");
     let mut quoted = String::from('"');
     for character in argument.chars() {
-        if character == '\"' {
-            quoted.push_str("\"^\"\"");
-            continue;
+        match character {
+            '\"' => quoted.push_str("\"\""),
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(character),
         }
-        quoted.push(character);
     }
     quoted.push('"');
     quoted
@@ -285,6 +290,46 @@ exit /b 0
     }
 
     #[test]
+    fn trailing_dot_pathext_rejects_hostile_arguments_before_batch_protection_can_be_bypassed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin directory");
+        std::fs::write(bin_dir.join("claude.cmd"), "@echo off\r\nexit /b 0\r\n")
+            .expect("write batch shim");
+        let marker_path = temp_dir.path().join("injected.txt");
+        let source_env = BTreeMap::from([
+            ("PATH".to_string(), bin_dir.display().to_string()),
+            ("PATHEXT".to_string(), ".CMD.".to_string()),
+            (
+                "COMSPEC".to_string(),
+                std::env::var("COMSPEC").expect("Windows supplies COMSPEC"),
+            ),
+        ]);
+
+        let hostile_argument =
+            format!("review \" & type nul > \"{}\" & rem", marker_path.display());
+        let error = resolve_windows_program_from_source_env("claude", &source_env, temp_dir.path())
+            .and_then(|program| {
+                prepare_windows_batch_launch_from_source_env(
+                    program,
+                    vec![hostile_argument],
+                    &source_env,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .expect_err(
+                "trailing-dot PATHEXT must reject hostile arguments before batch classification",
+            );
+
+        assert!(error.contains("could not resolve"));
+        assert!(
+            !marker_path.exists(),
+            "trailing-dot PATHEXT must not permit an injected command to execute"
+        );
+    }
+
+    #[test]
     fn batch_launch_rejects_line_break_arguments_before_spawning() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let batch_path = temp_dir.path().join("capture.cmd");
@@ -357,6 +402,22 @@ mod command_line_validation_tests {
                     component: "argument"
                 })
             );
+        }
+    }
+
+    #[test]
+    fn cmd_quote_keeps_embedded_quotes_and_metacharacters_inside_one_argument() {
+        assert_eq!(
+            quote_windows_cmd_argument(r#"embedded " & pipe | input < output > ( ) ^ %NAME% !"#),
+            "\"embedded \"\" & pipe | input < output > ( ) ^ %%NAME%% !\""
+        );
+    }
+
+    #[test]
+    fn rejects_trailing_dot_or_space_pathext_aliases() {
+        assert!(is_valid_windows_pathext(".CMD"));
+        for invalid in [".CMD.", ".BAT.", ".CMD ", ".BAT ", "CMD", ".CMD/", ".BAT\\"] {
+            assert!(!is_valid_windows_pathext(invalid));
         }
     }
 }

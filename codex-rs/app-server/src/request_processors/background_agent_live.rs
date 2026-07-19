@@ -2708,22 +2708,6 @@ fn permission_profile_grants_workspace_write(permission_profile: &PermissionProf
         })
 }
 
-#[cfg(test)]
-mod workspace_write_tests {
-    use super::permission_profile_grants_workspace_write;
-    use codex_protocol::models::PermissionProfile;
-
-    #[test]
-    fn workspace_write_authority_is_derived_before_worktree_rebinding() {
-        assert!(permission_profile_grants_workspace_write(
-            &PermissionProfile::workspace_write()
-        ));
-        assert!(!permission_profile_grants_workspace_write(
-            &PermissionProfile::read_only()
-        ));
-    }
-}
-
 async fn run_background_agent_worker(
     context: BackgroundAgentWorkerContext,
     run: BackgroundAgentRun,
@@ -4507,6 +4491,16 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+
+    #[test]
+    fn workspace_write_authority_is_derived_before_worktree_rebinding() {
+        assert!(permission_profile_grants_workspace_write(
+            &PermissionProfile::workspace_write()
+        ));
+        assert!(!permission_profile_grants_workspace_write(
+            &PermissionProfile::read_only()
+        ));
+    }
 
     struct TestWorkerFixture {
         program: PathBuf,
