@@ -430,7 +430,7 @@ mod command_line_validation_tests {
     #[test]
     fn cmd_transport_contains_only_fixed_environment_references() {
         assert_eq!(
-            windows_batch_transport_command_line(2),
+            windows_batch_transport_command_line(/*argument_count*/ 2),
             "\"\"!CODEWITH_BATCH_PROGRAM!\" \"!CODEWITH_BATCH_ARGUMENT_0!\" \"!CODEWITH_BATCH_ARGUMENT_1!\"\""
         );
     }
