@@ -3009,7 +3009,7 @@ async fn create_background_agent_git_worktree_lease(
                 run_id: agent_id.to_string(),
                 identity: format!("test:{lease_id}"),
                 mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: codex_home.clone(),
+                base_repo_path: codex_home.to_path_buf(),
                 worktree_path: worktree_path.clone(),
                 branch: Some(branch),
                 head_sha: Some(base_sha),
