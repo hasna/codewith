@@ -464,12 +464,12 @@ mod tests {
         let nfc = base_repo_path
             .join(".codewith")
             .join("worktrees")
-            .join("caf\u{e9}")
+            .join("ca\u{0066}\u{00e9}")
             .join("missing");
         let nfd = base_repo_path
             .join(".codewith")
             .join("worktrees")
-            .join("cafe\u{301}")
+            .join("ca\u{0066}e\u{0301}")
             .join("missing");
         let store = runtime.managed_worktrees();
 
