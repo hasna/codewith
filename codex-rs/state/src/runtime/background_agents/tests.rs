@@ -4,6 +4,7 @@ use crate::BackgroundAgentExecutionHandleParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
+#[cfg(unix)]
 use crate::runtime::managed_worktrees::managed_worktree_path_key;
 use crate::runtime::managed_worktrees::path_to_db_string;
 use crate::runtime::test_support::test_thread_metadata;
