@@ -178,16 +178,16 @@ mod tests {
             unix_path_key("/worktrees/runa")
         );
         assert_ne!(
-            unix_path_key("/worktrees/caf\u{00e9}"),
-            unix_path_key("/worktrees/cafe\u{0301}")
+            unix_path_key("/worktrees/x\u{00e5}"),
+            unix_path_key("/worktrees/xa\u{030a}")
         );
     }
 
     #[test]
     fn macos_keys_fold_case_and_canonical_unicode_aliases() {
         assert_eq!(
-            macos_path_key("/worktrees/CAF\u{00c9}/run"),
-            macos_path_key("/worktrees/cafe\u{0301}/RUN")
+            macos_path_key("/worktrees/X\u{00c5}/run"),
+            macos_path_key("/worktrees/xa\u{030a}/RUN")
         );
     }
 
@@ -225,8 +225,8 @@ mod tests {
             windows_path_key("c:\\worktrees\\run\u{017f}")
         );
         assert_ne!(
-            windows_path_key("C:\\worktrees\\caf\u{00e9}"),
-            windows_path_key("C:\\worktrees\\cafe\u{0301}")
+            windows_path_key("C:\\worktrees\\x\u{00e5}"),
+            windows_path_key("C:\\worktrees\\xa\u{030a}")
         );
     }
 
@@ -240,8 +240,8 @@ mod tests {
 
         #[cfg(target_os = "macos")]
         assert_eq!(
-            macos_path_key("/worktrees/caf\u{00e9}"),
-            managed_worktree_path_key_from_display("/worktrees/caf\u{00e9}")
+            macos_path_key("/worktrees/x\u{00e5}"),
+            managed_worktree_path_key_from_display("/worktrees/x\u{00e5}")
         );
 
         #[cfg(not(any(windows, target_os = "macos")))]
