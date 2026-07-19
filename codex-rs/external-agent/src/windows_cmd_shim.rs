@@ -338,27 +338,26 @@ fn native_node(
     source_env: &BTreeMap<String, String>,
     cwd: &Path,
 ) -> Result<PathBuf, WindowsBatchLaunchError> {
+    native_node_with_probe(source_env, cwd, |node| {
+        node.is_file().then(|| node.canonicalize()).transpose()
+    })
+}
+
+fn native_node_with_probe(
+    source_env: &BTreeMap<String, String>,
+    cwd: &Path,
+    mut probe: impl FnMut(&Path) -> std::io::Result<Option<PathBuf>>,
+) -> Result<PathBuf, WindowsBatchLaunchError> {
     let path = environment_value(source_env, "PATH").ok_or_else(|| {
         WindowsBatchLaunchError::NodeNotFound("source environment has no PATH".into())
     })?;
     let cwd = absolute_cwd(cwd).map_err(WindowsBatchLaunchError::NodeNotFound)?;
     for directory in std::env::split_paths(path).filter(|path| !path.as_os_str().is_empty()) {
-        let has_prefix = directory
-            .components()
-            .any(|component| matches!(component, Component::Prefix(_)));
-        if has_prefix != directory.has_root() {
+        let Some(node) = resolve_node_path_entry(&directory, &cwd) else {
             continue;
-        }
-        let node = if has_prefix {
-            directory
-        } else {
-            cwd.join(directory)
-        }
-        .join("node.exe");
-        if node.is_file() {
-            let node = node
-                .canonicalize()
-                .map_err(WindowsBatchLaunchError::CanonicalizeNode)?;
+        };
+        let node = node.join("node.exe");
+        if let Some(node) = probe(&node).map_err(WindowsBatchLaunchError::CanonicalizeNode)? {
             return native_node_exe(&node)
                 .then_some(node)
                 .ok_or(WindowsBatchLaunchError::NodeNotNative);
@@ -369,14 +368,25 @@ fn native_node(
     ))
 }
 
+fn resolve_node_path_entry(path: &Path, cwd: &Path) -> Option<PathBuf> {
+    let has_prefix = matches!(path.components().next(), Some(Component::Prefix(_)));
+    if path.as_os_str().is_empty() || has_prefix != path.has_root() {
+        return None;
+    }
+    Some(if has_prefix {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    })
+}
+
 fn absolute_cwd(cwd: &Path) -> Result<PathBuf, String> {
     if cwd.is_absolute() {
-        Ok(cwd.to_path_buf())
-    } else {
-        std::env::current_dir()
-            .map_err(|err| format!("could not resolve launch cwd: {err}"))
-            .map(|current_dir| current_dir.join(cwd))
+        return Ok(cwd.to_path_buf());
     }
+    std::env::current_dir()
+        .map_err(|err| format!("could not resolve launch cwd: {err}"))
+        .map(|current_dir| current_dir.join(cwd))
 }
 
 fn environment_value<'a>(

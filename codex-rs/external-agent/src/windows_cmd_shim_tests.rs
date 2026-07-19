@@ -1,59 +1,43 @@
 use super::*;
-
 use pretty_assertions::assert_eq;
-
-// Immutable escaped-CRLF outputs from published cmd-shim tarballs:
-// 5.0.0 gitHead c55b9a9a4cb3f321a9abad7d6d45e2aac2f82b08,
-// integrity sha512-qkCtZ59BidfEwHltnJwkyVZn+XQojdAySM1D1gSeh11Z4pW1Kpolkyo53L5noc0nrxmIvyFwTmJRo4xs7FFLPw==;
-// 9.0.2 gitHead 7667c245e7d9259b5f88b77fb71b497ffcc26976,
-// integrity sha512-xVHoI+wNrM4tDB9iC1idf/8D0tYnVimlBp/5zHW+x1sGjjRD69NvR9th3Z1JAYGN/BTW4he6aZFYV6kzy+k+jw==.
 const CMD_SHIM_V5_NODE_GOLDEN: &str = include_str!("fixtures/cmd-shim-5.0.0-node.cmd.golden");
 const CMD_SHIM_V9_NODE_GOLDEN: &str = include_str!("fixtures/cmd-shim-9.0.2-node.cmd.golden");
-
+const NODE_CWD: &str = r"C:\intended-cwd";
 fn released_cmd(golden: &str) -> String {
     golden
         .trim_end_matches(['\r', '\n'])
         .replace(r"\r\n", "\r\n")
 }
-
 fn v9_node_with_target(target: &str) -> String {
     released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("node_modules\\agent\\bin\\agent.js", target)
 }
-
-// Exact cmd-shim@9.0.2 static direct-executable form.
 fn npm_v9_direct(target: &str) -> String {
     format!(
         "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\{target}\"   %*\r\n"
     )
 }
-
-// Historical seven-line Corepack fallback, not cmd-shim@5.0.0 output.
 fn legacy_seven_line_corepack_shim(target: &str) -> String {
     format!(
         "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\{target}\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\{target}\" %*\r\n)\r\n"
     )
 }
-
-fn write(path: &Path, contents: &str) {
+fn write(path: &Path, contents: impl AsRef<[u8]>) {
     std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture");
     std::fs::write(path, contents).expect("write fixture");
 }
-
+fn assert_reader_error(path: &Path, kind: std::io::ErrorKind) {
+    assert_eq!(read_bounded_shim(path).unwrap_err().kind(), kind);
+}
 fn local_bin(temp: &Path, name: &str) -> PathBuf {
     temp.join("node_modules/.bin").join(format!("{name}.cmd"))
 }
-
 fn node_source_env(path: &Path) -> BTreeMap<String, String> {
     BTreeMap::from([("PATH".into(), path.display().to_string())])
 }
-
 fn expected_launch(program: &Path, args: Vec<OsString>) -> WindowsNativeLaunch {
-    WindowsNativeLaunch {
-        program: program.canonicalize().expect("canonical program"),
-        args,
-    }
+    let program = program.canonicalize().expect("canonical program");
+    WindowsNativeLaunch { program, args }
 }
-
 fn expected_node_launch(target: &Path, node: &Path, args: Vec<OsString>) -> WindowsNativeLaunch {
     let target = target
         .canonicalize()
@@ -61,7 +45,6 @@ fn expected_node_launch(target: &Path, node: &Path, args: Vec<OsString>) -> Wind
         .into_os_string();
     expected_launch(node, std::iter::once(target).chain(args).collect())
 }
-
 fn prepare_empty_args(
     program: PathBuf,
     source_env: &BTreeMap<String, String>,
@@ -69,7 +52,6 @@ fn prepare_empty_args(
 ) -> Result<WindowsNativeLaunch, WindowsBatchLaunchError> {
     prepare_windows_batch_launch_from_source_env(program, Vec::new(), source_env, cwd)
 }
-
 fn assert_node_shim_resolves(temp: &Path, shim: &Path, contents: &str, target: &Path) {
     let node = temp.join("trusted-node/node.exe");
     write(shim, contents);
@@ -79,7 +61,6 @@ fn assert_node_shim_resolves(temp: &Path, shim: &Path, contents: &str, target: &
     let launch = prepare_empty_args(shim.to_path_buf(), &source_env, temp).expect("Node shim plan");
     assert_eq!(launch, expected_node_launch(target, &node, Vec::new()));
 }
-
 #[test]
 fn recognizes_exact_static_generators_and_rejects_rewrites() {
     let global_target = "node_modules\\agent\\bin\\agent.js";
@@ -114,7 +95,6 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
         assert_eq!(recognized_shim(&shim), None);
     }
 }
-
 #[test]
 fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -139,7 +119,6 @@ fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
     .expect("alias must use the canonical cmd target");
     assert_eq!(launch, expected_launch(&target, args));
 }
-
 #[test]
 fn node_shim_fixtures_resolve_bounded_targets() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -156,7 +135,6 @@ fn node_shim_fixtures_resolve_bounded_targets() {
         &temp.path().join("node_modules/dist/corepack.js"),
     );
 }
-
 #[test]
 fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -186,7 +164,6 @@ fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() 
             .expect("source PATH plan");
     assert_eq!(launch, expected_node_launch(&target, &node, args));
 }
-
 #[test]
 fn rejects_relative_program_before_classifying_or_reading_the_shim() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -194,7 +171,6 @@ fn rejects_relative_program_before_classifying_or_reading_the_shim() {
         .expect_err("relative shim must not bind to the host current directory");
     assert!(matches!(error, WindowsBatchLaunchError::ProgramNotAbsolute));
 }
-
 #[test]
 fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -203,7 +179,6 @@ fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
     let file = std::fs::File::create(&shim).expect("create oversized fixture");
     file.set_len((MAX_CMD_SHIM_BYTES + 1) as u64)
         .expect("extend oversized fixture");
-
     let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
         .expect_err("oversized shim must be rejected by the bounded read");
     assert!(matches!(
@@ -211,30 +186,50 @@ fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
         WindowsBatchLaunchError::ReadShim(ref error)
             if error.kind() == std::io::ErrorKind::InvalidData
     ));
-}
-
-#[test]
-fn accepts_an_exactly_bounded_utf8_shim_before_classification() {
-    let temp = tempfile::tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("bounded reader tempdir");
     let shim = temp.path().join("prefix/bounded.cmd");
     write(&shim, &"x".repeat(MAX_CMD_SHIM_BYTES));
-
     let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
         .expect_err("exactly bounded shim must reach classification");
     assert!(matches!(error, WindowsBatchLaunchError::UnsupportedShim));
+    let invalid_utf8 = temp.path().join("prefix/invalid-utf8.cmd");
+    write(&invalid_utf8, [0xff]);
+    assert_reader_error(&invalid_utf8, std::io::ErrorKind::InvalidData);
+    let missing = temp.path().join("missing.cmd");
+    assert_reader_error(&missing, std::io::ErrorKind::NotFound);
+    assert!(read_bounded_shim(temp.path()).is_err());
 }
-
 #[test]
 fn rejects_unsafe_path_entries_before_node_lookup() {
     for path in ["C:relative", r"\root-only"] {
         let source_env = BTreeMap::from([("PATH".into(), path.into())]);
         assert!(matches!(
-            native_node(&source_env, Path::new(r"C:\intended-cwd")),
+            native_node_with_probe(&source_env, Path::new(NODE_CWD), |_| {
+                panic!("unsafe PATH entry must not be probed")
+            }),
             Err(WindowsBatchLaunchError::NodeNotFound(_))
         ));
     }
 }
-
+#[test]
+fn node_path_entries_resolve_relative_absolute_and_unc_paths() {
+    for (entry, node) in [
+        ("trusted-node", r"C:\intended-cwd\trusted-node\node.exe"),
+        (r"C:\node-bin", r"C:\node-bin\node.exe"),
+        (
+            r"\\server\share\node-bin",
+            r"\\server\share\node-bin\node.exe",
+        ),
+    ] {
+        let source_env = BTreeMap::from([("PATH".into(), entry.into())]);
+        let node = PathBuf::from(node);
+        native_node_with_probe(&source_env, Path::new(NODE_CWD), |candidate| {
+            assert_eq!(candidate, node);
+            Ok(Some(candidate.to_path_buf()))
+        })
+        .expect("node path entry");
+    }
+}
 #[test]
 fn rejects_program_spellings_that_win32_normalizes_before_batch_classification() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -264,7 +259,6 @@ fn rejects_program_spellings_that_win32_normalizes_before_batch_classification()
         r"\\.\C:\review\agent.cmd"
     )));
 }
-
 #[test]
 fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -293,7 +287,6 @@ fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() 
         assert!(matches!(error, WindowsBatchLaunchError::InvalidShimTarget));
     }
 }
-
 #[test]
 fn rejects_target_reparse_escape_after_canonicalization() {
     let temp = tempfile::tempdir().expect("tempdir");
