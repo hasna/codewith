@@ -343,7 +343,13 @@ fn native_node(
     })?;
     let cwd = absolute_cwd(cwd).map_err(WindowsBatchLaunchError::NodeNotFound)?;
     for directory in std::env::split_paths(path).filter(|path| !path.as_os_str().is_empty()) {
-        let node = if directory.is_absolute() {
+        let has_prefix = directory
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_)));
+        if has_prefix != directory.has_root() {
+            continue;
+        }
+        let node = if has_prefix {
             directory
         } else {
             cwd.join(directory)

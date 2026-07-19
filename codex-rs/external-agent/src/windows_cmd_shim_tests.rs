@@ -217,6 +217,26 @@ fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
 }
 
 #[test]
+fn accepts_an_exactly_bounded_utf8_shim_before_classification() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let shim = temp.path().join("prefix/bounded.cmd");
+    write(&shim, &"x".repeat(MAX_CMD_SHIM_BYTES));
+
+    let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
+        .expect_err("exactly bounded shim must reach classification");
+    assert!(matches!(error, WindowsBatchLaunchError::UnsupportedShim));
+}
+
+#[test]
+fn rejects_drive_relative_path_entries_before_node_lookup() {
+    let source_env = BTreeMap::from([("PATH".into(), "C:relative".into())]);
+    assert!(matches!(
+        native_node(&source_env, Path::new(r"C:\intended-cwd")),
+        Err(WindowsBatchLaunchError::NodeNotFound(_))
+    ));
+}
+
+#[test]
 fn rejects_program_spellings_that_win32_normalizes_before_batch_classification() {
     let temp = tempfile::tempdir().expect("tempdir");
     for program in [
