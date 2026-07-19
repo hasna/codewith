@@ -272,8 +272,13 @@ impl AcpStdioHarness {
             .map(std::string::ToString::to_string)
             .collect();
         #[cfg(windows)]
-        let (program, args) = prepare_windows_batch_launch_from_source_env(program, args, &env)
-            .map_err(|err| invalid_batch_launch_request(self.descriptor.id, err))?;
+        let (program, args, env) = {
+            let mut env = env;
+            let (program, args) =
+                prepare_windows_batch_launch_from_source_env(program, args, &mut env)
+                    .map_err(|err| invalid_batch_launch_request(self.descriptor.id, err))?;
+            (program, args, env)
+        };
         Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
             program,
@@ -425,9 +430,13 @@ impl AcpStdioHarness {
             .collect::<Vec<_>>();
         args.push("--help".to_string());
         #[cfg(windows)]
-        let (program, args) =
-            prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, &env)
-                .map_err(|err| err.to_string())?;
+        let (program, args, env) = {
+            let mut env = env;
+            let (program, args) =
+                prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, &mut env)
+                    .map_err(|err| err.to_string())?;
+            (program, args, env)
+        };
         #[cfg(not(windows))]
         let program = program.to_path_buf();
         let mut command = Command::new(program);

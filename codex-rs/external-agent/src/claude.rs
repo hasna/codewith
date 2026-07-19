@@ -296,8 +296,13 @@ impl ClaudeCodeHarness {
         let program = resolved_program.into();
         let env = self.sanitized_env(source_env);
         #[cfg(windows)]
-        let (program, args) = prepare_windows_batch_launch_from_source_env(program, args, &env)
-            .map_err(|error| invalid_batch_launch_request(self.descriptor.id, error))?;
+        let (program, args, env) = {
+            let mut env = env;
+            let (program, args) =
+                prepare_windows_batch_launch_from_source_env(program, args, &mut env)
+                    .map_err(|error| invalid_batch_launch_request(self.descriptor.id, error))?;
+            (program, args, env)
+        };
         Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
             program,
