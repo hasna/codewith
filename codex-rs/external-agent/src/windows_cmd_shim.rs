@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// A native invocation containing an absolute program and lossless OS arguments.
 ///
 /// For non-batch inputs this is an exact pass-through; callers are responsible for selecting a
-/// directly invokable native program. This staged primitive has no production Claude or ACP
+/// directly invocable native program. This staged primitive has no production Claude or ACP
 /// consumer yet: OPE2-00126 and OPE2-00127 must adopt it before those launches are protected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsNativeLaunch {
