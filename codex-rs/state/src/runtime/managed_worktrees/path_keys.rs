@@ -1,158 +1,279 @@
-//! Lexical identity keys for managed-worktree display paths.
+//! Conservative lexical identity keys for managed-worktree paths.
 //!
-//! This module intentionally does not read the filesystem. The managed-worktree
-//! store preserves its display path separately; this codec derives a stable key
-//! for future identity and collision checks from that display string alone.
+//! This module intentionally does not read the filesystem. Keys are opaque
+//! byte sequences derived from native path data, so they never rely on lossy
+//! display text. They normalize only lexical syntax that is unambiguous across
+//! filesystem policies. Case and Unicode alias checks require verified
+//! filesystem policy and belong to later admission code.
 
-#[cfg(any(target_os = "macos", test))]
-use unicode_normalization::UnicodeNormalization;
+use std::path::Path;
 
-/// Derives the platform identity key for an already-persisted display path.
+#[cfg(unix)]
+use std::ffi::OsStr;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
+const KEY_VERSION: &[u8] = b"managed-worktree-path-key-v1";
+
+/// Derives an opaque, byte-safe identity key from a native path.
 ///
-/// This is key-only normalization: it does not alter the persisted display
-/// path, resolve symlinks, or canonicalize any existing ancestor. Windows
-/// folds case with a locale-independent Unicode upper-then-lower mapping.
-/// macOS additionally normalizes to NFD to reflect the default APFS alias
-/// behavior. Other Unix platforms preserve case and Unicode spelling.
-pub(crate) fn managed_worktree_path_key_from_display(display_path: &str) -> String {
-    #[cfg(windows)]
-    {
-        windows_path_key(display_path)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        macos_path_key(display_path)
-    }
-
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        unix_path_key(display_path)
-    }
+/// The key does not alter the display path, resolve symlinks, or infer a
+/// filesystem's case or Unicode policy. Unix keys preserve `OsStr` bytes;
+/// Windows keys preserve UTF-16 units. In particular, verbatim and device
+/// Windows namespaces are encoded without Win32 normalization.
+#[cfg(unix)]
+pub(crate) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+    unix_path_key(path.as_os_str())
 }
 
-#[cfg(any(not(any(windows, target_os = "macos")), test))]
-fn unix_path_key(display_path: &str) -> String {
-    normalize_slash_path(display_path)
+/// Derives an opaque, byte-safe identity key from a native Windows path.
+#[cfg(windows)]
+pub(crate) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+    let units = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    windows_path_key(&units)
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn macos_path_key(display_path: &str) -> String {
-    let decomposed = display_path.nfd().collect::<String>();
-    fold_case(normalize_slash_path(&decomposed)).nfd().collect()
-}
-
-#[cfg(any(not(windows), test))]
-fn normalize_slash_path(path: &str) -> String {
-    let rooted = path.starts_with('/');
-    let components = normalize_components(path.split('/'), /*root_floor*/ 0, rooted);
-    format_path(components, "/", rooted, "")
+#[cfg(unix)]
+fn unix_path_key(path: &OsStr) -> Vec<u8> {
+    let path = path.as_bytes();
+    let rooted = path.starts_with(b"/");
+    let components = normalize_byte_components(path.split(|byte| *byte == b'/'), rooted);
+    encode_byte_key(
+        if rooted {
+            b"unix-absolute"
+        } else {
+            b"unix-relative"
+        },
+        components,
+    )
 }
 
 #[cfg(any(windows, test))]
-fn windows_path_key(display_path: &str) -> String {
-    let path = strip_windows_verbatim_prefix(display_path).replace('/', "\\");
-    let key = if let Some(path) = path.strip_prefix(r"\\") {
-        normalize_windows_unc(path)
-    } else if has_windows_drive_prefix(&path) {
-        normalize_windows_drive(&path)
+fn windows_path_key(path: &[u16]) -> Vec<u8> {
+    if has_windows_verbatim_prefix(path) {
+        return encode_wide_key(verbatim_kind(path), path, Vec::new());
+    }
+    if has_windows_device_prefix(path) {
+        return encode_wide_key(b"windows-device", path, Vec::new());
+    }
+    if has_windows_unc_prefix(path) {
+        let components = normalize_wide_components(
+            split_windows_components(&path[2..]),
+            /*rooted*/ true,
+            /*root_floor*/ 2,
+        );
+        return encode_wide_key(b"windows-unc", &[], components);
+    }
+    if has_windows_drive_prefix(path) {
+        let rooted = path.get(2).is_some_and(|unit| is_windows_separator(*unit));
+        let components = normalize_wide_components(
+            split_windows_components(&path[2..]),
+            rooted,
+            /*root_floor*/ 0,
+        );
+        return encode_wide_key(
+            if rooted {
+                b"windows-drive-absolute"
+            } else {
+                b"windows-drive-relative"
+            },
+            &path[..2],
+            components,
+        );
+    }
+
+    let rooted = path.first().is_some_and(|unit| is_windows_separator(*unit));
+    let components = normalize_wide_components(
+        split_windows_components(path),
+        rooted,
+        /*root_floor*/ 0,
+    );
+    encode_wide_key(
+        if rooted {
+            b"windows-rooted"
+        } else {
+            b"windows-relative"
+        },
+        &[],
+        components,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_verbatim_prefix(path: &[u16]) -> bool {
+    path.starts_with(&[
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'?'),
+        u16::from(b'\\'),
+    ])
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_device_prefix(path: &[u16]) -> bool {
+    path.starts_with(&[
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'.'),
+        u16::from(b'\\'),
+    ])
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_unc_prefix(path: &[u16]) -> bool {
+    matches!(path, [first, second, ..] if is_windows_separator(*first) && is_windows_separator(*second))
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_drive_prefix(path: &[u16]) -> bool {
+    path.first().is_some_and(|drive| is_ascii_alpha(*drive))
+        && path.get(1).is_some_and(|unit| *unit == u16::from(b':'))
+}
+
+#[cfg(any(windows, test))]
+fn verbatim_kind(path: &[u16]) -> &'static [u8] {
+    let namespace = &path[4..];
+    if has_ascii_prefix_ignore_case(namespace, b"UNC")
+        && namespace
+            .get(3)
+            .is_some_and(|unit| is_windows_separator(*unit))
+    {
+        b"windows-verbatim-unc"
+    } else if has_windows_drive_prefix(namespace) {
+        b"windows-verbatim-drive"
+    } else if has_ascii_prefix_ignore_case(namespace, b"Volume{") {
+        b"windows-verbatim-volume"
     } else {
-        normalize_windows_relative(&path)
-    };
-    fold_case(key)
-}
-
-#[cfg(any(windows, test))]
-fn strip_windows_verbatim_prefix(path: &str) -> String {
-    if path
-        .get(..8)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
-    {
-        return format!(r"\\{}", path.get(8..).unwrap_or_default());
-    }
-    if path
-        .get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\"))
-    {
-        return path.get(4..).unwrap_or_default().to_string();
-    }
-    path.to_string()
-}
-
-#[cfg(any(windows, test))]
-fn has_windows_drive_prefix(path: &str) -> bool {
-    path.as_bytes()
-        .get(1)
-        .is_some_and(|character| *character == b':')
-        && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-}
-
-#[cfg(any(windows, test))]
-fn normalize_windows_unc(path: &str) -> String {
-    let components = normalize_components(path.split('\\'), /*root_floor*/ 2, true);
-    let joined = components.join("\\");
-    if joined.is_empty() {
-        r"\\".to_string()
-    } else {
-        format!(r"\\{joined}")
+        b"windows-verbatim"
     }
 }
 
 #[cfg(any(windows, test))]
-fn normalize_windows_drive(path: &str) -> String {
-    let (prefix, suffix) = path.split_at(2);
-    let rooted = suffix.starts_with('\\');
-    let components = normalize_components(suffix.split('\\'), /*root_floor*/ 0, rooted);
-    format_path(components, "\\", rooted, prefix)
+fn has_ascii_prefix_ignore_case(path: &[u16], prefix: &[u8]) -> bool {
+    path.get(..prefix.len()).is_some_and(|units| {
+        units.iter().zip(prefix).all(|(unit, expected)| {
+            u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(expected))
+        })
+    })
 }
 
 #[cfg(any(windows, test))]
-fn normalize_windows_relative(path: &str) -> String {
-    let rooted = path.starts_with('\\');
-    let components = normalize_components(path.split('\\'), /*root_floor*/ 0, rooted);
-    format_path(components, "\\", rooted, "")
+fn is_ascii_alpha(unit: u16) -> bool {
+    u8::try_from(unit).is_ok_and(|unit| unit.is_ascii_alphabetic())
 }
 
-fn normalize_components<'a>(
-    components: impl Iterator<Item = &'a str>,
-    root_floor: usize,
+#[cfg(any(windows, test))]
+fn is_windows_separator(unit: u16) -> bool {
+    unit == u16::from(b'\\') || unit == u16::from(b'/')
+}
+
+#[cfg(any(windows, test))]
+fn split_windows_components(path: &[u16]) -> impl Iterator<Item = &[u16]> {
+    path.split(|unit| is_windows_separator(*unit))
+}
+
+#[cfg(any(windows, test))]
+fn normalize_wide_components<'a>(
+    components: impl Iterator<Item = &'a [u16]>,
     rooted: bool,
-) -> Vec<&'a str> {
+    root_floor: usize,
+) -> Vec<&'a [u16]> {
+    normalize_components(
+        components,
+        rooted,
+        root_floor,
+        |component| component.is_empty() || component == [b'.' as u16],
+        |component| component == [b'.' as u16, b'.' as u16],
+    )
+}
+
+#[cfg(unix)]
+fn normalize_byte_components<'a>(
+    components: impl Iterator<Item = &'a [u8]>,
+    rooted: bool,
+) -> Vec<&'a [u8]> {
+    normalize_components(
+        components,
+        rooted,
+        /*root_floor*/ 0,
+        |component| component.is_empty() || component == b".",
+        |component| component == b"..",
+    )
+}
+
+fn normalize_components<'a, T>(
+    components: impl Iterator<Item = &'a [T]>,
+    rooted: bool,
+    root_floor: usize,
+    is_ignored: impl Fn(&[T]) -> bool,
+    is_parent: impl Fn(&[T]) -> bool,
+) -> Vec<&'a [T]> {
     let mut normalized = Vec::new();
     for component in components {
-        match component {
-            "" | "." => {}
-            ".." if normalized.len() > root_floor => {
+        if is_ignored(component) {
+            continue;
+        }
+        if is_parent(component) {
+            if normalized.len() > root_floor {
                 normalized.pop();
+            } else if !rooted {
+                normalized.push(component);
             }
-            ".." if !rooted => normalized.push(component),
-            ".." => {}
-            _ => normalized.push(component),
+        } else {
+            normalized.push(component);
         }
     }
     normalized
 }
 
-fn format_path(components: Vec<&str>, separator: &str, rooted: bool, prefix: &str) -> String {
-    let joined = components.join(separator);
-    match (prefix, rooted, joined.is_empty()) {
-        ("", false, true) => ".".to_string(),
-        ("", false, false) => joined,
-        ("", true, true) => separator.to_string(),
-        ("", true, false) => format!("{separator}{joined}"),
-        (_, false, true) => prefix.to_string(),
-        (_, false, false) => format!("{prefix}{joined}"),
-        (_, true, true) => format!("{prefix}{separator}"),
-        (_, true, false) => format!("{prefix}{separator}{joined}"),
+fn encode_byte_key(kind: &[u8], components: Vec<&[u8]>) -> Vec<u8> {
+    let mut key = key_prefix(kind);
+    push_length(&mut key, components.len());
+    for component in components {
+        push_bytes(&mut key, component);
+    }
+    key
+}
+
+#[cfg(any(windows, test))]
+fn encode_wide_key(kind: &[u8], prefix: &[u16], components: Vec<&[u16]>) -> Vec<u8> {
+    let mut key = key_prefix(kind);
+    push_wide_units(&mut key, prefix);
+    push_length(&mut key, components.len());
+    for component in components {
+        push_wide_units(&mut key, component);
+    }
+    key
+}
+
+fn key_prefix(kind: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(KEY_VERSION.len() + kind.len() + 16);
+    push_bytes(&mut key, KEY_VERSION);
+    push_bytes(&mut key, kind);
+    key
+}
+
+fn push_bytes(key: &mut Vec<u8>, value: &[u8]) {
+    push_length(key, value.len());
+    key.extend_from_slice(value);
+}
+
+#[cfg(any(windows, test))]
+fn push_wide_units(key: &mut Vec<u8>, value: &[u16]) {
+    push_length(key, value.len());
+    for unit in value {
+        key.extend_from_slice(&unit.to_be_bytes());
     }
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
-fn fold_case(path: String) -> String {
-    path.chars()
-        .flat_map(char::to_uppercase)
-        .flat_map(char::to_lowercase)
-        .collect()
+fn push_length(key: &mut Vec<u8>, length: usize) {
+    let length = match u32::try_from(length) {
+        Ok(length) => length,
+        Err(_) => panic!("managed worktree path key fields must fit in u32"),
+    };
+    key.extend_from_slice(&length.to_be_bytes());
 }
 
 #[cfg(test)]
@@ -160,94 +281,146 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    #[test]
-    fn unix_keys_normalize_lexically_without_changing_the_display_path() {
-        let display_path = "./worktrees//run-a/../run-b";
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
 
-        assert_eq!("worktrees/run-b", unix_path_key(display_path));
-        assert_eq!("./worktrees//run-a/../run-b", display_path);
-        assert_eq!("/run-b", unix_path_key("/worktrees/../run-b"));
-        assert_eq!("../run-b", unix_path_key("worktrees/../../run-b"));
-        assert_eq!(".", unix_path_key("worktrees/.."));
+    #[cfg(any(windows, test))]
+    fn wide(path: &str) -> Vec<u16> {
+        path.encode_utf16().collect()
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unix_keys_normalize_only_safe_lexical_syntax() {
+        assert_eq!(
+            unix_path_key(OsStr::new("worktrees/run-b")),
+            unix_path_key(OsStr::new("./worktrees//run-a/../run-b"))
+        );
+        assert_eq!(
+            unix_path_key(OsStr::new("/run-b")),
+            unix_path_key(OsStr::new("/worktrees/../run-b"))
+        );
+        assert_eq!(
+            unix_path_key(OsStr::new("../run-b")),
+            unix_path_key(OsStr::new("worktrees/../../run-b"))
+        );
+        assert_ne!(
+            unix_path_key(OsStr::new("run-b")),
+            unix_path_key(OsStr::new("/run-b"))
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn unix_keys_preserve_case_and_unicode_spelling() {
         assert_ne!(
-            unix_path_key("/worktrees/RunA"),
-            unix_path_key("/worktrees/runa")
+            unix_path_key(OsStr::new("/worktrees/RunA")),
+            unix_path_key(OsStr::new("/worktrees/runa"))
         );
         assert_ne!(
-            unix_path_key("/worktrees/x\u{00e5}"),
-            unix_path_key("/worktrees/xa\u{030a}")
+            unix_path_key(OsStr::new("/worktrees/x\u{00e5}")),
+            unix_path_key(OsStr::new("/worktrees/xa\u{030a}"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_keys_preserve_non_utf8_os_string_bytes() {
+        let invalid = OsStr::from_bytes(b"/worktrees/\xff");
+        let replacement = OsStr::new("/worktrees/\u{fffd}");
+
+        assert_ne!(unix_path_key(invalid), unix_path_key(replacement));
+        assert_eq!(
+            unix_path_key(invalid),
+            managed_worktree_path_key(Path::new(invalid))
         );
     }
 
     #[test]
-    fn macos_keys_fold_case_and_canonical_unicode_aliases() {
+    fn ordinary_windows_keys_normalize_separators_and_dot_segments_only() {
         assert_eq!(
-            macos_path_key("/worktrees/X\u{00c5}/run"),
-            macos_path_key("/worktrees/xa\u{030a}/RUN")
-        );
-    }
-
-    #[test]
-    fn windows_keys_normalize_separators_drive_roots_and_parents() {
-        assert_eq!(
-            r"c:\managed-worktrees\run-a",
-            windows_path_key(r"C:/Managed-Worktrees\\Run-A\\child\\..")
-        );
-        assert_eq!(r"c:\", windows_path_key(r"C:\."));
-        assert_eq!(r"c:run-a", windows_path_key(r"C:.\Run-A"));
-        assert_ne!(windows_path_key(r"C:RunA"), windows_path_key(r"C:\RunA"));
-    }
-
-    #[test]
-    fn windows_keys_collapse_unc_and_verbatim_aliases() {
-        assert_eq!(
-            windows_path_key(r"\\server\share\run-a"),
-            windows_path_key(r"\\?\UNC\SERVER\Share\worktrees\..\run-a")
+            windows_path_key(&wide(r"C:\managed-worktrees\run-a")),
+            windows_path_key(&wide(r"C:/managed-worktrees\\run-a\\child\\.."))
         );
         assert_eq!(
-            windows_path_key(r"C:\worktrees\run-a"),
-            windows_path_key(r"\\?\c:\WORKTREES\Run-A")
-        );
-        assert_eq!(
-            r"\\server\share",
-            windows_path_key(r"\\server\share\worktrees\..")
-        );
-    }
-
-    #[test]
-    fn windows_case_fold_handles_long_s_without_unicode_normalizing_names() {
-        assert_eq!(
-            windows_path_key(r"C:\worktrees\RunS"),
-            windows_path_key("c:\\worktrees\\run\u{017f}")
+            windows_path_key(&wide(r"\\server\share")),
+            windows_path_key(&wide(r"\\server\share\worktrees\.."))
         );
         assert_ne!(
-            windows_path_key("C:\\worktrees\\x\u{00e5}"),
-            windows_path_key("C:\\worktrees\\xa\u{030a}")
+            windows_path_key(&wide(r"C:run-a")),
+            windows_path_key(&wide(r"C:\run-a"))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"C:\RunA")),
+            windows_path_key(&wide(r"C:\runa"))
         );
     }
 
     #[test]
-    fn current_platform_key_uses_its_documented_policy() {
-        #[cfg(windows)]
-        assert_eq!(
-            windows_path_key(r"C:\worktrees\RunA"),
-            managed_worktree_path_key_from_display(r"C:\worktrees\RunA")
+    fn windows_verbatim_namespaces_preserve_raw_drive_unc_and_volume_paths() {
+        assert_ne!(
+            windows_path_key(&wide(r"\\?\C:\run. ")),
+            windows_path_key(&wide(r"C:\run. "))
         );
-
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            macos_path_key("/worktrees/x\u{00e5}"),
-            managed_worktree_path_key_from_display("/worktrees/x\u{00e5}")
+        assert_ne!(
+            windows_path_key(&wide(r"\\?\C:\run. ")),
+            windows_path_key(&wide(r"\\?\C:\run"))
         );
+        assert_ne!(
+            windows_path_key(&wide(r"\\?\C:\dir.\..\run. ")),
+            windows_path_key(&wide(r"\\?\C:\run. "))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"\\?\UNC\server\share\run. ")),
+            windows_path_key(&wide(r"\\server\share\run. "))
+        );
+        assert_ne!(
+            windows_path_key(&wide(
+                r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\run. "
+            )),
+            windows_path_key(&wide(r"\\?\C:\run. "))
+        );
+    }
 
-        #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn windows_keys_do_not_assume_case_or_expanding_unicode_aliases() {
+        assert_ne!(
+            windows_path_key(&wide(r"C:\worktrees\RunA")),
+            windows_path_key(&wide(r"C:\worktrees\runa"))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"C:\worktrees\Straße")),
+            windows_path_key(&wide(r"C:\worktrees\Strasse"))
+        );
+        assert_ne!(
+            windows_path_key(&wide("C:\\worktrees\\x\u{00e5}")),
+            windows_path_key(&wide("C:\\worktrees\\xa\u{030a}"))
+        );
+    }
+
+    #[test]
+    fn windows_keys_preserve_non_unicode_native_units() {
+        let lone_surrogate = vec![b'C' as u16, b':' as u16, b'\\' as u16, 0xd800];
+        let other_surrogate = vec![b'C' as u16, b':' as u16, b'\\' as u16, 0xd801];
+
         assert_eq!(
-            unix_path_key("/worktrees/RunA"),
-            managed_worktree_path_key_from_display("/worktrees/RunA")
+            windows_path_key(&lone_surrogate),
+            windows_path_key(&lone_surrogate)
+        );
+        assert_ne!(
+            windows_path_key(&lone_surrogate),
+            windows_path_key(&other_surrogate)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_platform_key_uses_native_path_bytes() {
+        let path = Path::new("/worktrees/RunA");
+
+        assert_eq!(
+            unix_path_key(path.as_os_str()),
+            managed_worktree_path_key(path)
         );
     }
 }
