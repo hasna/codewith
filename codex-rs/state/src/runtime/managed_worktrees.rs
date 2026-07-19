@@ -6,6 +6,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+mod path_keys;
+
+pub(crate) use path_keys::managed_worktree_path_key_from_display;
+
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
 
@@ -1520,7 +1524,12 @@ WHERE owner_agent_run_id = ?
 }
 
 pub(crate) fn path_to_db_string(path: &Path) -> String {
-    path_to_string(&normalize_path_for_db(path))
+    let display_path = path_to_string(&normalize_path_for_db(path));
+    debug_assert!(
+        !managed_worktree_path_key_from_display(&display_path).is_empty(),
+        "managed worktree display paths always have an identity key"
+    );
+    display_path
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
