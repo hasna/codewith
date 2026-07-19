@@ -238,6 +238,29 @@ fn rejects_relative_program_before_classifying_or_reading_the_shim() {
 }
 
 #[test]
+fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let shim = temp.path().join("prefix/oversized.cmd");
+    std::fs::create_dir_all(shim.parent().expect("fixture parent")).expect("create fixture");
+    let file = std::fs::File::create(&shim).expect("create oversized fixture");
+    file.set_len((MAX_CMD_SHIM_BYTES + 1) as u64)
+        .expect("extend oversized fixture");
+
+    let error = prepare_windows_batch_launch_from_source_env(
+        shim,
+        Vec::new(),
+        &BTreeMap::new(),
+        temp.path(),
+    )
+    .expect_err("oversized shim must be rejected by the bounded read");
+    assert!(matches!(
+        error,
+        WindowsBatchLaunchError::ReadShim(ref error)
+            if error.kind() == std::io::ErrorKind::InvalidData
+    ));
+}
+
+#[test]
 fn rejects_program_spellings_that_win32_normalizes_before_batch_classification() {
     let temp = tempfile::tempdir().expect("tempdir");
     for program in [

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -71,8 +72,7 @@ fn shim_target(canonical_shim: &Path) -> Result<(PathBuf, ShimRuntime), WindowsB
     let canonical_parent = canonical_shim
         .parent()
         .ok_or(WindowsBatchLaunchError::UnsupportedShim)?;
-    let shim =
-        std::fs::read_to_string(canonical_shim).map_err(WindowsBatchLaunchError::ReadShim)?;
+    let shim = read_bounded_shim(canonical_shim).map_err(WindowsBatchLaunchError::ReadShim)?;
     let (target, runtime) =
         recognized_shim(&shim).ok_or(WindowsBatchLaunchError::UnsupportedShim)?;
     let (canonical_root, layout) = trusted_shim_root(canonical_parent);
@@ -94,6 +94,26 @@ fn shim_target(canonical_shim: &Path) -> Result<(PathBuf, ShimRuntime), WindowsB
         ShimRuntime::Node if node_script(&target) => Ok((target, runtime)),
         _ => Err(WindowsBatchLaunchError::UnsupportedShim),
     }
+}
+
+// Published cmd-shim templates are small. Keep this generous limit while rejecting malformed
+// configured shims before they can force an unbounded allocation or line-vector construction.
+const MAX_CMD_SHIM_BYTES: usize = 64 * 1024;
+
+fn read_bounded_shim(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(MAX_CMD_SHIM_BYTES);
+    file.by_ref()
+        .take(MAX_CMD_SHIM_BYTES as u64)
+        .read_to_end(&mut bytes)?;
+    if file.read(&mut [0])? != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Windows batch shim exceeds {MAX_CMD_SHIM_BYTES} bytes"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.utf8_error()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
