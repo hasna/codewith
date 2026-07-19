@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 pub(crate) mod path_backfill;
 mod path_keys;
+pub(crate) use path_keys::managed_worktree_path_key;
 
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
@@ -2195,8 +2196,8 @@ WHERE worktree_id = ?
                     run_id: "run-1".to_string(),
                     identity: "bg-run-1".to_string(),
                     mode: crate::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                    base_repo_path: path_to_db_string(&repo),
-                    worktree_path: path_to_db_string(&worktree),
+                    base_repo_path: repo,
+                    worktree_path: worktree,
                     branch: Some("codewith/bg-run-1".to_string()),
                     head_sha: Some("abc123".to_string()),
                     status_snapshot_json: json!({"dirty": false}),

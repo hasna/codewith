@@ -4,11 +4,16 @@ use crate::BackgroundAgentExecutionHandleParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
+use crate::runtime::managed_worktrees::managed_worktree_path_key;
 use crate::runtime::managed_worktrees::path_to_db_string;
 use crate::runtime::test_support::test_thread_metadata;
 use crate::runtime::test_support::unique_temp_dir;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+#[cfg(unix)]
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1407,6 +1412,50 @@ async fn active_process_handles_include_persisted_start_token_and_stderr_path() 
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn background_agent_worktree_lease_writes_native_path_keys_immediately() -> anyhow::Result<()>
+{
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let repo = PathBuf::from(OsString::from_vec(b"/repo/\xffbase".to_vec()));
+    let worktree = PathBuf::from(OsString::from_vec(
+        b"/repo/\xffbase/.git/worktrees/agent/../lease-\xfe".to_vec(),
+    ));
+
+    runtime
+        .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
+            id: "lease-native-path-keys".to_string(),
+            run_id: "run-1".to_string(),
+            identity: "bg-run-1".to_string(),
+            mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
+            base_repo_path: repo.clone(),
+            worktree_path: worktree.clone(),
+            branch: Some("codewith/bg-run-1".to_string()),
+            head_sha: Some("abc123".to_string()),
+            status_snapshot_json: json!({"dirty": false}),
+            dirty: false,
+            cleanup_after: None,
+        })
+        .await?;
+
+    let (_, persisted_worktree_path, base_repo_path_key, worktree_path_key):
+        (String, String, Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT base_repo_path, worktree_path, base_repo_path_key, worktree_path_key FROM managed_worktrees WHERE worktree_id = ?",
+    )
+    .bind("lease-native-path-keys")
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+
+    assert_eq!(base_repo_path_key, managed_worktree_path_key(&repo));
+    assert_eq!(worktree_path_key, managed_worktree_path_key(&worktree));
+    assert_ne!(
+        worktree_path_key,
+        managed_worktree_path_key(PathBuf::from(persisted_worktree_path).as_path())
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -1420,8 +1469,8 @@ async fn worktree_lease_records_workspace_and_protects_dirty_cleanup() -> anyhow
             run_id: "run-1".to_string(),
             identity: "bg-run-1".to_string(),
             mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-            base_repo_path: path_to_db_string(&repo),
-            worktree_path: path_to_db_string(&worktree),
+            base_repo_path: repo,
+            worktree_path: worktree,
             branch: Some("codewith/bg-run-1".to_string()),
             head_sha: Some("abc123".to_string()),
             status_snapshot_json: json!({
@@ -1585,7 +1634,7 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
     create_run_with_id(runtime.as_ref(), "run-1").await?;
     create_run_with_id(runtime.as_ref(), "run-2").await?;
     let repo = repo_path("/repo");
-    let repo = path_to_db_string(&repo);
+    let repo_display = path_to_db_string(&repo);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1627,10 +1676,9 @@ async fn shared_repository_leases_reject_parallel_runs_until_released() -> anyho
         })
         .await
         .expect_err("parallel shared-repository lease should be rejected");
-    assert!(
-        err.to_string()
-            .contains(&format!("shared repository {repo} is already leased"))
-    );
+    assert!(err.to_string().contains(&format!(
+        "shared repository {repo_display} is already leased"
+    )));
 
     runtime
         .release_background_agent_worktree_lease("lease-1", BackgroundAgentWorkspaceCleanup::Retain)
@@ -1665,8 +1713,7 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
     create_run_with_id(runtime.as_ref(), "run-2").await?;
     let repo = repo_path("/repo");
     let worktree = worktree_path("bg-run-1");
-    let repo = path_to_db_string(&repo);
-    let worktree = path_to_db_string(&worktree);
+    let worktree_display = path_to_db_string(&worktree);
 
     runtime
         .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
@@ -1709,7 +1756,7 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         .await
         .expect_err("active isolated worktree path should be protected");
     assert!(err.to_string().contains(&format!(
-        "isolated worktree path {worktree} is already leased"
+        "isolated worktree path {worktree_display} is already leased"
     )));
 
     runtime
@@ -1739,7 +1786,7 @@ async fn isolated_worktree_path_cannot_be_reused_until_deleted() -> anyhow::Resu
         .await
         .expect_err("released isolated worktree path should stay protected until cleanup succeeds");
     assert!(still_protected.to_string().contains(&format!(
-        "isolated worktree path {worktree} is already leased"
+        "isolated worktree path {worktree_display} is already leased"
     )));
 
     let cleanup_candidate = runtime
