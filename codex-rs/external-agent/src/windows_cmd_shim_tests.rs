@@ -12,8 +12,7 @@ const CMD_SHIM_V9_NODE_GOLDEN: &str = include_str!("fixtures/cmd-shim-9.0.2-node
 
 fn released_cmd(golden: &str) -> String {
     golden
-        .strip_suffix('\n')
-        .unwrap_or(golden)
+        .trim_end_matches(['\r', '\n'])
         .replace(r"\r\n", "\r\n")
 }
 
