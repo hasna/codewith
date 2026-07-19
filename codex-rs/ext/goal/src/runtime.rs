@@ -15,6 +15,7 @@ use codex_protocol::protocol::ThreadGoal;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
+use crate::accounting::GoalTurnErrorDisposition;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
 use crate::steering::continuation_steering_item;
@@ -313,6 +314,12 @@ impl GoalRuntimeHandle {
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
+        let preserves_paused_blocker_audit = !objective_changed
+            && previous_status == Some(codex_state::ThreadGoalStatus::Paused)
+            && goal.status == codex_state::ThreadGoalStatus::Active;
+        if !preserves_paused_blocker_audit {
+            self.inner.accounting_state.clear_blocker_audit();
+        }
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
                 if matches!(
@@ -450,6 +457,7 @@ impl GoalRuntimeHandle {
             );
         }
         self.inner.accounting_state.clear_active_goal();
+        self.inner.accounting_state.clear_blocker_audit();
         Ok(())
     }
 
@@ -479,13 +487,9 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let (event_name, status) = match &reason {
-            ActiveGoalStopReason::TurnError(_) => {
-                ("turn-error", codex_state::ThreadGoalStatus::Blocked)
-            }
-            ActiveGoalStopReason::UsageLimit => {
-                ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
-            }
+        let event_name = match &reason {
+            ActiveGoalStopReason::TurnError(_) => "turn-error",
+            ActiveGoalStopReason::UsageLimit => "usage-limit",
         };
         self.account_active_goal_progress(
             turn_id,
@@ -505,6 +509,26 @@ impl GoalRuntimeHandle {
         else {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
+        };
+        let status = match &reason {
+            ActiveGoalStopReason::TurnError(error) => {
+                if active_goal.status != codex_state::ThreadGoalStatus::Active {
+                    self.inner.accounting_state.clear_active_goal();
+                    self.inner
+                        .accounting_state
+                        .clear_blocker_audit_for_goal(active_goal.goal_id.as_str());
+                    return Ok(());
+                }
+                match self.inner.accounting_state.observe_goal_turn_error(
+                    active_goal.goal_id.as_str(),
+                    turn_id,
+                    error,
+                ) {
+                    GoalTurnErrorDisposition::Pause => codex_state::ThreadGoalStatus::Paused,
+                    GoalTurnErrorDisposition::Block => codex_state::ThreadGoalStatus::Blocked,
+                }
+            }
+            ActiveGoalStopReason::UsageLimit => codex_state::ThreadGoalStatus::UsageLimited,
         };
         let can_stop = active_goal.status == codex_state::ThreadGoalStatus::Active
             || (active_goal.status == codex_state::ThreadGoalStatus::BudgetLimited
@@ -533,8 +557,15 @@ impl GoalRuntimeHandle {
         else {
             return Ok(());
         };
+        if goal.status != codex_state::ThreadGoalStatus::Paused {
+            self.inner
+                .accounting_state
+                .clear_blocker_audit_for_goal(goal.goal_id.as_str());
+        }
         match &reason {
-            ActiveGoalStopReason::TurnError(error) => {
+            ActiveGoalStopReason::TurnError(error)
+                if goal.status == codex_state::ThreadGoalStatus::Blocked =>
+            {
                 crate::pending_interaction::record_goal_turn_error_status_wait(
                     self.inner.state_dbs.as_ref(),
                     self.thread_id(),
@@ -544,6 +575,7 @@ impl GoalRuntimeHandle {
                 )
                 .await?;
             }
+            ActiveGoalStopReason::TurnError(_) => {}
             ActiveGoalStopReason::UsageLimit => {
                 crate::pending_interaction::record_goal_status_wait(
                     self.inner.state_dbs.as_ref(),

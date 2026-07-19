@@ -276,6 +276,14 @@ where
         }
 
         let turn_id = input.turn_store.level_id();
+        let goal_id = runtime
+            .accounting_state()
+            .active_goal_id_for_current_turn(turn_id);
+        if let Some(goal_id) = goal_id.as_deref() {
+            runtime
+                .accounting_state()
+                .clear_blocker_audit_for_goal(goal_id);
+        }
         if let Err(err) = runtime
             .account_active_goal_progress(
                 turn_id,
@@ -302,6 +310,14 @@ where
         }
 
         let turn_id = input.turn_store.level_id();
+        let goal_id = runtime
+            .accounting_state()
+            .active_goal_id_for_current_turn(turn_id);
+        if let Some(goal_id) = goal_id.as_deref() {
+            runtime
+                .accounting_state()
+                .clear_blocker_audit_for_goal(goal_id);
+        }
         if let Err(err) = runtime
             .account_active_goal_progress(
                 turn_id,
@@ -327,9 +343,10 @@ where
         let reason = match &input.error {
             CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
             // The turn has ended because the error was non-retryable or its
-            // retries were exhausted. Block the goal to prevent automatic
-            // continuation from looping and consuming tokens, as can happen
-            // with compaction errors.
+            // retries were exhausted. Hold the goal to prevent automatic
+            // continuation from looping and consuming tokens. The runtime
+            // promotes the same blocker to Blocked only after the required
+            // number of consecutive goal turns.
             _ => ActiveGoalStopReason::TurnError(input.error.clone()),
         };
         if let Err(err) = runtime

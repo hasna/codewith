@@ -949,7 +949,29 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             next_run_at,
-            FinishScheduleRun::Completed,
+            FinishScheduleRun::Completed {
+                pause_schedule: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn complete_thread_schedule_run_and_pause(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        self.finish_thread_schedule_run(
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            /*next_run_at*/ None,
+            FinishScheduleRun::Completed {
+                pause_schedule: true,
+            },
         )
         .await
     }
@@ -969,7 +991,32 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             next_run_at,
-            FinishScheduleRun::Failed { error },
+            FinishScheduleRun::Failed {
+                error,
+                pause_schedule: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn fail_thread_schedule_run_and_pause(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        error: String,
+    ) -> anyhow::Result<bool> {
+        self.finish_thread_schedule_run(
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            /*next_run_at*/ None,
+            FinishScheduleRun::Failed {
+                error,
+                pause_schedule: true,
+            },
         )
         .await
     }
@@ -1078,11 +1125,20 @@ WHERE status = 'active'
         let next_run_at_ms = next_run_at.map(datetime_to_epoch_millis);
         let mut tx = self.pool.begin().await?;
         let failed = matches!(finish, FinishScheduleRun::Failed { .. });
+        let pause_schedule = match &finish {
+            FinishScheduleRun::Completed { pause_schedule }
+            | FinishScheduleRun::Failed { pause_schedule, .. } => *pause_schedule,
+        };
         let schedule_result = sqlx::query(
             r#"
 UPDATE thread_schedules
 SET
-    status = CASE WHEN ? IS NULL THEN 'expired' ELSE status END,
+    status = CASE
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN 'expired'
+        WHEN ? THEN 'paused'
+        WHEN ? IS NULL THEN 'expired'
+        ELSE status
+    END,
     lease_id = NULL,
     lease_expires_at_ms = NULL,
     last_run_at_ms = ?,
@@ -1092,6 +1148,8 @@ SET
 WHERE schedule_id = ? AND lease_id = ?
             "#,
         )
+        .bind(completed_at_ms)
+        .bind(pause_schedule)
         .bind(next_run_at_ms)
         .bind(completed_at_ms)
         .bind(next_run_at_ms)
@@ -1106,8 +1164,10 @@ WHERE schedule_id = ? AND lease_id = ?
             return Ok(false);
         }
         let (status, error) = match &finish {
-            FinishScheduleRun::Completed => (crate::ThreadScheduleRunStatus::Completed, None),
-            FinishScheduleRun::Failed { error } => {
+            FinishScheduleRun::Completed { .. } => {
+                (crate::ThreadScheduleRunStatus::Completed, None)
+            }
+            FinishScheduleRun::Failed { error, .. } => {
                 (crate::ThreadScheduleRunStatus::Failed, Some(error.as_str()))
             }
         };
@@ -1137,8 +1197,8 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
 }
 
 enum FinishScheduleRun {
-    Completed,
-    Failed { error: String },
+    Completed { pause_schedule: bool },
+    Failed { error: String, pause_schedule: bool },
 }
 
 struct ScheduleBindings<'a> {
@@ -2514,6 +2574,65 @@ mod tests {
                 )
                 .await
                 .expect("wrong lease should not fail")
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_schedule_run_can_atomically_pause_without_rearming() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 31);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule = create_interval_schedule(&runtime, thread_id, "held task", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-held", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run_and_pause(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-held",
+                    now + chrono::Duration::seconds(5),
+                )
+                .await
+                .expect("run should complete while pausing the schedule")
+        );
+
+        let held_schedule = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Paused, held_schedule.status);
+        assert_eq!(None, held_schedule.next_run_at);
+        assert_eq!(None, held_schedule.lease_id);
+        assert_eq!(0, held_schedule.failure_count);
+        let run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&claim.run.run_id)
+            .await
+            .expect("run should load")
+            .expect("run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Completed, run.status);
+        assert!(
+            runtime
+                .thread_schedules()
+                .claim_due_thread_schedule(
+                    now + chrono::Duration::days(1),
+                    "lease-rearm",
+                    Duration::from_secs(300),
+                )
+                .await
+                .expect("paused schedule claim should not fail")
+                .is_none(),
+            "a held schedule must not become claimable again"
         );
     }
 
