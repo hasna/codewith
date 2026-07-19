@@ -6,9 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-// The codec is exercised as a test-only staging specification until a later
-// persistence and admission stage owns production identity keys.
-#[cfg(test)]
+pub(crate) mod path_backfill;
 mod path_keys;
 
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
@@ -167,6 +165,11 @@ WHERE owner_thread_id = ?
         let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let base_repo_path = path_to_db_string(&params.base_repo_path);
+        let worktree_path = path_to_db_string(&params.worktree_path);
+        let base_repo_path_key =
+            path_keys::managed_worktree_path_key_from_db_string(&base_repo_path);
+        let worktree_path_key = path_keys::managed_worktree_path_key_from_db_string(&worktree_path);
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (
@@ -175,6 +178,8 @@ INSERT INTO managed_worktrees (
     mode,
     base_repo_path,
     worktree_path,
+    base_repo_path_key,
+    worktree_path_key,
     branch,
     base_sha,
     head_sha,
@@ -191,7 +196,7 @@ INSERT INTO managed_worktrees (
     released_at_ms,
     cleanup_after_ms,
     deleted_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
 {}
             "#,
@@ -201,8 +206,10 @@ RETURNING
             .bind(worktree_id)
             .bind(params.identity)
             .bind(params.mode.as_str())
-            .bind(path_to_db_string(&params.base_repo_path))
-            .bind(path_to_db_string(&params.worktree_path))
+            .bind(base_repo_path)
+            .bind(worktree_path)
+            .bind(base_repo_path_key)
+            .bind(worktree_path_key)
             .bind(params.branch)
             .bind(params.base_sha)
             .bind(params.head_sha)

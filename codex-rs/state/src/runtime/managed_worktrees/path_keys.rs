@@ -1,8 +1,7 @@
-//! Conservative lexical identity key staging specification.
+//! Conservative lexical identity keys for managed worktree paths.
 //!
-//! This test-only module intentionally does not read the filesystem. It proves
-//! the byte-safe key format for a later persistence and admission stage without
-//! pretending that the codec has production callers today. Keys are opaque byte
+//! This module intentionally does not read the filesystem. It proves
+//! the byte-safe key format without making the keys an admission decision. Keys are opaque byte
 //! sequences derived from native path data, so they never rely on lossy display
 //! text. They normalize only lexical syntax that is unambiguous across
 //! filesystem policies. Case and Unicode alias checks require verified
@@ -12,8 +11,33 @@
 use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 const KEY_VERSION: &[u8] = b"managed-worktree-path-key-v1";
+
+pub(super) fn managed_worktree_path_key_from_db_string(path: &str) -> Option<Vec<u8>> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return None;
+    }
+    Some(managed_worktree_path_key(Path::new(path)))
+}
+
+#[cfg(unix)]
+fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+    unix_path_key(path.as_os_str())
+}
+
+#[cfg(windows)]
+fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    windows_path_key(&path.as_os_str().encode_wide().collect::<Vec<_>>())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn managed_worktree_path_key(_path: &Path) -> Vec<u8> {
+    Vec::new()
+}
 
 #[cfg(unix)]
 fn unix_path_key(path: &OsStr) -> Vec<u8> {

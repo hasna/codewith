@@ -597,6 +597,14 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
+        if let Err(err) =
+            managed_worktrees::path_backfill::backfill_legacy_managed_worktree_path_keys(
+                runtime.pool.as_ref(),
+            )
+            .await
+        {
+            warn!("managed worktree path-key startup backfill failed: {err}");
+        }
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!(
                 "failed to run startup maintenance for logs db at {}: {err}",
