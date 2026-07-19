@@ -218,6 +218,34 @@ fn rejects_relative_program_before_classifying_or_reading_the_shim() {
 }
 
 #[test]
+fn rejects_program_spellings_that_win32_normalizes_before_batch_classification() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    for program in [
+        temp.path().join("agent.cmd."),
+        temp.path().join("agent.cmd "),
+        temp.path().join("review.").join("agent.cmd"),
+    ] {
+        let error = prepare_windows_batch_launch_from_source_env(
+            program,
+            Vec::new(),
+            &BTreeMap::new(),
+            temp.path(),
+        )
+        .expect_err("ambiguous program spelling must not bypass cmd-shim handling");
+        assert!(matches!(
+            error,
+            WindowsBatchLaunchError::AmbiguousProgramPath
+        ));
+    }
+    assert!(ambiguous_windows_program_path(Path::new(
+        r"\\?\C:\review\agent.cmd"
+    )));
+    assert!(ambiguous_windows_program_path(Path::new(
+        r"\\.\C:\review\agent.cmd"
+    )));
+}
+
+#[test]
 fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() {
     let temp = tempfile::tempdir().expect("tempdir");
     for target in [

@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::path::Prefix;
 
 /// A native invocation containing an absolute program and lossless OS arguments.
 ///
@@ -31,6 +33,9 @@ pub fn prepare_windows_batch_launch_from_source_env(
 ) -> Result<WindowsNativeLaunch, WindowsBatchLaunchError> {
     if !program.is_absolute() {
         return Err(WindowsBatchLaunchError::ProgramNotAbsolute);
+    }
+    if ambiguous_windows_program_path(&program) {
+        return Err(WindowsBatchLaunchError::AmbiguousProgramPath);
     }
     if !is_windows_batch_program(&program) {
         return Ok(WindowsNativeLaunch { program, args });
@@ -178,6 +183,28 @@ fn normal_windows_component(component: &str) -> bool {
         && !component.contains(['<', '>', ':', '"', '|', '?', '*'])
         && !component.chars().any(char::is_control)
         && !windows_device_name(component)
+}
+
+/// Rejects spellings Win32 can normalize into a different program after we classify it.
+///
+/// Normal native programs still pass through unchanged. This only rejects path forms that make a
+/// lexical `.cmd`/`.bat` decision unsafe, including verbatim/device namespaces and components
+/// whose trailing dots or spaces Win32 ignores.
+fn ambiguous_windows_program_path(program: &Path) -> bool {
+    program.components().any(|component| match component {
+        Component::Prefix(prefix) => matches!(
+            prefix.kind(),
+            Prefix::Verbatim(_)
+                | Prefix::VerbatimDisk(_)
+                | Prefix::VerbatimUNC(_, _)
+                | Prefix::DeviceNS(_)
+        ),
+        Component::RootDir => false,
+        Component::CurDir | Component::ParentDir => true,
+        Component::Normal(component) => component
+            .to_str()
+            .is_none_or(|component| !normal_windows_component(component)),
+    })
 }
 
 fn windows_device_name(component: &str) -> bool {
@@ -367,6 +394,8 @@ fn is_windows_batch_program(program: &Path) -> bool {
 pub enum WindowsBatchLaunchError {
     #[error("launch programs must be absolute")]
     ProgramNotAbsolute,
+    #[error("Windows launch program uses an ambiguous normalized path spelling")]
+    AmbiguousProgramPath,
     #[error("could not canonicalize Windows batch shim: {0}")]
     CanonicalizeShim(std::io::Error),
     #[error("canonical Windows batch shim is not absolute")]
