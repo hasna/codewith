@@ -14,6 +14,7 @@ pub(crate) struct ManagedWorktreePathKeyBackfillOutcome {
     completed: bool,
 }
 
+#[derive(sqlx::FromRow)]
 struct LegacyManagedWorktreePathRow {
     worktree_id: String,
     base_repo_path: String,
@@ -28,18 +29,7 @@ pub(crate) async fn backfill_legacy_managed_worktree_path_keys(
     pool: &SqlitePool,
 ) -> anyhow::Result<ManagedWorktreePathKeyBackfillOutcome> {
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            String,
-            String,
-            Option<Vec<u8>>,
-            Option<Vec<u8>>,
-            bool,
-            bool,
-        ),
-    >(
+    let rows = sqlx::query_as::<_, LegacyManagedWorktreePathRow>(
         r#"
 SELECT
     managed_worktrees.worktree_id,
@@ -47,8 +37,8 @@ SELECT
     managed_worktrees.worktree_path,
     managed_worktrees.base_repo_path_key,
     managed_worktrees.worktree_path_key,
-    COALESCE(managed_worktree_path_key_backfill_terminal.base_repo_path_terminal, 0),
-    COALESCE(managed_worktree_path_key_backfill_terminal.worktree_path_terminal, 0)
+    COALESCE(managed_worktree_path_key_backfill_terminal.base_repo_path_terminal, 0) AS base_repo_path_terminal,
+    COALESCE(managed_worktree_path_key_backfill_terminal.worktree_path_terminal, 0) AS worktree_path_terminal
 FROM managed_worktrees
 LEFT JOIN managed_worktree_path_key_backfill_terminal
     ON managed_worktree_path_key_backfill_terminal.worktree_id = managed_worktrees.worktree_id
@@ -62,30 +52,7 @@ LIMIT ?
     )
     .bind(MANAGED_WORKTREE_PATH_KEY_BACKFILL_BATCH_SIZE)
     .fetch_all(&mut *tx)
-    .await?
-    .into_iter()
-    .map(
-        |(
-            worktree_id,
-            base_repo_path,
-            worktree_path,
-            base_repo_path_key,
-            worktree_path_key,
-            base_repo_path_terminal,
-            worktree_path_terminal,
-        )| {
-            LegacyManagedWorktreePathRow {
-                worktree_id,
-                base_repo_path,
-                worktree_path,
-                base_repo_path_key,
-                worktree_path_key,
-                base_repo_path_terminal,
-                worktree_path_terminal,
-            }
-        },
-    )
-    .collect::<Vec<_>>();
+    .await?;
     let mut outcome = ManagedWorktreePathKeyBackfillOutcome {
         scanned_rows: rows.len() as u32,
         completed: rows.len() < MANAGED_WORKTREE_PATH_KEY_BACKFILL_BATCH_SIZE as usize,
