@@ -43,11 +43,8 @@ fn local_bin(temp: &Path, name: &str) -> PathBuf {
     temp.join("node_modules/.bin").join(format!("{name}.cmd"))
 }
 
-fn node_source_env(temp: &Path) -> BTreeMap<String, String> {
-    BTreeMap::from([(
-        "PATH".into(),
-        temp.join("trusted-node").display().to_string(),
-    )])
+fn node_source_env(path: &Path) -> BTreeMap<String, String> {
+    BTreeMap::from([("PATH".into(), path.display().to_string())])
 }
 
 fn expected_launch(program: &Path, args: Vec<OsString>) -> WindowsNativeLaunch {
@@ -78,7 +75,7 @@ fn assert_node_shim_resolves(temp: &Path, shim: &Path, contents: &str, target: &
     write(shim, contents);
     write(target, "fixture");
     write(&node, "fixture");
-    let source_env = node_source_env(temp);
+    let source_env = node_source_env(Path::new("trusted-node"));
     let launch = prepare_empty_args(shim.to_path_buf(), &source_env, temp).expect("Node shim plan");
     assert_eq!(launch, expected_node_launch(target, &node, Vec::new()));
 }
@@ -179,7 +176,7 @@ fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() 
     ]
     .map(OsString::from)
     .to_vec();
-    let mut source_env = node_source_env(temp.path());
+    let mut source_env = node_source_env(node.parent().expect("node parent"));
     source_env.insert(
         "COMSPEC".into(),
         temp.path().join("poisoned.cmd").display().to_string(),
@@ -228,12 +225,14 @@ fn accepts_an_exactly_bounded_utf8_shim_before_classification() {
 }
 
 #[test]
-fn rejects_drive_relative_path_entries_before_node_lookup() {
-    let source_env = BTreeMap::from([("PATH".into(), "C:relative".into())]);
-    assert!(matches!(
-        native_node(&source_env, Path::new(r"C:\intended-cwd")),
-        Err(WindowsBatchLaunchError::NodeNotFound(_))
-    ));
+fn rejects_unsafe_path_entries_before_node_lookup() {
+    for path in ["C:relative", r"\root-only"] {
+        let source_env = BTreeMap::from([("PATH".into(), path.into())]);
+        assert!(matches!(
+            native_node(&source_env, Path::new(r"C:\intended-cwd")),
+            Err(WindowsBatchLaunchError::NodeNotFound(_))
+        ));
+    }
 }
 
 #[test]
