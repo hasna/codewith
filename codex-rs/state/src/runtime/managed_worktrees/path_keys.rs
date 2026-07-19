@@ -1,39 +1,19 @@
-//! Conservative lexical identity keys for managed-worktree paths.
+//! Conservative lexical identity key staging specification.
 //!
-//! This module intentionally does not read the filesystem. Keys are opaque
-//! byte sequences derived from native path data, so they never rely on lossy
-//! display text. They normalize only lexical syntax that is unambiguous across
+//! This test-only module intentionally does not read the filesystem. It proves
+//! the byte-safe key format for a later persistence and admission stage without
+//! pretending that the codec has production callers today. Keys are opaque byte
+//! sequences derived from native path data, so they never rely on lossy display
+//! text. They normalize only lexical syntax that is unambiguous across
 //! filesystem policies. Case and Unicode alias checks require verified
 //! filesystem policy and belong to later admission code.
-
-use std::path::Path;
 
 #[cfg(unix)]
 use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
 
 const KEY_VERSION: &[u8] = b"managed-worktree-path-key-v1";
-
-/// Derives an opaque, byte-safe identity key from a native path.
-///
-/// The key does not alter the display path, resolve symlinks, or infer a
-/// filesystem's case or Unicode policy. Unix keys preserve `OsStr` bytes;
-/// Windows keys preserve UTF-16 units. In particular, verbatim and device
-/// Windows namespaces are encoded without Win32 normalization.
-#[cfg(unix)]
-pub(crate) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
-    unix_path_key(path.as_os_str())
-}
-
-/// Derives an opaque, byte-safe identity key from a native Windows path.
-#[cfg(windows)]
-pub(crate) fn managed_worktree_path_key(path: &Path) -> Vec<u8> {
-    let units = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    windows_path_key(&units)
-}
 
 #[cfg(unix)]
 fn unix_path_key(path: &OsStr) -> Vec<u8> {
@@ -218,9 +198,10 @@ fn normalize_components<'a, T>(
             continue;
         }
         if is_parent(component) {
-            if normalized.len() > root_floor {
-                normalized.pop();
-            } else if !rooted {
+            // `component/..` may traverse through a symlink, so it cannot be
+            // erased without consulting the filesystem. Only a parent already
+            // at a syntactic root is safe to discard.
+            if !rooted || normalized.len() != root_floor {
                 normalized.push(component);
             }
         } else {
@@ -293,13 +274,21 @@ mod tests {
     fn unix_keys_normalize_only_safe_lexical_syntax() {
         assert_eq!(
             unix_path_key(OsStr::new("worktrees/run-b")),
-            unix_path_key(OsStr::new("./worktrees//run-a/../run-b"))
+            unix_path_key(OsStr::new("./worktrees//run-b"))
         );
         assert_eq!(
             unix_path_key(OsStr::new("/run-b")),
-            unix_path_key(OsStr::new("/worktrees/../run-b"))
+            unix_path_key(OsStr::new("/../run-b"))
         );
-        assert_eq!(
+        assert_ne!(
+            unix_path_key(OsStr::new("run-b")),
+            unix_path_key(OsStr::new("link/../run-b"))
+        );
+        assert_ne!(
+            unix_path_key(OsStr::new("/run-b")),
+            unix_path_key(OsStr::new("/link/../run-b"))
+        );
+        assert_ne!(
             unix_path_key(OsStr::new("../run-b")),
             unix_path_key(OsStr::new("worktrees/../../run-b"))
         );
@@ -342,21 +331,37 @@ mod tests {
         let replacement = OsStr::new("/worktrees/\u{fffd}");
 
         assert_ne!(unix_path_key(invalid), unix_path_key(replacement));
-        assert_eq!(
-            unix_path_key(invalid),
-            managed_worktree_path_key(Path::new(invalid))
-        );
     }
 
     #[test]
-    fn ordinary_windows_keys_normalize_separators_and_dot_segments_only() {
+    fn ordinary_windows_keys_normalize_separators_and_safe_root_parents_only() {
         assert_eq!(
             windows_path_key(&wide(r"C:\managed-worktrees\run-a")),
-            windows_path_key(&wide(r"C:/managed-worktrees\\run-a\\child\\.."))
+            windows_path_key(&wide(r"C:/managed-worktrees\\.\\run-a"))
         );
         assert_eq!(
             windows_path_key(&wide(r"\\server\share")),
-            windows_path_key(&wide(r"\\server\share\worktrees\.."))
+            windows_path_key(&wide(r"\\server\share\.."))
+        );
+        assert_eq!(
+            windows_path_key(&wide(r"C:\run-b")),
+            windows_path_key(&wide(r"C:\..\run-b"))
+        );
+        assert_eq!(
+            windows_path_key(&wide(r"\run-b")),
+            windows_path_key(&wide(r"\..\run-b"))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"C:\run-b")),
+            windows_path_key(&wide(r"C:\link\..\run-b"))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"C:run-b")),
+            windows_path_key(&wide(r"C:link\..\run-b"))
+        );
+        assert_ne!(
+            windows_path_key(&wide(r"\\server\share\run-b")),
+            windows_path_key(&wide(r"\\server\share\link\..\run-b"))
         );
         assert_ne!(
             windows_path_key(&wide(r"C:run-a")),
@@ -422,17 +427,6 @@ mod tests {
         assert_ne!(
             windows_path_key(&lone_surrogate),
             windows_path_key(&other_surrogate)
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn current_platform_key_uses_native_path_bytes() {
-        let path = Path::new("/worktrees/RunA");
-
-        assert_eq!(
-            unix_path_key(path.as_os_str()),
-            managed_worktree_path_key(path)
         );
     }
 
