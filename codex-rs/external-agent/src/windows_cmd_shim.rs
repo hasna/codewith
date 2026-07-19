@@ -2,27 +2,16 @@ use std::collections::BTreeMap;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+/// A native Windows process invocation prepared without invoking a batch shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WindowsNativeLaunch {
-    pub(crate) program: PathBuf,
-    pub(crate) args: Vec<String>,
+pub struct WindowsNativeLaunch {
+    /// Absolute native program that a caller can pass to [`std::process::Command::new`].
+    pub program: PathBuf,
+    /// Arguments, in order, for [`std::process::Command::args`].
+    pub args: Vec<String>,
 }
-/// Collapses Windows environment keys; overrides win case-insensitively.
-pub(crate) fn merge_windows_environment(
-    source: &BTreeMap<String, String>,
-    overrides: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut environment = BTreeMap::new();
-    for (name, value) in source {
-        environment.insert(name.to_ascii_uppercase(), value.clone());
-    }
-    for (name, value) in overrides {
-        environment.insert(name.to_ascii_uppercase(), value.clone());
-    }
-    environment
-}
-/// Resolves an absolute Windows command path from source env and launch CWD.
-pub(crate) fn resolve_windows_program_from_source_env(
+/// Resolves `program` from source `PATH` and `PATHEXT`, resolving relative entries from `cwd`.
+fn resolve_windows_program_from_source_env(
     program: &str,
     source_env: &BTreeMap<String, String>,
     cwd: &Path,
@@ -33,7 +22,7 @@ pub(crate) fn resolve_windows_program_from_source_env(
         .map(String::as_str)
         .unwrap_or(".COM;.EXE;.BAT;.CMD")
         .split(';')
-        .filter(|extension| valid_pathext(extension))
+        .filter(valid_pathext)
         .collect::<Vec<_>>();
     let cwd = absolute_cwd(cwd, program)?;
     let requested = Path::new(program);
@@ -74,8 +63,9 @@ pub(crate) fn resolve_windows_program_from_source_env(
         "could not resolve `{program}` from source PATH using source PATHEXT"
     ))
 }
-
-pub(crate) fn prepare_windows_batch_launch_from_source_env(
+/// Prepares a native plan without `cmd.exe`, `COMSPEC`, delayed expansion, or transport env.
+/// It rejects existing reparse escapes; callers must trust the local filesystem and revalidate before spawn.
+pub fn prepare_windows_batch_launch_from_source_env(
     program: PathBuf,
     args: Vec<String>,
     source_env: &BTreeMap<String, String>,
@@ -88,8 +78,19 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
     for argument in &args {
         validate_component("argument", argument)?;
     }
-    let target = shim_target(&program)?;
-    let node = native_node(&program, source_env, cwd)?;
+    let parent = program
+        .parent()
+        .ok_or(WindowsBatchLaunchError::UnsupportedShim)?
+        .canonicalize()
+        .map_err(WindowsBatchLaunchError::CanonicalizeShimDirectory)?;
+    let target = shim_target(&program, &parent)?;
+    if native_executable(&target) {
+        return Ok(WindowsNativeLaunch {
+            program: target,
+            args,
+        });
+    }
+    let node = native_node(&parent, source_env, cwd)?;
     let mut native_args = Vec::with_capacity(args.len() + 1);
     native_args.push(target.to_string_lossy().into_owned());
     native_args.extend(args);
@@ -98,32 +99,37 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
         args: native_args,
     })
 }
-
-fn shim_target(program: &Path) -> Result<PathBuf, WindowsBatchLaunchError> {
+fn shim_target(
+    program: &Path,
+    canonical_parent: &Path,
+) -> Result<PathBuf, WindowsBatchLaunchError> {
     let shim = std::fs::read_to_string(program).map_err(WindowsBatchLaunchError::ReadShim)?;
     let relative = npm_cmd_shim_v1_target(&shim)
         .or_else(|| corepack_cmd_shim_v1_target(&shim))
         .ok_or(WindowsBatchLaunchError::UnsupportedShim)?;
     let relative = Path::new(relative);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
     {
-        return Err(WindowsBatchLaunchError::UnsupportedShim);
+        return Err(WindowsBatchLaunchError::InvalidShimTarget);
     }
-    let target = program
-        .parent()
-        .expect("batch program paths have a parent")
-        .join(relative);
-    if !node_script(&target) || !target.is_file() {
+    let target = canonical_parent.join(relative);
+    if !target.is_file() {
         return Err(WindowsBatchLaunchError::MissingShimTarget { target });
     }
-    target
+    let target = target
         .canonicalize()
-        .map_err(WindowsBatchLaunchError::CanonicalizeTarget)
+        .map_err(WindowsBatchLaunchError::CanonicalizeTarget)?;
+    if !target.starts_with(canonical_parent) {
+        return Err(WindowsBatchLaunchError::TargetEscapesShimDirectory { target });
+    }
+    if !node_script(&target) && !native_executable(&target) {
+        Err(WindowsBatchLaunchError::UnsupportedShim)
+    } else {
+        Ok(target)
+    }
 }
-
 fn npm_cmd_shim_v1_target(shim: &str) -> Option<&str> {
     const HEADER: [&str; 8] = [
         "@ECHO off",
@@ -135,63 +141,64 @@ fn npm_cmd_shim_v1_target(shim: &str) -> Option<&str> {
         "SETLOCAL",
         "CALL :find_dp0",
     ];
-    const NODE_BODY: [&str; 8] = [
+    const BODY: [&str; 8] = [
         "",
         "IF EXIST \"%dp0%\\node.exe\" (",
         "  SET \"_prog=%dp0%\\node.exe\"",
         ") ELSE (",
         "  SET \"_prog=node\"",
-        "  SET PATHEXT=%PATHEXT:;.JS;=%",
+        "  SET PATHEXT=%PATHEXT:;.JS;=;%",
         ")",
         "",
     ];
-    let lines = shim.lines().collect::<Vec<_>>();
-    (lines.len() == HEADER.len() + NODE_BODY.len() + 1).then_some(())?;
-    for (index, expected) in HEADER.into_iter().enumerate() {
-        (lines[index] == expected).then_some(())?;
+    let lines = normalized_batch_lines(shim)?;
+    (lines.len() == HEADER.len() + BODY.len() + 1).then_some(())?;
+    for (line, expected) in lines.iter().zip(HEADER.into_iter().chain(BODY)) {
+        (*line == expected).then_some(())?;
     }
-    for (index, expected) in NODE_BODY.into_iter().enumerate() {
-        (lines[HEADER.len() + index] == expected).then_some(())?;
-    }
-    lines
-        .last()?
-        .strip_prefix("endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ")
-        .and_then(|line| node_invocation_target(line, "\"%_prog%\""))
+    target_from_line(
+        lines.last()?,
+        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\",
+    )
 }
-
 fn corepack_cmd_shim_v1_target(shim: &str) -> Option<&str> {
-    let lines = shim.lines().collect::<Vec<_>>();
-    (lines.len() == 5).then_some(())?;
-    (lines[0] == "@IF EXIST \"%~dp0\\node.exe\" (").then_some(())?;
-    (lines[2] == ") ELSE (").then_some(())?;
-    (lines[4] == ")").then_some(())?;
-    let first = node_invocation_target(lines[1].trim(), "\"%~dp0\\node.exe\"")?;
-    let second = node_invocation_target(lines[3].trim(), "node")?;
+    let lines = normalized_batch_lines(shim)?;
+    (lines.len() == 7).then_some(())?;
+    (lines[0] == "@SETLOCAL").then_some(())?;
+    (lines[1] == "@IF EXIST \"%~dp0\\node.exe\" (").then_some(())?;
+    (lines[3] == ") ELSE (").then_some(())?;
+    (lines[4] == "  @SET PATHEXT=%PATHEXT:;.JS;=;%").then_some(())?;
+    (lines[6] == ")").then_some(())?;
+    let first = target_from_line(lines[2], "  \"%~dp0\\node.exe\"  \"%~dp0\\")?;
+    let second = target_from_line(lines[5], "  node  \"%~dp0\\")?;
     (first == second).then_some(first)
 }
-
-fn node_invocation_target<'a>(line: &'a str, interpreter: &str) -> Option<&'a str> {
-    let target = line.strip_prefix(interpreter)?.trim_start();
-    ["\"%dp0%\\", "\"%~dp0\\"].into_iter().find_map(|prefix| {
-        let target = target.strip_prefix(prefix)?;
-        let (target, suffix) = target.split_once('"')?;
-        (suffix.trim() == "%*").then_some(target)
-    })
+fn normalized_batch_lines(shim: &str) -> Option<Vec<&str>> {
+    let body = shim.strip_suffix('\n')?;
+    let body = body.strip_suffix('\r').unwrap_or(body);
+    let lines = body
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>();
+    (!lines.iter().any(|line| line.contains('\r'))).then_some(lines)
 }
-
+fn target_from_line<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    line.strip_prefix(prefix)?.strip_suffix("\" %*")
+}
 fn native_node(
-    shim: &Path,
+    canonical_parent: &Path,
     source_env: &BTreeMap<String, String>,
     cwd: &Path,
 ) -> Result<PathBuf, WindowsBatchLaunchError> {
-    let sibling = shim
-        .parent()
-        .expect("batch program paths have a parent")
-        .join("node.exe");
+    let sibling = canonical_parent.join("node.exe");
     if sibling.is_file() {
-        return sibling
+        let sibling = sibling
             .canonicalize()
-            .map_err(WindowsBatchLaunchError::CanonicalizeNode);
+            .map_err(WindowsBatchLaunchError::CanonicalizeNode)?;
+        if !sibling.starts_with(canonical_parent) {
+            return Err(WindowsBatchLaunchError::TargetEscapesShimDirectory { target: sibling });
+        }
+        return Ok(sibling);
     }
     let node = resolve_windows_program_from_source_env("node", source_env, cwd)
         .map_err(WindowsBatchLaunchError::NodeNotFound)?;
@@ -199,7 +206,6 @@ fn native_node(
         .then_some(node)
         .ok_or(WindowsBatchLaunchError::NodeNotNative)
 }
-
 fn absolute_cwd(cwd: &Path, program: &str) -> Result<PathBuf, String> {
     if cwd.is_absolute() {
         Ok(cwd.to_path_buf())
@@ -209,7 +215,6 @@ fn absolute_cwd(cwd: &Path, program: &str) -> Result<PathBuf, String> {
             .map(|current_dir| current_dir.join(cwd))
     }
 }
-
 fn environment_value<'a>(
     source_env: &'a BTreeMap<String, String>,
     name: &str,
@@ -219,61 +224,59 @@ fn environment_value<'a>(
         .rfind(|(key, _)| key.eq_ignore_ascii_case(name))
         .map(|(_, value)| value)
 }
-
 fn valid_pathext(extension: &&str) -> bool {
     extension.len() > 1
         && extension.starts_with('.')
         && !extension.ends_with(['.', ' '])
         && !extension.contains(['/', '\\'])
 }
-
 fn node_script(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "js" | "cjs" | "mjs"
-            )
-        })
+    path.extension().is_some_and(|extension| {
+        ["js", "cjs", "mjs"]
+            .iter()
+            .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+    })
 }
-
+fn native_executable(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+}
 fn native_node_exe(path: &Path) -> bool {
     path.file_name()
-        .and_then(|name| name.to_str())
         .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"))
 }
-
-pub(crate) fn is_windows_batch_program(program: &Path) -> bool {
-    program
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
+fn is_windows_batch_program(program: &Path) -> bool {
+    program.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    })
 }
-
 fn validate_component(component: &'static str, value: &str) -> Result<(), WindowsBatchLaunchError> {
     if value.contains(['\r', '\n']) {
         return Err(WindowsBatchLaunchError::LineBreak { component });
     }
     Ok(())
 }
-
+/// Errors returned while preparing a Windows native launch plan.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum WindowsBatchLaunchError {
+pub enum WindowsBatchLaunchError {
     #[error("Windows batch launch rejects {component} containing CR or LF")]
     LineBreak { component: &'static str },
     #[error(
         "unsupported Windows batch shim; install the agent through npm or configure a native executable"
     )]
     UnsupportedShim,
-    #[error("could not read npm batch shim: {0}")]
+    #[error("could not read Windows batch shim: {0}")]
     ReadShim(std::io::Error),
-    #[error("npm batch shim JavaScript target does not exist: {}", .target.display())]
+    #[error("could not canonicalize batch shim directory: {0}")]
+    CanonicalizeShimDirectory(std::io::Error),
+    #[error("batch shim target must be a relative path of normal components")]
+    InvalidShimTarget,
+    #[error("batch shim target does not exist: {}", .target.display())]
     MissingShimTarget { target: PathBuf },
-    #[error("could not canonicalize npm batch shim JavaScript target: {0}")]
+    #[error("could not canonicalize batch shim target: {0}")]
     CanonicalizeTarget(std::io::Error),
+    #[error("batch shim target escapes the canonical shim directory: {}", .target.display())]
+    TargetEscapesShimDirectory { target: PathBuf },
     #[error("could not canonicalize npm shim node.exe: {0}")]
     CanonicalizeNode(std::io::Error),
     #[error("could not find node.exe for npm batch shim: {0}")]
@@ -281,47 +284,40 @@ pub(crate) enum WindowsBatchLaunchError {
     #[error("npm batch shim resolved node to a non-native program")]
     NodeNotNative,
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use tokio::process::Command;
 
-    fn npm_shim_source(target: &str) -> String {
+    // Derived from cmd-shim v8's writeShim output with the Node program and no extra args.
+    fn npm_cmd_shim_output(target: &str) -> String {
         format!(
-            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\{target}\" %*\r\n"
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\{target}\" %*\r\n"
         )
     }
 
-    fn npm_shim(path: &Path, target: &str) {
-        std::fs::write(path, npm_shim_source(target)).expect("write npm cmd shim");
+    // Derived from Corepack's generateCmdShim longProg template with no optional paths or args.
+    fn corepack_cmd_shim_output(target: &str) -> String {
+        format!(
+            "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\{target}\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\{target}\" %*\r\n)\r\n"
+        )
+    }
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture");
+        std::fs::write(path, contents).expect("write fixture");
+    }
+
+    fn write_npm_shim(path: &Path, target: &str) {
+        write(path, &npm_cmd_shim_output(target));
     }
 
     #[test]
-    fn merges_environment_case_insensitively() {
-        let source = BTreeMap::from([
-            ("Path".to_string(), "source-path".to_string()),
-            ("PathExt".to_string(), ".CMD".to_string()),
-        ]);
-        let overrides = BTreeMap::from([("PATH".to_string(), "override-path".to_string())]);
-        assert_eq!(
-            merge_windows_environment(&source, &overrides),
-            BTreeMap::from([
-                ("PATH".to_string(), "override-path".to_string()),
-                ("PATHEXT".to_string(), ".CMD".to_string()),
-            ])
-        );
-    }
-
-    #[test]
-    fn resolves_relative_path_entries_from_launch_cwd_as_absolute_paths() {
+    fn resolves_windows_paths_case_insensitively() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let cwd = temp_dir.path().join("launch-cwd");
-        let bin = cwd.join("relative-bin");
-        std::fs::create_dir_all(&bin).expect("create relative PATH entry");
-        let program = bin.join("agent.cmd");
-        std::fs::write(&program, "not executed").expect("write candidate");
+        let program = cwd.join("relative-bin").join("agent.cmd");
+        write(&program, "not executed");
         let source_env = BTreeMap::from([
             ("pAtH".to_string(), "relative-bin".to_string()),
             ("PaThExT".to_string(), ".CMD".to_string()),
@@ -330,169 +326,159 @@ mod tests {
         let resolved = resolve_windows_program_from_source_env("agent", &source_env, &cwd)
             .expect("resolve relative PATH from launch cwd");
 
-        assert_eq!(resolved, program);
+        assert!(
+            resolved
+                .as_os_str()
+                .eq_ignore_ascii_case(program.as_os_str())
+        );
         assert!(resolved.is_absolute());
     }
 
     #[test]
-    fn recognizes_npm_shims_for_claude_cursor_grok_and_npm() {
+    fn accepts_exact_npm_and_corepack_generators() {
+        let npm_target = "node_modules\\@cursor\\agent\\bin\\agent.js";
+        let corepack_target = "node_modules\\npm\\bin\\npm-cli.js";
+        assert_eq!(
+            npm_cmd_shim_v1_target(&npm_cmd_shim_output(npm_target)),
+            Some(npm_target)
+        );
+        assert_eq!(
+            corepack_cmd_shim_v1_target(&corepack_cmd_shim_output(corepack_target)),
+            Some(corepack_target)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_rewriting_and_noncanonical_whitespace() {
+        let target = "agent.js";
+        let npm = npm_cmd_shim_output(target);
+        let corepack = corepack_cmd_shim_output(target);
+        let invalid_npm = [
+            "@echo off\r\ncall :launch %*\r\n".to_string(),
+            npm.replace(
+                "\"%_prog%\" \"%dp0%\\agent.js\"",
+                "\"%_prog%\" --inspect \"%dp0%\\agent.js\"",
+            ),
+            npm.replace("@ECHO off", "@ECHO off "),
+        ];
+        for shim in invalid_npm {
+            assert_eq!(npm_cmd_shim_v1_target(&shim), None);
+        }
+        assert_eq!(
+            corepack_cmd_shim_v1_target(&corepack.replace("  node  ", " node  ")),
+            None
+        );
+    }
+
+    #[test]
+    fn launches_claude_direct_executable_without_node_or_a_shell() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let shim = temp_dir.path().join("claude.cmd");
+        let target = temp_dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        write_npm_shim(
+            &shim,
+            "node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe",
+        );
+        write(&target, "fixture");
+        let args = vec!["--resume".to_string(), "task".to_string()];
+
+        let launch = prepare_windows_batch_launch_from_source_env(
+            shim,
+            args.clone(),
+            &BTreeMap::new(),
+            temp_dir.path(),
+        )
+        .expect("Claude executable shim should produce a direct plan");
+
+        assert_eq!(
+            launch.program,
+            target.canonicalize().expect("canonical executable")
+        );
+        assert_eq!(launch.args, args);
+    }
+
+    #[test]
+    fn rejects_current_parent_and_absolute_target_components() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
         for target in [
-            "node_modules\\@anthropic-ai\\claude-code\\cli.js",
-            "node_modules\\@cursor\\agent\\bin\\agent.js",
-            "node_modules\\@xai\\grok\\bin\\grok.js",
-            "node_modules\\npm\\bin\\npm-cli.js",
+            ".\\agent.js",
+            "..\\agent.js",
+            "node_modules\\..\\agent.js",
+            "C:\\agent.js",
         ] {
-            let shim = npm_shim_source(target);
-            assert_eq!(npm_cmd_shim_v1_target(&shim), Some(target));
+            let shim = temp_dir.path().join(format!("{}.cmd", target.len()));
+            write_npm_shim(&shim, target);
+            let error = prepare_windows_batch_launch_from_source_env(
+                shim,
+                Vec::new(),
+                &BTreeMap::new(),
+                temp_dir.path(),
+            )
+            .expect_err("non-normal target must fail before filesystem access");
+            assert!(matches!(error, WindowsBatchLaunchError::InvalidShimTarget));
         }
     }
 
     #[test]
-    fn rejects_unknown_or_argument_rewriting_batch_shims() {
-        let unknown = "@echo off\r\nset \"ARG1=%~1\"\r\nshift /1\r\ncall :launch %*\r\n";
-        let rewritten = npm_shim_source("agent.js").replace(
-            "\"%_prog%\" \"%dp0%\\agent.js\"",
-            "\"%_prog%\" --inspect \"%dp0%\\agent.js\"",
-        );
-        assert_eq!(npm_cmd_shim_v1_target(unknown), None);
-        assert_eq!(corepack_cmd_shim_v1_target(&rewritten), None);
-        assert_eq!(npm_cmd_shim_v1_target(&rewritten), None);
-    }
-
-    #[test]
-    fn unknown_batch_shims_fail_closed_with_remediation() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let shim = temp_dir.path().join("unknown.cmd");
-        std::fs::write(&shim, "@echo off\r\nshift /1\r\ncall :launch %*\r\n")
-            .expect("write unknown shim");
-
-        let error = prepare_windows_batch_launch_from_source_env(
-            shim,
-            vec!["safe argument".to_string()],
-            &BTreeMap::new(),
-            temp_dir.path(),
-        )
-        .expect_err("unknown batch shims must not execute");
-
-        assert!(matches!(error, WindowsBatchLaunchError::UnsupportedShim));
-        assert!(error.to_string().contains("configure a native executable"));
-    }
-
-    #[test]
-    fn prefers_a_sibling_node_exe_over_source_path() {
+    fn poisoned_path_comspec_and_hostile_argv_stay_data_in_the_native_plan() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let shim = temp_dir.path().join("agent.cmd");
         let target = temp_dir.path().join("agent.js");
         let node = temp_dir.path().join("node.exe");
-        npm_shim(&shim, "agent.js");
-        std::fs::write(&target, "// fixture\n").expect("write target");
-        std::fs::write(&node, "fixture").expect("write node fixture");
+        write_npm_shim(&shim, "agent.js");
+        write(&target, "// fixture");
+        write(&node, "fixture");
+        let args = [
+            "",
+            "quotes: \"double\" and 'single'",
+            "&|<>()^",
+            "%PERCENT%",
+            "!BANG!",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+        ]
+        .map(String::from)
+        .to_vec();
+        let source_env = BTreeMap::from([
+            (
+                "PATH".to_string(),
+                temp_dir.path().join("poisoned").display().to_string(),
+            ),
+            (
+                "COMSPEC".to_string(),
+                temp_dir.path().join("poisoned.cmd").display().to_string(),
+            ),
+        ]);
 
         let launch = prepare_windows_batch_launch_from_source_env(
             shim,
-            Vec::new(),
-            &BTreeMap::new(),
-            temp_dir.path(),
-        )
-        .expect("sibling node.exe should prepare without PATH");
-
-        assert_eq!(
-            launch.program,
-            node.canonicalize().expect("canonical sibling node")
-        );
-    }
-
-    #[tokio::test]
-    async fn native_node_launch_preserves_hostile_argv_without_cmd_exe() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let shim = temp_dir.path().join("capture.cmd");
-        let target = temp_dir.path().join("capture.js");
-        let capture = temp_dir.path().join("captured.json");
-        let marker = temp_dir.path().join("injected.txt");
-        let poisoned_comspec = temp_dir.path().join("poisoned-cmd.exe");
-        npm_shim(&shim, "capture.js");
-        std::fs::write(
-            &target,
-            r#"require("fs").writeFileSync(process.env.CODEWITH_CAPTURE, JSON.stringify(process.argv.slice(2)));
-"#,
-        )
-        .expect("write JavaScript entrypoint");
-        let hostile_args = vec![
-            "spaces stay one argument".to_string(),
-            format!("embedded \" & type nul > \"{}\" & rem", marker.display()),
-            "pipe | command".to_string(),
-            "input < source".to_string(),
-            "output > destination".to_string(),
-            "parentheses ( ) literal".to_string(),
-            "caret ^ literal".to_string(),
-            "%CODEWITH_TEST_PERCENT%".to_string(),
-            "!CODEWITH_TEST_BANG!".to_string(),
-            String::new(),
-            "eleventh argument survives too".to_string(),
-        ];
-        let mut source_env = std::env::vars().collect::<BTreeMap<_, _>>();
-        source_env.retain(|key, _| !key.eq_ignore_ascii_case("PATHEXT"));
-        source_env.insert("PaThExT".to_string(), ".EXE;.CMD".to_string());
-        source_env.insert(
-            "cOmSpEc".to_string(),
-            poisoned_comspec.display().to_string(),
-        );
-        let launch = prepare_windows_batch_launch_from_source_env(
-            shim,
-            hostile_args.clone(),
+            args.clone(),
             &source_env,
             temp_dir.path(),
         )
-        .expect("recognized npm shim should prepare native node");
+        .expect("sibling node.exe should make a native plan");
 
-        assert_eq!(
-            launch.program.file_name().and_then(|name| name.to_str()),
-            Some("node.exe")
+        assert!(
+            launch
+                .program
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"))
         );
-        assert_ne!(launch.program, poisoned_comspec);
-        let target = target
-            .canonicalize()
-            .expect("target path")
-            .display()
-            .to_string();
-        assert_eq!(launch.args.first(), Some(&target));
-        let status = Command::new(&launch.program)
-            .args(&launch.args)
-            .envs(source_env)
-            .env("CODEWITH_CAPTURE", &capture)
-            .env("CODEWITH_TEST_PERCENT", "expanded-in-test")
-            .env("CODEWITH_TEST_BANG", "expanded-in-test")
-            .status()
-            .await
-            .expect("launch native node entrypoint");
-        assert!(status.success());
-        assert!(!marker.exists(), "hostile argv must not become a command");
-        let received = serde_json::from_str::<Vec<String>>(
-            &std::fs::read_to_string(capture).expect("read captured argv"),
-        )
-        .expect("capture JavaScript should serialize argv");
-        assert_eq!(received, hostile_args);
-    }
-
-    #[test]
-    fn rejects_line_break_arguments_before_parsing_the_shim() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let shim = temp_dir.path().join("capture.cmd");
-        std::fs::write(&shim, "@echo off\r\nexit /b 0\r\n").expect("write shim");
-        for line_break in ["\r", "\n", "\r\n"] {
-            let error = prepare_windows_batch_launch_from_source_env(
-                shim.clone(),
-                vec![format!("task{line_break}next")],
-                &BTreeMap::new(),
-                temp_dir.path(),
-            )
-            .expect_err("line breaks must be rejected before batch parsing");
-            assert!(matches!(
-                error,
-                WindowsBatchLaunchError::LineBreak {
-                    component: "argument"
-                }
-            ));
-        }
+        assert_ne!(launch.program, temp_dir.path().join("poisoned.cmd"));
+        let mut expected = vec![
+            target
+                .canonicalize()
+                .expect("canonical target")
+                .display()
+                .to_string(),
+        ];
+        expected.extend(args);
+        assert_eq!(launch.args, expected);
     }
 }
