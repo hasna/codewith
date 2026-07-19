@@ -114,12 +114,11 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
 
     let argument_count = args.len();
     let transport_values = std::iter::once((WINDOWS_BATCH_PROGRAM_ENV.to_string(), program_value))
-        .chain(args.into_iter().enumerate().map(|(index, argument)| {
-            (
-                windows_batch_argument_env_name(index),
-                windows_batch_argument_transport_value(argument.as_str()),
-            )
-        }));
+        .chain(
+            args.into_iter()
+                .enumerate()
+                .map(|(index, argument)| (windows_batch_argument_env_name(index), argument)),
+        );
     for (name, value) in transport_values {
         source_env.retain(|key, _| !key.eq_ignore_ascii_case(name.as_str()));
         source_env.insert(name, value);
@@ -151,24 +150,15 @@ fn windows_batch_argument_env_name(index: usize) -> String {
     format!("{WINDOWS_BATCH_ARGUMENT_ENV_PREFIX}{index}")
 }
 
-/// Encodes only literal quotes for the final batch-program argument parse.
-///
-/// The `cmd.exe /c` transport expands its environment references after it has
-/// parsed command metacharacters, so `%` and `!` must remain untouched here.
-/// A literal quote, however, still changes the batch program's argument
-/// grouping. Closing the syntactic quote, emitting a caret-escaped literal
-/// quote, and reopening the group preserves that quote as data.
-#[cfg(any(windows, test))]
-fn windows_batch_argument_transport_value(argument: &str) -> String {
-    argument.replace('"', "\"^\"\"")
-}
-
 #[cfg(any(windows, test))]
 fn windows_batch_transport_command_line(argument_count: usize) -> String {
     let command_line = std::iter::once(format!("\"!{WINDOWS_BATCH_PROGRAM_ENV}!\""))
         .chain((0..argument_count).map(|index| {
             let name = windows_batch_argument_env_name(index);
-            format!("\"!{name}!\"")
+            // CMD tokenizes this fixed reference before delayed expansion, so
+            // expanded metacharacters remain data. The syntactic empty quotes
+            // keep an empty expanded value as one batch-program argument.
+            format!("!{name}!\"\"")
         }))
         .collect::<Vec<_>>()
         .join(" ");
@@ -274,6 +264,7 @@ exit /b 0
         )
         .expect("write batch capture shim");
         let hostile_args = vec![
+            "spaces stay one argument".to_string(),
             format!(
                 "embedded \" & type nul > \"{}\" & rem",
                 marker_path.display()
@@ -281,12 +272,11 @@ exit /b 0
             "pipe | command".to_string(),
             "input < source".to_string(),
             "output > destination".to_string(),
-            "open ( parenthesis".to_string(),
-            "close ) parenthesis".to_string(),
+            "parentheses ( ) literal".to_string(),
             "caret ^ literal".to_string(),
             "%CODEWITH_BATCH_TEST_PERCENT%".to_string(),
-            "bang ! literal".to_string(),
             "!CODEWITH_BATCH_TEST_BANG!".to_string(),
+            String::new(),
         ];
         let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
         let mut source_env = BTreeMap::from([("cOmSpEc".to_string(), comspec)]);
@@ -443,20 +433,10 @@ mod command_line_validation_tests {
     }
 
     #[test]
-    fn cmd_transport_contains_only_fixed_environment_references() {
+    fn cmd_transport_uses_unquoted_fixed_references_and_empty_argument_tokens() {
         assert_eq!(
             windows_batch_transport_command_line(/*argument_count*/ 2),
-            "\"\"!CODEWITH_BATCH_PROGRAM!\" \"!CODEWITH_BATCH_ARGUMENT_0!\" \"!CODEWITH_BATCH_ARGUMENT_1!\"\""
-        );
-    }
-
-    #[test]
-    fn batch_argument_transport_encodes_quotes_without_rewriting_other_data() {
-        assert_eq!(
-            windows_batch_argument_transport_value(
-                r#"embedded " & pipe | input < output > ( ) ^ %NAME% !"#
-            ),
-            r#"embedded "^"" & pipe | input < output > ( ) ^ %NAME% !"#
+            "\"\"!CODEWITH_BATCH_PROGRAM!\" !CODEWITH_BATCH_ARGUMENT_0!\"\" !CODEWITH_BATCH_ARGUMENT_1!\"\"\""
         );
     }
 

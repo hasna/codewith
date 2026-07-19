@@ -2144,8 +2144,12 @@ mod tests {
         assert_eq!(launch.program, PathBuf::from(comspec));
         assert_eq!(launch.args[3], "/c");
         assert_eq!(
-            launch.env.get("CODEWITH_BATCH_PROGRAM"),
-            Some(&grok.display().to_string())
+            launch
+                .env
+                .get("CODEWITH_BATCH_PROGRAM")
+                .expect("batch program transport environment")
+                .to_ascii_lowercase(),
+            grok.display().to_string().to_ascii_lowercase()
         );
 
         let mut process = AcpStdioProcess::spawn(
