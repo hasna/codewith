@@ -141,6 +141,8 @@ impl ClaudeEnvironmentPolicy {
     ) -> BTreeMap<String, String> {
         #[cfg(windows)]
         let source = merge_windows_environment(source, extra);
+        #[cfg(windows)]
+        let source = &source;
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
             if let Some(value) = source_env_value(source, name) {

@@ -104,6 +104,8 @@ impl AcpEnvironmentPolicy {
     ) -> BTreeMap<String, String> {
         #[cfg(windows)]
         let source = merge_windows_environment(source, extra);
+        #[cfg(windows)]
+        let source = &source;
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
             if let Some(value) = source_env_value(source, name) {
@@ -662,6 +664,8 @@ fn copy_acp_runtime_auth_env(
 ) {
     #[cfg(windows)]
     let source_env = merge_windows_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
     for name in acp_runtime_auth_env_vars(runtime_id) {
         if let Some(value) = source_env_value(source_env, name) {
             destination.insert((*name).to_string(), value.clone());
