@@ -40,13 +40,13 @@ use crate::TerminalCapability;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 #[cfg(windows)]
-use crate::windows_command::WindowsBatchLaunchError;
+use crate::windows_cmd_shim::WindowsBatchLaunchError;
 #[cfg(windows)]
-use crate::windows_command::configure_windows_batch_launch;
+use crate::windows_cmd_shim::is_windows_batch_program;
+#[cfg(windows)]
+use crate::windows_cmd_shim::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::merge_windows_environment;
-#[cfg(windows)]
-use crate::windows_command::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
@@ -262,6 +262,7 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         extra_env: &BTreeMap<String, String>,
     ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
+        let cwd = cwd.into();
         let program = resolved_program.into();
         let env = self.env_policy.sanitize(source_env, extra_env);
         let args = self
@@ -273,10 +274,13 @@ impl AcpStdioHarness {
             .collect();
         #[cfg(windows)]
         let (program, args, env) = {
-            let mut env = env;
-            let (program, args) =
-                prepare_windows_batch_launch_from_source_env(program, args, &mut env)
-                    .map_err(|err| invalid_batch_launch_request(self.descriptor.id, err))?;
+            let (program, args) = prepare_windows_batch_launch_from_source_env(
+                program,
+                args,
+                &env,
+                &cwd,
+            )
+            .map_err(|err| invalid_batch_launch_request(self.descriptor.id, err))?;
             (program, args, env)
         };
         Ok(ExternalAgentLaunchSpec {
@@ -284,7 +288,7 @@ impl AcpStdioHarness {
             program,
             args,
             arg0: None,
-            cwd: cwd.into(),
+            cwd,
             env,
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "external-agent ACP launch has not been wrapped in a Codewith platform sandbox",
@@ -323,6 +327,10 @@ impl AcpStdioHarness {
             Ok(program) => program,
             Err(err) => return self.runtime_missing_readiness(err),
         };
+        #[cfg(windows)]
+        if is_windows_batch_program(&program) {
+            return self.runtime_ready_readiness(&program);
+        }
         if self.descriptor.id == ExternalAgentRuntimeId::CURSOR
             && let Err(message) = self.probe_cursor_runtime(&program, source_env).await
         {
@@ -429,20 +437,8 @@ impl AcpStdioHarness {
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>();
         args.push("--help".to_string());
-        #[cfg(windows)]
-        let (program, args, env) = {
-            let mut env = env;
-            let (program, args) =
-                prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, &mut env)
-                    .map_err(|err| err.to_string())?;
-            (program, args, env)
-        };
-        #[cfg(not(windows))]
         let program = program.to_path_buf();
         let mut command = Command::new(program);
-        #[cfg(windows)]
-        configure_windows_batch_launch(&mut command, &args);
-        #[cfg(not(windows))]
         command.args(args);
         command
             .env_clear()
@@ -773,9 +769,6 @@ impl AcpStdioProcess {
         unsafe {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
-        #[cfg(windows)]
-        configure_windows_batch_launch(&mut command, &launch.args);
-        #[cfg(not(windows))]
         command.args(&launch.args);
         command
             .current_dir(&launch.cwd)
@@ -2108,7 +2101,7 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn acp_cmd_launches_with_source_comspec_and_source_only_pathext() {
+    async fn acp_npm_cmd_shim_launches_with_native_node_from_source_path() {
         let Some(descriptor) = find_external_agent_runtime("grok-build") else {
             panic!("grok-build runtime");
         };
@@ -2117,13 +2110,26 @@ mod tests {
         let bin_dir = temp_dir.path().join("bin");
         std::fs::create_dir(&bin_dir).expect("create bin dir");
         let grok = bin_dir.join("grok.cmd");
-        std::fs::write(&grok, "@echo off\r\necho batch-launch\r\nexit /b 0\r\n")
-            .expect("write fake ACP batch shim");
-        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        std::fs::write(
+            &grok,
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET \"_prog=node\"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\grok.js\" %*\r\n",
+        )
+        .expect("write npm Grok batch shim");
+        std::fs::write(
+            bin_dir.join("grok.js"),
+            "process.stdout.write('native-node-launch\\n');\n",
+        )
+        .expect("write Grok JavaScript entrypoint");
+        let mut source_paths = vec![bin_dir.clone()];
+        source_paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").expect("Windows supplies PATH"),
+        ));
+        let source_path = std::env::join_paths(source_paths).expect("join source PATH");
+        let source_comspec = temp_dir.path().join("source-comspec.cmd");
         let source_env = BTreeMap::from([
-            ("pAtH".to_string(), bin_dir.display().to_string()),
-            ("pAtHeXt".to_string(), ".CMD".to_string()),
-            ("cOmSpEc".to_string(), comspec.clone()),
+            ("pAtH".to_string(), source_path.display().to_string()),
+            ("pAtHeXt".to_string(), ".CMD;.EXE".to_string()),
+            ("cOmSpEc".to_string(), source_comspec.display().to_string()),
         ]);
         let request = ExternalAgentRequest::new(
             "grok-build",
@@ -2140,37 +2146,65 @@ mod tests {
         );
         let launch = harness
             .launch_spec(temp_dir.path(), resolved, &source_env, &BTreeMap::new())
-            .expect("batch launch spec should build");
-        assert_eq!(launch.program, PathBuf::from(comspec));
-        assert_eq!(launch.args[3], "/c");
+            .expect("npm batch shim launch spec should build");
         assert_eq!(
-            launch
-                .env
-                .get("CODEWITH_BATCH_PROGRAM")
-                .expect("batch program transport environment")
-                .to_ascii_lowercase(),
-            grok.display().to_string().to_ascii_lowercase()
+            launch.program.file_name().and_then(|name| name.to_str()),
+            Some("node.exe")
         );
+        assert_ne!(launch.program, source_comspec);
+        assert_eq!(launch.args.first(), Some(&bin_dir.join("grok.js").canonicalize().expect("grok entrypoint").display().to_string()));
+        assert!(!launch.args.iter().any(|arg| matches!(arg.as_str(), "/c" | "/v:on")));
 
         let mut process = AcpStdioProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
         )
-        .expect("cmd.exe should launch the ACP batch shim");
+        .expect("native node should launch the ACP entrypoint");
         assert_eq!(
             process
                 .stdout
                 .next_line()
                 .await
                 .expect("read ACP batch output"),
-            Some("batch-launch".to_string())
+            Some("native-node-launch".to_string())
         );
         assert!(
             process
                 .child
                 .wait()
                 .await
-                .expect("wait for ACP batch shim")
+                .expect("wait for ACP npm shim launch")
                 .success()
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cursor_batch_readiness_does_not_execute_source_comspec() {
+        let harness = cursor_acp_harness().expect("cursor harness");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin directory");
+        std::fs::write(bin_dir.join("agent.cmd"), "@echo off\r\nexit /b 0\r\n")
+            .expect("write Cursor batch shim");
+        let source_comspec = temp_dir.path().join("source-comspec.cmd");
+        let marker = temp_dir.path().join("source-comspec-ran.txt");
+        std::fs::write(
+            &source_comspec,
+            "@echo off\r\necho unsafe > \"%~dp0source-comspec-ran.txt\"\r\nexit /b 0\r\n",
+        )
+        .expect("write source COMSPEC shim");
+        let source_env = BTreeMap::from([
+            ("PATH".to_string(), bin_dir.display().to_string()),
+            ("PATHEXT".to_string(), ".CMD".to_string()),
+            ("COMSPEC".to_string(), source_comspec.display().to_string()),
+        ]);
+
+        let readiness = harness.readiness_with_env(&source_env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+        assert!(
+            !marker.exists(),
+            "readiness must not execute a source-environment COMSPEC for a batch runtime"
         );
     }
 

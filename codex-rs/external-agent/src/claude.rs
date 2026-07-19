@@ -28,13 +28,13 @@ use crate::ExternalAgentSessionState;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch;
 #[cfg(windows)]
-use crate::windows_command::WindowsBatchLaunchError;
+use crate::windows_cmd_shim::WindowsBatchLaunchError;
 #[cfg(windows)]
-use crate::windows_command::configure_windows_batch_launch;
+use crate::windows_cmd_shim::is_windows_batch_program;
+#[cfg(windows)]
+use crate::windows_cmd_shim::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::merge_windows_environment;
-#[cfg(windows)]
-use crate::windows_command::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
@@ -216,6 +216,10 @@ impl ClaudeCodeHarness {
         if has_agent_sdk_auth_env(source_env) {
             return self.runtime_ready_readiness(&program);
         }
+        #[cfg(windows)]
+        if is_windows_batch_program(&program) {
+            return self.runtime_ready_readiness(&program);
+        }
 
         let launch = match self.launch_spec_with_args(
             PathBuf::from("."),
@@ -227,9 +231,6 @@ impl ClaudeCodeHarness {
             Err(error) => return self.runtime_missing_readiness(error.to_string()),
         };
         let mut command = Command::new(&launch.program);
-        #[cfg(windows)]
-        configure_windows_batch_launch(&mut command, &launch.args);
-        #[cfg(not(windows))]
         command.args(&launch.args);
         match command
             .env_clear()
@@ -293,14 +294,18 @@ impl ClaudeCodeHarness {
         source_env: &BTreeMap<String, String>,
         args: Vec<String>,
     ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
+        let cwd = cwd.into();
         let program = resolved_program.into();
         let env = self.sanitized_env(source_env);
         #[cfg(windows)]
         let (program, args, env) = {
-            let mut env = env;
-            let (program, args) =
-                prepare_windows_batch_launch_from_source_env(program, args, &mut env)
-                    .map_err(|error| invalid_batch_launch_request(self.descriptor.id, error))?;
+            let (program, args) = prepare_windows_batch_launch_from_source_env(
+                program,
+                args,
+                &env,
+                &cwd,
+            )
+            .map_err(|error| invalid_batch_launch_request(self.descriptor.id, error))?;
             (program, args, env)
         };
         Ok(ExternalAgentLaunchSpec {
@@ -308,7 +313,7 @@ impl ClaudeCodeHarness {
             program,
             args,
             arg0: None,
-            cwd: cwd.into(),
+            cwd,
             env,
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "Claude Code launch has not been wrapped in a Codewith platform sandbox",
@@ -527,9 +532,6 @@ impl ClaudeCodeProcess {
         unsafe {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
-        #[cfg(windows)]
-        configure_windows_batch_launch(&mut command, &launch.args);
-        #[cfg(not(windows))]
         command.args(&launch.args);
         command
             .current_dir(&launch.cwd)
@@ -1201,17 +1203,30 @@ exit 2
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn claude_cmd_receives_source_pathext_in_sanitized_environment() {
+    async fn claude_npm_cmd_shim_receives_source_pathext_in_sanitized_environment() {
         let temp_dir = tempfile::TempDir::new().expect("tempdir");
         let bin_dir = temp_dir.path().join("bin");
         std::fs::create_dir(&bin_dir).expect("create bin dir");
         let claude_path = bin_dir.join("claude.cmd");
-        std::fs::write(&claude_path, "@echo off\r\necho %PATHEXT%\r\nexit /b 0\r\n")
-            .expect("write fake claude");
+        std::fs::write(
+            &claude_path,
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET \"_prog=node\"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\claude.js\" %*\r\n",
+        )
+        .expect("write npm Claude shim");
+        std::fs::write(
+            bin_dir.join("claude.js"),
+            "process.stdout.write(process.env.PATHEXT + '\\n');\n",
+        )
+        .expect("write Claude JavaScript entrypoint");
         let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        let mut source_paths = vec![bin_dir.clone()];
+        source_paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").expect("Windows supplies PATH"),
+        ));
+        let source_path = std::env::join_paths(source_paths).expect("join source PATH");
         let source_env = BTreeMap::from([
-            ("Path".to_string(), bin_dir.display().to_string()),
-            ("PathExt".to_string(), ".CMD".to_string()),
+            ("Path".to_string(), source_path.display().to_string()),
+            ("PathExt".to_string(), ".CMD;.EXE".to_string()),
             ("cOmSpEc".to_string(), comspec.clone()),
             ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
         ]);
@@ -1224,16 +1239,15 @@ exit 2
         );
         let launch = harness
             .launch_spec(temp_dir.path(), &claude_path, &source_env)
-            .expect("batch launch spec should build");
-        assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD".to_string()));
+            .expect("npm shim launch spec should build");
+        assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD;.EXE".to_string()));
         assert_eq!(launch.env.get("COMSPEC"), Some(&comspec));
         assert_eq!(launch.env.get("SYSTEMROOT"), None);
-        assert_eq!(launch.program, PathBuf::from(comspec));
-        assert_eq!(launch.args[3], "/c");
         assert_eq!(
-            launch.env.get("CODEWITH_BATCH_PROGRAM"),
-            Some(&claude_path.display().to_string())
+            launch.program.file_name().and_then(|name| name.to_str()),
+            Some("node.exe")
         );
+        assert_eq!(launch.args.first(), Some(&bin_dir.join("claude.js").canonicalize().expect("Claude entrypoint").display().to_string()));
         let mut process = ClaudeCodeProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
             &request,
@@ -1246,7 +1260,7 @@ exit 2
                 .next_line()
                 .await
                 .expect("read fake claude stdout"),
-            Some(".CMD".to_string())
+            Some(".CMD;.EXE".to_string())
         );
         assert!(
             process
@@ -1264,23 +1278,28 @@ exit 2
         let bin_dir = temp_dir.path().join("bin");
         std::fs::create_dir(&bin_dir).expect("create bin dir");
         let claude_path = bin_dir.join("claude.cmd");
-        let capture_path = bin_dir.join("captured-task.txt");
+        let capture_path = bin_dir.join("captured-args.json");
         let marker_path = bin_dir.join("injected.txt");
         std::fs::write(
             &claude_path,
-            r#"@echo off
-setlocal DisableDelayedExpansion
-set "TASK=%~9"
-set TASK > "%~dp0captured-task.txt"
-exit /b 0
-"#,
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET \"_prog=node\"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\claude.js\" %*\r\n",
         )
-        .expect("write fake Claude batch shim");
-        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        .expect("write npm Claude batch shim");
+        std::fs::write(
+            bin_dir.join("claude.js"),
+            "require('fs').writeFileSync(process.env.CODEWITH_BATCH_CAPTURE, JSON.stringify(process.argv.slice(2)));\n",
+        )
+        .expect("write Claude JavaScript entrypoint");
+        let mut source_paths = vec![bin_dir.clone()];
+        source_paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").expect("Windows supplies PATH"),
+        ));
+        let source_path = std::env::join_paths(source_paths).expect("join source PATH");
+        let source_comspec = temp_dir.path().join("source-comspec.cmd");
         let source_env = BTreeMap::from([
-            ("Path".to_string(), bin_dir.display().to_string()),
-            ("PathExt".to_string(), ".CMD".to_string()),
-            ("cOmSpEc".to_string(), comspec),
+            ("Path".to_string(), source_path.display().to_string()),
+            ("PathExt".to_string(), ".CMD;.EXE".to_string()),
+            ("cOmSpEc".to_string(), source_comspec.display().to_string()),
             (
                 "ANTHROPIC_API_KEY".to_string(),
                 "expanded-in-test".to_string(),
@@ -1291,31 +1310,73 @@ exit /b 0
             marker_path.display()
         );
         let harness = claude_code_harness().expect("claude harness");
+        let expected_args = claude_code_args(task.as_str());
         let launch = harness
             .launch_spec_with_args(
                 temp_dir.path(),
                 &claude_path,
                 &source_env,
-                claude_code_args(task.as_str()),
+                expected_args.clone(),
             )
-            .expect("hostile single-line task should prepare");
+            .expect("npm Claude shim should prepare hostile single-line task");
 
         let mut command = Command::new(&launch.program);
-        configure_windows_batch_launch(&mut command, &launch.args);
+        command.args(&launch.args);
         let status = command
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
+            .env("CODEWITH_BATCH_CAPTURE", &capture_path)
             .status()
             .await
-            .expect("launch fake Claude batch shim");
+            .expect("launch native Claude node entrypoint");
         assert!(status.success());
+        assert_eq!(
+            launch.program.file_name().and_then(|name| name.to_str()),
+            Some("node.exe")
+        );
+        assert_ne!(launch.program, source_comspec);
+        assert!(!launch.args.iter().any(|arg| matches!(arg.as_str(), "/c" | "/v:on")));
         assert!(
             !marker_path.exists(),
-            "hostile task escaped the Claude batch command line"
+            "hostile task must not be reparsed as a batch command"
         );
-        let captured = std::fs::read_to_string(capture_path).expect("read captured task");
-        assert_eq!(captured.trim_end(), format!("TASK={task}"));
+        let captured = serde_json::from_str::<Vec<String>>(
+            &std::fs::read_to_string(capture_path).expect("read captured Claude argv"),
+        )
+        .expect("Claude target should serialize argv as JSON");
+        assert_eq!(captured, expected_args);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn claude_batch_readiness_does_not_execute_source_comspec() {
+        let harness = claude_code_harness().expect("claude harness");
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin directory");
+        std::fs::write(bin_dir.join("claude.cmd"), "@echo off\r\nexit /b 0\r\n")
+            .expect("write Claude batch shim");
+        let source_comspec = temp_dir.path().join("source-comspec.cmd");
+        let marker = temp_dir.path().join("source-comspec-ran.txt");
+        std::fs::write(
+            &source_comspec,
+            "@echo off\r\necho unsafe > \"%~dp0source-comspec-ran.txt\"\r\nexit /b 0\r\n",
+        )
+        .expect("write source COMSPEC shim");
+        let source_env = BTreeMap::from([
+            ("PATH".to_string(), bin_dir.display().to_string()),
+            ("PATHEXT".to_string(), ".CMD".to_string()),
+            ("COMSPEC".to_string(), source_comspec.display().to_string()),
+        ]);
+
+        let readiness = harness.readiness_with_env(&source_env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+        assert!(
+            !marker.exists(),
+            "readiness must not execute a source-environment COMSPEC for a batch runtime"
+        );
     }
 
     #[cfg(windows)]

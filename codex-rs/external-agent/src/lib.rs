@@ -10,6 +10,7 @@ mod acp;
 mod claude;
 mod contract;
 mod platform_sandbox;
+mod windows_cmd_shim;
 mod runtimes;
 mod windows_command;
 
