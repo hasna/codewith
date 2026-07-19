@@ -108,7 +108,13 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     .await?;
     let agent_id = start.agent.agent_id.clone();
 
-    assert_eq!(start.agent.status, AgentRunStatus::Queued);
+    assert!(
+        matches!(
+            start.agent.status,
+            AgentRunStatus::Queued | AgentRunStatus::Starting
+        ),
+        "the supervisor may claim a newly queued run before agent/start returns"
+    );
     assert_eq!(start.agent.desired_state, AgentDesiredState::Running);
     assert_eq!(start.status_snapshot.status, AgentRunStatus::Queued);
     assert_eq!(

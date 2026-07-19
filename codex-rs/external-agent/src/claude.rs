@@ -28,6 +28,8 @@ use crate::ExternalAgentSessionState;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch;
 #[cfg(windows)]
+use crate::windows_command::prepare_windows_batch_launch_from_source_env;
+#[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
 use tokio::io::AsyncBufReadExt;
@@ -200,10 +202,16 @@ impl ClaudeCodeHarness {
             return self.runtime_ready_readiness(&program);
         }
 
-        match Command::new(&program)
-            .args(["auth", "status"])
+        let launch = self.launch_spec_with_args(
+            PathBuf::from("."),
+            program.clone(),
+            source_env,
+            vec!["auth".to_string(), "status".to_string()],
+        );
+        match Command::new(&launch.program)
+            .args(&launch.args)
             .env_clear()
-            .envs(self.sanitized_env(source_env))
+            .envs(launch.env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -236,21 +244,41 @@ impl ClaudeCodeHarness {
     ) -> Result<ExternalAgentResult, ExternalAgentError> {
         self.validate_request(&request)?;
         let program = self.resolve_program(&request, &source_env)?;
-        let launch = self.launch_spec(request.cwd.clone(), program, &source_env);
+        let launch = self.launch_spec_with_args(
+            request.cwd.clone(),
+            program,
+            &source_env,
+            claude_code_args(request.task.as_str()),
+        );
         let launch = platform_sandbox_external_agent_launch(launch, sandbox_config)?;
         self.run_sandboxed_launch(request, host, launch).await
     }
 
+    #[cfg(test)]
     fn launch_spec(
         &self,
         cwd: impl Into<PathBuf>,
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
     ) -> ExternalAgentLaunchSpec {
+        self.launch_spec_with_args(cwd, resolved_program, source_env, Vec::new())
+    }
+
+    fn launch_spec_with_args(
+        &self,
+        cwd: impl Into<PathBuf>,
+        resolved_program: impl Into<PathBuf>,
+        source_env: &BTreeMap<String, String>,
+        args: Vec<String>,
+    ) -> ExternalAgentLaunchSpec {
+        let program = resolved_program.into();
+        #[cfg(windows)]
+        let (program, args) =
+            prepare_windows_batch_launch_from_source_env(program, args, source_env);
         ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
-            program: resolved_program.into(),
-            args: Vec::new(),
+            program,
+            args,
             arg0: None,
             cwd: cwd.into(),
             env: self.sanitized_env(source_env),
@@ -438,7 +466,7 @@ struct ClaudeCodeProcess {
 impl ClaudeCodeProcess {
     fn spawn(
         launch: ExternalAgentSandboxedLaunchSpec,
-        request: &ExternalAgentRequest,
+        _request: &ExternalAgentRequest,
     ) -> Result<Self, ExternalAgentError> {
         let launch = launch.into_launch_spec();
         let runtime = launch.runtime.clone();
@@ -460,7 +488,7 @@ impl ClaudeCodeProcess {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
         command
-            .args(claude_code_args(request.task.as_str()))
+            .args(&launch.args)
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
@@ -1129,9 +1157,11 @@ exit 2
         let claude_path = bin_dir.join("claude.cmd");
         std::fs::write(&claude_path, "@echo off\r\necho %PATHEXT%\r\nexit /b 0\r\n")
             .expect("write fake claude");
+        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
         let source_env = BTreeMap::from([
             ("Path".to_string(), bin_dir.display().to_string()),
             ("PathExt".to_string(), ".CMD".to_string()),
+            ("cOmSpEc".to_string(), comspec.clone()),
             ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
         ]);
         let harness = claude_code_harness().expect("claude harness");
@@ -1143,8 +1173,11 @@ exit 2
         );
         let launch = harness.launch_spec(temp_dir.path(), &claude_path, &source_env);
         assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD".to_string()));
-        assert_eq!(launch.env.get("COMSPEC"), None);
+        assert_eq!(launch.env.get("COMSPEC"), Some(&comspec));
         assert_eq!(launch.env.get("SYSTEMROOT"), None);
+        assert_eq!(launch.program, PathBuf::from(comspec));
+        assert_eq!(launch.args[3], "/c");
+        assert!(launch.args[4].contains(claude_path.to_string_lossy().as_ref()));
         let mut process = ClaudeCodeProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
             &request,

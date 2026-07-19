@@ -40,6 +40,8 @@ use crate::TerminalCapability;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 #[cfg(windows)]
+use crate::windows_command::prepare_windows_batch_launch_from_source_env;
+#[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -245,16 +247,21 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         extra_env: &BTreeMap<String, String>,
     ) -> ExternalAgentLaunchSpec {
+        let program = resolved_program.into();
+        let args = self
+            .descriptor
+            .command
+            .args
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        #[cfg(windows)]
+        let (program, args) =
+            prepare_windows_batch_launch_from_source_env(program, args, source_env);
         ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
-            program: resolved_program.into(),
-            args: self
-                .descriptor
-                .command
-                .args
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
+            program,
+            args,
             arg0: None,
             cwd: cwd.into(),
             env: self.env_policy.sanitize(source_env, extra_env),
@@ -332,11 +339,7 @@ impl AcpStdioHarness {
             "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
             request.runtime.as_str().to_string(),
         );
-        for name in acp_runtime_auth_env_vars(request.runtime.as_str()) {
-            if let Some(value) = source_env.get(*name) {
-                extra_env.insert((*name).to_string(), value.clone());
-            }
-        }
+        copy_acp_runtime_auth_env(&mut extra_env, &source_env, request.runtime.as_str());
         let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env);
         let launch = platform_sandbox_external_agent_launch_with_writable_roots(
             launch,
@@ -395,10 +398,22 @@ impl AcpStdioHarness {
         let env = self
             .env_policy
             .sanitize(source_env, &BTreeMap::<String, String>::new());
+        let mut args = self
+            .descriptor
+            .command
+            .args
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        args.push("--help".to_string());
+        #[cfg(windows)]
+        let (program, args) =
+            prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, source_env);
+        #[cfg(not(windows))]
+        let program = program.to_path_buf();
         let mut command = Command::new(program);
         command
-            .args(self.descriptor.command.args)
-            .arg("--help")
+            .args(args)
             .env_clear()
             .envs(env)
             .stdin(Stdio::null())
@@ -610,6 +625,18 @@ fn acp_runtime_auth_env_vars(runtime_id: &str) -> &'static [&'static str] {
         ExternalAgentRuntimeId::CURSOR => CURSOR_AUTH_ENV_VARS,
         ExternalAgentRuntimeId::GROK_BUILD => GROK_BUILD_AUTH_ENV_VARS,
         _ => &[],
+    }
+}
+
+fn copy_acp_runtime_auth_env(
+    destination: &mut BTreeMap<String, String>,
+    source_env: &BTreeMap<String, String>,
+    runtime_id: &str,
+) {
+    for name in acp_runtime_auth_env_vars(runtime_id) {
+        if let Some(value) = source_env_value(source_env, name) {
+            destination.insert((*name).to_string(), value.clone());
+        }
     }
 }
 
@@ -1937,6 +1964,86 @@ mod tests {
                 .resolve_program(&request, &source_env)
                 .expect("source .CMD PATHEXT should resolve the supplied command"),
             grok
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_auth_env_lookup_is_case_insensitive() {
+        let source_env = BTreeMap::from([
+            ("cUrSoR_aPi_KeY".to_string(), "cursor-key".to_string()),
+            ("CuRsOr_AuTh_ToKeN".to_string(), "cursor-token".to_string()),
+        ]);
+        let mut destination = BTreeMap::new();
+
+        copy_acp_runtime_auth_env(
+            &mut destination,
+            &source_env,
+            ExternalAgentRuntimeId::CURSOR,
+        );
+
+        assert_eq!(
+            destination,
+            BTreeMap::from([
+                ("CURSOR_API_KEY".to_string(), "cursor-key".to_string()),
+                ("CURSOR_AUTH_TOKEN".to_string(), "cursor-token".to_string(),),
+            ])
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn acp_cmd_launches_with_source_comspec_and_source_only_pathext() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let grok = bin_dir.join("grok.cmd");
+        std::fs::write(&grok, "@echo off\r\necho batch-launch\r\nexit /b 0\r\n")
+            .expect("write fake ACP batch shim");
+        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        let source_env = BTreeMap::from([
+            ("pAtH".to_string(), bin_dir.display().to_string()),
+            ("pAtHeXt".to_string(), ".CMD".to_string()),
+            ("cOmSpEc".to_string(), comspec.clone()),
+        ]);
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let resolved = harness
+            .resolve_program(&request, &source_env)
+            .expect("source-only PATH and PATHEXT should resolve the batch shim");
+        assert_eq!(resolved, grok);
+        let launch = harness.launch_spec(temp_dir.path(), resolved, &source_env, &BTreeMap::new());
+        assert_eq!(launch.program, PathBuf::from(comspec));
+        assert_eq!(launch.args[3], "/c");
+        assert!(launch.args[4].contains(grok.to_string_lossy().as_ref()));
+
+        let mut process = AcpStdioProcess::spawn(
+            ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
+        )
+        .expect("cmd.exe should launch the ACP batch shim");
+        assert_eq!(
+            process
+                .stdout
+                .next_line()
+                .await
+                .expect("read ACP batch output"),
+            Some("batch-launch".to_string())
+        );
+        assert!(
+            process
+                .child
+                .wait()
+                .await
+                .expect("wait for ACP batch shim")
+                .success()
         );
     }
 

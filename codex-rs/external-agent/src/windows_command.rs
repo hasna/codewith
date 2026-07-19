@@ -60,6 +60,79 @@ pub(crate) fn resolve_windows_program_from_source_env(
     ))
 }
 
+/// Rewrites a resolved `.cmd` or `.bat` program into a `cmd.exe /c` launch.
+///
+/// `CreateProcess` does not provide the same executable contract for batch
+/// shims as it does for native binaries. Keep the resolved source-environment
+/// path, but execute it through the source `COMSPEC` (or `cmd.exe` when the
+/// source omits it). The command string quotes every argument, disables AutoRun
+/// and delayed expansion, and doubles `%` so a batch shim cannot expand a
+/// caller-supplied environment reference.
+#[cfg(windows)]
+pub(crate) fn prepare_windows_batch_launch_from_source_env(
+    program: PathBuf,
+    args: Vec<String>,
+    source_env: &BTreeMap<String, String>,
+) -> (PathBuf, Vec<String>) {
+    if !is_windows_batch_program(&program) {
+        return (program, args);
+    }
+
+    let command_line = std::iter::once(program.to_string_lossy().into_owned())
+        .chain(args)
+        .map(|argument| quote_windows_cmd_argument(argument.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command_interpreter = windows_source_env_value(source_env, "COMSPEC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cmd.exe"));
+    (
+        command_interpreter,
+        vec![
+            "/d".to_string(),
+            "/v:off".to_string(),
+            "/s".to_string(),
+            "/c".to_string(),
+            format!("\"{command_line}\""),
+        ],
+    )
+}
+
+#[cfg(windows)]
+fn is_windows_batch_program(program: &Path) -> bool {
+    program
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(windows)]
+fn quote_windows_cmd_argument(argument: &str) -> String {
+    let argument = argument.replace('%', "%%");
+    let mut quoted = String::from("\"");
+    let mut backslash_count = 0;
+    for character in argument.chars() {
+        if character == '\\' {
+            backslash_count += 1;
+            continue;
+        }
+        if character == '\"' {
+            quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2).saturating_add(1)));
+            quoted.push('\"');
+            backslash_count = 0;
+            continue;
+        }
+        quoted.push_str(&"\\".repeat(backslash_count));
+        backslash_count = 0;
+        quoted.push(character);
+    }
+    quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2)));
+    quoted.push('\"');
+    quoted
+}
+
 #[cfg(windows)]
 fn windows_source_env_value<'a>(
     source_env: &'a BTreeMap<String, String>,

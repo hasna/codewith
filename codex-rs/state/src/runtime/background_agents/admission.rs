@@ -39,6 +39,16 @@ impl StateRuntime {
         &self,
         params: &BackgroundAgentRunAdmissionParams,
     ) -> anyhow::Result<BackgroundAgentRunAdmission> {
+        crate::busy_retry::retry_on_busy("admit background agent run", || {
+            self.admit_background_agent_run_once(params)
+        })
+        .await
+    }
+
+    async fn admit_background_agent_run_once(
+        &self,
+        params: &BackgroundAgentRunAdmissionParams,
+    ) -> anyhow::Result<BackgroundAgentRunAdmission> {
         let now = Utc::now().timestamp();
         let now_ms = now * 1000;
         let mut tx = self.pool.begin().await?;
@@ -127,19 +137,41 @@ async fn admit_background_agent_run_in_tx(
             .await?
         }
     };
+    let run = background_agent_run_by_id_in_tx(tx, run.id.as_str())
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "background agent run {} disappeared during admission",
+                run.id
+            )
+        })?;
     let status_snapshot =
         match get_background_agent_status_snapshot_in_tx(tx, run.id.as_str()).await? {
             Some(snapshot) => snapshot,
             None => {
+                let current_event = latest_background_agent_event_in_tx(tx, run.id.as_str())
+                    .await?
+                    .unwrap_or_else(|| event.clone());
+                let (summary, payload_json) = if created_new_run {
+                    ("Queued".to_string(), serde_json::json!({"phase": "queued"}))
+                } else {
+                    (
+                        format!("{:?}", run.status),
+                        serde_json::json!({
+                            "phase": run.status.as_str(),
+                            "recovered": true,
+                        }),
+                    )
+                };
                 let status_params = BackgroundAgentStatusSnapshotParams {
                     run_id: run.id.clone(),
-                    seq: event.seq,
+                    seq: current_event.seq,
                     status: run.status,
                     desired_state: run.desired_state,
-                    summary: Some("Queued".to_string()),
+                    summary: Some(summary),
                     pending_interaction_count: 0,
-                    last_event_seq: event.seq,
-                    payload_json: serde_json::json!({"phase": "queued"}),
+                    last_event_seq: current_event.seq,
+                    payload_json,
                 };
                 upsert_background_agent_status_snapshot_in_tx(tx, &status_params, now).await?;
                 get_background_agent_status_snapshot_in_tx(tx, run.id.as_str())
@@ -152,15 +184,6 @@ async fn admit_background_agent_run_in_tx(
                     })?
             }
         };
-    let run = background_agent_run_by_id_in_tx(tx, run.id.as_str())
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "background agent run {} disappeared during admission",
-                run.id
-            )
-        })?;
-
     Ok(BackgroundAgentRunAdmission {
         run,
         execution_snapshot,
@@ -283,6 +306,20 @@ async fn first_background_agent_event_in_tx(
     let row = sqlx::query_as::<_, BackgroundAgentEventRow>(
         "SELECT id, run_id, seq, event_type, payload_json, created_at \
          FROM background_agent_events WHERE run_id = ? ORDER BY seq ASC LIMIT 1",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(BackgroundAgentEvent::try_from).transpose()
+}
+
+async fn latest_background_agent_event_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+) -> anyhow::Result<Option<BackgroundAgentEvent>> {
+    let row = sqlx::query_as::<_, BackgroundAgentEventRow>(
+        "SELECT id, run_id, seq, event_type, payload_json, created_at \
+         FROM background_agent_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
     )
     .bind(run_id)
     .fetch_optional(&mut **tx)

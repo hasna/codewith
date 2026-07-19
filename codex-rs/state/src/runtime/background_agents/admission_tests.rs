@@ -206,6 +206,49 @@ async fn concurrent_managed_worktree_admission_has_one_winner_and_no_loser_resid
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_idempotent_admissions_from_two_runtimes_converge_on_one_run()
+-> anyhow::Result<()> {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+    let first_runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+    let second_runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+    let base_repo_path = unique_temp_dir().join("repo");
+    let worktree_path = create_isolated_worktree(&runtime, "worktree-1", &base_repo_path).await?;
+
+    let mut first_params = admission_params("run-first", "worktree-1", &worktree_path);
+    first_params.run.idempotency_key = Some("same-key".to_string());
+    let mut second_params = admission_params("run-second", "worktree-1", &worktree_path);
+    second_params.run.idempotency_key = Some("same-key".to_string());
+    let barrier = Arc::new(Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async move {
+        first_barrier.wait().await;
+        first_runtime
+            .admit_background_agent_run(&first_params)
+            .await
+    };
+    let second = async move {
+        barrier.wait().await;
+        second_runtime
+            .admit_background_agent_run(&second_params)
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let first = first.expect("first same-key admission should succeed");
+    let second = second.expect("second same-key admission should converge, not return SQLite busy");
+
+    assert_eq!(first.run.id, second.run.id);
+    assert_ne!(first.created_new_run, second.created_new_run);
+    assert_eq!(first.execution_snapshot.run_id, first.run.id);
+    assert_eq!(second.execution_snapshot.run_id, second.run.id);
+    assert_eq!(first.event.run_id, first.run.id);
+    assert_eq!(second.event.run_id, second.run.id);
+    assert_eq!(first.status_snapshot.run_id, first.run.id);
+    assert_eq!(second.status_snapshot.run_id, second.run.id);
+    Ok(())
+}
+
 #[tokio::test]
 async fn idempotent_admission_restores_only_its_persisted_worktree() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -251,6 +294,61 @@ async fn idempotent_admission_restores_only_its_persisted_worktree() -> anyhow::
     .fetch_optional(runtime.pool.as_ref())
     .await?;
     assert_eq!(assignment_worktree_id, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn idempotent_admission_reconstructs_a_missing_snapshot_from_current_run_state()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let base_repo_path = unique_temp_dir().join("repo");
+    let worktree_path = create_isolated_worktree(&runtime, "worktree-1", &base_repo_path).await?;
+    let mut initial_params = admission_params("run-initial", "worktree-1", &worktree_path);
+    initial_params.run.idempotency_key = Some("recover-current-snapshot".to_string());
+    let initial = runtime.admit_background_agent_run(&initial_params).await?;
+
+    runtime
+        .update_background_agent_run_status(
+            initial.run.id.as_str(),
+            BackgroundAgentRunStatus::Starting,
+            Some("supervisor claimed run"),
+        )
+        .await?;
+    runtime
+        .append_background_agent_event(
+            initial.run.id.as_str(),
+            "agent.claimed",
+            &json!({"supervisor": "test"}),
+        )
+        .await?;
+    runtime
+        .append_background_agent_event(
+            initial.run.id.as_str(),
+            "agent.progress",
+            &json!({"stage": "launching"}),
+        )
+        .await?;
+    sqlx::query("DELETE FROM background_agent_status_snapshots WHERE run_id = ?")
+        .bind(initial.run.id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await?;
+
+    let mut retry_params = admission_params("run-retry", "worktree-1", &worktree_path);
+    retry_params.run.idempotency_key = Some("recover-current-snapshot".to_string());
+    let recovered = runtime.admit_background_agent_run(&retry_params).await?;
+
+    assert_eq!(recovered.run.id, initial.run.id);
+    assert_eq!(recovered.event.seq, 1);
+    assert_eq!(
+        recovered.status_snapshot.status,
+        BackgroundAgentRunStatus::Starting
+    );
+    assert_eq!(recovered.status_snapshot.seq, 3);
+    assert_eq!(recovered.status_snapshot.last_event_seq, 3);
+    assert_eq!(
+        recovered.status_snapshot.payload_json,
+        json!({"phase": "starting", "recovered": true})
+    );
     Ok(())
 }
 
