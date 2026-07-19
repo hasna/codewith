@@ -253,6 +253,8 @@ set "ARG6=%~6"
 set "ARG7=%~7"
 set "ARG8=%~8"
 set "ARG9=%~9"
+shift
+set "ARG10=%~9"
 set ARG > "%~dp0captured.txt"
 exit /b 0
 "#,
