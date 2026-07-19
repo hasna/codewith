@@ -406,7 +406,7 @@ SELECT
     created_at_ms
 FROM thread_pending_interaction_events
 WHERE interaction_id = ?
-ORDER BY created_at_ms ASC, rowid ASC
+ORDER BY created_at_ms ASC, insertion_seq ASC
             "#,
         )
         .bind(interaction_id)

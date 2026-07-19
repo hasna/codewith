@@ -113,6 +113,7 @@ use futures::future::join_all;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -134,6 +135,7 @@ const BACKGROUND_AGENT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKGROUND_AGENT_INTERACTION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const BACKGROUND_AGENT_INTERACTION_TIMEOUT: ChronoDuration = ChronoDuration::hours(12);
 const BACKGROUND_AGENT_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+const BACKGROUND_AGENT_WORKER_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKGROUND_AGENT_WORKER_STDERR_DIR: &str = "workers";
 const MANAGED_WORKTREE_CLEANUP_BATCH_LIMIT: u32 = 20;
 const MANAGED_WORKTREE_CLEANUP_RETRY_DELAY: ChronoDuration = ChronoDuration::minutes(15);
@@ -295,14 +297,29 @@ impl ThreadRequestProcessor {
         for token in tokens {
             token.cancel();
         }
-        let process_handles = {
-            let mut active = self.background_agent_worker_processes.lock().await;
-            active.drain().map(|(_, handle)| handle).collect::<Vec<_>>()
-        };
-        let stop_tasks = process_handles.into_iter().map(|handle| async move {
-            let controller = WorkerProcessController::default();
-            if let Err(err) = controller.stop(&handle).await {
-                warn!("failed to stop background-agent worker process: {err}");
+        // Clone before awaiting shutdown so this lock never spans a process stop.
+        #[allow(clippy::needless_collect)]
+        let process_handles = self
+            .background_agent_worker_processes
+            .lock()
+            .await
+            .iter()
+            .map(|(run_id, handle)| (run_id.clone(), handle.clone()))
+            .collect::<Vec<_>>();
+        let stop_tasks = process_handles.into_iter().map(|(run_id, handle)| {
+            let active_worker_processes = Arc::clone(&self.background_agent_worker_processes);
+            async move {
+                match stop_background_agent_worker_process(&handle).await {
+                    Ok(_) => {
+                        active_worker_processes.lock().await.remove(run_id.as_str());
+                    }
+                    Err(err) => {
+                        warn!(
+                            run_id,
+                            "failed to stop background-agent worker process: {err}"
+                        );
+                    }
+                }
             }
         });
         join_all(stop_tasks).await;
@@ -1625,14 +1642,22 @@ impl ThreadRequestProcessor {
             .background_agent_worker_processes
             .lock()
             .await
-            .remove(run_id);
+            .get(run_id)
+            .cloned();
         if let Some(handle) = process_handle {
-            let controller = WorkerProcessController::default();
-            if let Err(err) = controller.stop(&handle).await {
-                warn!(
-                    run_id,
-                    "failed to stop background-agent worker process: {err}"
-                );
+            match stop_background_agent_worker_process(&handle).await {
+                Ok(_) => {
+                    self.background_agent_worker_processes
+                        .lock()
+                        .await
+                        .remove(run_id);
+                }
+                Err(err) => {
+                    warn!(
+                        run_id,
+                        "failed to stop background-agent worker process: {err}"
+                    );
+                }
             }
         }
     }
@@ -1700,6 +1725,9 @@ impl ThreadRequestProcessor {
             arg0_paths: self.arg0_paths.clone(),
             active_workers: Arc::clone(&self.background_agent_workers),
             active_worker_processes: Arc::clone(&self.background_agent_worker_processes),
+            worker_process_cleanup_pending: Arc::clone(
+                &self.background_agent_worker_process_cleanup_pending,
+            ),
             task_tracker: self.background_tasks.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
             codex_bin: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codewith")),
@@ -1719,6 +1747,7 @@ struct BackgroundAgentWorkerContext {
     arg0_paths: codex_arg0::Arg0DispatchPaths,
     active_workers: Arc<Mutex<HashMap<String, CancellationToken>>>,
     active_worker_processes: Arc<Mutex<HashMap<String, WorkerProcessHandle>>>,
+    worker_process_cleanup_pending: Arc<Mutex<HashSet<String>>>,
     task_tracker: TaskTracker,
     codex_home: PathBuf,
     codex_bin: PathBuf,
@@ -1730,14 +1759,20 @@ struct BackgroundAgentProcessSupervisorContext {
     state_db: StateDbHandle,
     supervisor_id: String,
     active_worker_processes: Arc<Mutex<HashMap<String, WorkerProcessHandle>>>,
+    worker_process_cleanup_pending: Arc<Mutex<HashSet<String>>>,
     codex_home: PathBuf,
     codex_bin: PathBuf,
     #[cfg(test)]
     worker_process_spawn_hook: Option<WorkerProcessSpawnHook>,
+    #[cfg(test)]
+    worker_process_stop_hook: Option<WorkerProcessStopHook>,
 }
 
 #[cfg(test)]
 type WorkerProcessSpawnHook = Arc<dyn Fn(&WorkerProcessHandle) -> anyhow::Result<()> + Send + Sync>;
+
+#[cfg(test)]
+type WorkerProcessStopHook = Arc<dyn Fn(&WorkerProcessHandle) -> anyhow::Result<()> + Send + Sync>;
 
 impl BackgroundAgentWorkerContext {
     fn process_supervisor_context(&self) -> BackgroundAgentProcessSupervisorContext {
@@ -1745,10 +1780,13 @@ impl BackgroundAgentWorkerContext {
             state_db: Arc::clone(&self.state_db),
             supervisor_id: self.supervisor_id.clone(),
             active_worker_processes: Arc::clone(&self.active_worker_processes),
+            worker_process_cleanup_pending: Arc::clone(&self.worker_process_cleanup_pending),
             codex_home: self.codex_home.clone(),
             codex_bin: self.codex_bin.clone(),
             #[cfg(test)]
             worker_process_spawn_hook: None,
+            #[cfg(test)]
+            worker_process_stop_hook: None,
         }
     }
 }
@@ -1839,6 +1877,8 @@ async fn reconcile_background_agent_worker_processes(
         .await?;
     reconcile_managed_worktree_cleanup(&context.state_db).await?;
     rehydrate_background_agent_worker_processes(&context).await?;
+    let cleanup_retried_run_ids =
+        retry_pending_background_agent_worker_process_cleanup(&context).await;
     prune_finished_background_agent_worker_processes(&context).await?;
     let runs = match only_run_id {
         Some(run_id) => context
@@ -1850,6 +1890,9 @@ async fn reconcile_background_agent_worker_processes(
         None => context.state_db.list_runs(Some(200)).await?,
     };
     for run in runs {
+        if cleanup_retried_run_ids.contains(run.id.as_str()) {
+            continue;
+        }
         let active_handle = context
             .active_worker_processes
             .lock()
@@ -1917,19 +1960,31 @@ async fn reconcile_background_agent_worker_processes(
         }
         .await;
         if let Err(err) = event_result {
-            let handle = context
-                .active_worker_processes
+            context
+                .worker_process_cleanup_pending
                 .lock()
                 .await
-                .remove(run.id.as_str())
-                .unwrap_or(handle);
-            if let Err(stop_err) = WorkerProcessController::default().stop(&handle).await {
-                warn!(
-                    run_id = %run.id,
-                    "failed to stop background-agent worker after spawn event write failed: {stop_err}"
-                );
+                .insert(run.id.clone());
+            match stop_background_agent_worker_process_with_context(&context, &handle).await {
+                Ok(_) => {
+                    context
+                        .active_worker_processes
+                        .lock()
+                        .await
+                        .remove(run.id.as_str());
+                    context
+                        .worker_process_cleanup_pending
+                        .lock()
+                        .await
+                        .remove(run.id.as_str());
+                    return Err(err);
+                }
+                Err(stop_err) => {
+                    return Err(anyhow::anyhow!(
+                        "post-spawn event write failed: {err:#}; background-agent worker cleanup failed: {stop_err:#}"
+                    ));
+                }
             }
-            return Err(err);
         }
     }
     Ok(())
@@ -1941,21 +1996,8 @@ async fn stop_tracked_background_agent_worker_process(
     run: &BackgroundAgentRun,
     handle: &WorkerProcessHandle,
 ) -> anyhow::Result<()> {
-    let controller = WorkerProcessController::default();
-    let stop_report = match controller.stop(handle).await {
-        Ok(report) => Some(report),
-        Err(err) => {
-            warn!(
-                run_id = %run.id,
-                "failed to stop inactive background-agent worker process: {err}"
-            );
-            None
-        }
-    };
+    let stop_report = stop_background_agent_worker_process(handle).await?;
     active_worker_processes.lock().await.remove(run.id.as_str());
-    let Some(stop_report) = stop_report else {
-        return Ok(());
-    };
     if run.desired_state == BackgroundAgentDesiredState::Running {
         return Ok(());
     }
@@ -1968,6 +2010,88 @@ async fn stop_tracked_background_agent_worker_process(
         }),
     )
     .await
+}
+
+async fn stop_background_agent_worker_process(
+    handle: &WorkerProcessHandle,
+) -> anyhow::Result<codex_background_agent::process_lifecycle::WorkerProcessStopReport> {
+    let controller = WorkerProcessController::default();
+    let report = controller.stop(handle).await?;
+    let deadline = tokio::time::Instant::now() + BACKGROUND_AGENT_WORKER_PROCESS_REAP_TIMEOUT;
+    loop {
+        if controller.is_reaped(handle).await? {
+            return Ok(report);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "background-agent worker process {} or its process group remains after stop",
+                handle.pid
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn stop_background_agent_worker_process_with_context(
+    _context: &BackgroundAgentProcessSupervisorContext,
+    handle: &WorkerProcessHandle,
+) -> anyhow::Result<codex_background_agent::process_lifecycle::WorkerProcessStopReport> {
+    #[cfg(test)]
+    if let Some(hook) = _context.worker_process_stop_hook.as_ref() {
+        hook(handle)?;
+    }
+    stop_background_agent_worker_process(handle).await
+}
+
+async fn retry_pending_background_agent_worker_process_cleanup(
+    context: &BackgroundAgentProcessSupervisorContext,
+) -> HashSet<String> {
+    let run_ids = context
+        .worker_process_cleanup_pending
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut retried = HashSet::new();
+    for run_id in run_ids {
+        let handle = context
+            .active_worker_processes
+            .lock()
+            .await
+            .get(run_id.as_str())
+            .cloned();
+        let Some(handle) = handle else {
+            context
+                .worker_process_cleanup_pending
+                .lock()
+                .await
+                .remove(run_id.as_str());
+            continue;
+        };
+        match stop_background_agent_worker_process_with_context(context, &handle).await {
+            Ok(_) => {
+                context
+                    .active_worker_processes
+                    .lock()
+                    .await
+                    .remove(run_id.as_str());
+                context
+                    .worker_process_cleanup_pending
+                    .lock()
+                    .await
+                    .remove(run_id.as_str());
+                retried.insert(run_id);
+            }
+            Err(err) => {
+                warn!(
+                    run_id,
+                    "failed to retry background-agent worker process cleanup: {err}"
+                );
+            }
+        }
+    }
+    retried
 }
 
 async fn finalize_stopped_background_agent_process_for_run(
@@ -4495,6 +4619,8 @@ pub(super) fn new_background_agent_supervisor_id() -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
     struct TestWorkerFixture {
@@ -4797,7 +4923,7 @@ done
     }
 
     #[tokio::test]
-    async fn test_worker_fixture_drop_stops_worker_before_owning_temp_dir_is_destroyed()
+    async fn post_spawn_event_failure_retries_tracked_worker_cleanup_after_stop_failure()
     -> anyhow::Result<()> {
         let temp = TempDir::new()?;
         let state_db =
@@ -4809,10 +4935,13 @@ done
         let active_worker_processes = Arc::new(Mutex::new(HashMap::new()));
         let captured_handle = Arc::new(std::sync::Mutex::new(None));
         let captured_handle_for_hook = Arc::clone(&captured_handle);
+        let fail_stop = Arc::new(AtomicBool::new(true));
+        let fail_stop_for_hook = Arc::clone(&fail_stop);
         let context = BackgroundAgentProcessSupervisorContext {
             state_db,
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: fixture.program.clone(),
             worker_process_spawn_hook: Some(Arc::new(move |handle| {
@@ -4821,21 +4950,44 @@ done
                     .expect("capture mutex should not be poisoned") = Some(handle.clone());
                 Err(anyhow::anyhow!("injected post-spawn event write failure"))
             })),
+            worker_process_stop_hook: Some(Arc::new(move |_| {
+                if fail_stop_for_hook.load(Ordering::SeqCst) {
+                    anyhow::bail!("injected worker stop failure");
+                }
+                Ok(())
+            })),
         };
         let temp_path = fixture.temp_path().to_path_buf();
         let err = reconcile_background_agent_worker_processes(
-            context,
+            context.clone(),
             Some("forced-stop-run".to_string()),
         )
         .await
         .expect_err("injected post-spawn failure should abort reconciliation");
-        assert_eq!(err.to_string(), "injected post-spawn event write failure");
+        assert!(
+            err.to_string()
+                .contains("injected post-spawn event write failure")
+        );
+        assert!(err.to_string().contains("injected worker stop failure"));
         let handle = captured_handle
             .lock()
             .expect("capture mutex should not be poisoned")
             .clone()
             .expect("spawn hook should capture the worker handle");
+        fixture.track_worker(handle.clone());
+        fixture.wait_until_ready().await?;
         let descendant_pid = fixture.descendant_pid().await?;
+
+        assert_eq!(
+            active_worker_processes.lock().await.get("forced-stop-run"),
+            Some(&handle),
+            "a failed cleanup must retain the recoverable worker handle"
+        );
+        assert!(worker_process_exists(descendant_pid)?);
+
+        fail_stop.store(false, Ordering::SeqCst);
+        reconcile_background_agent_worker_processes(context, Some("forced-stop-run".to_string()))
+            .await?;
 
         wait_for_worker_process_reap(&controller, &handle).await?;
         wait_for_worker_process_group_reap(&handle).await?;
@@ -4865,9 +5017,11 @@ done
             state_db: Arc::clone(&state_db),
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: fixture.program.clone(),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
 
         reconcile_background_agent_worker_processes(
@@ -5086,9 +5240,11 @@ done
             state_db,
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: fixture.program.clone(),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
         reconcile_background_agent_worker_processes(context.clone(), Some("finished-run".into()))
             .await?;
@@ -5190,9 +5346,11 @@ done
             state_db: Arc::clone(&state_db),
             supervisor_id: "new-process-supervisor".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: fixture.program.clone(),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
 
         reconcile_background_agent_worker_processes(context, Some("orphaned-run".to_string()))
@@ -5246,9 +5404,11 @@ done
             state_db,
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: PathBuf::from("/bin/true"),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
 
         reconcile_background_agent_worker_processes(context, Some("terminal-run".to_string()))
@@ -5320,9 +5480,11 @@ done
             state_db: Arc::clone(&state_db),
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: PathBuf::from("/bin/true"),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
 
         reconcile_background_agent_worker_processes(context, Some("stopping-run".to_string()))
@@ -5414,9 +5576,11 @@ done
             state_db: Arc::clone(&state_db),
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             codex_home: temp.path().to_path_buf(),
             codex_bin: fixture.program.clone(),
             worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
         };
 
         reconcile_background_agent_worker_processes(
