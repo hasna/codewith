@@ -65,9 +65,11 @@ pub(crate) fn resolve_windows_program_from_source_env(
 /// `CreateProcess` does not provide the same executable contract for batch
 /// shims as it does for native binaries. Keep the resolved source-environment
 /// path, but execute it through the source `COMSPEC` (or `cmd.exe` when the
-/// source omits it). The command string quotes every argument, disables AutoRun
-/// and delayed expansion, and doubles `%` so a batch shim cannot expand a
-/// caller-supplied environment reference.
+/// source omits it). The command string emits a Windows argv-quoted argument,
+/// then escapes that text for CMD before it reaches the batch shim. CMD uses
+/// carets rather than backslashes to escape quotes and command metacharacters;
+/// delayed expansion remains disabled and `%` is doubled so caller-supplied
+/// environment references remain literal.
 #[cfg(windows)]
 pub(crate) fn prepare_windows_batch_launch_from_source_env(
     program: PathBuf,
@@ -111,8 +113,8 @@ fn is_windows_batch_program(program: &Path) -> bool {
 #[cfg(windows)]
 fn quote_windows_cmd_argument(argument: &str) -> String {
     let argument = argument.replace('%', "%%");
-    let mut quoted = String::from("\"");
-    let mut backslash_count = 0;
+    let mut quoted = String::from("^\"");
+    let mut backslash_count: usize = 0;
     for character in argument.chars() {
         if character == '\\' {
             backslash_count += 1;
@@ -120,17 +122,97 @@ fn quote_windows_cmd_argument(argument: &str) -> String {
         }
         if character == '\"' {
             quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2).saturating_add(1)));
-            quoted.push('\"');
+            quoted.push_str("^\"");
             backslash_count = 0;
             continue;
         }
         quoted.push_str(&"\\".repeat(backslash_count));
         backslash_count = 0;
+        if matches!(character, '^' | '&' | '|' | '<' | '>' | '(' | ')' | '@') {
+            quoted.push('^');
+        }
         quoted.push(character);
     }
     quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2)));
-    quoted.push('\"');
+    quoted.push_str("^\"");
     quoted
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::process::Command;
+
+    #[test]
+    fn batch_launch_preserves_hostile_arguments_without_executing_them() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let batch_path = temp_dir.path().join("capture.cmd");
+        let capture_path = temp_dir.path().join("captured.txt");
+        let marker_path = temp_dir.path().join("injected.txt");
+        std::fs::write(
+            &batch_path,
+            r#"@echo off
+setlocal DisableDelayedExpansion
+set "ARG1=%~1"
+set "ARG2=%~2"
+set "ARG3=%~3"
+set "ARG4=%~4"
+set "ARG5=%~5"
+set "ARG6=%~6"
+set "ARG7=%~7"
+set "ARG8=%~8"
+set "ARG9=%~9"
+set ARG > "%~dp0captured.txt"
+exit /b 0
+"#,
+        )
+        .expect("write batch capture shim");
+        let hostile_args = vec![
+            format!(
+                "embedded \" & type nul > \"{}\" & rem",
+                marker_path.display()
+            ),
+            "pipe | command".to_string(),
+            "input < source".to_string(),
+            "output > destination".to_string(),
+            "open ( parenthesis".to_string(),
+            "close ) parenthesis".to_string(),
+            "caret ^ literal".to_string(),
+            "%CODEWITH_BATCH_TEST_PERCENT%".to_string(),
+            "bang ! literal".to_string(),
+        ];
+        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        let source_env = BTreeMap::from([("cOmSpEc".to_string(), comspec)]);
+        let (program, args) = prepare_windows_batch_launch_from_source_env(
+            batch_path,
+            hostile_args.clone(),
+            &source_env,
+        );
+
+        let status = Command::new(program)
+            .args(args)
+            .env("CODEWITH_BATCH_TEST_PERCENT", "expanded-in-test")
+            .status()
+            .expect("launch batch capture shim");
+        assert!(status.success());
+        assert!(
+            !marker_path.exists(),
+            "hostile argument escaped the batch command line"
+        );
+        let captured = std::fs::read_to_string(capture_path).expect("read captured arguments");
+        let received = (1..=hostile_args.len())
+            .map(|index| {
+                let prefix = format!("ARG{index}=");
+                captured
+                    .lines()
+                    .find_map(|line| line.strip_prefix(prefix.as_str()))
+                    .expect("capture shim should receive every argument")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(received, hostile_args);
+    }
 }
 
 #[cfg(windows)]

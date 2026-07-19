@@ -1202,6 +1202,64 @@ exit 2
     }
 
     #[cfg(windows)]
+    #[tokio::test]
+    async fn claude_cmd_forwards_a_hostile_task_without_executing_it() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let claude_path = bin_dir.join("claude.cmd");
+        let capture_path = bin_dir.join("captured-task.txt");
+        let marker_path = bin_dir.join("injected.txt");
+        std::fs::write(
+            &claude_path,
+            r#"@echo off
+setlocal DisableDelayedExpansion
+set "TASK=%~9"
+set TASK > "%~dp0captured-task.txt"
+exit /b 0
+"#,
+        )
+        .expect("write fake Claude batch shim");
+        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), bin_dir.display().to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            ("cOmSpEc".to_string(), comspec),
+            (
+                "ANTHROPIC_API_KEY".to_string(),
+                "expanded-in-test".to_string(),
+            ),
+        ]);
+        let task = format!(
+            "inspect \" & type nul > \"{}\" & rem | < > ( ) ^ %ANTHROPIC_API_KEY% !",
+            marker_path.display()
+        );
+        let harness = claude_code_harness().expect("claude harness");
+        let launch = harness.launch_spec_with_args(
+            temp_dir.path(),
+            &claude_path,
+            &source_env,
+            claude_code_args(task.as_str()),
+        );
+
+        let status = Command::new(&launch.program)
+            .args(&launch.args)
+            .current_dir(&launch.cwd)
+            .env_clear()
+            .envs(&launch.env)
+            .status()
+            .await
+            .expect("launch fake Claude batch shim");
+        assert!(status.success());
+        assert!(
+            !marker_path.exists(),
+            "hostile task escaped the Claude batch command line"
+        );
+        let captured = std::fs::read_to_string(capture_path).expect("read captured task");
+        assert_eq!(captured.trim_end(), format!("TASK={task}"));
+    }
+
+    #[cfg(windows)]
     #[test]
     fn sanitized_environment_keeps_windows_command_bootstrap_case_insensitively() {
         let source = BTreeMap::from([

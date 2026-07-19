@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use unicode_normalization::UnicodeNormalization;
 
 /// Returns the display form persisted for a managed-worktree path.
 ///
@@ -19,15 +21,16 @@ pub(crate) fn path_to_db_string(path: &Path) -> String {
 
 /// Returns the deterministic equality key for a managed-worktree path.
 ///
-/// Windows and macOS keys use a locale-independent Unicode upper-then-lower
-/// fold. Windows file-name equality is driven by an upcase table, and standard
-/// APFS is case-insensitive by default; the extra uppercase pass conservatively
-/// folds compatibility aliases such as U+017F LATIN SMALL LETTER LONG S with
-/// `S`/`s` while keeping the mapping deterministic across create,
-/// reconciliation, and cleanup admission. A case-sensitive APFS volume may
-/// reject a distinct spelling that it could store separately, but admission
-/// must never let the default case-insensitive filesystem aliases bypass
-/// worktree ownership. Other Unix keys retain their display casing.
+/// Windows keys use a locale-independent Unicode upper-then-lower fold. macOS
+/// applies canonical NFD normalization before and after that fold because
+/// standard APFS treats canonically equivalent names as the same path. The
+/// extra uppercase pass conservatively folds compatibility aliases such as
+/// U+017F LATIN SMALL LETTER LONG S with `S`/`s` while keeping the mapping
+/// deterministic across create, reconciliation, and cleanup admission. A
+/// case-sensitive APFS volume may reject a distinct spelling that it could
+/// store separately, but admission must never let the default
+/// case-insensitive filesystem aliases bypass worktree ownership. Other Unix
+/// keys retain their display casing.
 #[cfg(test)]
 fn managed_worktree_path_key(path: &Path) -> String {
     managed_worktree_path_key_from_display(path_to_db_string(path).as_str())
@@ -38,9 +41,15 @@ pub(crate) fn managed_worktree_path_key_from_display(display_path: &str) -> Stri
     normalize_path_key(display_path.to_owned())
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn normalize_path_key(path: String) -> String {
     normalize_case_insensitive_path_key(path)
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_path_key(path: String) -> String {
+    let folded = normalize_case_insensitive_path_key(path.nfd().collect());
+    folded.nfd().collect()
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -306,27 +315,27 @@ fn strip_windows_verbatim_prefix(path: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use super::super::ManagedWorktreeCreateParams;
     #[cfg(windows)]
     use super::super::ManagedWorktreeReleaseParams;
     use super::*;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::ManagedWorktreeCleanupPolicy;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::ManagedWorktreeMode;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::ManagedWorktreeOwnerKind;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::runtime::StateRuntime;
     use crate::runtime::test_support::unique_temp_dir;
     use pretty_assertions::assert_eq;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use serde_json::json;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use std::sync::Arc;
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     async fn test_runtime() -> Arc<StateRuntime> {
         StateRuntime::init(unique_temp_dir(), "test-provider".to_string())
             .await
@@ -339,7 +348,7 @@ mod tests {
         Ok(path)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn create_params_for_paths(
         worktree_id: &str,
         base_repo_path: PathBuf,
@@ -364,7 +373,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     async fn stored_worktree_path_key(
         runtime: &StateRuntime,
         worktree_id: &str,
@@ -443,6 +452,53 @@ mod tests {
                 r"C:\Managed-Worktrees\RunS\missing\leaf".to_string()
             )
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_unicode_aliases_with_nonexistent_leaves_share_an_admission_key()
+    -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = test_temp_dir()?.join("repo");
+        std::fs::create_dir_all(&base_repo_path)?;
+        let nfc = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join("caf\u{e9}")
+            .join("missing");
+        let nfd = base_repo_path
+            .join(".codewith")
+            .join("worktrees")
+            .join("cafe\u{301}")
+            .join("missing");
+        let store = runtime.managed_worktrees();
+
+        assert_ne!(path_to_db_string(&nfc), path_to_db_string(&nfd));
+        assert_eq!(
+            managed_worktree_path_key(&nfc),
+            managed_worktree_path_key(&nfd)
+        );
+        store
+            .create_managed_worktree(create_params_for_paths(
+                "wt-nfc",
+                base_repo_path.clone(),
+                nfc.clone(),
+            ))
+            .await?;
+        assert_eq!(
+            Some(managed_worktree_path_key(&nfc)),
+            stored_worktree_path_key(runtime.as_ref(), "wt-nfc").await?
+        );
+
+        let error = store
+            .create_managed_worktree(create_params_for_paths("wt-nfd", base_repo_path, nfd))
+            .await
+            .expect_err("a live APFS Unicode alias must be rejected");
+        assert!(
+            format!("{error:#}").contains("normalized isolated worktree path is already live"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
     }
 
     #[cfg(windows)]

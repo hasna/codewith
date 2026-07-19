@@ -145,45 +145,63 @@ async fn admit_background_agent_run_in_tx(
                 run.id
             )
         })?;
-    let status_snapshot =
-        match get_background_agent_status_snapshot_in_tx(tx, run.id.as_str()).await? {
-            Some(snapshot) => snapshot,
-            None => {
-                let current_event = latest_background_agent_event_in_tx(tx, run.id.as_str())
-                    .await?
-                    .unwrap_or_else(|| event.clone());
-                let (summary, payload_json) = if created_new_run {
-                    ("Queued".to_string(), serde_json::json!({"phase": "queued"}))
-                } else {
-                    (
-                        format!("{:?}", run.status),
-                        serde_json::json!({
-                            "phase": run.status.as_str(),
-                            "recovered": true,
-                        }),
-                    )
-                };
-                let status_params = BackgroundAgentStatusSnapshotParams {
-                    run_id: run.id.clone(),
-                    seq: current_event.seq,
-                    status: run.status,
-                    desired_state: run.desired_state,
-                    summary: Some(summary),
-                    pending_interaction_count: 0,
-                    last_event_seq: current_event.seq,
-                    payload_json,
-                };
-                upsert_background_agent_status_snapshot_in_tx(tx, &status_params, now).await?;
-                get_background_agent_status_snapshot_in_tx(tx, run.id.as_str())
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "failed to load background agent status snapshot for run {}",
-                            run.id
-                        )
-                    })?
-            }
+    let current_event = latest_background_agent_event_in_tx(tx, run.id.as_str())
+        .await?
+        .unwrap_or_else(|| event.clone());
+    let status_snapshot = get_background_agent_status_snapshot_in_tx(tx, run.id.as_str()).await?;
+    let snapshot_is_current = status_snapshot.as_ref().is_some_and(|snapshot| {
+        snapshot.status == run.status
+            && snapshot.desired_state == run.desired_state
+            && snapshot.seq == current_event.seq
+            && snapshot.last_event_seq == run.last_event_seq
+            && current_event.seq == run.last_event_seq
+    });
+    let status_snapshot = if let Some(snapshot) = status_snapshot.filter(|_| snapshot_is_current) {
+        snapshot
+    } else {
+        let pending_interaction_count: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)
+FROM background_agent_pending_interactions
+WHERE run_id = ? AND status IN (?, ?)
+            "#,
+        )
+        .bind(run.id.as_str())
+        .bind(BackgroundAgentPendingInteractionStatus::Pending.as_str())
+        .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
+        .fetch_one(&mut **tx)
+        .await?;
+        let (summary, payload_json) = if created_new_run {
+            ("Queued".to_string(), serde_json::json!({"phase": "queued"}))
+        } else {
+            (
+                format!("{:?}", run.status),
+                serde_json::json!({
+                    "phase": run.status.as_str(),
+                    "recovered": true,
+                }),
+            )
         };
+        let status_params = BackgroundAgentStatusSnapshotParams {
+            run_id: run.id.clone(),
+            seq: current_event.seq,
+            status: run.status,
+            desired_state: run.desired_state,
+            summary: Some(summary),
+            pending_interaction_count,
+            last_event_seq: current_event.seq,
+            payload_json,
+        };
+        upsert_background_agent_status_snapshot_in_tx(tx, &status_params, now).await?;
+        get_background_agent_status_snapshot_in_tx(tx, run.id.as_str())
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "failed to load background agent status snapshot for run {}",
+                    run.id
+                )
+            })?
+    };
     Ok(BackgroundAgentRunAdmission {
         run,
         execution_snapshot,

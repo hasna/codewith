@@ -1,4 +1,5 @@
 use super::*;
+use crate::BackgroundAgentPendingInteractionKind;
 use crate::runtime::managed_worktrees::path_to_db_string;
 use crate::runtime::test_support::unique_temp_dir;
 use pretty_assertions::assert_eq;
@@ -345,6 +346,73 @@ async fn idempotent_admission_reconstructs_a_missing_snapshot_from_current_run_s
     );
     assert_eq!(recovered.status_snapshot.seq, 3);
     assert_eq!(recovered.status_snapshot.last_event_seq, 3);
+    assert_eq!(
+        recovered.status_snapshot.payload_json,
+        json!({"phase": "starting", "recovered": true})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn idempotent_admission_refreshes_a_retained_stale_snapshot_from_current_run_state()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let base_repo_path = unique_temp_dir().join("repo");
+    let worktree_path = create_isolated_worktree(&runtime, "worktree-1", &base_repo_path).await?;
+    let mut initial_params = admission_params("run-initial", "worktree-1", &worktree_path);
+    initial_params.run.idempotency_key = Some("refresh-stale-snapshot".to_string());
+    let initial = runtime.admit_background_agent_run(&initial_params).await?;
+
+    runtime
+        .create_background_agent_pending_interaction(
+            &BackgroundAgentPendingInteractionCreateParams {
+                id: "pending-1".to_string(),
+                run_id: initial.run.id.clone(),
+                worker_request_id: Some("worker-request-1".to_string()),
+                kind: BackgroundAgentPendingInteractionKind::Approval,
+                request_payload_json: json!({"action": "continue"}),
+                no_client_policy: "deny".to_string(),
+                timeout_at: None,
+            },
+        )
+        .await?;
+    runtime
+        .update_background_agent_run_status(
+            initial.run.id.as_str(),
+            BackgroundAgentRunStatus::Starting,
+            Some("supervisor claimed run"),
+        )
+        .await?;
+    sqlx::query("UPDATE background_agent_runs SET desired_state = ? WHERE id = ?")
+        .bind(BackgroundAgentDesiredState::Stopped.as_str())
+        .bind(initial.run.id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await?;
+    runtime
+        .append_background_agent_event(
+            initial.run.id.as_str(),
+            "agent.progress",
+            &json!({"stage": "launching"}),
+        )
+        .await?;
+
+    let mut retry_params = admission_params("run-retry", "worktree-1", &worktree_path);
+    retry_params.run.idempotency_key = Some("refresh-stale-snapshot".to_string());
+    let recovered = runtime.admit_background_agent_run(&retry_params).await?;
+
+    assert_eq!(recovered.run.id, initial.run.id);
+    assert_eq!(recovered.event.seq, 1);
+    assert_eq!(
+        recovered.status_snapshot.status,
+        BackgroundAgentRunStatus::Starting
+    );
+    assert_eq!(
+        recovered.status_snapshot.desired_state,
+        BackgroundAgentDesiredState::Stopped
+    );
+    assert_eq!(recovered.status_snapshot.seq, 3);
+    assert_eq!(recovered.status_snapshot.last_event_seq, 3);
+    assert_eq!(recovered.status_snapshot.pending_interaction_count, 1);
     assert_eq!(
         recovered.status_snapshot.payload_json,
         json!({"phase": "starting", "recovered": true})
