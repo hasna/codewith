@@ -7,6 +7,8 @@
 //! while keeping transcript, approval, and audit ownership in Codewith.
 
 mod acp;
+#[cfg(windows)]
+mod acp_windows;
 mod claude;
 mod contract;
 mod platform_sandbox;

@@ -37,6 +37,8 @@ use crate::ExternalAgentSessionRequest;
 use crate::ExternalAgentSessionState;
 use crate::FileSystemCapability;
 use crate::TerminalCapability;
+#[cfg(windows)]
+use crate::acp_windows;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 use serde_json::Value as JsonValue;
@@ -70,12 +72,21 @@ pub struct AcpEnvironmentPolicy {
 
 impl AcpEnvironmentPolicy {
     pub fn sanitized() -> Self {
-        Self {
-            inherited_vars: SAFE_ENV_VARS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        }
+        let inherited_vars = SAFE_ENV_VARS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        #[cfg(windows)]
+        let inherited_vars = {
+            let mut inherited_vars = inherited_vars;
+            inherited_vars.extend(
+                acp_windows::INHERITED_ENV_VARS
+                    .iter()
+                    .map(std::string::ToString::to_string),
+            );
+            inherited_vars
+        };
+        Self { inherited_vars }
     }
 
     pub fn sanitize(
@@ -83,16 +94,39 @@ impl AcpEnvironmentPolicy {
         source: &BTreeMap<String, String>,
         extra: &BTreeMap<String, String>,
     ) -> BTreeMap<String, String> {
+        #[cfg(windows)]
+        let source = acp_windows::merge_environment(source, extra);
+        #[cfg(windows)]
+        let source = &source;
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
-            if let Some(value) = source.get(name) {
+            if let Some(value) = source_env_value(source, name) {
                 env.insert(name.clone(), value.clone());
             }
         }
+        #[cfg(not(windows))]
         for (name, value) in extra {
             env.insert(name.clone(), value.clone());
         }
+        #[cfg(windows)]
+        for (name, value) in extra {
+            env.insert(name.to_ascii_uppercase(), value.clone());
+        }
         env
+    }
+}
+
+fn source_env_value<'a>(
+    source_env: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'a String> {
+    #[cfg(windows)]
+    {
+        source_env.get(&name.to_ascii_uppercase())
+    }
+    #[cfg(not(windows))]
+    {
+        source_env.get(name)
     }
 }
 
@@ -214,24 +248,26 @@ impl AcpStdioHarness {
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
         extra_env: &BTreeMap<String, String>,
-    ) -> ExternalAgentLaunchSpec {
-        ExternalAgentLaunchSpec {
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
+        let cwd = cwd.into();
+        let program = resolved_program.into();
+        let env = self.env_policy.sanitize(source_env, extra_env);
+        let args = self.command_args();
+        #[cfg(windows)]
+        let (program, args) = self
+            .prepared_windows_launch_parts(program, args, source_env, &cwd)
+            .map_err(|message| invalid_windows_launch_request(self.descriptor.id, message))?;
+        Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
-            program: resolved_program.into(),
-            args: self
-                .descriptor
-                .command
-                .args
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
+            program,
+            args,
             arg0: None,
-            cwd: cwd.into(),
-            env: self.env_policy.sanitize(source_env, extra_env),
+            cwd,
+            env,
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "external-agent ACP launch has not been wrapped in a Codewith platform sandbox",
             ),
-        }
+        })
     }
 
     fn runtime_missing_readiness(&self, detail: String) -> ExternalAgentReadiness {
@@ -265,11 +301,26 @@ impl AcpStdioHarness {
             Ok(program) => program,
             Err(err) => return self.runtime_missing_readiness(err),
         };
+        #[cfg(windows)]
+        let native_program = match self.prepared_windows_launch_parts(
+            program.clone(),
+            self.command_args(),
+            source_env,
+            cwd.as_path(),
+        ) {
+            Ok((program, _)) => program,
+            Err(err) => return self.runtime_missing_readiness(err),
+        };
         if self.descriptor.id == ExternalAgentRuntimeId::CURSOR
-            && let Err(message) = self.probe_cursor_runtime(&program, source_env).await
+            && let Err(message) = self
+                .probe_cursor_runtime(&program, source_env, cwd.as_path())
+                .await
         {
             return self.runtime_missing_readiness(message);
         }
+        #[cfg(windows)]
+        return self.runtime_ready_readiness(&native_program);
+        #[cfg(not(windows))]
         self.runtime_ready_readiness(&program)
     }
 
@@ -302,12 +353,8 @@ impl AcpStdioHarness {
             "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
             request.runtime.as_str().to_string(),
         );
-        for name in acp_runtime_auth_env_vars(request.runtime.as_str()) {
-            if let Some(value) = source_env.get(*name) {
-                extra_env.insert((*name).to_string(), value.clone());
-            }
-        }
-        let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env);
+        copy_acp_runtime_auth_env(&mut extra_env, &source_env, request.runtime.as_str());
+        let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env)?;
         let launch = platform_sandbox_external_agent_launch_with_writable_roots(
             launch,
             sandbox_config,
@@ -336,12 +383,17 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
     ) -> Result<PathBuf, String> {
+        #[cfg(not(windows))]
         let path = source_env.get("PATH").map(String::as_str);
         let mut last_error = None;
         for program in acp_program_candidates(self.descriptor) {
-            match which::which_in(program, path, cwd) {
+            #[cfg(windows)]
+            let resolved = acp_windows::resolve_program_from_source_env(program, source_env, cwd);
+            #[cfg(not(windows))]
+            let resolved = which::which_in(program, path, cwd).map_err(|err| err.to_string());
+            match resolved {
                 Ok(program) => return Ok(program),
-                Err(err) => last_error = Some(err.to_string()),
+                Err(err) => last_error = Some(err),
             }
         }
         Err(last_error.unwrap_or_else(|| {
@@ -356,14 +408,28 @@ impl AcpStdioHarness {
         &self,
         program: &Path,
         source_env: &BTreeMap<String, String>,
+        cwd: &Path,
     ) -> Result<(), String> {
+        #[cfg(not(windows))]
+        let _ = cwd;
         let env = self
             .env_policy
             .sanitize(source_env, &BTreeMap::<String, String>::new());
+        let mut args = self.command_args();
+        args.push("--help".to_string());
+        #[cfg(windows)]
+        let launch =
+            acp_windows::prepare_native_launch(program.to_path_buf(), args, source_env, cwd)
+                .map_err(|err| err.to_string())?;
+        #[cfg(windows)]
+        let mut command = Command::new(launch.program);
+        #[cfg(windows)]
+        command.args(launch.args);
+        #[cfg(not(windows))]
         let mut command = Command::new(program);
+        #[cfg(not(windows))]
+        command.args(args);
         command
-            .args(self.descriptor.command.args)
-            .arg("--help")
             .env_clear()
             .envs(env)
             .stdin(Stdio::null())
@@ -386,6 +452,28 @@ impl AcpStdioHarness {
         } else {
             Err(detail.to_string())
         }
+    }
+
+    fn command_args(&self) -> Vec<String> {
+        self.descriptor
+            .command
+            .args
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn prepared_windows_launch_parts(
+        &self,
+        program: PathBuf,
+        args: Vec<String>,
+        source_env: &BTreeMap<String, String>,
+        cwd: &Path,
+    ) -> Result<(PathBuf, Vec<String>), String> {
+        let launch = acp_windows::prepare_native_launch(program, args, source_env, cwd)
+            .map_err(|err| err.to_string())?;
+        acp_windows::native_launch_parts(launch)
     }
 
     fn validate_request(&self, request: &ExternalAgentRequest) -> Result<(), ExternalAgentError> {
@@ -533,6 +621,14 @@ impl AcpStdioHarness {
     }
 }
 
+#[cfg(windows)]
+fn invalid_windows_launch_request(runtime: &str, message: String) -> ExternalAgentError {
+    ExternalAgentError::InvalidRequest {
+        runtime: runtime.to_string(),
+        message,
+    }
+}
+
 pub fn cursor_acp_harness() -> Option<AcpStdioHarness> {
     find_external_agent_runtime(ExternalAgentRuntimeId::CURSOR).map(AcpStdioHarness::new)
 }
@@ -575,6 +671,22 @@ fn acp_runtime_auth_env_vars(runtime_id: &str) -> &'static [&'static str] {
         ExternalAgentRuntimeId::CURSOR => CURSOR_AUTH_ENV_VARS,
         ExternalAgentRuntimeId::GROK_BUILD => GROK_BUILD_AUTH_ENV_VARS,
         _ => &[],
+    }
+}
+
+fn copy_acp_runtime_auth_env(
+    destination: &mut BTreeMap<String, String>,
+    source_env: &BTreeMap<String, String>,
+    runtime_id: &str,
+) {
+    #[cfg(windows)]
+    let source_env = acp_windows::merge_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
+    for name in acp_runtime_auth_env_vars(runtime_id) {
+        if let Some(value) = source_env_value(source_env, name) {
+            destination.insert((*name).to_string(), value.clone());
+        }
     }
 }
 
@@ -1636,6 +1748,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn launch_spec_uses_canonical_runtime_command_and_sanitized_env() {
         let Some(descriptor) = find_external_agent_runtime("grok-build") else {
@@ -1645,7 +1758,9 @@ mod tests {
         let source = BTreeMap::from([("PATH".to_string(), "/bin".to_string())]);
         let extra = BTreeMap::new();
 
-        let spec = harness.launch_spec("/repo", "/usr/bin/grok", &source, &extra);
+        let spec = harness
+            .launch_spec("/repo", "/usr/bin/grok", &source, &extra)
+            .expect("non-batch launch spec should build");
 
         assert_eq!(
             spec,
@@ -1664,6 +1779,113 @@ mod tests {
                     "external-agent ACP launch has not been wrapped in a Codewith platform sandbox",
                 ),
             }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_spec_converts_a_recognized_cmd_shim_to_a_native_node_launch() {
+        let Some(descriptor) = find_external_agent_runtime("cursor") else {
+            panic!("cursor runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let prefix_bin = temp_dir.path().join("prefix-bin");
+        let target = prefix_bin
+            .join("node_modules")
+            .join("agent")
+            .join("bin")
+            .join("agent.js");
+        let node_dir = temp_dir.path().join("node");
+        let shim = prefix_bin.join("agent.cmd");
+        std::fs::create_dir_all(target.parent().expect("target parent"))
+            .expect("create shim target directory");
+        std::fs::create_dir_all(&node_dir).expect("create node directory");
+        std::fs::write(&target, "console.log('agent')").expect("write agent script");
+        std::fs::write(node_dir.join("node.exe"), "not executed").expect("write node");
+        std::fs::write(
+            &shim,
+            include_str!("fixtures/cmd-shim-9.0.2-node.cmd.golden").replace("\\r\\n", "\r\n"),
+        )
+        .expect("write cmd shim");
+        let source = BTreeMap::from([
+            ("pAtH".to_string(), node_dir.display().to_string()),
+            ("pAtHeXt".to_string(), ".CMD;.EXE".to_string()),
+        ]);
+
+        let spec = harness
+            .launch_spec(temp_dir.path(), shim, &source, &BTreeMap::new())
+            .expect("recognized shim should become a native launch");
+
+        assert_eq!(
+            spec.program,
+            node_dir.join("node.exe").canonicalize().expect("node")
+        );
+        assert_eq!(
+            spec.args,
+            vec![
+                target
+                    .canonicalize()
+                    .expect("target")
+                    .into_os_string()
+                    .into_string()
+                    .expect("Unicode target"),
+                "acp".to_string(),
+            ]
+        );
+        assert_eq!(spec.env.get("PATH"), Some(&node_dir.display().to_string()));
+        assert_eq!(spec.env.get("PATHEXT"), Some(&".CMD;.EXE".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_spec_rejects_unrecognized_batch_shims_before_sandboxing() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let shim = temp_dir.path().join("grok.cmd");
+        std::fs::write(&shim, "@echo off\r\necho unsupported\r\n").expect("write cmd shim");
+        let source = BTreeMap::from([("PATH".to_string(), temp_dir.path().display().to_string())]);
+
+        let err = harness
+            .launch_spec(temp_dir.path(), shim, &source, &BTreeMap::new())
+            .expect_err("unrecognized batch shims must fail closed");
+
+        assert!(
+            err.to_string().contains("unsupported Windows batch shim"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn readiness_rejects_unrecognized_batch_shims_before_reporting_ready() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let shim = temp_dir.path().join("grok.cmd");
+        std::fs::write(&shim, "@echo off\r\necho unsupported\r\n").expect("write cmd shim");
+        let source = BTreeMap::from([
+            ("pAtH".to_string(), temp_dir.path().display().to_string()),
+            ("pAtHeXt".to_string(), ".CMD".to_string()),
+        ]);
+
+        let readiness = harness.readiness_with_env(&source).await;
+
+        assert_eq!(
+            readiness.status,
+            ExternalAgentReadinessStatus::MissingRuntime
+        );
+        assert!(
+            readiness
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("unsupported Windows batch shim")),
+            "unexpected readiness: {readiness:?}"
         );
     }
 

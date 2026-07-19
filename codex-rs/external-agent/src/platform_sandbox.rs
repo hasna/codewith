@@ -61,6 +61,15 @@ pub(crate) fn platform_sandbox_external_agent_launch_with_writable_roots(
     writable_roots: Vec<PathBuf>,
 ) -> Result<ExternalAgentSandboxedLaunchSpec, ExternalAgentError> {
     let runtime = launch.runtime.clone();
+    #[cfg(windows)]
+    if launch.program.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    }) {
+        return Err(not_ready(
+            &runtime,
+            "Windows external-agent sandbox launches must use a verified native program",
+        ));
+    }
     if matches!(config.permission_profile, PermissionProfile::Disabled) {
         return Err(not_ready(
             &runtime,
@@ -214,6 +223,25 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "external agent runtime `fake` is not ready: external-agent sandbox permissions must not be disabled"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_batch_programs_before_the_sandbox_can_transform_them() {
+        let config = ExternalAgentSandboxConfig::new(PermissionProfile::External {
+            network: NetworkSandboxPolicy::Restricted,
+        });
+        let mut launch = launch_spec();
+        launch.program = PathBuf::from(r"C:\\tools\\agent.cmd");
+        launch.cwd = PathBuf::from(r"C:\\tmp");
+
+        let err = platform_sandbox_external_agent_launch(launch, &config)
+            .expect_err("batch programs must not enter the sandbox command transform");
+
+        assert_eq!(
+            err.to_string(),
+            "external agent runtime `fake` is not ready: Windows external-agent sandbox launches must use a verified native program"
         );
     }
 
