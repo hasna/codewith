@@ -109,7 +109,7 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
         })
         .collect::<Result<Vec<_>, WindowsBatchLaunchError>>()?
         .join(" ");
-    let command_interpreter = windows_source_env_value(source_env, "COMSPEC")
+    let command_interpreter = windows_source_env_value(&source_env, "COMSPEC")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("cmd.exe"));
     Ok((
