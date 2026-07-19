@@ -33,7 +33,8 @@ fn admission_params(
             config_fingerprint: Some("config-test".to_string()),
             version_fingerprint: Some("version-test".to_string()),
         },
-        worktree_id: worktree_id.to_string(),
+        worktree_id: Some(worktree_id.to_string()),
+        max_active_runs: 8,
         execution_snapshot: BackgroundAgentExecutionSnapshotParams {
             run_id: run_id.to_string(),
             snapshot_kind: "initial_execution_context".to_string(),
@@ -48,6 +49,12 @@ fn admission_params(
             "initialGoalObjective": null,
         }),
     }
+}
+
+fn unmanaged_admission_params(run_id: &str) -> BackgroundAgentRunAdmissionParams {
+    let mut params = admission_params(run_id, "unused-worktree", Path::new("/unused-worktree"));
+    params.worktree_id = None;
+    params
 }
 
 async fn create_isolated_worktree(
@@ -250,6 +257,82 @@ async fn concurrent_idempotent_admissions_from_two_runtimes_converge_on_one_run(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_unmanaged_admissions_enforce_the_active_run_quota_in_sqlite()
+-> anyhow::Result<()> {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+    for index in 0..7 {
+        runtime
+            .admit_background_agent_run(&unmanaged_admission_params(&format!("seed-{index}")))
+            .await?;
+    }
+    let first_runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+    let second_runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+    let first_params = unmanaged_admission_params("run-first");
+    let second_params = unmanaged_admission_params("run-second");
+    let barrier = Arc::new(Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async move {
+        first_barrier.wait().await;
+        first_runtime
+            .admit_background_agent_run(&first_params)
+            .await
+    };
+    let second = async move {
+        barrier.wait().await;
+        second_runtime
+            .admit_background_agent_run(&second_params)
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let (winner, loser_id) = match (first, second) {
+        (Ok(winner), Err(error)) => {
+            assert!(matches!(
+                error.downcast_ref::<BackgroundAgentAdmissionError>(),
+                Some(BackgroundAgentAdmissionError::QuotaExceeded { .. })
+            ));
+            (winner, "run-second")
+        }
+        (Err(error), Ok(winner)) => {
+            assert!(matches!(
+                error.downcast_ref::<BackgroundAgentAdmissionError>(),
+                Some(BackgroundAgentAdmissionError::QuotaExceeded { .. })
+            ));
+            (winner, "run-first")
+        }
+        (Ok(_), Ok(_)) => anyhow::bail!("both concurrent quota admissions succeeded"),
+        (Err(first), Err(second)) => {
+            anyhow::bail!("both concurrent quota admissions failed: {first}; {second}")
+        }
+    };
+
+    assert!(winner.created_new_run);
+    let run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM background_agent_runs")
+        .fetch_one(runtime.pool.as_ref())
+        .await?;
+    assert_eq!(run_count, 8);
+    for table in [
+        "background_agent_runs",
+        "background_agent_execution_snapshots",
+        "background_agent_events",
+        "background_agent_status_snapshots",
+    ] {
+        let column = if table == "background_agent_runs" {
+            "id"
+        } else {
+            "run_id"
+        };
+        let query = format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?");
+        let residue: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query))
+            .bind(loser_id)
+            .fetch_one(runtime.pool.as_ref())
+            .await?;
+        assert_eq!(residue, 0, "quota loser left residue in {table}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn idempotent_admission_restores_only_its_persisted_worktree() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -421,7 +504,7 @@ async fn idempotent_admission_refreshes_a_retained_stale_snapshot_from_current_r
 }
 
 #[tokio::test]
-async fn terminal_idempotent_retry_cannot_claim_a_fresh_worktree() -> anyhow::Result<()> {
+async fn terminal_idempotent_retry_cannot_claim_a_different_worktree() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     let base_repo_path = unique_temp_dir().join("repo");
     let first_path = create_isolated_worktree(&runtime, "worktree-first", &base_repo_path).await?;
@@ -444,7 +527,7 @@ async fn terminal_idempotent_retry_cannot_claim_a_fresh_worktree() -> anyhow::Re
         .await
         .expect_err("terminal idempotent retry must not claim a fresh worktree");
     assert!(
-        error.to_string().contains("terminal"),
+        error.to_string().contains("different managed worktree"),
         "unexpected terminal retry error: {error:#}"
     );
     let assignment_count: i64 = sqlx::query_scalar(
@@ -454,6 +537,129 @@ async fn terminal_idempotent_retry_cannot_claim_a_fresh_worktree() -> anyhow::Re
     .fetch_one(runtime.pool.as_ref())
     .await?;
     assert_eq!(assignment_count, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_same_key_replays_its_durable_records_without_reclaiming() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let base_repo_path = unique_temp_dir().join("repo");
+    let worktree_path = create_isolated_worktree(&runtime, "worktree-1", &base_repo_path).await?;
+
+    for (status, label) in [
+        (BackgroundAgentRunStatus::Completed, "completed"),
+        (BackgroundAgentRunStatus::Failed, "failed"),
+        (BackgroundAgentRunStatus::Cancelled, "cancelled"),
+    ] {
+        let mut first_params = admission_params(
+            format!("run-{label}").as_str(),
+            "worktree-1",
+            &worktree_path,
+        );
+        first_params.run.idempotency_key = Some(format!("terminal-replay-{label}"));
+        let first = runtime.admit_background_agent_run(&first_params).await?;
+        detach_assignment_for_restore_regression(&runtime, "worktree-1", first.run.id.as_str())
+            .await?;
+        runtime
+            .update_background_agent_run_status(
+                first.run.id.as_str(),
+                status,
+                Some("terminal replay regression"),
+            )
+            .await?;
+
+        let mut retry_params = admission_params(
+            format!("retry-{label}").as_str(),
+            "worktree-1",
+            &worktree_path,
+        );
+        retry_params.run.idempotency_key = Some(format!("terminal-replay-{label}"));
+        let replay = runtime.admit_background_agent_run(&retry_params).await?;
+
+        assert!(!replay.created_new_run);
+        assert_eq!(replay.run.id, first.run.id);
+        assert_eq!(replay.execution_snapshot, first.execution_snapshot);
+        assert_eq!(replay.event, first.event);
+        assert_eq!(replay.status_snapshot.status, status);
+        let assignment_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktree_assignments \
+             WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL",
+        )
+        .bind("worktree-1")
+        .bind(first.run.id.as_str())
+        .fetch_one(runtime.pool.as_ref())
+        .await?;
+        assert_eq!(
+            assignment_count, 0,
+            "terminal replay must not reclaim the worktree"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn idempotent_recovery_accepts_a_legacy_snapshot_cwd_through_a_symlink_alias()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let base_repo_path = unique_temp_dir().join("repo");
+    let worktree_path = create_isolated_worktree(&runtime, "worktree-1", &base_repo_path).await?;
+    let alias_base_repo_path = base_repo_path.with_file_name("repo-alias");
+    std::os::unix::fs::symlink(&base_repo_path, &alias_base_repo_path)?;
+    let alias_worktree_path = alias_base_repo_path
+        .join(".codewith")
+        .join("worktrees")
+        .join("worktree-1");
+    let mut first_params = admission_params("run-initial", "worktree-1", &worktree_path);
+    first_params.run.idempotency_key = Some("legacy-symlink-recovery".to_string());
+    let first = runtime.admit_background_agent_run(&first_params).await?;
+    sqlx::query(
+        "UPDATE background_agent_execution_snapshots SET payload_json = ? WHERE run_id = ?",
+    )
+    .bind(json!({"cwd": path_to_db_string(&alias_worktree_path)}).to_string())
+    .bind(first.run.id.as_str())
+    .execute(runtime.pool.as_ref())
+    .await?;
+    sqlx::query("DELETE FROM managed_worktree_assignments WHERE agent_run_id = ?")
+        .bind(first.run.id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await?;
+    sqlx::query(
+        "UPDATE managed_worktrees SET owner_kind = 'manual', owner_agent_run_id = NULL \
+         WHERE worktree_id = ?",
+    )
+    .bind("worktree-1")
+    .execute(runtime.pool.as_ref())
+    .await?;
+
+    let mut missing_worktree_params =
+        admission_params("run-missing-worktree", "worktree-1", &worktree_path);
+    missing_worktree_params.run.idempotency_key = Some("legacy-symlink-recovery".to_string());
+    missing_worktree_params.worktree_id = None;
+    let error = runtime
+        .admit_background_agent_run(&missing_worktree_params)
+        .await
+        .expect_err("managed snapshot recovery must not resume without its managed worktree");
+    assert!(
+        error
+            .to_string()
+            .contains("associated with a managed worktree"),
+        "unexpected missing-worktree replay error: {error:#}"
+    );
+
+    let mut retry_params = admission_params("run-retry", "worktree-1", &worktree_path);
+    retry_params.run.idempotency_key = Some("legacy-symlink-recovery".to_string());
+    let recovered = runtime.admit_background_agent_run(&retry_params).await?;
+
+    assert_eq!(recovered.run.id, first.run.id);
+    let assignment_worktree_id: Option<String> = sqlx::query_scalar(
+        "SELECT worktree_id FROM managed_worktree_assignments \
+         WHERE agent_run_id = ? AND detached_at_ms IS NULL",
+    )
+    .bind(first.run.id.as_str())
+    .fetch_optional(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(assignment_worktree_id.as_deref(), Some("worktree-1"));
     Ok(())
 }
 

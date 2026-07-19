@@ -84,6 +84,7 @@ use codex_protocol::protocol::validate_thread_goal_objective;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rollout::StateDbHandle;
+use codex_state::BackgroundAgentAdmissionError;
 use codex_state::BackgroundAgentRunAdmissionParams;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
@@ -98,7 +99,6 @@ const MAX_AGENT_LIST_LIMIT: usize = 200;
 const DEFAULT_MAX_ACTIVE_AGENT_RUNS_PER_USER: i64 = 8;
 const AGENT_BACKPRESSURE_ACTIVE_RUN_LIMIT: &str = "active_run_limit";
 const AGENT_EVENT_CURSOR_PREFIX: &str = "event:";
-static AGENT_START_ADMISSION_LOCK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Clone)]
 pub(crate) struct BackgroundAgentRequestProcessor {
@@ -159,47 +159,6 @@ impl BackgroundAgentRequestProcessor {
         let execution_context = execution_context.map(|context| *context);
         let prompt = validate_agent_prompt(prompt)?;
         let initial_goal_objective = validate_agent_initial_goal_objective(initial_goal_objective)?;
-        let mut existing_run = match idempotency_key.as_deref() {
-            Some(idempotency_key) => state_db
-                .get_run_by_idempotency_key(idempotency_key)
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to load background agent idempotency key: {err}"
-                    ))
-                })?,
-            None => None,
-        };
-        let _admission_permit = if existing_run.is_none() {
-            let permit = AGENT_START_ADMISSION_LOCK.acquire().await.map_err(|err| {
-                internal_error(format!(
-                    "failed to acquire background agent admission permit: {err}"
-                ))
-            })?;
-            if let Some(idempotency_key) = idempotency_key.as_deref() {
-                existing_run = state_db
-                    .get_run_by_idempotency_key(idempotency_key)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!(
-                            "failed to load background agent idempotency key: {err}"
-                        ))
-                    })?;
-            }
-            Some(permit)
-        } else {
-            None
-        };
-        let new_run_requested = existing_run.is_none();
-        if new_run_requested {
-            let quota = load_agent_quota_snapshot(state_db.as_ref()).await?;
-            if !quota.admission_allowed() {
-                return Err(overloaded(format!(
-                    "background agent queue is overloaded: {} active run(s), max {}",
-                    quota.active_run_count, quota.max_active_runs_per_user
-                )));
-            }
-        }
         let agent_id = Uuid::now_v7().to_string();
         let prompt_snapshot_ref =
             prompt_snapshot_ref.unwrap_or_else(|| format!("inline:{agent_id}:prompt"));
@@ -234,10 +193,7 @@ impl BackgroundAgentRequestProcessor {
             config_fingerprint,
             version_fingerprint,
         };
-        let initial_run_fields = existing_run
-            .as_ref()
-            .map(InitialExecutionSnapshotRunFields::from_run)
-            .unwrap_or_else(|| InitialExecutionSnapshotRunFields::from_create_params(&run_params));
+        let initial_run_fields = InitialExecutionSnapshotRunFields::from_create_params(&run_params);
         let execution_payload = initial_execution_snapshot_payload(
             initial_run_fields,
             InitialExecutionSnapshotPayloadParams {
@@ -260,146 +216,23 @@ impl BackgroundAgentRequestProcessor {
             "promptSnapshotRef": run_params.prompt_snapshot_ref.as_str(),
             "initialGoalObjective": initial_goal_objective.as_deref(),
         });
-        if let Some(worktree_id) = managed_worktree_id {
-            let admission = state_db
-                .admit_background_agent_run(&BackgroundAgentRunAdmissionParams {
-                    run: run_params,
-                    worktree_id,
-                    execution_snapshot: execution_snapshot_params,
-                    started_event_payload_json: started_event_payload,
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to atomically admit background agent: {err}"
-                    ))
-                })?;
-            return Ok(AgentStartResponse {
-                agent: api_agent_run_from_state(admission.run),
-                status_snapshot: api_agent_status_snapshot_from_state(admission.status_snapshot),
-                execution_snapshot: api_agent_execution_snapshot_from_state(
-                    admission.execution_snapshot,
-                ),
-                event: api_agent_event_from_state(admission.event),
-            });
-        }
-        let run = match existing_run {
-            Some(run) => run,
-            None => state_db.create_run(run_params).await.map_err(|err| {
-                internal_error(format!("failed to create background agent: {err}"))
-            })?,
-        };
-        let created_new_run = run.id == agent_id;
-        let execution_snapshot = if created_new_run {
-            state_db
-                .create_execution_snapshot(BackgroundAgentExecutionSnapshotParams {
-                    run_id: run.id.clone(),
-                    snapshot_kind: "initial_execution_context".to_string(),
-                    payload_json: execution_payload,
-                    recovery_policy: recovery_policy.clone(),
-                    config_fingerprint: run.config_fingerprint.clone(),
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to create background agent execution snapshot: {err}"
-                    ))
-                })?
-        } else {
-            match state_db
-                .get_latest_execution_snapshot(run.id.as_str())
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to load background agent execution snapshot: {err}"
-                    ))
-                })? {
-                Some(snapshot) => snapshot,
-                None => state_db
-                    .create_execution_snapshot(BackgroundAgentExecutionSnapshotParams {
-                        run_id: run.id.clone(),
-                        snapshot_kind: "initial_execution_context".to_string(),
-                        payload_json: execution_payload,
-                        recovery_policy: recovery_policy.clone(),
-                        config_fingerprint: run.config_fingerprint.clone(),
-                    })
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!(
-                            "failed to create background agent execution snapshot: {err}"
-                        ))
-                    })?,
-            }
-        };
-        let event = if created_new_run {
-            append_background_agent_event_with_retry(
-                state_db.as_ref(),
-                run.id.as_str(),
-                "agent.started",
-                &started_event_payload,
-            )
+        let admission = state_db
+            .admit_background_agent_run(&BackgroundAgentRunAdmissionParams {
+                run: run_params,
+                worktree_id: managed_worktree_id,
+                max_active_runs: DEFAULT_MAX_ACTIVE_AGENT_RUNS_PER_USER,
+                execution_snapshot: execution_snapshot_params,
+                started_event_payload_json: started_event_payload,
+            })
             .await
-            .map_err(|err| {
-                internal_error(format!("failed to append background agent event: {err}"))
-            })?
-        } else {
-            let mut events = state_db
-                .list_events_after(run.id.as_str(), /*after_seq*/ None, Some(1))
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to list background agent events: {err}"))
-                })?;
-            match events.pop() {
-                Some(event) => event,
-                None => append_background_agent_event_with_retry(
-                    state_db.as_ref(),
-                    run.id.as_str(),
-                    "agent.startRecovered",
-                    &json!({
-                        "reason": "idempotent_start_without_start_event",
-                    }),
-                )
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to append background agent event: {err}"))
-                })?,
-            }
-        };
-        let snapshot = match state_db
-            .get_status_snapshot(run.id.as_str())
-            .await
-            .map_err(|err| {
-                internal_error(format!("failed to load background agent snapshot: {err}"))
-            })? {
-            Some(snapshot) => snapshot,
-            None => state_db
-                .upsert_status_snapshot(BackgroundAgentStatusSnapshotParams {
-                    run_id: run.id.clone(),
-                    seq: event.seq,
-                    status: run.status,
-                    desired_state: run.desired_state,
-                    summary: Some("Queued".to_string()),
-                    pending_interaction_count: 0,
-                    last_event_seq: event.seq,
-                    payload_json: json!({
-                        "phase": "queued",
-                    }),
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to update background agent snapshot: {err}"))
-                })?,
-        };
-        let run = self
-            .load_agent_run(state_db.as_ref(), run.id.as_str())
-            .await?
-            .ok_or_else(|| internal_error("background agent disappeared after create"))?;
-
+            .map_err(map_background_agent_admission_error)?;
         Ok(AgentStartResponse {
-            agent: api_agent_run_from_state(run),
-            status_snapshot: api_agent_status_snapshot_from_state(snapshot),
-            execution_snapshot: api_agent_execution_snapshot_from_state(execution_snapshot),
-            event: api_agent_event_from_state(event),
+            agent: api_agent_run_from_state(admission.run),
+            status_snapshot: api_agent_status_snapshot_from_state(admission.status_snapshot),
+            execution_snapshot: api_agent_execution_snapshot_from_state(
+                admission.execution_snapshot,
+            ),
+            event: api_agent_event_from_state(admission.event),
         })
     }
 
@@ -1152,6 +985,19 @@ async fn validate_agent_start_rollout_path(
     Ok(())
 }
 
+fn map_background_agent_admission_error(error: anyhow::Error) -> JSONRPCErrorError {
+    match error.downcast_ref::<BackgroundAgentAdmissionError>() {
+        Some(BackgroundAgentAdmissionError::QuotaExceeded { .. }) => overloaded(error.to_string()),
+        Some(
+            BackgroundAgentAdmissionError::IdempotencyConflict { .. }
+            | BackgroundAgentAdmissionError::WorktreeConflict { .. },
+        ) => invalid_params(error.to_string()),
+        None => internal_error(format!(
+            "failed to atomically admit background agent: {error}"
+        )),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AgentQuotaSnapshot {
     active_run_count: i64,
@@ -1260,14 +1106,6 @@ struct InitialExecutionSnapshotRunFields<'a> {
 }
 
 impl<'a> InitialExecutionSnapshotRunFields<'a> {
-    fn from_run(run: &'a BackgroundAgentRun) -> Self {
-        Self {
-            auth_profile_ref: run.auth_profile_ref.as_deref(),
-            config_fingerprint: run.config_fingerprint.as_deref(),
-            version_fingerprint: run.version_fingerprint.as_deref(),
-        }
-    }
-
     fn from_create_params(params: &'a BackgroundAgentRunCreateParams) -> Self {
         Self {
             auth_profile_ref: params.auth_profile_ref.as_deref(),

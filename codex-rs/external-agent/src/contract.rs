@@ -380,6 +380,8 @@ pub enum ExternalAgentRunStatus {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExternalAgentError {
+    #[error("external agent runtime `{runtime}` rejected launch request: {message}")]
+    InvalidRequest { runtime: String, message: String },
     #[error("external agent runtime `{runtime}` is not ready: {reason}")]
     NotReady { runtime: String, reason: String },
     #[error("external agent runtime `{runtime}` protocol error: {message}")]

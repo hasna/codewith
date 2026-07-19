@@ -158,6 +158,7 @@ const WRITER_MAX_CONNECTIONS: u32 = 1;
 /// the database layer instead of silently re-introducing multi-writer 517.
 const READER_MAX_CONNECTIONS: u32 = 5;
 
+pub use background_agents::BackgroundAgentAdmissionError;
 pub use background_agents::BackgroundAgentRunAdmission;
 pub use background_agents::BackgroundAgentRunAdmissionParams;
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;

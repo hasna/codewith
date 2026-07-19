@@ -142,6 +142,7 @@ pub use model::WorkflowRunStepVerifier;
 pub use model::WorkflowRunStepVerifierStatus;
 pub use model::WorkflowSpecRecord;
 pub use model::WorkflowSpecStatus;
+pub use runtime::BackgroundAgentAdmissionError;
 pub use runtime::BackgroundAgentRunAdmission;
 pub use runtime::BackgroundAgentRunAdmissionParams;
 pub use runtime::DEFAULT_MACHINE_REGISTRY_LIST_LIMIT;

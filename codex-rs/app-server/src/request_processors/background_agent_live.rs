@@ -336,9 +336,16 @@ impl ThreadRequestProcessor {
                         &absolute_worktree_path,
                     ));
                 let (file_system, network) = permission_profile.to_runtime_permissions();
-                let file_system = file_system.with_additional_legacy_workspace_writable_roots(
-                    std::slice::from_ref(&absolute_worktree_path),
-                );
+                let file_system = if file_system.can_write_path_with_cwd(
+                    absolute_worktree_path.as_path(),
+                    absolute_worktree_path.as_path(),
+                ) {
+                    file_system.with_additional_legacy_workspace_writable_roots(
+                        std::slice::from_ref(&absolute_worktree_path),
+                    )
+                } else {
+                    file_system
+                };
                 let permission_profile =
                     PermissionProfile::from_runtime_permissions_with_enforcement(
                         permission_profile.enforcement(),

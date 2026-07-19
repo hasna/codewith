@@ -40,6 +40,10 @@ use crate::TerminalCapability;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 #[cfg(windows)]
+use crate::windows_command::WindowsBatchLaunchError;
+#[cfg(windows)]
+use crate::windows_command::merge_windows_environment;
+#[cfg(windows)]
 use crate::windows_command::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
@@ -98,14 +102,21 @@ impl AcpEnvironmentPolicy {
         source: &BTreeMap<String, String>,
         extra: &BTreeMap<String, String>,
     ) -> BTreeMap<String, String> {
+        #[cfg(windows)]
+        let source = merge_windows_environment(source, extra);
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
             if let Some(value) = source_env_value(source, name) {
                 env.insert(name.clone(), value.clone());
             }
         }
+        #[cfg(not(windows))]
         for (name, value) in extra {
             env.insert(name.clone(), value.clone());
+        }
+        #[cfg(windows)]
+        for (name, value) in extra {
+            env.insert(name.to_ascii_uppercase(), value.clone());
         }
         env
     }
@@ -119,7 +130,8 @@ fn source_env_value<'a>(
     {
         source_env
             .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .next_back()
             .map(|(_, value)| value)
     }
     #[cfg(not(windows))]
@@ -246,8 +258,9 @@ impl AcpStdioHarness {
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
         extra_env: &BTreeMap<String, String>,
-    ) -> ExternalAgentLaunchSpec {
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
         let program = resolved_program.into();
+        let env = self.env_policy.sanitize(source_env, extra_env);
         let args = self
             .descriptor
             .command
@@ -256,19 +269,19 @@ impl AcpStdioHarness {
             .map(std::string::ToString::to_string)
             .collect();
         #[cfg(windows)]
-        let (program, args) =
-            prepare_windows_batch_launch_from_source_env(program, args, source_env);
-        ExternalAgentLaunchSpec {
+        let (program, args) = prepare_windows_batch_launch_from_source_env(program, args, &env)
+            .map_err(|err| invalid_batch_launch_request(self.descriptor.id, err))?;
+        Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
             program,
             args,
             arg0: None,
             cwd: cwd.into(),
-            env: self.env_policy.sanitize(source_env, extra_env),
+            env,
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "external-agent ACP launch has not been wrapped in a Codewith platform sandbox",
             ),
-        }
+        })
     }
 
     fn runtime_missing_readiness(&self, detail: String) -> ExternalAgentReadiness {
@@ -340,7 +353,7 @@ impl AcpStdioHarness {
             request.runtime.as_str().to_string(),
         );
         copy_acp_runtime_auth_env(&mut extra_env, &source_env, request.runtime.as_str());
-        let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env);
+        let launch = self.launch_spec(request.cwd.clone(), program, &source_env, &extra_env)?;
         let launch = platform_sandbox_external_agent_launch_with_writable_roots(
             launch,
             sandbox_config,
@@ -369,12 +382,14 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
     ) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        let source_env = merge_windows_environment(source_env, &BTreeMap::new());
         #[cfg(not(windows))]
         let path = source_env_value(source_env, "PATH").map(String::as_str);
         let mut last_error = None;
         for program in acp_program_candidates(self.descriptor) {
             #[cfg(windows)]
-            let resolved = resolve_windows_program_from_source_env(program, source_env, cwd);
+            let resolved = resolve_windows_program_from_source_env(program, &source_env, cwd);
             #[cfg(not(windows))]
             let resolved = which::which_in(program, path, cwd).map_err(|err| err.to_string());
             match resolved {
@@ -408,7 +423,8 @@ impl AcpStdioHarness {
         args.push("--help".to_string());
         #[cfg(windows)]
         let (program, args) =
-            prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, source_env);
+            prepare_windows_batch_launch_from_source_env(program.to_path_buf(), args, &env)
+                .map_err(|err| err.to_string())?;
         #[cfg(not(windows))]
         let program = program.to_path_buf();
         let mut command = Command::new(program);
@@ -583,6 +599,17 @@ impl AcpStdioHarness {
     }
 }
 
+#[cfg(windows)]
+fn invalid_batch_launch_request(
+    runtime: &str,
+    error: WindowsBatchLaunchError,
+) -> ExternalAgentError {
+    ExternalAgentError::InvalidRequest {
+        runtime: runtime.to_string(),
+        message: error.to_string(),
+    }
+}
+
 pub fn cursor_acp_harness() -> Option<AcpStdioHarness> {
     find_external_agent_runtime(ExternalAgentRuntimeId::CURSOR).map(AcpStdioHarness::new)
 }
@@ -633,6 +660,8 @@ fn copy_acp_runtime_auth_env(
     source_env: &BTreeMap<String, String>,
     runtime_id: &str,
 ) {
+    #[cfg(windows)]
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
     for name in acp_runtime_auth_env_vars(runtime_id) {
         if let Some(value) = source_env_value(source_env, name) {
             destination.insert((*name).to_string(), value.clone());
@@ -1731,7 +1760,9 @@ mod tests {
         let source = BTreeMap::from([("PATH".to_string(), "/bin".to_string())]);
         let extra = BTreeMap::new();
 
-        let spec = harness.launch_spec("/repo", "/usr/bin/grok", &source, &extra);
+        let spec = harness
+            .launch_spec("/repo", "/usr/bin/grok", &source, &extra)
+            .expect("non-batch launch spec should build");
 
         assert_eq!(
             spec,
@@ -1971,7 +2002,8 @@ mod tests {
     #[test]
     fn runtime_auth_env_lookup_is_case_insensitive() {
         let source_env = BTreeMap::from([
-            ("cUrSoR_aPi_KeY".to_string(), "cursor-key".to_string()),
+            ("CURSOR_API_KEY".to_string(), "ambient-key".to_string()),
+            ("cUrSoR_aPi_KeY".to_string(), "policy-key".to_string()),
             ("CuRsOr_AuTh_ToKeN".to_string(), "cursor-token".to_string()),
         ]);
         let mut destination = BTreeMap::new();
@@ -1985,9 +2017,72 @@ mod tests {
         assert_eq!(
             destination,
             BTreeMap::from([
-                ("CURSOR_API_KEY".to_string(), "cursor-key".to_string()),
+                ("CURSOR_API_KEY".to_string(), "policy-key".to_string()),
                 ("CURSOR_AUTH_TOKEN".to_string(), "cursor-token".to_string(),),
             ])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_environment_overrides_deduplicate_case_insensitively() {
+        let source = BTreeMap::from([
+            ("PATH".to_string(), r"C:\ambient-bin".to_string()),
+            ("PATHEXT".to_string(), ".EXE".to_string()),
+            ("COMSPEC".to_string(), r"C:\ambient\cmd.exe".to_string()),
+            ("SYSTEMROOT".to_string(), r"C:\ambient".to_string()),
+        ]);
+        let overrides = BTreeMap::from([
+            ("Path".to_string(), r"C:\policy-bin".to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            ("ComSpec".to_string(), r"C:\policy\cmd.exe".to_string()),
+            ("SystemRoot".to_string(), r"C:\policy".to_string()),
+        ]);
+
+        let environment = AcpEnvironmentPolicy::sanitized().sanitize(&source, &overrides);
+
+        assert_eq!(
+            environment,
+            BTreeMap::from([
+                ("COMSPEC".to_string(), r"C:\policy\cmd.exe".to_string()),
+                ("PATH".to_string(), r"C:\policy-bin".to_string()),
+                ("PATHEXT".to_string(), ".CMD".to_string()),
+                ("SYSTEMROOT".to_string(), r"C:\policy".to_string()),
+            ])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_program_uses_the_case_insensitive_pathext_override() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let grok = bin_dir.join("grok.cmd");
+        std::fs::write(&grok, "not executed").expect("write fake grok");
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let source_env = BTreeMap::from([
+            ("PATH".to_string(), bin_dir.display().to_string()),
+            ("PATHEXT".to_string(), ".EXE".to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+        ]);
+
+        assert_eq!(
+            harness
+                .resolve_program(&request, &source_env)
+                .expect("case-insensitive PathExt override should resolve the .cmd shim")
+                .to_string_lossy()
+                .to_ascii_lowercase(),
+            grok.to_string_lossy().to_ascii_lowercase()
         );
     }
 
@@ -2019,11 +2114,20 @@ mod tests {
         let resolved = harness
             .resolve_program(&request, &source_env)
             .expect("source-only PATH and PATHEXT should resolve the batch shim");
-        assert_eq!(resolved, grok);
-        let launch = harness.launch_spec(temp_dir.path(), resolved, &source_env, &BTreeMap::new());
+        assert_eq!(
+            resolved.to_string_lossy().to_ascii_lowercase(),
+            grok.to_string_lossy().to_ascii_lowercase()
+        );
+        let launch = harness
+            .launch_spec(temp_dir.path(), resolved, &source_env, &BTreeMap::new())
+            .expect("batch launch spec should build");
         assert_eq!(launch.program, PathBuf::from(comspec));
         assert_eq!(launch.args[3], "/c");
-        assert!(launch.args[4].contains(grok.to_string_lossy().as_ref()));
+        assert!(
+            launch.args[4]
+                .to_ascii_lowercase()
+                .contains(grok.to_string_lossy().to_ascii_lowercase().as_str())
+        );
 
         let mut process = AcpStdioProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),

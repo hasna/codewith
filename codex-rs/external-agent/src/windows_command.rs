@@ -5,6 +5,24 @@ use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
 
+/// Collapses Windows environment keys before a launcher resolves or copies
+/// them. Source collisions use BTreeMap's stable lexical order, while values
+/// supplied by `overrides` always win over the inherited environment.
+#[cfg(windows)]
+pub(crate) fn merge_windows_environment(
+    source: &BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut environment = BTreeMap::new();
+    for (name, value) in source {
+        environment.insert(name.to_ascii_uppercase(), value.clone());
+    }
+    for (name, value) in overrides {
+        environment.insert(name.to_ascii_uppercase(), value.clone());
+    }
+    environment
+}
+
 /// Resolves a Windows command using only the supplied source environment.
 ///
 /// `which` reads `PATHEXT` from the host process, which can differ from the
@@ -65,30 +83,33 @@ pub(crate) fn resolve_windows_program_from_source_env(
 /// `CreateProcess` does not provide the same executable contract for batch
 /// shims as it does for native binaries. Keep the resolved source-environment
 /// path, but execute it through the source `COMSPEC` (or `cmd.exe` when the
-/// source omits it). The command string emits a Windows argv-quoted argument,
-/// then escapes that text for CMD before it reaches the batch shim. CMD uses
-/// carets rather than backslashes to escape quotes and command metacharacters;
-/// delayed expansion remains disabled and `%` is doubled so caller-supplied
+/// source omits it). CMD uses syntactic quotes to group each argument. An
+/// embedded quote closes that group, emits a caret-escaped literal quote, and
+/// reopens the group; every command metacharacter therefore stays quoted.
+/// Delayed expansion remains disabled and `%` is doubled so caller-supplied
 /// environment references remain literal.
 #[cfg(windows)]
 pub(crate) fn prepare_windows_batch_launch_from_source_env(
     program: PathBuf,
     args: Vec<String>,
     source_env: &BTreeMap<String, String>,
-) -> (PathBuf, Vec<String>) {
+) -> Result<(PathBuf, Vec<String>), WindowsBatchLaunchError> {
     if !is_windows_batch_program(&program) {
-        return (program, args);
+        return Ok((program, args));
     }
 
-    let command_line = std::iter::once(program.to_string_lossy().into_owned())
-        .chain(args)
-        .map(|argument| quote_windows_cmd_argument(argument.as_str()))
-        .collect::<Vec<_>>()
+    let command_line = std::iter::once(("program", program.to_string_lossy().into_owned()))
+        .chain(args.into_iter().map(|argument| ("argument", argument)))
+        .map(|(component, argument)| {
+            validate_windows_batch_command_component(component, argument.as_str())?;
+            Ok(quote_windows_cmd_argument(argument.as_str()))
+        })
+        .collect::<Result<Vec<_>, WindowsBatchLaunchError>>()?
         .join(" ");
     let command_interpreter = windows_source_env_value(source_env, "COMSPEC")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("cmd.exe"));
-    (
+    Ok((
         command_interpreter,
         vec![
             "/d".to_string(),
@@ -97,7 +118,28 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
             "/c".to_string(),
             format!("\"{command_line}\""),
         ],
-    )
+    ))
+}
+
+/// Rejects physical command-line boundaries before a batch launch reaches
+/// `cmd.exe`. CMD parses CR and LF as command separators, so preserving them
+/// in a `/c` string would permit a caller to append another command.
+#[cfg(any(windows, test))]
+fn validate_windows_batch_command_component(
+    component: &'static str,
+    value: &str,
+) -> Result<(), WindowsBatchLaunchError> {
+    if value.contains(['\r', '\n']) {
+        return Err(WindowsBatchLaunchError::LineBreak { component });
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum WindowsBatchLaunchError {
+    #[error("Windows batch launch rejects {component} containing CR or LF")]
+    LineBreak { component: &'static str },
 }
 
 #[cfg(windows)]
@@ -113,28 +155,15 @@ fn is_windows_batch_program(program: &Path) -> bool {
 #[cfg(windows)]
 fn quote_windows_cmd_argument(argument: &str) -> String {
     let argument = argument.replace('%', "%%");
-    let mut quoted = String::from("^\"");
-    let mut backslash_count: usize = 0;
+    let mut quoted = String::from('"');
     for character in argument.chars() {
-        if character == '\\' {
-            backslash_count += 1;
-            continue;
-        }
         if character == '\"' {
-            quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2).saturating_add(1)));
-            quoted.push_str("^\"");
-            backslash_count = 0;
+            quoted.push_str("\"^\"\"");
             continue;
-        }
-        quoted.push_str(&"\\".repeat(backslash_count));
-        backslash_count = 0;
-        if matches!(character, '^' | '&' | '|' | '<' | '>' | '(' | ')' | '@') {
-            quoted.push('^');
         }
         quoted.push(character);
     }
-    quoted.push_str(&"\\".repeat(backslash_count.saturating_mul(2)));
-    quoted.push_str("^\"");
+    quoted.push('"');
     quoted
 }
 
@@ -188,7 +217,8 @@ exit /b 0
             batch_path,
             hostile_args.clone(),
             &source_env,
-        );
+        )
+        .expect("hostile single-line arguments should prepare");
 
         let status = Command::new(program)
             .args(args)
@@ -213,6 +243,82 @@ exit /b 0
             .collect::<Vec<_>>();
         assert_eq!(received, hostile_args);
     }
+
+    #[test]
+    fn batch_launch_rejects_line_break_arguments_before_spawning() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let batch_path = temp_dir.path().join("capture.cmd");
+        let marker_path = temp_dir.path().join("injected.txt");
+        std::fs::write(&batch_path, "@echo off\r\nexit /b 0\r\n")
+            .expect("write batch capture shim");
+        let comspec = std::env::var("COMSPEC").expect("Windows supplies COMSPEC");
+        let source_env = BTreeMap::from([("COMSPEC".to_string(), comspec)]);
+
+        for line_break in ["\r", "\n", "\r\n"] {
+            let task = format!(
+                "review{line_break}& type nul > \"{}\" & rem",
+                marker_path.display()
+            );
+            let error = prepare_windows_batch_launch_from_source_env(
+                batch_path.clone(),
+                vec![task],
+                &source_env,
+            )
+            .expect_err("line breaks must be rejected before launching cmd.exe");
+            assert_eq!(
+                error,
+                WindowsBatchLaunchError::LineBreak {
+                    component: "argument"
+                }
+            );
+            assert!(
+                !marker_path.exists(),
+                "rejected argument must never execute an injected command"
+            );
+        }
+
+        let native_program = PathBuf::from("native.exe");
+        let native_args = vec!["line\r\nbearing argument".to_string()];
+        assert_eq!(
+            prepare_windows_batch_launch_from_source_env(
+                native_program.clone(),
+                native_args.clone(),
+                &source_env,
+            ),
+            Ok((native_program, native_args))
+        );
+
+        let error = prepare_windows_batch_launch_from_source_env(
+            PathBuf::from("capture\r\n.cmd"),
+            Vec::new(),
+            &source_env,
+        )
+        .expect_err("batch program names with line breaks must be rejected");
+        assert_eq!(
+            error,
+            WindowsBatchLaunchError::LineBreak {
+                component: "program"
+            }
+        );
+    }
+}
+
+#[cfg(test)]
+mod command_line_validation_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn rejects_cr_lf_and_crlf_without_rewriting_them() {
+        for value in ["task\rnext", "task\nnext", "task\r\nnext"] {
+            assert_eq!(
+                validate_windows_batch_command_component("argument", value),
+                Err(WindowsBatchLaunchError::LineBreak {
+                    component: "argument"
+                })
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -222,6 +328,7 @@ fn windows_source_env_value<'a>(
 ) -> Option<&'a String> {
     source_env
         .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+        .next_back()
         .map(|(_, value)| value)
 }

@@ -507,6 +507,23 @@ async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
         start.execution_snapshot.payload.get("workspaceRoots"),
         Some(&json!([created_worktree_path]))
     );
+    let permission_profile: PermissionProfile = serde_json::from_value(
+        start
+            .execution_snapshot
+            .payload
+            .get("permissionProfile")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("execution snapshot should include permissionProfile")
+            })?,
+    )?;
+    let worktree_path = Path::new(created_worktree_path.as_str());
+    assert!(
+        !permission_profile
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(worktree_path, worktree_path),
+        "read-only managed agents must not gain a worktree-specific write rule"
+    );
     let read_request_id = mcp
         .send_raw_request(
             "worktree/read",
@@ -634,8 +651,8 @@ async fn agent_start_terminal_key_leaves_other_managed_worktree_unclaimed() -> R
 
     params.cwd = Some(second_created.worktree.worktree_path.clone());
     let error = start_agent_error(&mut mcp, params).await?;
-    assert_eq!(error.error.code, -32603);
-    assert!(error.error.message.contains("terminal"));
+    assert_eq!(error.error.code, -32602);
+    assert!(error.error.message.contains("different managed worktree"));
     let read_request_id = mcp
         .send_raw_request(
             "worktree/read",

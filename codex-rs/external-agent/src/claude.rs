@@ -28,6 +28,10 @@ use crate::ExternalAgentSessionState;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch;
 #[cfg(windows)]
+use crate::windows_command::WindowsBatchLaunchError;
+#[cfg(windows)]
+use crate::windows_command::merge_windows_environment;
+#[cfg(windows)]
 use crate::windows_command::prepare_windows_batch_launch_from_source_env;
 #[cfg(windows)]
 use crate::windows_command::resolve_windows_program_from_source_env;
@@ -135,14 +139,21 @@ impl ClaudeEnvironmentPolicy {
         source: &BTreeMap<String, String>,
         extra: &BTreeMap<String, String>,
     ) -> BTreeMap<String, String> {
+        #[cfg(windows)]
+        let source = merge_windows_environment(source, extra);
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
             if let Some(value) = source_env_value(source, name) {
                 env.insert(name.clone(), value.clone());
             }
         }
+        #[cfg(not(windows))]
         for (name, value) in extra {
             env.insert(name.clone(), value.clone());
+        }
+        #[cfg(windows)]
+        for (name, value) in extra {
+            env.insert(name.to_ascii_uppercase(), value.clone());
         }
         env
     }
@@ -156,7 +167,8 @@ fn source_env_value<'a>(
     {
         source_env
             .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .next_back()
             .map(|(_, value)| value)
     }
     #[cfg(not(windows))]
@@ -202,12 +214,15 @@ impl ClaudeCodeHarness {
             return self.runtime_ready_readiness(&program);
         }
 
-        let launch = self.launch_spec_with_args(
+        let launch = match self.launch_spec_with_args(
             PathBuf::from("."),
             program.clone(),
             source_env,
             vec!["auth".to_string(), "status".to_string()],
-        );
+        ) {
+            Ok(launch) => launch,
+            Err(error) => return self.runtime_missing_readiness(error.to_string()),
+        };
         match Command::new(&launch.program)
             .args(&launch.args)
             .env_clear()
@@ -249,7 +264,7 @@ impl ClaudeCodeHarness {
             program,
             &source_env,
             claude_code_args(request.task.as_str()),
-        );
+        )?;
         let launch = platform_sandbox_external_agent_launch(launch, sandbox_config)?;
         self.run_sandboxed_launch(request, host, launch).await
     }
@@ -260,7 +275,7 @@ impl ClaudeCodeHarness {
         cwd: impl Into<PathBuf>,
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
-    ) -> ExternalAgentLaunchSpec {
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
         self.launch_spec_with_args(cwd, resolved_program, source_env, Vec::new())
     }
 
@@ -270,22 +285,23 @@ impl ClaudeCodeHarness {
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
         args: Vec<String>,
-    ) -> ExternalAgentLaunchSpec {
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
         let program = resolved_program.into();
+        let env = self.sanitized_env(source_env);
         #[cfg(windows)]
-        let (program, args) =
-            prepare_windows_batch_launch_from_source_env(program, args, source_env);
-        ExternalAgentLaunchSpec {
+        let (program, args) = prepare_windows_batch_launch_from_source_env(program, args, &env)
+            .map_err(|error| invalid_batch_launch_request(self.descriptor.id, error))?;
+        Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
             program,
             args,
             arg0: None,
             cwd: cwd.into(),
-            env: self.sanitized_env(source_env),
+            env,
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "Claude Code launch has not been wrapped in a Codewith platform sandbox",
             ),
-        }
+        })
     }
 
     fn sanitized_env(&self, source_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -317,9 +333,10 @@ impl ClaudeCodeHarness {
     ) -> Result<PathBuf, String> {
         #[cfg(windows)]
         {
+            let source_env = merge_windows_environment(source_env, &BTreeMap::new());
             resolve_windows_program_from_source_env(
                 self.descriptor.command.program,
-                source_env,
+                &source_env,
                 cwd,
             )
         }
@@ -416,6 +433,17 @@ impl ClaudeCodeHarness {
             supported_modes: self.descriptor.supported_modes.to_vec(),
             detail: Some(program.display().to_string()),
         }
+    }
+}
+
+#[cfg(windows)]
+fn invalid_batch_launch_request(
+    runtime: &str,
+    error: WindowsBatchLaunchError,
+) -> ExternalAgentError {
+    ExternalAgentError::InvalidRequest {
+        runtime: runtime.to_string(),
+        message: error.to_string(),
     }
 }
 
@@ -1171,7 +1199,9 @@ exit 2
             temp_dir.path(),
             crate::ExternalAgentMode::Plan,
         );
-        let launch = harness.launch_spec(temp_dir.path(), &claude_path, &source_env);
+        let launch = harness
+            .launch_spec(temp_dir.path(), &claude_path, &source_env)
+            .expect("batch launch spec should build");
         assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD".to_string()));
         assert_eq!(launch.env.get("COMSPEC"), Some(&comspec));
         assert_eq!(launch.env.get("SYSTEMROOT"), None);
@@ -1235,12 +1265,14 @@ exit /b 0
             marker_path.display()
         );
         let harness = claude_code_harness().expect("claude harness");
-        let launch = harness.launch_spec_with_args(
-            temp_dir.path(),
-            &claude_path,
-            &source_env,
-            claude_code_args(task.as_str()),
-        );
+        let launch = harness
+            .launch_spec_with_args(
+                temp_dir.path(),
+                &claude_path,
+                &source_env,
+                claude_code_args(task.as_str()),
+            )
+            .expect("hostile single-line task should prepare");
 
         let status = Command::new(&launch.program)
             .args(&launch.args)
@@ -1257,6 +1289,48 @@ exit /b 0
         );
         let captured = std::fs::read_to_string(capture_path).expect("read captured task");
         assert_eq!(captured.trim_end(), format!("TASK={task}"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_cmd_rejects_line_break_tasks_before_spawning() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let claude_path = temp_dir.path().join("claude.cmd");
+        let marker_path = temp_dir.path().join("injected.txt");
+        std::fs::write(&claude_path, "@echo off\r\nexit /b 0\r\n")
+            .expect("write fake Claude batch shim");
+        let source_env = BTreeMap::from([(
+            "COMSPEC".to_string(),
+            std::env::var("COMSPEC").expect("Windows supplies COMSPEC"),
+        )]);
+        let harness = claude_code_harness().expect("claude harness");
+
+        for line_break in ["\r", "\n", "\r\n"] {
+            let task = format!(
+                "review{line_break}& type nul > \"{}\" & rem",
+                marker_path.display()
+            );
+            let error = harness
+                .launch_spec_with_args(
+                    temp_dir.path(),
+                    &claude_path,
+                    &source_env,
+                    claude_code_args(task.as_str()),
+                )
+                .expect_err("line-bearing Claude tasks must be rejected before cmd.exe launches");
+            assert!(
+                matches!(
+                    error,
+                    ExternalAgentError::InvalidRequest { ref message, .. }
+                        if message.contains("CR or LF")
+                ),
+                "unexpected launch error: {error}"
+            );
+            assert!(
+                !marker_path.exists(),
+                "rejected Claude task must not execute an injected command"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -1369,7 +1443,9 @@ exit /b 0
             ("XAI_API_KEY".to_string(), "test-value".to_string()),
         ]);
 
-        let spec = harness.launch_spec("/repo", "/usr/bin/claude", &source);
+        let spec = harness
+            .launch_spec("/repo", "/usr/bin/claude", &source)
+            .expect("non-batch launch spec should build");
 
         assert_eq!(
             spec.env,
