@@ -4468,6 +4468,74 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
+    struct TestWorkerFixture {
+        program: PathBuf,
+        ready_path: PathBuf,
+        release_path: PathBuf,
+    }
+
+    impl TestWorkerFixture {
+        fn create(temp_dir: &std::path::Path) -> std::io::Result<Self> {
+            use std::os::unix::fs::PermissionsExt;
+
+            let program = temp_dir.join("successful-worker-process");
+            let ready_path = temp_dir.join("successful-worker.ready");
+            let release_path = temp_dir.join("successful-worker.release");
+            std::fs::write(
+                &program,
+                r#"#!/usr/bin/env sh
+ready_path="${0%/*}/successful-worker.ready"
+release_path="${0%/*}/successful-worker.release"
+: > "$ready_path"
+while [ ! -e "$release_path" ]; do
+  sleep 0.01
+done
+"#,
+            )?;
+            let mut permissions = std::fs::metadata(&program)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&program, permissions)?;
+            Ok(Self {
+                program,
+                ready_path,
+                release_path,
+            })
+        }
+
+        async fn wait_until_ready(&self) -> anyhow::Result<()> {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if self.ready_path.exists() {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    anyhow::bail!("timed out waiting for test worker process readiness");
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+
+        fn release(&self) -> std::io::Result<()> {
+            std::fs::write(&self.release_path, "")
+        }
+    }
+
+    async fn wait_for_worker_process_exit(
+        controller: &WorkerProcessController,
+        handle: &WorkerProcessHandle,
+    ) -> anyhow::Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if controller.status(handle).await? != WorkerProcessStatus::Running {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("timed out waiting for worker process to exit");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     #[tokio::test]
     async fn process_supervisor_spawns_worker_process_and_records_event() -> anyhow::Result<()> {
         let temp = TempDir::new()?;
@@ -4475,13 +4543,14 @@ mod tests {
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
                 .await?;
         seed_queued_run(state_db.as_ref(), "run/with path").await?;
+        let fixture = TestWorkerFixture::create(temp.path())?;
         let active_worker_processes = Arc::new(Mutex::new(HashMap::new()));
         let context = BackgroundAgentProcessSupervisorContext {
             state_db: Arc::clone(&state_db),
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: fixture.program.clone(),
         };
 
         reconcile_background_agent_worker_processes(
@@ -4489,6 +4558,7 @@ mod tests {
             Some("run/with path".to_string()),
         )
         .await?;
+        fixture.wait_until_ready().await?;
 
         let handle = active_worker_processes
             .lock()
@@ -4534,6 +4604,8 @@ mod tests {
             spawn_event.get("pgid").and_then(Value::as_u64),
             Some(u64::from(handle.pid))
         );
+        fixture.release()?;
+        wait_for_worker_process_exit(&WorkerProcessController::default(), &handle).await?;
 
         Ok(())
     }
@@ -4690,22 +4762,25 @@ mod tests {
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
                 .await?;
         seed_queued_run(state_db.as_ref(), "finished-run").await?;
+        let fixture = TestWorkerFixture::create(temp.path())?;
         let active_worker_processes = Arc::new(Mutex::new(HashMap::new()));
         let context = BackgroundAgentProcessSupervisorContext {
             state_db,
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: fixture.program.clone(),
         };
         reconcile_background_agent_worker_processes(context.clone(), Some("finished-run".into()))
             .await?;
+        fixture.wait_until_ready().await?;
         assert!(
             active_worker_processes
                 .lock()
                 .await
                 .contains_key("finished-run")
         );
+        fixture.release()?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -4784,16 +4859,18 @@ mod tests {
                 .await?,
             1
         );
+        let fixture = TestWorkerFixture::create(temp.path())?;
         let context = BackgroundAgentProcessSupervisorContext {
             state_db: Arc::clone(&state_db),
             supervisor_id: "new-process-supervisor".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: fixture.program.clone(),
         };
 
         reconcile_background_agent_worker_processes(context, Some("orphaned-run".to_string()))
             .await?;
+        fixture.wait_until_ready().await?;
 
         let replacement = active_worker_processes
             .lock()
@@ -4806,6 +4883,8 @@ mod tests {
             controller.status(&old_handle).await?,
             WorkerProcessStatus::Running
         );
+        fixture.release()?;
+        wait_for_worker_process_exit(&controller, &replacement).await?;
         Ok(())
     }
 
@@ -4963,23 +5042,17 @@ mod tests {
             )
             .await?
             .expect("run should be claimed");
+        let fixture = TestWorkerFixture::create(temp.path())?;
         let controller = WorkerProcessController::default();
         let old_handle = controller
             .spawn(WorkerProcessCommand::new(
-                "/bin/true",
+                fixture.program.clone(),
                 temp.path().join("missing-stopping.stderr.log"),
             ))
             .await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if controller.status(&old_handle).await? != WorkerProcessStatus::Running {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                anyhow::bail!("timed out waiting for worker process to exit");
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        fixture.wait_until_ready().await?;
+        fixture.release()?;
+        wait_for_worker_process_exit(&controller, &old_handle).await?;
         let old_stderr_log_path = old_handle.stderr_log_path.to_string_lossy().to_string();
         state_db
             .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
@@ -5015,7 +5088,7 @@ mod tests {
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             codex_home: temp.path().to_path_buf(),
-            codex_bin: PathBuf::from("/bin/true"),
+            codex_bin: fixture.program.clone(),
         };
 
         reconcile_background_agent_worker_processes(
