@@ -11,9 +11,17 @@ mod claude;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
+#[cfg(windows)]
+mod windows_cmd_shim;
 
 pub use acp::*;
 pub use claude::*;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
+#[cfg(windows)]
+pub use windows_cmd_shim::WindowsBatchLaunchError;
+#[cfg(windows)]
+pub use windows_cmd_shim::WindowsNativeLaunch;
+#[cfg(windows)]
+pub use windows_cmd_shim::prepare_windows_batch_launch_from_source_env;
