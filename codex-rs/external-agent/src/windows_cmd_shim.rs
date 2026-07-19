@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::ffi::OsString;
-use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -15,70 +15,76 @@ pub struct WindowsNativeLaunch {
     pub args: Vec<OsString>,
 }
 
-/// Prepares a recognized batch shim as a native invocation without `cmd.exe` or `COMSPEC`.
+/// Prepares one of the static cmd-shim templates as a native invocation without `cmd.exe` or
+/// `COMSPEC`.
 ///
-/// For a Node shim, only the caller-supplied `source_env` `PATH` is trusted to locate an
-/// absolute `node.exe`; there is no sibling, host-environment, or `COMSPEC` fallback. Canonical
-/// paths are a local-filesystem snapshot, so callers must revalidate immediately before spawn to
-/// retain their reparse/TOCTOU boundary.
+/// Supported Node templates deliberately exclude shebang arguments and environment-variable
+/// expansion. For a Node shim, only the caller-supplied `source_env` `PATH` is trusted to locate
+/// an absolute `node.exe`; there is no sibling, host-environment, or `COMSPEC` fallback.
+/// Canonical paths are a local-filesystem snapshot, so callers must revalidate immediately before
+/// spawn to retain their reparse/TOCTOU boundary.
 pub fn prepare_windows_batch_launch_from_source_env(
     program: PathBuf,
     args: Vec<OsString>,
     source_env: &BTreeMap<String, String>,
     cwd: &Path,
 ) -> Result<WindowsNativeLaunch, WindowsBatchLaunchError> {
-    if !is_windows_batch_program(&program) {
-        return program
-            .is_absolute()
-            .then_some(WindowsNativeLaunch { program, args })
-            .ok_or(WindowsBatchLaunchError::ProgramNotAbsolute);
+    if !program.is_absolute() {
+        return Err(WindowsBatchLaunchError::ProgramNotAbsolute);
     }
-    let parent = program
-        .parent()
-        .ok_or(WindowsBatchLaunchError::UnsupportedShim)?
+    if !is_windows_batch_program(&program) {
+        return Ok(WindowsNativeLaunch { program, args });
+    }
+
+    let canonical_shim = program
         .canonicalize()
-        .map_err(WindowsBatchLaunchError::CanonicalizeShimDirectory)?;
-    let (target, runtime) = shim_target(&program, &parent)?;
+        .map_err(WindowsBatchLaunchError::CanonicalizeShim)?;
+    if !canonical_shim.is_absolute() {
+        return Err(WindowsBatchLaunchError::CanonicalShimNotAbsolute);
+    }
+    if !is_windows_batch_program(&canonical_shim) {
+        return Err(WindowsBatchLaunchError::UnsupportedShim);
+    }
+
+    let (target, runtime) = shim_target(&canonical_shim)?;
     match runtime {
         ShimRuntime::DirectNative => Ok(WindowsNativeLaunch {
             program: target,
             args,
         }),
         ShimRuntime::Node => {
-            let mut args = Vec::with_capacity(args.len() + 1);
-            args.push(target.into_os_string());
-            args.extend(args);
+            let mut launch_args = Vec::with_capacity(args.len() + 1);
+            launch_args.push(target.into_os_string());
+            launch_args.extend(args);
             Ok(WindowsNativeLaunch {
                 program: native_node(source_env, cwd)?,
-                args,
+                args: launch_args,
             })
         }
     }
 }
 
-fn shim_target(
-    program: &Path,
-    canonical_parent: &Path,
-) -> Result<(PathBuf, ShimRuntime), WindowsBatchLaunchError> {
-    let shim = std::fs::read_to_string(program).map_err(WindowsBatchLaunchError::ReadShim)?;
-    let (relative, runtime) =
+fn shim_target(canonical_shim: &Path) -> Result<(PathBuf, ShimRuntime), WindowsBatchLaunchError> {
+    let canonical_parent = canonical_shim
+        .parent()
+        .ok_or(WindowsBatchLaunchError::UnsupportedShim)?;
+    let shim =
+        std::fs::read_to_string(canonical_shim).map_err(WindowsBatchLaunchError::ReadShim)?;
+    let (target, runtime) =
         recognized_shim(&shim).ok_or(WindowsBatchLaunchError::UnsupportedShim)?;
-    let relative = Path::new(relative);
-    if !relative
-        .components()
-        .all(|component| matches!(component, Component::Normal(_)))
-    {
-        return Err(WindowsBatchLaunchError::InvalidShimTarget);
-    }
-    let target = canonical_parent.join(relative);
+    let (canonical_root, layout) = trusted_shim_root(canonical_parent);
+    let target = resolve_shim_target(target, &canonical_root, layout)?;
     if !target.is_file() {
         return Err(WindowsBatchLaunchError::MissingShimTarget { target });
     }
     let target = target
         .canonicalize()
         .map_err(WindowsBatchLaunchError::CanonicalizeTarget)?;
-    if !target.starts_with(canonical_parent) {
-        return Err(WindowsBatchLaunchError::TargetEscapesShimDirectory { target });
+    if !target.is_absolute() {
+        return Err(WindowsBatchLaunchError::CanonicalTargetNotAbsolute);
+    }
+    if !target.starts_with(&canonical_root) {
+        return Err(WindowsBatchLaunchError::TargetEscapesShimRoot { target });
     }
     match runtime {
         ShimRuntime::DirectNative if native_executable(&target) => Ok((target, runtime)),
@@ -93,11 +99,104 @@ enum ShimRuntime {
     Node,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShimLayout {
+    NodeModulesBin,
+    Prefix,
+}
+
+fn trusted_shim_root(canonical_parent: &Path) -> (PathBuf, ShimLayout) {
+    let is_bin = canonical_parent
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(".bin"));
+    let node_modules = canonical_parent.parent().filter(|parent| {
+        parent
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+    });
+    if is_bin && let Some(node_modules) = node_modules {
+        return (node_modules.to_path_buf(), ShimLayout::NodeModulesBin);
+    }
+
+    // A non-.bin shim is only accepted as a prefix/global shim. Its exact static template must
+    // name a child under `node_modules`, so the shim's canonical parent is the narrow root.
+    (canonical_parent.to_path_buf(), ShimLayout::Prefix)
+}
+
+fn resolve_shim_target(
+    target: &str,
+    canonical_root: &Path,
+    layout: ShimLayout,
+) -> Result<PathBuf, WindowsBatchLaunchError> {
+    let components = strict_target_components(target)?;
+    let components = match layout {
+        ShimLayout::NodeModulesBin => match components.as_slice() {
+            ["..", components @ ..] if !components.is_empty() => components,
+            _ => return Err(WindowsBatchLaunchError::InvalidShimTarget),
+        },
+        ShimLayout::Prefix => {
+            if !components
+                .first()
+                .is_some_and(|component| component.eq_ignore_ascii_case("node_modules"))
+            {
+                return Err(WindowsBatchLaunchError::InvalidShimTarget);
+            }
+            components.as_slice()
+        }
+    };
+    Ok(components
+        .iter()
+        .fold(canonical_root.to_path_buf(), |path, component| {
+            path.join(OsStr::new(component))
+        }))
+}
+
+fn strict_target_components(target: &str) -> Result<Vec<&str>, WindowsBatchLaunchError> {
+    if target.is_empty() || target.contains('/') || target.contains(['%', '!']) {
+        return Err(WindowsBatchLaunchError::InvalidShimTarget);
+    }
+    let components = target.split('\\').collect::<Vec<_>>();
+    if components.iter().any(|component| {
+        component.is_empty()
+            || component == &"."
+            || (component != &".." && !normal_windows_component(component))
+    }) {
+        return Err(WindowsBatchLaunchError::InvalidShimTarget);
+    }
+    if components
+        .iter()
+        .enumerate()
+        .any(|(index, component)| component == &".." && index != 0)
+    {
+        return Err(WindowsBatchLaunchError::InvalidShimTarget);
+    }
+    Ok(components)
+}
+
+fn normal_windows_component(component: &str) -> bool {
+    !component.ends_with([' ', '.'])
+        && !component.contains(['<', '>', ':', '"', '|', '?', '*'])
+        && !component.chars().any(char::is_control)
+        && !windows_device_name(component)
+}
+
+fn windows_device_name(component: &str) -> bool {
+    let name = component.split('.').next().unwrap_or_default();
+    let bytes = name.as_bytes();
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|device| name.eq_ignore_ascii_case(device))
+        || (bytes.len() == 4
+            && ((bytes[..3].eq_ignore_ascii_case(b"COM")
+                || bytes[..3].eq_ignore_ascii_case(b"LPT"))
+                && matches!(bytes[3], b'1'..=b'9')))
+}
+
 fn recognized_shim(shim: &str) -> Option<(&str, ShimRuntime)> {
     let lines = normalized_batch_lines(shim)?;
     npm_cmd_shim_v9_target(&lines)
         .or_else(|| npm_cmd_shim_v8_target(&lines))
-        .or_else(|| corepack_cmd_shim_v1_target(&lines))
+        .or_else(|| legacy_cmd_shim_v5_target(&lines))
 }
 
 const CMD_SHIM_HEAD: [&str; 8] = [
@@ -111,7 +210,7 @@ const CMD_SHIM_HEAD: [&str; 8] = [
     "CALL :find_dp0",
 ];
 
-fn npm_cmd_shim_v9_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
+fn npm_cmd_shim_v9_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime)> {
     (lines.starts_with(&CMD_SHIM_HEAD)).then_some(())?;
     if lines.len() == CMD_SHIM_HEAD.len() + 1 {
         return target_from_line(lines.last()?, "\"%dp0%\\", "\"   %*")
@@ -141,7 +240,8 @@ fn npm_cmd_shim_v9_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
     .map(|target| (target, ShimRuntime::Node))
 }
 
-fn npm_cmd_shim_v8_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
+fn npm_cmd_shim_v8_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime)> {
+    (lines.starts_with(&CMD_SHIM_HEAD)).then_some(())?;
     const BODY: [&str; 8] = [
         "",
         "IF EXIST \"%dp0%\\node.exe\" (",
@@ -153,22 +253,21 @@ fn npm_cmd_shim_v8_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
         "",
     ];
     (lines.len() == CMD_SHIM_HEAD.len() + BODY.len() + 1).then_some(())?;
-    lines[..CMD_SHIM_HEAD.len()]
+    lines[CMD_SHIM_HEAD.len()..]
         .iter()
         .copied()
-        .chain(lines[CMD_SHIM_HEAD.len()..].iter().copied())
-        .zip(CMD_SHIM_HEAD.into_iter().chain(BODY))
+        .zip(BODY)
         .all(|(line, expected)| line == expected)
         .then_some(())?;
     target_from_line(
         lines.last()?,
-        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\",
+        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\",
         "\" %*",
     )
     .map(|target| (target, ShimRuntime::Node))
 }
 
-fn corepack_cmd_shim_v1_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
+fn legacy_cmd_shim_v5_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime)> {
     (lines.len() == 7).then_some(())?;
     (lines[0] == "@SETLOCAL").then_some(())?;
     (lines[1] == "@IF EXIST \"%~dp0\\node.exe\" (").then_some(())?;
@@ -181,15 +280,9 @@ fn corepack_cmd_shim_v1_target(lines: &[&str]) -> Option<(&str, ShimRuntime)> {
 }
 
 fn normalized_batch_lines(shim: &str) -> Option<Vec<&str>> {
-    let body = shim
-        .strip_suffix('\n')?
-        .strip_suffix('\r')
-        .unwrap_or(shim.strip_suffix('\n')?);
-    let lines = body
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect::<Vec<_>>();
-    (!lines.iter().any(|line| line.contains('\r'))).then_some(lines)
+    let body = shim.strip_suffix("\r\n")?;
+    let lines = body.split("\r\n").collect::<Vec<_>>();
+    (!lines.iter().any(|line| line.contains(['\r', '\n']))).then_some(lines)
 }
 
 fn target_from_line<'a>(line: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
@@ -272,24 +365,28 @@ fn is_windows_batch_program(program: &Path) -> bool {
 /// Errors returned while preparing a Windows native launch plan.
 #[derive(Debug, thiserror::Error)]
 pub enum WindowsBatchLaunchError {
-    #[error("non-batch launch programs must be absolute")]
+    #[error("launch programs must be absolute")]
     ProgramNotAbsolute,
+    #[error("could not canonicalize Windows batch shim: {0}")]
+    CanonicalizeShim(std::io::Error),
+    #[error("canonical Windows batch shim is not absolute")]
+    CanonicalShimNotAbsolute,
     #[error(
-        "unsupported Windows batch shim; install the agent through npm or configure a native executable"
+        "unsupported Windows batch shim; configure a native executable or an exact static cmd-shim form"
     )]
     UnsupportedShim,
     #[error("could not read Windows batch shim: {0}")]
     ReadShim(std::io::Error),
-    #[error("could not canonicalize batch shim directory: {0}")]
-    CanonicalizeShimDirectory(std::io::Error),
-    #[error("batch shim target must be a relative path of normal components")]
+    #[error("batch shim target is not an accepted bounded Windows relative path")]
     InvalidShimTarget,
     #[error("batch shim target does not exist: {}", .target.display())]
     MissingShimTarget { target: PathBuf },
     #[error("could not canonicalize batch shim target: {0}")]
     CanonicalizeTarget(std::io::Error),
-    #[error("batch shim target escapes the canonical shim directory: {}", .target.display())]
-    TargetEscapesShimDirectory { target: PathBuf },
+    #[error("canonical batch shim target is not absolute")]
+    CanonicalTargetNotAbsolute,
+    #[error("batch shim target escapes the trusted shim root: {}", .target.display())]
+    TargetEscapesShimRoot { target: PathBuf },
     #[error("could not canonicalize node.exe: {0}")]
     CanonicalizeNode(std::io::Error),
     #[error("could not find node.exe for npm batch shim: {0}")]
@@ -299,177 +396,5 @@ pub enum WindowsBatchLaunchError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    fn npm_v8(target: &str) -> String {
-        format!(
-            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\{target}\" %*\r\n"
-        )
-    }
-
-    // Pinned from cmd-shim@9.0.2 lib/index.js with no shebang args or variables.
-    fn npm_v9_node(target: &str) -> String {
-        format!(
-            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
-        )
-    }
-
-    // Pinned from cmd-shim@9.0.2's no-shebang direct executable form.
-    fn npm_v9_direct(target: &str) -> String {
-        format!(
-            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\{target}\"   %*\r\n"
-        )
-    }
-
-    fn corepack(target: &str) -> String {
-        format!(
-            "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\{target}\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\{target}\" %*\r\n)\r\n"
-        )
-    }
-
-    fn write(path: &Path, contents: &str) {
-        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("create fixture");
-        std::fs::write(path, contents).expect("write fixture");
-    }
-
-    #[test]
-    fn recognizes_pinned_generators_and_rejects_rewrites() {
-        let node = "node_modules\\agent\\bin\\agent.js";
-        let claude = "node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
-        assert_eq!(
-            recognized_shim(&npm_v8(node)),
-            Some((node, ShimRuntime::Node))
-        );
-        assert_eq!(
-            recognized_shim(&npm_v9_node(node)),
-            Some((node, ShimRuntime::Node))
-        );
-        assert_eq!(
-            recognized_shim(&npm_v9_direct(claude)),
-            Some((claude, ShimRuntime::DirectNative))
-        );
-        assert_eq!(
-            recognized_shim(&corepack(node)),
-            Some((node, ShimRuntime::Node))
-        );
-        assert_eq!(
-            recognized_shim(&npm_v9_node(node).replace("@ECHO off", "@ECHO off ")),
-            None
-        );
-        assert_eq!(
-            recognized_shim(&npm_v9_node(node).replace("\"%_prog%\"  ", "\"%_prog%\" --inspect ")),
-            None
-        );
-    }
-
-    #[test]
-    fn direct_claude_shim_and_non_batch_contract_are_native() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let shim = temp.path().join("claude.cmd");
-        let target = temp
-            .path()
-            .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
-        write(
-            &shim,
-            &npm_v9_direct("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
-        );
-        write(&target, "fixture");
-        let args = vec![OsString::from("--resume"), OsString::from("task")];
-        let launch = prepare_windows_batch_launch_from_source_env(
-            shim,
-            args.clone(),
-            &BTreeMap::new(),
-            temp.path(),
-        )
-        .expect("direct plan");
-        assert_eq!(
-            launch,
-            WindowsNativeLaunch {
-                program: target.canonicalize().expect("canonical target"),
-                args
-            }
-        );
-        assert!(matches!(
-            prepare_windows_batch_launch_from_source_env(
-                PathBuf::from("agent.exe"),
-                Vec::new(),
-                &BTreeMap::new(),
-                temp.path()
-            ),
-            Err(WindowsBatchLaunchError::ProgramNotAbsolute)
-        ));
-    }
-
-    #[test]
-    fn rejects_noncanonical_targets_before_filesystem_access() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        for target in [
-            ".\\agent.js",
-            "..\\agent.js",
-            "node_modules\\..\\agent.js",
-            "C:\\agent.js",
-        ] {
-            let shim = temp.path().join(format!("{}.cmd", target.len()));
-            write(&shim, &npm_v9_node(target));
-            let error = prepare_windows_batch_launch_from_source_env(
-                shim,
-                Vec::new(),
-                &BTreeMap::new(),
-                temp.path(),
-            )
-            .expect_err("reject non-normal target");
-            assert!(matches!(error, WindowsBatchLaunchError::InvalidShimTarget));
-        }
-    }
-
-    #[test]
-    fn source_path_node_keeps_multiline_os_argv_and_ignores_comspec() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let shim = temp.path().join("agent.cmd");
-        let target = temp.path().join("agent.js");
-        let node = temp.path().join("trusted-node/node.EXE");
-        write(&shim, &npm_v9_node("agent.js"));
-        write(&target, "fixture");
-        write(&node, "fixture");
-        assert!(!temp.path().join("node.exe").exists());
-        let args = [
-            "",
-            "quotes: \"double\" and 'single'",
-            "&|<>()^",
-            "%PERCENT%",
-            "!BANG!",
-            "first\r\nsecond",
-        ]
-        .map(OsString::from)
-        .to_vec();
-        let source_env = BTreeMap::from([
-            (
-                "PATH".into(),
-                temp.path().join("trusted-node").display().to_string(),
-            ),
-            (
-                "COMSPEC".into(),
-                temp.path().join("poisoned.cmd").display().to_string(),
-            ),
-        ]);
-        let launch = prepare_windows_batch_launch_from_source_env(
-            shim,
-            args.clone(),
-            &source_env,
-            temp.path(),
-        )
-        .expect("source PATH plan");
-        let mut expected = vec![
-            target
-                .canonicalize()
-                .expect("canonical target")
-                .into_os_string(),
-        ];
-        expected.extend(args);
-        assert_eq!(launch.args, expected);
-        assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
-        assert_ne!(launch.program, temp.path().join("poisoned.cmd"));
-    }
-}
+#[path = "windows_cmd_shim_tests.rs"]
+mod tests;
