@@ -25,6 +25,12 @@ use crate::ExternalAgentRuntimeId;
 use crate::ExternalAgentSandboxConfig;
 use crate::ExternalAgentSandboxedLaunchSpec;
 use crate::ExternalAgentSessionState;
+#[cfg(windows)]
+use crate::claude_windows::merge_windows_environment;
+#[cfg(windows)]
+use crate::claude_windows::prepare_windows_claude_launch;
+#[cfg(windows)]
+use crate::claude_windows::resolve_windows_program_from_source_env;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch;
 use serde_json::Value as JsonValue;
@@ -109,12 +115,17 @@ pub struct ClaudeEnvironmentPolicy {
 
 impl ClaudeEnvironmentPolicy {
     pub fn sanitized() -> Self {
-        Self {
-            inherited_vars: CLAUDE_SAFE_ENV_VARS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        }
+        let inherited_vars = CLAUDE_SAFE_ENV_VARS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        #[cfg(windows)]
+        let inherited_vars = {
+            let mut inherited_vars = inherited_vars;
+            inherited_vars.push("PATHEXT".to_string());
+            inherited_vars
+        };
+        Self { inherited_vars }
     }
 
     pub fn sanitize(
@@ -122,6 +133,10 @@ impl ClaudeEnvironmentPolicy {
         source: &BTreeMap<String, String>,
         extra: &BTreeMap<String, String>,
     ) -> BTreeMap<String, String> {
+        #[cfg(windows)]
+        let source = merge_windows_environment(source, extra);
+        #[cfg(windows)]
+        let source = &source;
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
             if let Some(value) = source.get(name) {
@@ -129,6 +144,8 @@ impl ClaudeEnvironmentPolicy {
             }
         }
         for (name, value) in extra {
+            #[cfg(windows)]
+            let name = name.to_ascii_uppercase();
             env.insert(name.clone(), value.clone());
         }
         env
@@ -165,6 +182,15 @@ impl ClaudeCodeHarness {
     ) -> ExternalAgentReadiness {
         let program = match self.resolve_program_with_cwd(source_env, Path::new(".")) {
             Ok(program) => program,
+            Err(err) => return self.runtime_missing_readiness(err),
+        };
+        let _launch = match self.launch_spec_with_args(
+            PathBuf::from("."),
+            program.clone(),
+            source_env,
+            Vec::new(),
+        ) {
+            Ok(launch) => launch,
             Err(err) => return self.runtime_missing_readiness(err.to_string()),
         };
 
@@ -172,10 +198,19 @@ impl ClaudeCodeHarness {
             return self.runtime_ready_readiness(&program);
         }
 
-        match Command::new(&program)
-            .args(["auth", "status"])
+        let launch = match self.launch_spec_with_args(
+            PathBuf::from("."),
+            program.clone(),
+            source_env,
+            vec!["auth".to_string(), "status".to_string()],
+        ) {
+            Ok(launch) => launch,
+            Err(err) => return self.runtime_missing_readiness(err.to_string()),
+        };
+        match Command::new(&launch.program)
+            .args(&launch.args)
             .env_clear()
-            .envs(self.sanitized_env(source_env))
+            .envs(launch.env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -208,28 +243,49 @@ impl ClaudeCodeHarness {
     ) -> Result<ExternalAgentResult, ExternalAgentError> {
         self.validate_request(&request)?;
         let program = self.resolve_program(&request, &source_env)?;
-        let launch = self.launch_spec(request.cwd.clone(), program, &source_env);
+        let launch = self.launch_spec_with_args(
+            request.cwd.clone(),
+            program,
+            &source_env,
+            claude_code_args(request.task.as_str()),
+        )?;
         let launch = platform_sandbox_external_agent_launch(launch, sandbox_config)?;
         self.run_sandboxed_launch(request, host, launch).await
     }
 
+    #[cfg(test)]
     fn launch_spec(
         &self,
         cwd: impl Into<PathBuf>,
         resolved_program: impl Into<PathBuf>,
         source_env: &BTreeMap<String, String>,
-    ) -> ExternalAgentLaunchSpec {
-        ExternalAgentLaunchSpec {
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
+        self.launch_spec_with_args(cwd, resolved_program, source_env, Vec::new())
+    }
+
+    fn launch_spec_with_args(
+        &self,
+        cwd: impl Into<PathBuf>,
+        resolved_program: impl Into<PathBuf>,
+        source_env: &BTreeMap<String, String>,
+        args: Vec<String>,
+    ) -> Result<ExternalAgentLaunchSpec, ExternalAgentError> {
+        let cwd = cwd.into();
+        let program = resolved_program.into();
+        #[cfg(windows)]
+        let (program, args) = prepare_windows_claude_launch(program, args, source_env, &cwd)
+            .map_err(|reason| windows_launch_not_ready(self.descriptor.id, reason))?;
+        Ok(ExternalAgentLaunchSpec {
             runtime: ExternalAgentRuntimeId::from(self.descriptor.id),
-            program: resolved_program.into(),
-            args: Vec::new(),
+            program,
+            args,
             arg0: None,
-            cwd: cwd.into(),
+            cwd,
             env: self.sanitized_env(source_env),
             isolation: ExternalAgentLaunchIsolation::unenforced(
                 "Claude Code launch has not been wrapped in a Codewith platform sandbox",
             ),
-        }
+        })
     }
 
     fn sanitized_env(&self, source_env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -250,7 +306,7 @@ impl ClaudeCodeHarness {
         self.resolve_program_with_cwd(source_env, &request.cwd)
             .map_err(|err| ExternalAgentError::NotReady {
                 runtime: request.runtime.as_str().to_string(),
-                reason: err.to_string(),
+                reason: err,
             })
     }
 
@@ -258,9 +314,21 @@ impl ClaudeCodeHarness {
         &self,
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
-    ) -> Result<PathBuf, which::Error> {
-        let path = source_env.get("PATH").map(String::as_str);
-        which::which_in(self.descriptor.command.program, path, cwd)
+    ) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        {
+            resolve_windows_program_from_source_env(
+                self.descriptor.command.program,
+                source_env,
+                cwd,
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            let path = source_env.get("PATH").map(String::as_str);
+            which::which_in(self.descriptor.command.program, path, cwd)
+                .map_err(|err| err.to_string())
+        }
     }
 
     fn validate_request(&self, request: &ExternalAgentRequest) -> Result<(), ExternalAgentError> {
@@ -351,6 +419,14 @@ impl ClaudeCodeHarness {
     }
 }
 
+#[cfg(windows)]
+fn windows_launch_not_ready(runtime: &str, reason: String) -> ExternalAgentError {
+    ExternalAgentError::NotReady {
+        runtime: runtime.to_string(),
+        reason: format!("could not safely prepare Claude Windows launch: {reason}"),
+    }
+}
+
 pub fn claude_code_harness() -> Option<ClaudeCodeHarness> {
     find_external_agent_runtime(ExternalAgentRuntimeId::CLAUDE).map(ClaudeCodeHarness::new)
 }
@@ -398,7 +474,7 @@ struct ClaudeCodeProcess {
 impl ClaudeCodeProcess {
     fn spawn(
         launch: ExternalAgentSandboxedLaunchSpec,
-        request: &ExternalAgentRequest,
+        _request: &ExternalAgentRequest,
     ) -> Result<Self, ExternalAgentError> {
         let launch = launch.into_launch_spec();
         let runtime = launch.runtime.clone();
@@ -420,7 +496,7 @@ impl ClaudeCodeProcess {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
         command
-            .args(claude_code_args(request.task.as_str()))
+            .args(&launch.args)
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
@@ -628,6 +704,10 @@ fn add_agent_sdk_auth_env(
     env: &mut BTreeMap<String, String>,
     source_env: &BTreeMap<String, String>,
 ) {
+    #[cfg(windows)]
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
     copy_env_vars(env, source_env, CLAUDE_AGENT_SDK_AUTH_ENV_VARS);
     if env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
@@ -651,6 +731,10 @@ fn add_agent_sdk_auth_env(
 }
 
 fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
+    #[cfg(windows)]
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
     env_value_is_set(source_env, "ANTHROPIC_API_KEY")
         || env_value_is_set(source_env, "ANTHROPIC_AUTH_TOKEN")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
@@ -1061,6 +1145,135 @@ exit 2
         assert_eq!(readiness.status, ExternalAgentReadinessStatus::MissingAuth);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn readiness_uses_source_pathext_and_rejects_unrecognized_cmd_shims() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin directory");
+        let claude = bin_dir.join("claude.CLAUDEEXT");
+        std::fs::write(&claude, "fixture").expect("write native Claude fixture");
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), bin_dir.display().to_string()),
+            ("PathExt".to_string(), ".CLAUDEEXT".to_string()),
+            ("aNtHrOpIc_ApI_kEy".to_string(), "test-value".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("Claude harness");
+
+        let readiness = harness.readiness_with_env(&source_env).await;
+
+        assert_eq!(readiness.status, ExternalAgentReadinessStatus::Ready);
+        assert_eq!(readiness.detail, Some(claude.display().to_string()));
+
+        let shim = bin_dir.join("claude.cmd");
+        std::fs::write(&shim, "@echo off\r\nexit /b 0\r\n").expect("write unsupported shim");
+        let rejected_env = BTreeMap::from([
+            ("PATH".to_string(), bin_dir.display().to_string()),
+            ("PATHEXT".to_string(), ".CMD".to_string()),
+            ("ANTHROPIC_API_KEY".to_string(), "test-value".to_string()),
+        ]);
+
+        let readiness = harness.readiness_with_env(&rejected_env).await;
+
+        assert_eq!(
+            readiness.status,
+            ExternalAgentReadinessStatus::MissingRuntime
+        );
+        assert!(
+            readiness
+                .detail
+                .is_some_and(|detail| detail.contains("unsupported Windows batch shim")),
+            "unsupported cmd shim must fail closed during readiness: {readiness:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_cmd_shim_becomes_native_launch_and_preserves_hostile_task_argv() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let shim = temp_dir.path().join("node_modules/.bin/claude.cmd");
+        let target = temp_dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+        write_windows_fixture(
+            &shim,
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\..\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n",
+        );
+        write_windows_fixture(&target, "fixture");
+        let task = "quotes \" stay literal & | < > ( ) ^ %ANTHROPIC_API_KEY% !";
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), r"C:\source-bin".to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            ("aNtHrOpIc_ApI_kEy".to_string(), "test-value".to_string()),
+            ("ComSpec".to_string(), r"C:\poisoned\cmd.exe".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("Claude harness");
+        let args = claude_code_args(task);
+
+        let launch = harness
+            .launch_spec_with_args(temp_dir.path(), &shim, &source_env, args.clone())
+            .expect("recognized cmd shim should become a native launch");
+
+        assert_eq!(
+            launch.program,
+            target.canonicalize().expect("canonical target")
+        );
+        assert_eq!(launch.args, args);
+        assert_eq!(launch.env.get("PATH"), Some(&r"C:\source-bin".to_string()));
+        assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD".to_string()));
+        assert_eq!(
+            launch.env.get("ANTHROPIC_API_KEY"),
+            Some(&"test-value".to_string())
+        );
+        assert!(!launch.env.contains_key("COMSPEC"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_node_shim_uses_source_path_and_preserves_task_argv() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let shim = temp_dir.path().join("prefix/claude.cmd");
+        let target = temp_dir
+            .path()
+            .join("prefix/node_modules/@anthropic-ai/claude-code/bin/cli.js");
+        let node = temp_dir.path().join("node-bin/node.exe");
+        let shim_contents = include_str!("fixtures/cmd-shim-9.0.2-node.cmd.golden")
+            .trim_end_matches(['\r', '\n'])
+            .replace(r"\r\n", "\r\n")
+            .replace(
+                "node_modules\\agent\\bin\\agent.js",
+                "node_modules\\@anthropic-ai\\claude-code\\bin\\cli.js",
+            );
+        write_windows_fixture(&shim, shim_contents);
+        write_windows_fixture(&target, "fixture");
+        write_windows_fixture(&node, "fixture");
+        let task = "one task with & | < > ( ) ^ % and !";
+        let source_env = BTreeMap::from([
+            ("Path".to_string(), "node-bin".to_string()),
+            ("aNtHrOpIc_ApI_kEy".to_string(), "test-value".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("Claude harness");
+        let args = claude_code_args(task);
+
+        let launch = harness
+            .launch_spec_with_args(temp_dir.path(), &shim, &source_env, args.clone())
+            .expect("recognized Node shim should become a native launch");
+
+        assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
+        assert_eq!(
+            launch.args,
+            std::iter::once(
+                target
+                    .canonicalize()
+                    .expect("canonical target")
+                    .display()
+                    .to_string(),
+            )
+            .chain(args)
+            .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn launch_env_preserves_stable_config_and_claude_auth_only() {
         let harness = claude_code_harness().expect("claude harness");
@@ -1147,7 +1360,9 @@ exit 2
             ("XAI_API_KEY".to_string(), "test-value".to_string()),
         ]);
 
-        let spec = harness.launch_spec("/repo", "/usr/bin/claude", &source);
+        let spec = harness
+            .launch_spec("/repo", "/usr/bin/claude", &source)
+            .expect("native launch spec should build");
 
         assert_eq!(
             spec.env,
@@ -1245,5 +1460,12 @@ exit 2
         std::fs::set_permissions(&claude_path, permissions).expect("chmod fake claude");
         let path = bin_dir.display().to_string();
         (temp_dir, BTreeMap::from([("PATH".to_string(), path)]))
+    }
+
+    #[cfg(windows)]
+    fn write_windows_fixture(path: &Path, contents: impl AsRef<[u8]>) {
+        std::fs::create_dir_all(path.parent().expect("fixture parent"))
+            .expect("create fixture parent");
+        std::fs::write(path, contents).expect("write fixture");
     }
 }

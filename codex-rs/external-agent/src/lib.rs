@@ -9,6 +9,8 @@
 mod acp;
 mod acp_adapter;
 mod claude;
+#[cfg(windows)]
+mod claude_windows;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
