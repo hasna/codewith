@@ -1988,6 +1988,46 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn rejects_long_s_missing_leaf_alias_during_worktree_admission() -> anyhow::Result<()> {
+        let runtime = test_runtime().await;
+        let base_repo_path = PathBuf::from(r"C:\Repo");
+        let canonical_path = PathBuf::from(r"C:\Repo\.codewith\worktrees\RunS\missing\leaf");
+        let long_s_alias =
+            PathBuf::from("c:\\repo\\.codewith\\worktrees\\run\u{017f}\\missing\\leaf");
+
+        assert_ne!(
+            path_to_db_string(&canonical_path),
+            path_to_db_string(&long_s_alias)
+        );
+        assert_eq!(
+            managed_worktree_path_key_from_display(path_to_db_string(&canonical_path).as_str()),
+            managed_worktree_path_key_from_display(path_to_db_string(&long_s_alias).as_str())
+        );
+        let store = runtime.managed_worktrees();
+        store
+            .create_managed_worktree(create_params_for_paths(
+                "wt-long-s-canonical",
+                base_repo_path.clone(),
+                canonical_path,
+            ))
+            .await?;
+        let error = store
+            .create_managed_worktree(create_params_for_paths(
+                "wt-long-s-alias",
+                base_repo_path,
+                long_s_alias,
+            ))
+            .await
+            .expect_err("Windows long-s aliases must not bypass worktree admission");
+        assert!(
+            format!("{error:#}").contains("normalized isolated worktree path is already live"),
+            "unexpected admission error: {error:#}"
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn retained_live_legacy_alias_blocks_new_canonical_admission() -> anyhow::Result<()> {

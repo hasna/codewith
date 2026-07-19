@@ -65,6 +65,7 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         &[
             ("CODEWITH_AUTH_PROFILE", Some("cursor-work")),
             ("PATH", Some(path.as_str())),
+            ("PATHEXT", Some(".CMD")),
         ],
     )
     .await?;

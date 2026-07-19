@@ -1281,7 +1281,7 @@ fn background_agent_status_timestamps(
     (started_at, completed_at)
 }
 
-fn is_background_agent_unique_constraint_violation(err: &sqlx::Error) -> bool {
+pub(super) fn is_background_agent_unique_constraint_violation(err: &sqlx::Error) -> bool {
     let sqlx::Error::Database(database_err) = err else {
         return false;
     };

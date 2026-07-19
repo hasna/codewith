@@ -142,6 +142,8 @@ pub use model::WorkflowRunStepVerifier;
 pub use model::WorkflowRunStepVerifierStatus;
 pub use model::WorkflowSpecRecord;
 pub use model::WorkflowSpecStatus;
+pub use runtime::BackgroundAgentRunAdmission;
+pub use runtime::BackgroundAgentRunAdmissionParams;
 pub use runtime::DEFAULT_MACHINE_REGISTRY_LIST_LIMIT;
 pub use runtime::DEFAULT_MAILBOX_MESSAGE_LIST_LIMIT;
 pub use runtime::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT;

@@ -84,6 +84,7 @@ use codex_protocol::protocol::validate_thread_goal_objective;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rollout::StateDbHandle;
+use codex_state::BackgroundAgentRunAdmissionParams;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
 use codex_state::ManagedWorktreeDetachParams;
@@ -112,6 +113,24 @@ impl BackgroundAgentRequestProcessor {
     pub(super) async fn agent_start_inner(
         &self,
         params: AgentStartParams,
+    ) -> Result<AgentStartResponse, JSONRPCErrorError> {
+        self.agent_start_inner_with_optional_managed_worktree(params, None)
+            .await
+    }
+
+    pub(super) async fn agent_start_inner_with_managed_worktree(
+        &self,
+        params: AgentStartParams,
+        managed_worktree_id: String,
+    ) -> Result<AgentStartResponse, JSONRPCErrorError> {
+        self.agent_start_inner_with_optional_managed_worktree(params, Some(managed_worktree_id))
+            .await
+    }
+
+    async fn agent_start_inner_with_optional_managed_worktree(
+        &self,
+        params: AgentStartParams,
+        managed_worktree_id: Option<String>,
     ) -> Result<AgentStartResponse, JSONRPCErrorError> {
         let state_db = self.state_db()?;
         let AgentStartParams {
@@ -194,36 +213,31 @@ impl BackgroundAgentRequestProcessor {
             .as_ref()
             .and_then(|context| context.recovery_policy.clone())
             .unwrap_or_else(|| "abort_mid_turn_resume_at_safe_boundary".to_string());
-        let run = match existing_run {
-            Some(run) => run,
-            None => state_db
-                .create_run(BackgroundAgentRunCreateParams {
-                    id: agent_id.clone(),
-                    idempotency_key,
-                    request_id,
-                    source,
-                    prompt_snapshot_ref,
-                    input_snapshot_ref,
-                    thread_id,
-                    thread_store_kind,
-                    thread_store_id,
-                    rollout_path,
-                    parent_thread_id,
-                    parent_agent_run_id,
-                    spawn_linkage_json: spawn_linkage,
-                    auth_profile_ref,
-                    status_reason: Some("queued for background-agent supervisor".to_string()),
-                    config_fingerprint,
-                    version_fingerprint,
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to create background agent: {err}"))
-                })?,
+        let run_params = BackgroundAgentRunCreateParams {
+            id: agent_id.clone(),
+            idempotency_key,
+            request_id,
+            source,
+            prompt_snapshot_ref,
+            input_snapshot_ref,
+            thread_id,
+            thread_store_kind,
+            thread_store_id,
+            rollout_path,
+            parent_thread_id,
+            parent_agent_run_id,
+            spawn_linkage_json: spawn_linkage,
+            auth_profile_ref,
+            status_reason: Some("queued for background-agent supervisor".to_string()),
+            config_fingerprint,
+            version_fingerprint,
         };
-        let created_new_run = run.id == agent_id;
+        let initial_run_fields = existing_run
+            .as_ref()
+            .map(InitialExecutionSnapshotRunFields::from_run)
+            .unwrap_or_else(|| InitialExecutionSnapshotRunFields::from_create_params(&run_params));
         let execution_payload = initial_execution_snapshot_payload(
-            &run,
+            initial_run_fields,
             InitialExecutionSnapshotPayloadParams {
                 cwd: cwd.as_deref(),
                 initial_goal_objective: initial_goal_objective.as_deref(),
@@ -231,6 +245,49 @@ impl BackgroundAgentRequestProcessor {
                 recovery_policy: recovery_policy.as_str(),
             },
         );
+        let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+            run_id: agent_id.clone(),
+            snapshot_kind: "initial_execution_context".to_string(),
+            payload_json: execution_payload.clone(),
+            recovery_policy: recovery_policy.clone(),
+            config_fingerprint: run_params.config_fingerprint.clone(),
+        };
+        let started_event_payload = json!({
+            "cwd": cwd,
+            "prompt": prompt,
+            "promptSnapshotRef": run_params.prompt_snapshot_ref.as_str(),
+            "initialGoalObjective": initial_goal_objective.as_deref(),
+        });
+        if let Some(worktree_id) = managed_worktree_id {
+            let admission = state_db
+                .admit_background_agent_run(&BackgroundAgentRunAdmissionParams {
+                    run: run_params,
+                    worktree_id,
+                    execution_snapshot: execution_snapshot_params,
+                    started_event_payload_json: started_event_payload,
+                })
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to atomically admit background agent: {err}"
+                    ))
+                })?;
+            return Ok(AgentStartResponse {
+                agent: api_agent_run_from_state(admission.run),
+                status_snapshot: api_agent_status_snapshot_from_state(admission.status_snapshot),
+                execution_snapshot: api_agent_execution_snapshot_from_state(
+                    admission.execution_snapshot,
+                ),
+                event: api_agent_event_from_state(admission.event),
+            });
+        }
+        let run = match existing_run {
+            Some(run) => run,
+            None => state_db.create_run(run_params).await.map_err(|err| {
+                internal_error(format!("failed to create background agent: {err}"))
+            })?,
+        };
+        let created_new_run = run.id == agent_id;
         let execution_snapshot = if created_new_run {
             state_db
                 .create_execution_snapshot(BackgroundAgentExecutionSnapshotParams {
@@ -277,12 +334,7 @@ impl BackgroundAgentRequestProcessor {
                 state_db.as_ref(),
                 run.id.as_str(),
                 "agent.started",
-                &json!({
-                    "cwd": cwd,
-                    "prompt": prompt,
-                    "promptSnapshotRef": run.prompt_snapshot_ref.as_str(),
-                    "initialGoalObjective": initial_goal_objective.as_deref(),
-                }),
+                &started_event_payload,
             )
             .await
             .map_err(|err| {
@@ -1199,8 +1251,32 @@ struct InitialExecutionSnapshotPayloadParams<'a> {
     recovery_policy: &'a str,
 }
 
+struct InitialExecutionSnapshotRunFields<'a> {
+    auth_profile_ref: Option<&'a str>,
+    config_fingerprint: Option<&'a str>,
+    version_fingerprint: Option<&'a str>,
+}
+
+impl<'a> InitialExecutionSnapshotRunFields<'a> {
+    fn from_run(run: &'a BackgroundAgentRun) -> Self {
+        Self {
+            auth_profile_ref: run.auth_profile_ref.as_deref(),
+            config_fingerprint: run.config_fingerprint.as_deref(),
+            version_fingerprint: run.version_fingerprint.as_deref(),
+        }
+    }
+
+    fn from_create_params(params: &'a BackgroundAgentRunCreateParams) -> Self {
+        Self {
+            auth_profile_ref: params.auth_profile_ref.as_deref(),
+            config_fingerprint: params.config_fingerprint.as_deref(),
+            version_fingerprint: params.version_fingerprint.as_deref(),
+        }
+    }
+}
+
 fn initial_execution_snapshot_payload(
-    run: &BackgroundAgentRun,
+    run: InitialExecutionSnapshotRunFields<'_>,
     params: InitialExecutionSnapshotPayloadParams<'_>,
 ) -> serde_json::Value {
     json!({
@@ -1213,7 +1289,7 @@ fn initial_execution_snapshot_payload(
         "approvalPolicy": params
             .execution_context
             .and_then(|context| context.approval_policy),
-        "authProfileRef": run.auth_profile_ref.as_deref(),
+        "authProfileRef": run.auth_profile_ref,
         "permissionProfile": params
             .execution_context
             .and_then(|context| context.permission_profile.as_ref()),
@@ -1251,8 +1327,8 @@ fn initial_execution_snapshot_payload(
         "maxTokens": params
             .execution_context
             .and_then(|context| context.max_tokens),
-        "configFingerprint": run.config_fingerprint.as_deref(),
-        "versionFingerprint": run.version_fingerprint.as_deref(),
+        "configFingerprint": run.config_fingerprint,
+        "versionFingerprint": run.version_fingerprint,
         "recoveryPolicy": params.recovery_policy,
         "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
     })

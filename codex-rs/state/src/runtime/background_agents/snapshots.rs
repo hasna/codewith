@@ -86,16 +86,65 @@ WHERE run_id = ?
         params: &BackgroundAgentExecutionSnapshotParams,
     ) -> anyhow::Result<BackgroundAgentExecutionSnapshot> {
         let now = Utc::now().timestamp();
-        let payload_json = serde_json::to_string(&params.payload_json)?;
         let mut tx = self.pool.begin().await?;
-        let seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
-        )
-        .bind(params.run_id.as_str())
-        .fetch_one(&mut *tx)
-        .await?;
-        let id = sqlx::query(
-            r#"
+        let snapshot =
+            create_background_agent_execution_snapshot_in_tx(&mut tx, params, now).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn get_latest_background_agent_execution_snapshot(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
+        let mut tx = self.pool.begin().await?;
+        let snapshot =
+            get_latest_background_agent_execution_snapshot_in_tx(&mut tx, run_id).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+}
+
+pub(super) async fn get_background_agent_status_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+) -> anyhow::Result<Option<BackgroundAgentStatusSnapshot>> {
+    let row = sqlx::query_as::<_, BackgroundAgentStatusSnapshotRow>(
+        r#"
+SELECT
+    run_id,
+    seq,
+    status,
+    desired_state,
+    summary,
+    pending_interaction_count,
+    last_event_seq,
+    payload_json,
+    updated_at
+FROM background_agent_status_snapshots
+WHERE run_id = ?
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(BackgroundAgentStatusSnapshot::try_from).transpose()
+}
+
+pub(super) async fn create_background_agent_execution_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    params: &BackgroundAgentExecutionSnapshotParams,
+    now: i64,
+) -> anyhow::Result<BackgroundAgentExecutionSnapshot> {
+    let payload_json = serde_json::to_string(&params.payload_json)?;
+    let seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
+    )
+    .bind(params.run_id.as_str())
+    .fetch_one(&mut **tx)
+    .await?;
+    let id = sqlx::query(
+        r#"
 INSERT INTO background_agent_execution_snapshots (
     run_id,
     seq,
@@ -105,49 +154,48 @@ INSERT INTO background_agent_execution_snapshots (
     config_fingerprint,
     created_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(params.run_id.as_str())
-        .bind(seq)
-        .bind(params.snapshot_kind.as_str())
-        .bind(payload_json)
-        .bind(params.recovery_policy.as_str())
-        .bind(params.config_fingerprint.as_deref())
-        .bind(now)
-        .execute(&mut *tx)
-        .await?
-        .last_insert_rowid();
+        "#,
+    )
+    .bind(params.run_id.as_str())
+    .bind(seq)
+    .bind(params.snapshot_kind.as_str())
+    .bind(payload_json)
+    .bind(params.recovery_policy.as_str())
+    .bind(params.config_fingerprint.as_deref())
+    .bind(now)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_rowid();
 
-        sqlx::query(
-            r#"
+    sqlx::query(
+        r#"
 UPDATE background_agent_runs
 SET last_snapshot_seq = ?, updated_at = ?
 WHERE id = ?
-            "#,
-        )
-        .bind(seq)
-        .bind(now)
-        .bind(params.run_id.as_str())
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
+        "#,
+    )
+    .bind(seq)
+    .bind(now)
+    .bind(params.run_id.as_str())
+    .execute(&mut **tx)
+    .await?;
 
-        self.get_background_agent_execution_snapshot(id)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "failed to load background agent execution snapshot {id} for run {}",
-                    params.run_id
-                )
-            })
-    }
+    get_background_agent_execution_snapshot_in_tx(tx, id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to load background agent execution snapshot {id} for run {}",
+                params.run_id
+            )
+        })
+}
 
-    pub async fn get_latest_background_agent_execution_snapshot(
-        &self,
-        run_id: &str,
-    ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
-        let row = sqlx::query_as::<_, BackgroundAgentExecutionSnapshotRow>(
-            r#"
+pub(super) async fn get_latest_background_agent_execution_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
+    let row = sqlx::query_as::<_, BackgroundAgentExecutionSnapshotRow>(
+        r#"
 SELECT
     id,
     run_id,
@@ -161,21 +209,21 @@ FROM background_agent_execution_snapshots
 WHERE run_id = ?
 ORDER BY seq DESC
 LIMIT 1
-            "#,
-        )
-        .bind(run_id)
-        .fetch_optional(self.pool.as_ref())
-        .await?;
-        row.map(BackgroundAgentExecutionSnapshot::try_from)
-            .transpose()
-    }
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(BackgroundAgentExecutionSnapshot::try_from)
+        .transpose()
+}
 
-    async fn get_background_agent_execution_snapshot(
-        &self,
-        snapshot_id: i64,
-    ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
-        let row = sqlx::query_as::<_, BackgroundAgentExecutionSnapshotRow>(
-            r#"
+async fn get_background_agent_execution_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    snapshot_id: i64,
+) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
+    let row = sqlx::query_as::<_, BackgroundAgentExecutionSnapshotRow>(
+        r#"
 SELECT
     id,
     run_id,
@@ -187,14 +235,13 @@ SELECT
     created_at
 FROM background_agent_execution_snapshots
 WHERE id = ?
-            "#,
-        )
-        .bind(snapshot_id)
-        .fetch_optional(self.pool.as_ref())
-        .await?;
-        row.map(BackgroundAgentExecutionSnapshot::try_from)
-            .transpose()
-    }
+        "#,
+    )
+    .bind(snapshot_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(BackgroundAgentExecutionSnapshot::try_from)
+        .transpose()
 }
 
 pub(super) async fn upsert_background_agent_status_snapshot_in_tx(

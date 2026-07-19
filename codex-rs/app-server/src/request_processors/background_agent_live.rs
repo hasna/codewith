@@ -355,44 +355,15 @@ impl ThreadRequestProcessor {
                     })?);
             }
         }
-        let response = self
-            .background_agent_state_processor()
-            .agent_start_inner(params)
-            .await?;
-        if let Some(worktree) = managed_worktree.as_ref() {
-            let snapshot_cwd_matches = response
-                .execution_snapshot
-                .payload
-                .get("cwd")
-                .and_then(Value::as_str)
-                .is_some_and(|cwd| paths_match(Path::new(cwd), worktree.worktree_path.as_path()));
-            if snapshot_cwd_matches
-                && !is_terminal_api_agent_status(response.agent.status)
-                && let Err(err) = self
-                    .background_agent_state_processor()
-                    .worktree_attach_inner(WorktreeAttachParams {
-                        worktree_id: worktree.worktree_id.clone(),
-                        thread_id: None,
-                        agent_run_id: Some(response.agent.agent_id.clone()),
-                    })
-                    .await
-            {
-                if worktree.existing_agent_run_id.is_none()
-                    && let Err(stop_err) = self
-                        .background_agent_state_processor()
-                        .agent_stop_inner(AgentStopParams {
-                            agent_id: response.agent.agent_id.clone(),
-                        })
-                        .await
-                {
-                    warn!(
-                        agent_id = response.agent.agent_id.as_str(),
-                        "failed to stop background agent after managed worktree attach failed: {stop_err:?}"
-                    );
-                }
-                return Err(err);
+        let processor = self.background_agent_state_processor();
+        let response = match managed_worktree {
+            Some(worktree) => {
+                processor
+                    .agent_start_inner_with_managed_worktree(params, worktree.worktree_id)
+                    .await?
             }
-        }
+            None => processor.agent_start_inner(params).await?,
+        };
         self.spawn_background_agent_reconcile(Some(response.agent.agent_id.clone()));
         Ok(Some(response.into()))
     }

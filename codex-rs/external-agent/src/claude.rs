@@ -116,7 +116,11 @@ impl ClaudeEnvironmentPolicy {
         #[cfg(windows)]
         let inherited_vars = {
             let mut inherited_vars = inherited_vars;
-            inherited_vars.push("PATHEXT".to_string());
+            inherited_vars.extend(
+                ["PATHEXT", "COMSPEC", "SYSTEMROOT"]
+                    .into_iter()
+                    .map(std::string::ToString::to_string),
+            );
             inherited_vars
         };
         Self { inherited_vars }
@@ -1185,6 +1189,9 @@ exit 2
             crate::ExternalAgentMode::Plan,
         );
         let launch = harness.launch_spec(temp_dir.path(), &claude_path, &source_env);
+        assert_eq!(launch.env.get("PATHEXT"), Some(&".CMD".to_string()));
+        assert_eq!(launch.env.get("COMSPEC"), None);
+        assert_eq!(launch.env.get("SYSTEMROOT"), None);
         let mut process = ClaudeCodeProcess::spawn(
             ExternalAgentSandboxedLaunchSpec::test_only_unenforced(launch),
             &request,
@@ -1206,6 +1213,30 @@ exit 2
                 .expect("wait for fake claude")
                 .success()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sanitized_environment_keeps_windows_command_bootstrap_case_insensitively() {
+        let source = BTreeMap::from([
+            ("Path".to_string(), r"C:\bin".to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            (
+                "ComSpec".to_string(),
+                r"C:\Windows\System32\cmd.exe".to_string(),
+            ),
+            ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+        ]);
+
+        let env = ClaudeEnvironmentPolicy::sanitized().sanitize(&source, &BTreeMap::new());
+
+        assert_eq!(env.get("PATH"), Some(&r"C:\bin".to_string()));
+        assert_eq!(env.get("PATHEXT"), Some(&".CMD".to_string()));
+        assert_eq!(
+            env.get("COMSPEC"),
+            Some(&r"C:\Windows\System32\cmd.exe".to_string())
+        );
+        assert_eq!(env.get("SYSTEMROOT"), Some(&r"C:\Windows".to_string()));
     }
 
     #[test]

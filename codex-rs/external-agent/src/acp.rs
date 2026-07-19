@@ -54,6 +54,8 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 const SAFE_ENV_VARS: &[&str] = &["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TERM"];
+#[cfg(windows)]
+const WINDOWS_COMMAND_ENV_VARS: &[&str] = &["PATHEXT", "COMSPEC", "SYSTEMROOT"];
 const CURSOR_AUTH_ENV_VARS: &[&str] = &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"];
 const GROK_BUILD_AUTH_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const ACP_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -70,12 +72,21 @@ pub struct AcpEnvironmentPolicy {
 
 impl AcpEnvironmentPolicy {
     pub fn sanitized() -> Self {
-        Self {
-            inherited_vars: SAFE_ENV_VARS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-        }
+        let inherited_vars = SAFE_ENV_VARS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        #[cfg(windows)]
+        let inherited_vars = {
+            let mut inherited_vars = inherited_vars;
+            inherited_vars.extend(
+                WINDOWS_COMMAND_ENV_VARS
+                    .iter()
+                    .map(std::string::ToString::to_string),
+            );
+            inherited_vars
+        };
+        Self { inherited_vars }
     }
 
     pub fn sanitize(
@@ -85,7 +96,7 @@ impl AcpEnvironmentPolicy {
     ) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         for name in &self.inherited_vars {
-            if let Some(value) = source.get(name) {
+            if let Some(value) = source_env_value(source, name) {
                 env.insert(name.clone(), value.clone());
             }
         }
@@ -93,6 +104,23 @@ impl AcpEnvironmentPolicy {
             env.insert(name.clone(), value.clone());
         }
         env
+    }
+}
+
+fn source_env_value<'a>(
+    source_env: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'a String> {
+    #[cfg(windows)]
+    {
+        source_env
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    }
+    #[cfg(not(windows))]
+    {
+        source_env.get(name)
     }
 }
 
@@ -336,7 +364,7 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
     ) -> Result<PathBuf, String> {
-        let path = source_env.get("PATH").map(String::as_str);
+        let path = source_env_value(source_env, "PATH").map(String::as_str);
         let mut last_error = None;
         for program in acp_program_candidates(self.descriptor) {
             match which::which_in(program, path, cwd) {
@@ -1634,6 +1662,30 @@ mod tests {
                 ("PATH".to_string(), "/bin".to_string()),
             ])
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sanitized_environment_keeps_windows_command_bootstrap_case_insensitively() {
+        let source = BTreeMap::from([
+            ("Path".to_string(), r"C:\bin".to_string()),
+            ("PathExt".to_string(), ".CMD".to_string()),
+            (
+                "ComSpec".to_string(),
+                r"C:\Windows\System32\cmd.exe".to_string(),
+            ),
+            ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+        ]);
+
+        let env = AcpEnvironmentPolicy::sanitized().sanitize(&source, &BTreeMap::new());
+
+        assert_eq!(env.get("PATH"), Some(&r"C:\bin".to_string()));
+        assert_eq!(env.get("PATHEXT"), Some(&".CMD".to_string()));
+        assert_eq!(
+            env.get("COMSPEC"),
+            Some(&r"C:\Windows\System32\cmd.exe".to_string())
+        );
+        assert_eq!(env.get("SYSTEMROOT"), Some(&r"C:\Windows".to_string()));
     }
 
     #[test]

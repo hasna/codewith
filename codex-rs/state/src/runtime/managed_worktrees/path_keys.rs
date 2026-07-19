@@ -19,13 +19,14 @@ pub(crate) fn path_to_db_string(path: &Path) -> String {
 
 /// Returns the deterministic equality key for a managed-worktree path.
 ///
-/// Windows keys use Rust's locale-independent Unicode lowercase mapping. This
-/// handles ASCII and ordinary Unicode case pairs without depending on the
-/// process locale, while remaining deterministic across create, reconciliation,
-/// and cleanup admission. It intentionally does not attempt to reproduce every
-/// filesystem-specific Windows upcase-table edge case; a conservative
-/// locale-neutral key is preferable to allowing ordinary spelling aliases to
-/// bypass worktree ownership. Unix and macOS keys retain their display casing.
+/// Windows keys use a locale-independent Unicode upper-then-lower fold. Windows
+/// file-name equality is driven by an upcase table, not Rust lowercase; the
+/// extra uppercase pass conservatively folds compatibility aliases such as
+/// U+017F LATIN SMALL LETTER LONG S with `S`/`s` while keeping the mapping
+/// deterministic across create, reconciliation, and cleanup admission. The key
+/// may reject some spellings that a specific filesystem would distinguish, but
+/// it must not allow Windows-equal aliases to bypass worktree ownership. Unix
+/// and macOS keys retain their display casing.
 #[cfg(test)]
 fn managed_worktree_path_key(path: &Path) -> String {
     managed_worktree_path_key_from_display(path_to_db_string(path).as_str())
@@ -38,12 +39,20 @@ pub(crate) fn managed_worktree_path_key_from_display(display_path: &str) -> Stri
 
 #[cfg(windows)]
 fn normalize_path_key(path: String) -> String {
-    path.to_lowercase()
+    normalize_windows_path_key(path)
 }
 
 #[cfg(not(windows))]
 fn normalize_path_key(path: String) -> String {
     path
+}
+
+#[cfg(any(test, windows))]
+fn normalize_windows_path_key(path: String) -> String {
+    path.chars()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn normalize_path_for_db(path: &Path) -> PathBuf {
@@ -417,19 +426,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn windows_compatible_path_keys_fold_long_s_aliases() {
+        assert_eq!(
+            normalize_windows_path_key(r"C:\Managed-Worktrees\RunS\missing\leaf".to_string()),
+            normalize_windows_path_key(
+                "c:\\managed-worktrees\\run\u{017f}\\missing\\leaf".to_string()
+            )
+        );
+        assert_eq!(
+            r"c:\managed-worktrees\runs\missing\leaf",
+            normalize_windows_path_key(r"C:\Managed-Worktrees\RunS\missing\leaf".to_string())
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_path_keys_fold_case_for_missing_leaves_drive_unc_and_verbatim_paths() {
         let drive_run_a = Path::new(r"C:\Managed-Worktrees\RunA\missing\leaf");
         let drive_runa = Path::new(r"c:\managed-worktrees\runa\missing\leaf");
         let verbatim_drive_run_a = Path::new(r"\\?\C:\Managed-Worktrees\RunA\missing\leaf");
+        let drive_run_s = Path::new(r"C:\Managed-Worktrees\RunS\missing");
+        let drive_long_s = Path::new("c:\\managed-worktrees\\run\u{017f}\\missing");
         assert_eq!(
             managed_worktree_path_key(drive_run_a),
             managed_worktree_path_key(drive_runa)
         );
         assert_eq!(
+            managed_worktree_path_key(drive_run_s),
+            managed_worktree_path_key(drive_long_s)
+        );
+        assert_eq!(
             r"c:\managed-worktrees\runa\missing\leaf",
             managed_worktree_path_key(drive_run_a)
+        );
+        assert_eq!(
+            r"c:\managed-worktrees\runs\missing",
+            managed_worktree_path_key(drive_run_s)
         );
         assert_eq!(r"c:\", managed_worktree_path_key(Path::new(r"C:\")));
         assert_eq!(
