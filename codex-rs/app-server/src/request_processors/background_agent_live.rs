@@ -4469,18 +4469,21 @@ mod tests {
     use tempfile::TempDir;
 
     struct TestWorkerFixture {
+        temp_dir: TempDir,
         program: PathBuf,
         ready_path: PathBuf,
         release_path: PathBuf,
+        worker_handles: std::sync::Mutex<Vec<WorkerProcessHandle>>,
     }
 
     impl TestWorkerFixture {
-        fn create(temp_dir: &std::path::Path) -> std::io::Result<Self> {
+        fn create() -> std::io::Result<Self> {
             use std::os::unix::fs::PermissionsExt;
 
-            let program = temp_dir.join("successful-worker-process");
-            let ready_path = temp_dir.join("successful-worker.ready");
-            let release_path = temp_dir.join("successful-worker.release");
+            let temp_dir = TempDir::new()?;
+            let program = temp_dir.path().join("successful-worker-process");
+            let ready_path = temp_dir.path().join("successful-worker.ready");
+            let release_path = temp_dir.path().join("successful-worker.release");
             std::fs::write(
                 &program,
                 r#"#!/usr/bin/env sh
@@ -4496,10 +4499,16 @@ done
             permissions.set_mode(0o755);
             std::fs::set_permissions(&program, permissions)?;
             Ok(Self {
+                temp_dir,
                 program,
                 ready_path,
                 release_path,
+                worker_handles: std::sync::Mutex::new(Vec::new()),
             })
+        }
+
+        fn temp_path(&self) -> &std::path::Path {
+            self.temp_dir.path()
         }
 
         async fn wait_until_ready(&self) -> anyhow::Result<()> {
@@ -4518,6 +4527,27 @@ done
         fn release(&self) -> std::io::Result<()> {
             std::fs::write(&self.release_path, "")
         }
+
+        fn track_worker(&self, handle: WorkerProcessHandle) {
+            if let Ok(mut worker_handles) = self.worker_handles.lock() {
+                worker_handles.push(handle);
+            }
+        }
+
+        async fn spawn_worker(
+            &self,
+            controller: &WorkerProcessController,
+            stderr_log_name: &str,
+        ) -> anyhow::Result<WorkerProcessHandle> {
+            let handle = controller
+                .spawn(WorkerProcessCommand::new(
+                    self.program.clone(),
+                    self.temp_path().join(stderr_log_name),
+                ))
+                .await?;
+            self.track_worker(handle.clone());
+            Ok(handle)
+        }
     }
 
     impl Drop for TestWorkerFixture {
@@ -4527,6 +4557,27 @@ done
             // temporary directory disappears; Drop must not mask the original
             // test failure if that best-effort cleanup itself fails.
             let _ = self.release();
+
+            let Ok(worker_handles) = self.worker_handles.get_mut() else {
+                return;
+            };
+            for handle in std::mem::take(worker_handles) {
+                let Ok(thread) = std::thread::Builder::new()
+                    .name("test-worker-fixture-cleanup".to_string())
+                    .spawn(move || {
+                        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                            .enable_time()
+                            .build()
+                        else {
+                            return;
+                        };
+                        let _ = runtime.block_on(WorkerProcessController::default().stop(&handle));
+                    })
+                else {
+                    continue;
+                };
+                let _ = thread.join();
+            }
         }
     }
 
@@ -4547,19 +4598,36 @@ done
     }
 
     #[tokio::test]
-    async fn test_worker_fixture_drop_releases_ready_worker_process() -> anyhow::Result<()> {
-        let temp = TempDir::new()?;
-        let fixture = TestWorkerFixture::create(temp.path())?;
+    async fn test_worker_fixture_drop_stops_worker_before_owning_temp_dir_is_destroyed()
+    -> anyhow::Result<()> {
         let controller = WorkerProcessController::default();
-        let handle = controller
-            .spawn(WorkerProcessCommand::new(
-                fixture.program.clone(),
-                temp.path().join("fixture-drop.stderr.log"),
-            ))
+        let handle = {
+            let fixture = TestWorkerFixture::create()?;
+            let handle = fixture
+                .spawn_worker(&controller, "fixture-drop.stderr.log")
+                .await?;
+            fixture.wait_until_ready().await?;
+            handle
+        };
+
+        assert_ne!(
+            controller.status(&handle).await?,
+            WorkerProcessStatus::Running
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_worker_fixture_release_is_idempotent() -> anyhow::Result<()> {
+        let fixture = TestWorkerFixture::create()?;
+        let controller = WorkerProcessController::default();
+        let handle = fixture
+            .spawn_worker(&controller, "fixture-release.stderr.log")
             .await?;
         fixture.wait_until_ready().await?;
 
-        drop(fixture);
+        fixture.release()?;
+        fixture.release()?;
 
         wait_for_worker_process_exit(&controller, &handle).await
     }
@@ -4571,7 +4639,7 @@ done
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
                 .await?;
         seed_queued_run(state_db.as_ref(), "run/with path").await?;
-        let fixture = TestWorkerFixture::create(temp.path())?;
+        let fixture = TestWorkerFixture::create()?;
         let active_worker_processes = Arc::new(Mutex::new(HashMap::new()));
         let context = BackgroundAgentProcessSupervisorContext {
             state_db: Arc::clone(&state_db),
@@ -4586,7 +4654,6 @@ done
             Some("run/with path".to_string()),
         )
         .await?;
-        fixture.wait_until_ready().await?;
 
         let handle = active_worker_processes
             .lock()
@@ -4594,6 +4661,8 @@ done
             .get("run/with path")
             .cloned()
             .expect("worker process handle should be tracked");
+        fixture.track_worker(handle.clone());
+        fixture.wait_until_ready().await?;
         assert_eq!(handle.pgid, Some(handle.pid));
         assert!(
             handle
@@ -4790,7 +4859,7 @@ done
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
                 .await?;
         seed_queued_run(state_db.as_ref(), "finished-run").await?;
-        let fixture = TestWorkerFixture::create(temp.path())?;
+        let fixture = TestWorkerFixture::create()?;
         let active_worker_processes = Arc::new(Mutex::new(HashMap::new()));
         let context = BackgroundAgentProcessSupervisorContext {
             state_db,
@@ -4801,6 +4870,13 @@ done
         };
         reconcile_background_agent_worker_processes(context.clone(), Some("finished-run".into()))
             .await?;
+        let handle = active_worker_processes
+            .lock()
+            .await
+            .get("finished-run")
+            .cloned()
+            .expect("worker process handle should be tracked");
+        fixture.track_worker(handle);
         fixture.wait_until_ready().await?;
         assert!(
             active_worker_processes
@@ -4887,7 +4963,7 @@ done
                 .await?,
             1
         );
-        let fixture = TestWorkerFixture::create(temp.path())?;
+        let fixture = TestWorkerFixture::create()?;
         let context = BackgroundAgentProcessSupervisorContext {
             state_db: Arc::clone(&state_db),
             supervisor_id: "new-process-supervisor".to_string(),
@@ -4898,7 +4974,6 @@ done
 
         reconcile_background_agent_worker_processes(context, Some("orphaned-run".to_string()))
             .await?;
-        fixture.wait_until_ready().await?;
 
         let replacement = active_worker_processes
             .lock()
@@ -4906,6 +4981,8 @@ done
             .get("orphaned-run")
             .cloned()
             .expect("replacement handle should be tracked");
+        fixture.track_worker(replacement.clone());
+        fixture.wait_until_ready().await?;
         assert_ne!(old_handle.pid, replacement.pid);
         assert_ne!(
             controller.status(&old_handle).await?,
@@ -5070,13 +5147,10 @@ done
             )
             .await?
             .expect("run should be claimed");
-        let fixture = TestWorkerFixture::create(temp.path())?;
+        let fixture = TestWorkerFixture::create()?;
         let controller = WorkerProcessController::default();
-        let old_handle = controller
-            .spawn(WorkerProcessCommand::new(
-                fixture.program.clone(),
-                temp.path().join("missing-stopping.stderr.log"),
-            ))
+        let old_handle = fixture
+            .spawn_worker(&controller, "missing-stopping.stderr.log")
             .await?;
         fixture.wait_until_ready().await?;
         fixture.release()?;
