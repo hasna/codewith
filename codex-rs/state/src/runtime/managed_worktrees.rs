@@ -5,6 +5,7 @@ use anyhow::Context;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+mod fences;
 mod path_keys;
 pub(crate) use path_keys::managed_worktree_path_key_from_display;
 pub(crate) use path_keys::normalize_legacy_managed_worktree_paths;
@@ -757,6 +758,11 @@ WHERE worktree_id = ?
         validate_detach_params(&params)?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
+        fences::ensure_no_active_background_agent_run_assignment(
+            &mut tx,
+            params.worktree_id.as_str(),
+        )
+        .await?;
         ensure_not_active_background_agent_worktree_lease(&mut tx, params.worktree_id.as_str())
             .await?;
         match &params.target {
@@ -893,6 +899,11 @@ WHERE worktree_id = ?
             tx.commit().await?;
             return Ok(None);
         };
+        fences::ensure_no_active_background_agent_run_assignment(
+            &mut tx,
+            params.worktree_id.as_str(),
+        )
+        .await?;
         ensure_not_active_background_agent_worktree_lease(&mut tx, params.worktree_id.as_str())
             .await?;
         let active_assignment_count: i64 = sqlx::query_scalar(
@@ -979,6 +990,7 @@ WHERE worktree_id = ?
         let now_ms = datetime_to_epoch_millis(now);
         let now_seconds = datetime_to_epoch_seconds(now);
         let mut tx = self.pool.begin().await?;
+        fences::ensure_no_active_background_agent_run_assignment(&mut tx, worktree_id).await?;
         let sql = format!(
             r#"
 UPDATE managed_worktrees
@@ -1254,6 +1266,7 @@ impl StateRuntime {
         let now_ms = datetime_to_epoch_millis(now);
         let now_seconds = datetime_to_epoch_seconds(now);
         let mut tx = self.pool.begin().await?;
+        fences::ensure_no_active_background_agent_run_assignment(&mut tx, worktree_id).await?;
         let sql = format!(
             r#"
 UPDATE managed_worktrees
@@ -3165,7 +3178,7 @@ WHERE worktree_id = ?
         assert!(
             detach_err
                 .to_string()
-                .contains("active background agent worktree lease"),
+                .contains("active background agent run"),
             "unexpected detach error: {detach_err}"
         );
         let release_err = store
@@ -3181,7 +3194,7 @@ WHERE worktree_id = ?
         assert!(
             release_err
                 .to_string()
-                .contains("active background agent worktree lease"),
+                .contains("active background agent run"),
             "unexpected release error: {release_err}"
         );
 
@@ -3211,6 +3224,24 @@ WHERE worktree_id = ? AND agent_run_id = ? AND detached_at_ms IS NULL
         .fetch_one(runtime.pool.as_ref())
         .await?;
         assert_eq!((1,), active_assignment_count);
+
+        let delete_err = store
+            .mark_managed_worktree_deleted("lease-1")
+            .await
+            .expect_err("active background-agent runs must block deletion");
+        assert!(
+            delete_err
+                .to_string()
+                .contains("active background agent run"),
+            "unexpected deletion error: {delete_err}"
+        );
+        runtime
+            .update_background_agent_run_status(
+                "run-1",
+                crate::BackgroundAgentRunStatus::Completed,
+                Some("completed before deleting worktree lease"),
+            )
+            .await?;
 
         let deleted = store
             .mark_managed_worktree_deleted("lease-1")

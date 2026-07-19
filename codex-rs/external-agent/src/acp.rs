@@ -39,6 +39,8 @@ use crate::FileSystemCapability;
 use crate::TerminalCapability;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
+#[cfg(windows)]
+use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
@@ -364,12 +366,17 @@ impl AcpStdioHarness {
         source_env: &BTreeMap<String, String>,
         cwd: &Path,
     ) -> Result<PathBuf, String> {
+        #[cfg(not(windows))]
         let path = source_env_value(source_env, "PATH").map(String::as_str);
         let mut last_error = None;
         for program in acp_program_candidates(self.descriptor) {
-            match which::which_in(program, path, cwd) {
+            #[cfg(windows)]
+            let resolved = resolve_windows_program_from_source_env(program, source_env, cwd);
+            #[cfg(not(windows))]
+            let resolved = which::which_in(program, path, cwd).map_err(|err| err.to_string());
+            match resolved {
                 Ok(program) => return Ok(program),
-                Err(err) => last_error = Some(err.to_string()),
+                Err(err) => last_error = Some(err),
             }
         }
         Err(last_error.unwrap_or_else(|| {
@@ -1849,6 +1856,86 @@ mod tests {
             harness
                 .resolve_program(&request, &source_env)
                 .expect("fake grok should resolve from source env PATH"),
+            grok
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_program_uses_case_insensitive_source_pathext_without_ambient_environment() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let extension = format!(
+            ".CODEWITHACP{}",
+            temp_dir
+                .path()
+                .file_name()
+                .expect("temporary directory name")
+                .to_string_lossy()
+                .to_ascii_uppercase()
+        );
+        let ambient_pathext = std::env::var_os("PATHEXT")
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert!(
+            !ambient_pathext
+                .split(';')
+                .any(|ambient_extension| ambient_extension.eq_ignore_ascii_case(extension.as_str())),
+            "the source-only test extension must not be present in ambient PATHEXT"
+        );
+        let grok = bin_dir.join(format!("grok{extension}"));
+        std::fs::write(&grok, "not executed").expect("write fake grok");
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let source_env = BTreeMap::from([
+            ("pAtH".to_string(), bin_dir.display().to_string()),
+            ("pAtHeXt".to_string(), format!("{extension};.CMD")),
+        ]);
+
+        assert_eq!(
+            harness
+                .resolve_program(&request, &source_env)
+                .expect("source PATHEXT should resolve the supplied command"),
+            grok
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_program_uses_source_cmd_pathext_case_insensitively() {
+        let Some(descriptor) = find_external_agent_runtime("grok-build") else {
+            panic!("grok-build runtime");
+        };
+        let harness = AcpStdioHarness::new(descriptor);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir(&bin_dir).expect("create bin dir");
+        let grok = bin_dir.join("grok.CMD");
+        std::fs::write(&grok, "not executed").expect("write fake grok");
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            temp_dir.path(),
+            ExternalAgentMode::Plan,
+        );
+        let source_env = BTreeMap::from([
+            ("pAtH".to_string(), bin_dir.display().to_string()),
+            ("pAtHeXt".to_string(), ".CMD".to_string()),
+        ]);
+
+        assert_eq!(
+            harness
+                .resolve_program(&request, &source_env)
+                .expect("source .CMD PATHEXT should resolve the supplied command"),
             grok
         );
     }

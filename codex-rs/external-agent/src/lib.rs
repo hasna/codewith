@@ -11,6 +11,7 @@ mod claude;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
+mod windows_command;
 
 pub use acp::*;
 pub use claude::*;

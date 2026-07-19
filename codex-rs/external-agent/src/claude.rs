@@ -27,6 +27,8 @@ use crate::ExternalAgentSandboxedLaunchSpec;
 use crate::ExternalAgentSessionState;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch;
+#[cfg(windows)]
+use crate::windows_command::resolve_windows_program_from_source_env;
 use serde_json::Value as JsonValue;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
@@ -726,55 +728,6 @@ fn env_flag_is_enabled(source_env: &BTreeMap<String, String>, name: &str) -> boo
         let value = value.trim();
         !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
     })
-}
-
-#[cfg(windows)]
-fn resolve_windows_program_from_source_env(
-    program: &str,
-    source_env: &BTreeMap<String, String>,
-    cwd: &Path,
-) -> Result<PathBuf, String> {
-    let path = source_env_value(source_env, "PATH")
-        .ok_or_else(|| format!("source environment does not define PATH for `{program}`"))?;
-    let path_extensions = source_env_value(source_env, "PATHEXT")
-        .map(String::as_str)
-        .unwrap_or(".COM;.EXE;.BAT;.CMD")
-        .split(';')
-        .filter(|extension| {
-            extension.len() > 1 && extension.starts_with('.') && !extension.contains(['/', '\\'])
-        })
-        .collect::<Vec<_>>();
-    let program_path = Path::new(program);
-    let bases = if program.contains(['/', '\\']) {
-        vec![if program_path.is_absolute() {
-            program_path.to_path_buf()
-        } else {
-            cwd.join(program_path)
-        }]
-    } else {
-        std::env::split_paths(path)
-            .filter(|directory| !directory.as_os_str().is_empty())
-            .map(|directory| directory.join(program_path))
-            .collect::<Vec<_>>()
-    };
-
-    for base in bases {
-        if base.is_file() {
-            return Ok(base);
-        }
-        if base.extension().is_none() {
-            for extension in &path_extensions {
-                let candidate = PathBuf::from(format!("{}{}", base.display(), extension));
-                if candidate.is_file() {
-                    return Ok(candidate);
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "could not resolve `{program}` from source PATH using source PATHEXT"
-    ))
 }
 
 fn validate_claude_system_event(

@@ -4,8 +4,7 @@ use super::snapshots::get_background_agent_status_snapshot_in_tx;
 use super::snapshots::get_latest_background_agent_execution_snapshot_in_tx;
 use super::snapshots::upsert_background_agent_status_snapshot_in_tx;
 use super::*;
-use crate::runtime::managed_worktrees::path_to_db_string;
-use std::path::Path;
+use crate::runtime::managed_worktrees::managed_worktree_path_key_from_display;
 use uuid::Uuid;
 
 type ManagedWorktreeOwnerRow = (String, String, Option<i64>, Option<String>, Option<String>);
@@ -56,11 +55,17 @@ async fn admit_background_agent_run_in_tx(
     now_ms: i64,
 ) -> anyhow::Result<BackgroundAgentRunAdmission> {
     let (run, created_new_run) = create_background_agent_run_in_tx(tx, &params.run, now).await?;
+    if !created_new_run && is_terminal_background_agent_run_status(run.status) {
+        anyhow::bail!(
+            "agent/start idempotency key is already associated with terminal background agent run {}",
+            run.id
+        );
+    }
     if created_new_run {
         claim_managed_worktree_for_background_agent_start_in_tx(
             tx,
             params.worktree_id.as_str(),
-            run.id.as_str(),
+            &run,
             now_ms,
         )
         .await?;
@@ -68,7 +73,6 @@ async fn admit_background_agent_run_in_tx(
         tx,
         params.worktree_id.as_str(),
         run.id.as_str(),
-        &params.execution_snapshot.payload_json,
     )
     .await?
     {
@@ -79,7 +83,7 @@ async fn admit_background_agent_run_in_tx(
         claim_managed_worktree_for_background_agent_start_in_tx(
             tx,
             params.worktree_id.as_str(),
-            run.id.as_str(),
+            &run,
             now_ms,
         )
         .await?;
@@ -289,9 +293,16 @@ async fn first_background_agent_event_in_tx(
 async fn claim_managed_worktree_for_background_agent_start_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     worktree_id: &str,
-    run_id: &str,
+    run: &BackgroundAgentRun,
     now_ms: i64,
 ) -> anyhow::Result<()> {
+    if is_terminal_background_agent_run_status(run.status) {
+        anyhow::bail!(
+            "agent/start cannot assign managed worktree to terminal background agent run {}",
+            run.id
+        );
+    }
+    let run_id = run.id.as_str();
     let owner: Option<ManagedWorktreeOwnerRow> = sqlx::query_as(
         "SELECT mode, lifecycle_status, deleted_at_ms, owner_thread_id, owner_agent_run_id \
              FROM managed_worktrees WHERE worktree_id = ?",
@@ -378,32 +389,50 @@ async fn should_restore_idempotent_managed_worktree_assignment_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     worktree_id: &str,
     run_id: &str,
-    execution_payload_json: &Value,
 ) -> anyhow::Result<bool> {
-    let active_worktree_id: Option<String> = sqlx::query_scalar(
+    let admitted_worktree_id: Option<String> = sqlx::query_scalar(
         "SELECT worktree_id FROM managed_worktree_assignments \
-         WHERE agent_run_id = ? AND detached_at_ms IS NULL LIMIT 1",
+         WHERE agent_run_id = ? ORDER BY attached_at_ms ASC, assignment_id ASC LIMIT 1",
     )
     .bind(run_id)
     .fetch_optional(&mut **tx)
     .await?;
-    if let Some(active_worktree_id) = active_worktree_id {
-        return Ok(active_worktree_id == worktree_id);
+    if let Some(admitted_worktree_id) = admitted_worktree_id {
+        return Ok(admitted_worktree_id == worktree_id);
     }
 
-    let managed_worktree_path: Option<String> = sqlx::query_scalar(
-        "SELECT worktree_path FROM managed_worktrees WHERE worktree_id = ? \
-         AND mode = 'isolated_worktree' AND lifecycle_status = 'active' \
-         AND deleted_at_ms IS NULL",
+    let initial_snapshot_payload: Option<String> = sqlx::query_scalar(
+        "SELECT payload_json FROM background_agent_execution_snapshots \
+         WHERE run_id = ? AND snapshot_kind = 'initial_execution_context' \
+         ORDER BY seq ASC LIMIT 1",
     )
-    .bind(worktree_id)
+    .bind(run_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some(managed_worktree_path) = managed_worktree_path else {
+    let Some(initial_snapshot_payload) = initial_snapshot_payload else {
         return Ok(false);
     };
-    let Some(snapshot_cwd) = execution_payload_json.get("cwd").and_then(Value::as_str) else {
+    let initial_snapshot_payload: Value = serde_json::from_str(&initial_snapshot_payload)?;
+    let Some(initial_snapshot_cwd) = initial_snapshot_payload.get("cwd").and_then(Value::as_str)
+    else {
         return Ok(false);
     };
-    Ok(path_to_db_string(Path::new(snapshot_cwd)) == managed_worktree_path)
+    let managed_worktree_path_key: Option<String> =
+        sqlx::query_scalar("SELECT worktree_path_key FROM managed_worktrees WHERE worktree_id = ?")
+            .bind(worktree_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some(managed_worktree_path_key) = managed_worktree_path_key else {
+        return Ok(false);
+    };
+    Ok(managed_worktree_path_key == managed_worktree_path_key_from_display(initial_snapshot_cwd))
+}
+
+fn is_terminal_background_agent_run_status(status: BackgroundAgentRunStatus) -> bool {
+    matches!(
+        status,
+        BackgroundAgentRunStatus::Completed
+            | BackgroundAgentRunStatus::Failed
+            | BackgroundAgentRunStatus::Cancelled
+    )
 }

@@ -520,6 +520,151 @@ async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_same_key_reuses_managed_worktree_admission_records() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start-idempotency",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let mut params = start_params(
+        "run inside the idempotent managed worktree",
+        Some("managed-worktree-idempotency".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(created.worktree.worktree_path);
+
+    let first = start_agent(&mut mcp, params.clone()).await?;
+    let retry = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(retry.agent.agent_id, first.agent.agent_id);
+    assert_eq!(retry.execution_snapshot, first.execution_snapshot);
+    assert_eq!(retry.event, first.event);
+    assert_eq!(
+        retry.status_snapshot.agent_id,
+        first.status_snapshot.agent_id
+    );
+    let events = agent_events_page(
+        &mut mcp,
+        first.agent.agent_id.as_str(),
+        /*cursor*/ None,
+        /*limit*/ Some(100),
+    )
+    .await?;
+    assert_eq!(
+        events
+            .data
+            .iter()
+            .filter(|event| event.event_type == "agent.started")
+            .count(),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_terminal_key_leaves_other_managed_worktree_unclaimed() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let first_create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start-terminal-first",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let first_created: WorktreeCreateResponse =
+        read_response(&mut mcp, first_create_request_id).await?;
+    let second_create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": "agent-start-terminal-second",
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let second_created: WorktreeCreateResponse =
+        read_response(&mut mcp, second_create_request_id).await?;
+    let mut params = start_params(
+        "run inside the terminal retry worktree",
+        Some("managed-worktree-terminal-retry".to_string()),
+        codex_home.path(),
+    );
+    params.cwd = Some(first_created.worktree.worktree_path);
+    let first = start_agent(&mut mcp, params.clone()).await?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    state_db
+        .update_background_agent_run_status(
+            first.agent.agent_id.as_str(),
+            StateBackgroundAgentRunStatus::Completed,
+            Some("completed for terminal retry regression"),
+        )
+        .await?;
+    drop(state_db);
+
+    params.cwd = Some(second_created.worktree.worktree_path.clone());
+    let error = start_agent_error(&mut mcp, params).await?;
+    assert_eq!(error.error.code, -32603);
+    assert!(error.error.message.contains("terminal"));
+    let read_request_id = mcp
+        .send_raw_request(
+            "worktree/read",
+            Some(json!({
+                "worktreeId": second_created.worktree.worktree_id,
+            })),
+        )
+        .await?;
+    let read: WorktreeReadResponse = read_response(&mut mcp, read_request_id).await?;
+    assert_eq!(
+        read.worktree
+            .expect("second worktree should still exist")
+            .owner_agent_run_id,
+        None
+    );
+    let events = agent_events_page(
+        &mut mcp,
+        first.agent.agent_id.as_str(),
+        /*cursor*/ None,
+        /*limit*/ Some(100),
+    )
+    .await?;
+    assert_eq!(
+        events
+            .data
+            .iter()
+            .filter(|event| event.event_type == "agent.started")
+            .count(),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
     assert_agent_start_rebinds_workspace_write_permissions_to_managed_worktree(
         /*execution_context_absent*/ true,

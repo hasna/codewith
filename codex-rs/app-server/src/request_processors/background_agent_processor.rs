@@ -114,8 +114,10 @@ impl BackgroundAgentRequestProcessor {
         &self,
         params: AgentStartParams,
     ) -> Result<AgentStartResponse, JSONRPCErrorError> {
-        self.agent_start_inner_with_optional_managed_worktree(params, None)
-            .await
+        self.agent_start_inner_with_optional_managed_worktree(
+            params, /*managed_worktree_id*/ None,
+        )
+        .await
     }
 
     pub(super) async fn agent_start_inner_with_managed_worktree(

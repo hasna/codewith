@@ -19,7 +19,6 @@ use codex_app_server_protocol::AgentExecutionContextParams;
 use codex_app_server_protocol::AgentListParams;
 use codex_app_server_protocol::AgentPendingInteractionRespondParams;
 use codex_app_server_protocol::AgentReadParams;
-use codex_app_server_protocol::AgentRunStatus;
 use codex_app_server_protocol::AgentStartParams;
 use codex_app_server_protocol::AgentStopParams;
 use codex_app_server_protocol::ClientResponsePayload;
@@ -142,7 +141,6 @@ const BACKGROUND_AGENT_USAGE_PROFILE_WAIT_PREFIX: &str = "usage_profile_wait_unt
 struct AgentStartManagedWorktree {
     worktree_id: String,
     worktree_path: PathBuf,
-    existing_agent_run_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1588,7 +1586,6 @@ impl ThreadRequestProcessor {
         Ok(Some(AgentStartManagedWorktree {
             worktree_id: worktree.worktree_id,
             worktree_path: worktree.worktree_path,
-            existing_agent_run_id,
         }))
     }
 
@@ -2662,13 +2659,6 @@ fn is_terminal_background_agent_status(status: BackgroundAgentRunStatus) -> bool
         BackgroundAgentRunStatus::Completed
             | BackgroundAgentRunStatus::Failed
             | BackgroundAgentRunStatus::Cancelled
-    )
-}
-
-fn is_terminal_api_agent_status(status: AgentRunStatus) -> bool {
-    matches!(
-        status,
-        AgentRunStatus::Completed | AgentRunStatus::Failed | AgentRunStatus::Cancelled
     )
 }
 
