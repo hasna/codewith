@@ -2,17 +2,17 @@ use super::*;
 
 use pretty_assertions::assert_eq;
 
-// Published cmd-shim@5.0.0 headed static Node form, handled by npm_cmd_shim_v8_target.
+// Published cmd-shim@5.0.0 headed static Node form: one leading space before each SET.
 fn published_cmd_shim_v5(target: &str) -> String {
     format!(
-        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
+        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
     )
 }
 
-// Exact cmd-shim@9.0.2 static Node form: no shebang arguments or environment-variable target.
+// Published cmd-shim@9.0.2 static Node form: one leading space before each SET.
 fn npm_v9_node(target: &str) -> String {
     format!(
-        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
+        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n SET \"_prog=node\"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
     )
 }
 
@@ -72,7 +72,14 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
     );
     assert_eq!(
         recognized_shim(
-            &published_cmd_shim_v5(global_target).replace("\"%_prog%\"  ", "\"%_prog%\" ")
+            &published_cmd_shim_v5(global_target).replace("\n SET \"_prog=", "\n  SET \"_prog=")
+        ),
+        None
+    );
+    assert_eq!(
+        recognized_shim(
+            &legacy_seven_line_corepack_shim(local_target)
+                .replace("  @SET PATHEXT", " @SET PATHEXT",)
         ),
         None
     );
@@ -110,7 +117,7 @@ fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
 }
 
 #[test]
-fn published_cmd_shim_v5_resolves_bounded_prefix_target() {
+fn published_cmd_shim_v5_node_fixture_resolves_bounded_prefix_target() {
     let temp = tempfile::tempdir().expect("tempdir");
     let shim = temp.path().join("prefix/agent.cmd");
     let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
@@ -172,7 +179,7 @@ fn legacy_corepack_shim_resolves_bounded_parent_target() {
 }
 
 #[test]
-fn prefix_shims_resolve_node_modules_and_keep_os_argv() {
+fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() {
     let temp = tempfile::tempdir().expect("tempdir");
     let shim = temp.path().join("prefix/agent.cmd");
     let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
