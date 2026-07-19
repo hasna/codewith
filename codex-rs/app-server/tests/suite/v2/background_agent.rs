@@ -600,6 +600,138 @@ async fn agent_start_same_key_reuses_managed_worktree_admission_records() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_terminal_key_replays_after_managed_worktree_release() -> Result<()> {
+    assert_terminal_managed_worktree_replay_after_cleanup(WorktreeLifecycleStatus::Released).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_terminal_key_replays_after_managed_worktree_deletion() -> Result<()> {
+    assert_terminal_managed_worktree_replay_after_cleanup(WorktreeLifecycleStatus::Deleted).await
+}
+
+async fn assert_terminal_managed_worktree_replay_after_cleanup(
+    expected_lifecycle_status: WorktreeLifecycleStatus,
+) -> Result<()> {
+    let codex_home = TempDir::new()?;
+    init_git_repo(codex_home.path())?;
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("background agent done")?,
+    ])
+    .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let create_request_id = mcp
+        .send_raw_request(
+            "worktree/create",
+            Some(json!({
+                "name": format!("terminal-replay-{expected_lifecycle_status:?}"),
+                "startPoint": "HEAD",
+            })),
+        )
+        .await?;
+    let created: WorktreeCreateResponse = read_response(&mut mcp, create_request_id).await?;
+    let mut params = start_params(
+        "replay the durable terminal managed-worktree result",
+        Some(format!(
+            "terminal-managed-worktree-{expected_lifecycle_status:?}"
+        )),
+        codex_home.path(),
+    );
+    params.cwd = Some(created.worktree.worktree_path.clone());
+    let first = start_agent(&mut mcp, params.clone()).await?;
+    let expected = wait_for_agent_status(
+        &mut mcp,
+        first.agent.agent_id.as_str(),
+        AgentRunStatus::Completed,
+    )
+    .await?;
+    let expected_agent = expected
+        .agent
+        .expect("terminal agent record should persist");
+    let expected_status_snapshot = expected
+        .status_snapshot
+        .expect("terminal status snapshot should persist");
+    let expected_execution_snapshot = expected
+        .execution_snapshot
+        .expect("execution snapshot should persist");
+
+    let detached_request_id = mcp
+        .send_raw_request(
+            "worktree/detach",
+            Some(json!({
+                "worktreeId": created.worktree.worktree_id,
+                "threadId": null,
+                "agentRunId": first.agent.agent_id.as_str(),
+            })),
+        )
+        .await?;
+    let detached: WorktreeDetachResponse = read_response(&mut mcp, detached_request_id).await?;
+    assert_eq!(
+        detached
+            .worktree
+            .expect("terminal run detachment should return the managed worktree")
+            .owner_agent_run_id,
+        None
+    );
+
+    let cleanup_response = if expected_lifecycle_status == WorktreeLifecycleStatus::Released {
+        let request_id = mcp
+            .send_raw_request(
+                "worktree/release",
+                Some(json!({
+                    "worktreeId": created.worktree.worktree_id,
+                    "cleanupPolicy": "retain",
+                })),
+            )
+            .await?;
+        let response: WorktreeReleaseResponse = read_response(&mut mcp, request_id).await?;
+        response
+            .worktree
+            .expect("release should return the managed worktree")
+    } else {
+        let request_id = mcp
+            .send_raw_request(
+                "worktree/cleanup",
+                Some(json!({
+                    "worktreeId": created.worktree.worktree_id,
+                    "forceDelete": true,
+                })),
+            )
+            .await?;
+        let response: WorktreeCleanupResponse = read_response(&mut mcp, request_id).await?;
+        response
+            .worktree
+            .expect("cleanup should return the managed worktree")
+    };
+    assert_eq!(expected_lifecycle_status, cleanup_response.lifecycle_status);
+
+    let retry = start_agent(&mut mcp, params).await?;
+
+    assert_eq!(expected_agent, retry.agent);
+    assert_eq!(expected_execution_snapshot, retry.execution_snapshot);
+    assert_eq!(first.event, retry.event);
+    assert_eq!(expected_status_snapshot, retry.status_snapshot);
+    let events = agent_events_page(
+        &mut mcp,
+        first.agent.agent_id.as_str(),
+        /*cursor*/ None,
+        /*limit*/ Some(100),
+    )
+    .await?;
+    assert_eq!(
+        events
+            .data
+            .iter()
+            .filter(|event| event.event_type == "agent.started")
+            .count(),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_terminal_key_leaves_other_managed_worktree_unclaimed() -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;

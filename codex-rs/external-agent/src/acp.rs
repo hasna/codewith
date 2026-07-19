@@ -42,6 +42,8 @@ use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 #[cfg(windows)]
 use crate::windows_command::WindowsBatchLaunchError;
 #[cfg(windows)]
+use crate::windows_command::configure_windows_batch_launch;
+#[cfg(windows)]
 use crate::windows_command::merge_windows_environment;
 #[cfg(windows)]
 use crate::windows_command::prepare_windows_batch_launch_from_source_env;
@@ -132,8 +134,7 @@ fn source_env_value<'a>(
     {
         source_env
             .iter()
-            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
-            .next_back()
+            .rfind(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value)
     }
     #[cfg(not(windows))]
@@ -430,8 +431,11 @@ impl AcpStdioHarness {
         #[cfg(not(windows))]
         let program = program.to_path_buf();
         let mut command = Command::new(program);
+        #[cfg(windows)]
+        configure_windows_batch_launch(&mut command, &args);
+        #[cfg(not(windows))]
+        command.args(args);
         command
-            .args(args)
             .env_clear()
             .envs(env)
             .stdin(Stdio::null())
@@ -760,8 +764,11 @@ impl AcpStdioProcess {
         unsafe {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
+        #[cfg(windows)]
+        configure_windows_batch_launch(&mut command, &launch.args);
+        #[cfg(not(windows))]
+        command.args(&launch.args);
         command
-            .args(&launch.args)
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)

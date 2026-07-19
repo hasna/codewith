@@ -93,6 +93,8 @@ use codex_git_utils::worktree_has_commits_after;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
@@ -327,19 +329,16 @@ impl ThreadRequestProcessor {
             params.cwd = Some(worktree_path.clone());
             if let Some(context) = params.execution_context.as_mut() {
                 context.workspace_roots = Some(vec![worktree_path]);
-                let permission_profile = self
-                    .config
-                    .permissions
-                    .permission_profile()
-                    .clone()
+                let configured_permission_profile =
+                    self.config.permissions.permission_profile().clone();
+                let grants_workspace_write =
+                    permission_profile_grants_workspace_write(&configured_permission_profile);
+                let permission_profile = configured_permission_profile
                     .materialize_project_roots_with_workspace_roots(std::slice::from_ref(
                         &absolute_worktree_path,
                     ));
                 let (file_system, network) = permission_profile.to_runtime_permissions();
-                let file_system = if file_system.can_write_path_with_cwd(
-                    absolute_worktree_path.as_path(),
-                    absolute_worktree_path.as_path(),
-                ) {
+                let file_system = if grants_workspace_write {
                     file_system.with_additional_legacy_workspace_writable_roots(
                         std::slice::from_ref(&absolute_worktree_path),
                     )
@@ -766,8 +765,12 @@ impl ThreadRequestProcessor {
             move || list_git_worktrees(base_repo_path.as_path())
         })
         .await?;
-        let mut state_worktrees =
-            load_all_managed_worktrees(state_db.as_ref(), base_repo_path.as_path()).await?;
+        let mut state_worktrees = load_all_managed_worktrees(
+            state_db.as_ref(),
+            base_repo_path.as_path(),
+            /*include_deleted*/ false,
+        )
+        .await?;
         let codewith_entries = git_entries
             .into_iter()
             .filter(|entry| {
@@ -842,8 +845,12 @@ impl ThreadRequestProcessor {
             }
         }
 
-        state_worktrees =
-            load_all_managed_worktrees(state_db.as_ref(), base_repo_path.as_path()).await?;
+        state_worktrees = load_all_managed_worktrees(
+            state_db.as_ref(),
+            base_repo_path.as_path(),
+            /*include_deleted*/ false,
+        )
+        .await?;
         let mut deleted = 0_u32;
         for worktree in state_worktrees {
             if worktree.mode != codex_state::ManagedWorktreeMode::IsolatedWorktree
@@ -1533,8 +1540,26 @@ impl ThreadRequestProcessor {
             return Ok(None);
         };
         let state_db = self.worktree_state_db()?;
-        let worktrees =
-            load_all_managed_worktrees(state_db.as_ref(), base_repo_path.as_path()).await?;
+        let existing_agent_run = match idempotency_key {
+            Some(idempotency_key) => state_db
+                .get_run_by_idempotency_key(idempotency_key)
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to load background agent idempotency key: {err}"
+                    ))
+                })?,
+            None => None,
+        };
+        let terminal_idempotency_replay = existing_agent_run
+            .as_ref()
+            .is_some_and(|run| is_terminal_background_agent_status(run.status));
+        let worktrees = load_all_managed_worktrees(
+            state_db.as_ref(),
+            base_repo_path.as_path(),
+            terminal_idempotency_replay,
+        )
+        .await?;
         let Some(worktree) = worktrees.into_iter().find(|worktree| {
             paths_match(worktree.worktree_path.as_path(), requested_path.as_path())
         }) else {
@@ -1553,7 +1578,9 @@ impl ThreadRequestProcessor {
                 "agent/start worktree cwd requires an isolated managed worktree",
             ));
         }
-        if worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active {
+        if !terminal_idempotency_replay
+            && worktree.lifecycle_status != codex_state::ManagedWorktreeLifecycleStatus::Active
+        {
             return Err(invalid_params(
                 "agent/start worktree cwd requires an active managed worktree",
             ));
@@ -1565,24 +1592,14 @@ impl ThreadRequestProcessor {
             ));
         }
 
-        let existing_agent_run_id = match idempotency_key {
-            Some(idempotency_key) => state_db
-                .get_run_by_idempotency_key(idempotency_key)
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to load background agent idempotency key: {err}"
-                    ))
-                })?
-                .map(|run| run.id),
-            None => None,
-        };
-        if worktree.owner_thread_id.is_some() {
+        let existing_agent_run_id = existing_agent_run.as_ref().map(|run| run.id.clone());
+        if !terminal_idempotency_replay && worktree.owner_thread_id.is_some() {
             return Err(invalid_params(
                 "agent/start worktree cwd is already assigned to a thread",
             ));
         }
-        if let Some(owner_agent_run_id) = worktree.owner_agent_run_id.as_deref()
+        if !terminal_idempotency_replay
+            && let Some(owner_agent_run_id) = worktree.owner_agent_run_id.as_deref()
             && existing_agent_run_id.as_deref() != Some(owner_agent_run_id)
         {
             return Err(invalid_params(format!(
@@ -2343,6 +2360,7 @@ where
 async fn load_all_managed_worktrees(
     state_db: &codex_state::StateRuntime,
     base_repo_path: &Path,
+    include_deleted: bool,
 ) -> Result<Vec<codex_state::ManagedWorktree>, JSONRPCErrorError> {
     let mut cursor = None;
     let mut worktrees = Vec::new();
@@ -2351,7 +2369,7 @@ async fn load_all_managed_worktrees(
             .managed_worktrees()
             .list_managed_worktrees_page(
                 Some(base_repo_path),
-                /*include_deleted*/ false,
+                include_deleted,
                 cursor.as_deref(),
                 codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT,
             )
@@ -2667,6 +2685,43 @@ fn is_terminal_background_agent_status(status: BackgroundAgentRunStatus) -> bool
             | BackgroundAgentRunStatus::Failed
             | BackgroundAgentRunStatus::Cancelled
     )
+}
+
+/// Returns whether the configured profile grants writes to its workspace roots.
+///
+/// This deliberately examines the unmaterialized profile. Once project roots have
+/// been expanded to a managed worktree, Windows may spell that path differently
+/// from the configured root (for example, using a short-name alias), so asking the
+/// materialized runtime permissions can incorrectly turn a workspace-write profile
+/// into a read-only one.
+fn permission_profile_grants_workspace_write(permission_profile: &PermissionProfile) -> bool {
+    let file_system = permission_profile.file_system_sandbox_policy();
+    file_system.has_full_disk_write_access()
+        || file_system.entries.iter().any(|entry| {
+            entry.access.can_write()
+                && matches!(
+                    &entry.path,
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::ProjectRoots { subpath: None }
+                    }
+                )
+        })
+}
+
+#[cfg(test)]
+mod workspace_write_tests {
+    use super::permission_profile_grants_workspace_write;
+    use codex_protocol::models::PermissionProfile;
+
+    #[test]
+    fn workspace_write_authority_is_derived_before_worktree_rebinding() {
+        assert!(permission_profile_grants_workspace_write(
+            &PermissionProfile::workspace_write()
+        ));
+        assert!(!permission_profile_grants_workspace_write(
+            &PermissionProfile::read_only()
+        ));
+    }
 }
 
 async fn run_background_agent_worker(

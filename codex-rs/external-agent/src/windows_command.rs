@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
+#[cfg(windows)]
+use tokio::process::Command;
 
 /// Collapses Windows environment keys before a launcher resolves or copies
 /// them. Source collisions use BTreeMap's stable lexical order, while values
@@ -98,6 +100,7 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
         return Ok((program, args));
     }
 
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
     let command_line = std::iter::once(("program", program.to_string_lossy().into_owned()))
         .chain(args.into_iter().map(|argument| ("argument", argument)))
         .map(|(component, argument)| {
@@ -119,6 +122,31 @@ pub(crate) fn prepare_windows_batch_launch_from_source_env(
             format!("\"{command_line}\""),
         ],
     ))
+}
+
+/// Appends an external-agent launch specification to a Tokio command.
+///
+/// `cmd.exe /c` consumes its final value from the raw process command line,
+/// not through the usual Windows argv parser. The batch preparation function
+/// has already validated and quoted that command string, so passing it through
+/// the normal `args` API would quote it a second time and alter its meaning.
+#[cfg(windows)]
+pub(crate) fn configure_windows_batch_launch(command: &mut Command, args: &[String]) {
+    const CMD_PREFIX: [&str; 4] = ["/d", "/v:off", "/s", "/c"];
+
+    if args.len() == CMD_PREFIX.len() + 1
+        && args
+            .iter()
+            .take(CMD_PREFIX.len())
+            .map(String::as_str)
+            .eq(CMD_PREFIX)
+    {
+        command
+            .args(&args[..CMD_PREFIX.len()])
+            .raw_arg(&args[CMD_PREFIX.len()]);
+    } else {
+        command.args(args);
+    }
 }
 
 /// Rejects physical command-line boundaries before a batch launch reaches
@@ -167,14 +195,24 @@ fn quote_windows_cmd_argument(argument: &str) -> String {
     quoted
 }
 
+#[cfg(windows)]
+fn windows_source_env_value<'a>(
+    source_env: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'a String> {
+    source_env
+        .iter()
+        .rfind(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value)
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use std::process::Command;
 
-    #[test]
-    fn batch_launch_preserves_hostile_arguments_without_executing_them() {
+    #[tokio::test]
+    async fn batch_launch_preserves_hostile_arguments_without_executing_them() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let batch_path = temp_dir.path().join("capture.cmd");
         let capture_path = temp_dir.path().join("captured.txt");
@@ -220,10 +258,12 @@ exit /b 0
         )
         .expect("hostile single-line arguments should prepare");
 
-        let status = Command::new(program)
-            .args(args)
+        let mut command = Command::new(program);
+        configure_windows_batch_launch(&mut command, &args);
+        let status = command
             .env("CODEWITH_BATCH_TEST_PERCENT", "expanded-in-test")
             .status()
+            .await
             .expect("launch batch capture shim");
         assert!(status.success());
         assert!(
@@ -319,16 +359,4 @@ mod command_line_validation_tests {
             );
         }
     }
-}
-
-#[cfg(windows)]
-fn windows_source_env_value<'a>(
-    source_env: &'a BTreeMap<String, String>,
-    name: &str,
-) -> Option<&'a String> {
-    source_env
-        .iter()
-        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
-        .next_back()
-        .map(|(_, value)| value)
 }

@@ -30,6 +30,8 @@ use crate::platform_sandbox_external_agent_launch;
 #[cfg(windows)]
 use crate::windows_command::WindowsBatchLaunchError;
 #[cfg(windows)]
+use crate::windows_command::configure_windows_batch_launch;
+#[cfg(windows)]
 use crate::windows_command::merge_windows_environment;
 #[cfg(windows)]
 use crate::windows_command::prepare_windows_batch_launch_from_source_env;
@@ -169,8 +171,7 @@ fn source_env_value<'a>(
     {
         source_env
             .iter()
-            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
-            .next_back()
+            .rfind(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value)
     }
     #[cfg(not(windows))]
@@ -225,8 +226,12 @@ impl ClaudeCodeHarness {
             Ok(launch) => launch,
             Err(error) => return self.runtime_missing_readiness(error.to_string()),
         };
-        match Command::new(&launch.program)
-            .args(&launch.args)
+        let mut command = Command::new(&launch.program);
+        #[cfg(windows)]
+        configure_windows_batch_launch(&mut command, &launch.args);
+        #[cfg(not(windows))]
+        command.args(&launch.args);
+        match command
             .env_clear()
             .envs(launch.env)
             .stdin(Stdio::null())
@@ -517,8 +522,11 @@ impl ClaudeCodeProcess {
         unsafe {
             command.pre_exec(codex_utils_pty::process_group::set_process_group);
         }
+        #[cfg(windows)]
+        configure_windows_batch_launch(&mut command, &launch.args);
+        #[cfg(not(windows))]
+        command.args(&launch.args);
         command
-            .args(&launch.args)
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
@@ -726,6 +734,10 @@ fn add_agent_sdk_auth_env(
     env: &mut BTreeMap<String, String>,
     source_env: &BTreeMap<String, String>,
 ) {
+    #[cfg(windows)]
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
     copy_env_vars(env, source_env, CLAUDE_AGENT_SDK_AUTH_ENV_VARS);
     if env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_ANTHROPIC_AWS")
@@ -749,6 +761,10 @@ fn add_agent_sdk_auth_env(
 }
 
 fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
+    #[cfg(windows)]
+    let source_env = merge_windows_environment(source_env, &BTreeMap::new());
+    #[cfg(windows)]
+    let source_env = &source_env;
     env_value_is_set(source_env, "ANTHROPIC_API_KEY")
         || env_value_is_set(source_env, "ANTHROPIC_AUTH_TOKEN")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")
@@ -1276,8 +1292,9 @@ exit /b 0
             )
             .expect("hostile single-line task should prepare");
 
-        let status = Command::new(&launch.program)
-            .args(&launch.args)
+        let mut command = Command::new(&launch.program);
+        configure_windows_batch_launch(&mut command, &launch.args);
+        let status = command
             .current_dir(&launch.cwd)
             .env_clear()
             .envs(&launch.env)
@@ -1357,6 +1374,27 @@ exit /b 0
             Some(&r"C:\Windows\System32\cmd.exe".to_string())
         );
         assert_eq!(env.get("SYSTEMROOT"), Some(&r"C:\Windows".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn agent_sdk_auth_environment_uses_the_case_insensitive_override() {
+        let source = BTreeMap::from([
+            ("ANTHROPIC_API_KEY".to_string(), "ambient-key".to_string()),
+            ("aNtHrOpIc_ApI_kEy".to_string(), "policy-key".to_string()),
+        ]);
+        let harness = claude_code_harness().expect("claude harness");
+
+        assert_eq!(
+            harness.sanitized_env(&source),
+            BTreeMap::from([
+                ("ANTHROPIC_API_KEY".to_string(), "policy-key".to_string()),
+                (
+                    "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
+                    "claude".to_string(),
+                ),
+            ])
+        );
     }
 
     #[test]
