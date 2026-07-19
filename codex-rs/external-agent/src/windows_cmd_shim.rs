@@ -244,9 +244,9 @@ fn npm_cmd_shim_v9_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime
     const BODY: [&str; 7] = [
         "",
         "IF EXIST \"%dp0%\\node.exe\" (",
-        " SET \"_prog=%dp0%\\node.exe\"",
+        "  SET \"_prog=%dp0%\\node.exe\"",
         ") ELSE (",
-        " SET \"_prog=node\"",
+        "  SET \"_prog=node\"",
         ")",
         "",
     ];
@@ -270,9 +270,9 @@ fn npm_cmd_shim_v8_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime
     const BODY: [&str; 8] = [
         "",
         "IF EXIST \"%dp0%\\node.exe\" (",
-        " SET \"_prog=%dp0%\\node.exe\"",
+        "  SET \"_prog=%dp0%\\node.exe\"",
         ") ELSE (",
-        " SET \"_prog=node\"",
+        "  SET \"_prog=node\"",
         "  SET PATHEXT=%PATHEXT:;.JS;=;%",
         ")",
         "",

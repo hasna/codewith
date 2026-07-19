@@ -2,18 +2,23 @@ use super::*;
 
 use pretty_assertions::assert_eq;
 
-// Published cmd-shim@5.0.0 headed static Node form: one leading space before each SET.
-fn published_cmd_shim_v5(target: &str) -> String {
-    format!(
-        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
-    )
+// Immutable escaped-CRLF outputs from published cmd-shim tarballs:
+// 5.0.0 gitHead c55b9a9a4cb3f321a9abad7d6d45e2aac2f82b08,
+// integrity sha512-qkCtZ59BidfEwHltnJwkyVZn+XQojdAySM1D1gSeh11Z4pW1Kpolkyo53L5noc0nrxmIvyFwTmJRo4xs7FFLPw==;
+// 9.0.2 gitHead 7667c245e7d9259b5f88b77fb71b497ffcc26976,
+// integrity sha512-xVHoI+wNrM4tDB9iC1idf/8D0tYnVimlBp/5zHW+x1sGjjRD69NvR9th3Z1JAYGN/BTW4he6aZFYV6kzy+k+jw==.
+const CMD_SHIM_V5_NODE_GOLDEN: &str = include_str!("fixtures/cmd-shim-5.0.0-node.cmd.golden");
+const CMD_SHIM_V9_NODE_GOLDEN: &str = include_str!("fixtures/cmd-shim-9.0.2-node.cmd.golden");
+
+fn released_cmd(golden: &str) -> String {
+    golden
+        .strip_suffix('\n')
+        .unwrap_or(golden)
+        .replace(r"\r\n", "\r\n")
 }
 
-// Published cmd-shim@9.0.2 static Node form: one leading space before each SET.
-fn npm_v9_node(target: &str) -> String {
-    format!(
-        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n SET \"_prog=node\"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
-    )
+fn v9_node_with_target(target: &str) -> String {
+    released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("node_modules\\agent\\bin\\agent.js", target)
 }
 
 // Exact cmd-shim@9.0.2 static direct-executable form.
@@ -45,11 +50,11 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
     let local_target = "..\\dist\\corepack.js";
     let claude = "..\\@anthropic-ai\\claude-code\\bin\\claude.exe";
     assert_eq!(
-        recognized_shim(&published_cmd_shim_v5(global_target)),
+        recognized_shim(&released_cmd(CMD_SHIM_V5_NODE_GOLDEN)),
         Some((global_target, ShimRuntime::Node))
     );
     assert_eq!(
-        recognized_shim(&npm_v9_node(global_target)),
+        recognized_shim(&released_cmd(CMD_SHIM_V9_NODE_GOLDEN)),
         Some((global_target, ShimRuntime::Node))
     );
     assert_eq!(
@@ -61,18 +66,19 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
         Some((local_target, ShimRuntime::Node))
     );
     assert_eq!(
-        recognized_shim(&npm_v9_node(global_target).replace("@ECHO off", "@ECHO off ")),
+        recognized_shim(&released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("@ECHO off", "@ECHO off ")),
         None
     );
     assert_eq!(
         recognized_shim(
-            &npm_v9_node(global_target).replace("\"%_prog%\"  ", "\"%_prog%\" --inspect ")
+            &released_cmd(CMD_SHIM_V9_NODE_GOLDEN)
+                .replace("\"%_prog%\"  ", "\"%_prog%\" --inspect ")
         ),
         None
     );
     assert_eq!(
         recognized_shim(
-            &published_cmd_shim_v5(global_target).replace("\n SET \"_prog=", "\n  SET \"_prog=")
+            &released_cmd(CMD_SHIM_V5_NODE_GOLDEN).replace("\r\n  SET PATHEXT", "\r\n SET PATHEXT")
         ),
         None
     );
@@ -122,10 +128,7 @@ fn published_cmd_shim_v5_node_fixture_resolves_bounded_prefix_target() {
     let shim = temp.path().join("prefix/agent.cmd");
     let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
     let node = temp.path().join("trusted-node/node.exe");
-    write(
-        &shim,
-        &published_cmd_shim_v5("node_modules\\agent\\bin\\agent.js"),
-    );
+    write(&shim, &released_cmd(CMD_SHIM_V5_NODE_GOLDEN));
     write(&target, "fixture");
     write(&node, "fixture");
     let source_env = BTreeMap::from([(
@@ -184,7 +187,7 @@ fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() 
     let shim = temp.path().join("prefix/agent.cmd");
     let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
     let node = temp.path().join("trusted-node/node.EXE");
-    write(&shim, &npm_v9_node("node_modules\\agent\\bin\\agent.js"));
+    write(&shim, &released_cmd(CMD_SHIM_V9_NODE_GOLDEN));
     write(&target, "fixture");
     write(&node, "fixture");
     let args = [
@@ -292,7 +295,7 @@ fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() 
         "node_modules\\%PROGRAMFILES%\\agent.js",
     ] {
         let shim = temp.path().join(format!("prefix/{}.cmd", target.len()));
-        write(&shim, &npm_v9_node(target));
+        write(&shim, &v9_node_with_target(target));
         let error = prepare_windows_batch_launch_from_source_env(
             shim,
             Vec::new(),
@@ -310,7 +313,7 @@ fn rejects_target_reparse_escape_after_canonicalization() {
     let shim = local_bin(temp.path(), "agent");
     let outside = temp.path().join("outside.js");
     let linked = temp.path().join("node_modules/agent/bin/agent.js");
-    write(&shim, &npm_v9_node("..\\agent\\bin\\agent.js"));
+    write(&shim, &v9_node_with_target("..\\agent\\bin\\agent.js"));
     write(&outside, "fixture");
     std::fs::create_dir_all(linked.parent().expect("linked parent")).expect("create linked parent");
     std::os::windows::fs::symlink_file(&outside, &linked).expect("create fixture symlink");
