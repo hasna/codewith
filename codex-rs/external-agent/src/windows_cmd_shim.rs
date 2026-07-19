@@ -8,9 +8,9 @@ use std::path::Prefix;
 
 /// A native invocation containing an absolute program and lossless OS arguments.
 ///
-/// For non-batch inputs this is an exact pass-through; callers are responsible for selecting a
-/// directly invocable native program. This staged primitive has no production Claude or ACP
-/// consumer yet: OPE2-00126 and OPE2-00127 must adopt it before those launches are protected.
+/// For non-batch inputs this preserves the native launch after canonicalization. This staged
+/// primitive has no production Claude or ACP consumer yet: OPE2-00126 and OPE2-00127 must adopt
+/// it before those launches are protected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsNativeLaunch {
     pub program: PathBuf,
@@ -37,21 +37,19 @@ pub fn prepare_windows_batch_launch_from_source_env(
     if ambiguous_windows_program_path(&program) {
         return Err(WindowsBatchLaunchError::AmbiguousProgramPath);
     }
-    if !is_windows_batch_program(&program) {
-        return Ok(WindowsNativeLaunch { program, args });
-    }
-
-    let canonical_shim = program
+    let canonical_program = program
         .canonicalize()
-        .map_err(WindowsBatchLaunchError::CanonicalizeShim)?;
-    if !canonical_shim.is_absolute() {
-        return Err(WindowsBatchLaunchError::CanonicalShimNotAbsolute);
+        .map_err(WindowsBatchLaunchError::CanonicalizeProgram)?;
+    if !canonical_program.is_absolute() {
+        return Err(WindowsBatchLaunchError::CanonicalProgramNotAbsolute);
     }
-    if !is_windows_batch_program(&canonical_shim) {
-        return Err(WindowsBatchLaunchError::UnsupportedShim);
+    if !is_windows_batch_program(&canonical_program) {
+        return Ok(WindowsNativeLaunch {
+            program: canonical_program,
+            args,
+        });
     }
-
-    let (target, runtime) = shim_target(&canonical_shim)?;
+    let (target, runtime) = shim_target(&canonical_program)?;
     match runtime {
         ShimRuntime::DirectNative => Ok(WindowsNativeLaunch {
             program: target,
@@ -187,9 +185,8 @@ fn normal_windows_component(component: &str) -> bool {
 
 /// Rejects spellings Win32 can normalize into a different program after we classify it.
 ///
-/// Normal native programs still pass through unchanged. This only rejects path forms that make a
-/// lexical `.cmd`/`.bat` decision unsafe, including verbatim/device namespaces and components
-/// whose trailing dots or spaces Win32 ignores.
+/// This rejects path forms that make a lexical `.cmd`/`.bat` decision unsafe, including
+/// verbatim/device namespaces and components whose trailing dots or spaces Win32 ignores.
 fn ambiguous_windows_program_path(program: &Path) -> bool {
     program.components().any(|component| match component {
         Component::Prefix(prefix) => matches!(
@@ -209,21 +206,22 @@ fn ambiguous_windows_program_path(program: &Path) -> bool {
 
 fn windows_device_name(component: &str) -> bool {
     let name = component.split('.').next().unwrap_or_default();
-    let bytes = name.as_bytes();
     ["CON", "PRN", "AUX", "NUL"]
         .iter()
         .any(|device| name.eq_ignore_ascii_case(device))
-        || (bytes.len() == 4
-            && ((bytes[..3].eq_ignore_ascii_case(b"COM")
-                || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-                && matches!(bytes[3], b'1'..=b'9')))
+        || (name.get(..3).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT")
+        }) && matches!(
+            name.get(3..),
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        ))
 }
 
 fn recognized_shim(shim: &str) -> Option<(&str, ShimRuntime)> {
     let lines = normalized_batch_lines(shim)?;
     npm_cmd_shim_v9_target(&lines)
         .or_else(|| npm_cmd_shim_v8_target(&lines))
-        .or_else(|| legacy_cmd_shim_v5_target(&lines))
+        .or_else(|| legacy_seven_line_corepack_target(&lines))
 }
 
 const CMD_SHIM_HEAD: [&str; 8] = [
@@ -294,7 +292,7 @@ fn npm_cmd_shim_v8_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime
     .map(|target| (target, ShimRuntime::Node))
 }
 
-fn legacy_cmd_shim_v5_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime)> {
+fn legacy_seven_line_corepack_target<'a>(lines: &[&'a str]) -> Option<(&'a str, ShimRuntime)> {
     (lines.len() == 7).then_some(())?;
     (lines[0] == "@SETLOCAL").then_some(())?;
     (lines[1] == "@IF EXIST \"%~dp0\\node.exe\" (").then_some(())?;
@@ -396,10 +394,10 @@ pub enum WindowsBatchLaunchError {
     ProgramNotAbsolute,
     #[error("Windows launch program uses an ambiguous normalized path spelling")]
     AmbiguousProgramPath,
-    #[error("could not canonicalize Windows batch shim: {0}")]
-    CanonicalizeShim(std::io::Error),
-    #[error("canonical Windows batch shim is not absolute")]
-    CanonicalShimNotAbsolute,
+    #[error("could not canonicalize Windows launch program: {0}")]
+    CanonicalizeProgram(std::io::Error),
+    #[error("canonical Windows launch program is not absolute")]
+    CanonicalProgramNotAbsolute,
     #[error(
         "unsupported Windows batch shim; configure a native executable or an exact static cmd-shim form"
     )]

@@ -2,7 +2,8 @@ use super::*;
 
 use pretty_assertions::assert_eq;
 
-fn npm_v8(target: &str) -> String {
+// Published cmd-shim@5.0.0 headed static Node form, handled by npm_cmd_shim_v8_target.
+fn published_cmd_shim_v5(target: &str) -> String {
     format!(
         "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{target}\" %*\r\n"
     )
@@ -22,8 +23,8 @@ fn npm_v9_direct(target: &str) -> String {
     )
 }
 
-// Exact legacy cmd-shim@5.0.0/Corepack static Node form.
-fn legacy_cmd_shim(target: &str) -> String {
+// Historical seven-line Corepack fallback, not cmd-shim@5.0.0 output.
+fn legacy_seven_line_corepack_shim(target: &str) -> String {
     format!(
         "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\{target}\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\{target}\" %*\r\n)\r\n"
     )
@@ -44,7 +45,7 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
     let local_target = "..\\dist\\corepack.js";
     let claude = "..\\@anthropic-ai\\claude-code\\bin\\claude.exe";
     assert_eq!(
-        recognized_shim(&npm_v8(global_target)),
+        recognized_shim(&published_cmd_shim_v5(global_target)),
         Some((global_target, ShimRuntime::Node))
     );
     assert_eq!(
@@ -56,7 +57,7 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
         Some((claude, ShimRuntime::DirectNative))
     );
     assert_eq!(
-        recognized_shim(&legacy_cmd_shim(local_target)),
+        recognized_shim(&legacy_seven_line_corepack_shim(local_target)),
         Some((local_target, ShimRuntime::Node))
     );
     assert_eq!(
@@ -70,15 +71,18 @@ fn recognizes_exact_static_generators_and_rejects_rewrites() {
         None
     );
     assert_eq!(
-        recognized_shim(&npm_v8(global_target).replace("\"%_prog%\"  ", "\"%_prog%\" ")),
+        recognized_shim(
+            &published_cmd_shim_v5(global_target).replace("\"%_prog%\"  ", "\"%_prog%\" ")
+        ),
         None
     );
 }
 
 #[test]
-fn local_bin_shims_resolve_bounded_parent_targets() {
+fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
     let temp = tempfile::tempdir().expect("tempdir");
     let shim = local_bin(temp.path(), "claude");
+    let alias = shim.with_extension("exe");
     let target = temp
         .path()
         .join("node_modules/@anthropic-ai/claude-code/bin/claude.exe");
@@ -87,14 +91,15 @@ fn local_bin_shims_resolve_bounded_parent_targets() {
         &npm_v9_direct("..\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
     );
     write(&target, "fixture");
+    std::os::windows::fs::symlink_file(&shim, &alias).expect("create alias");
     let args = vec![OsString::from("--resume"), OsString::from("task")];
     let launch = prepare_windows_batch_launch_from_source_env(
-        shim,
+        alias,
         args.clone(),
         &BTreeMap::new(),
         temp.path(),
     )
-    .expect("direct plan");
+    .expect("alias must use the canonical cmd target");
     assert_eq!(
         launch,
         WindowsNativeLaunch {
@@ -105,12 +110,15 @@ fn local_bin_shims_resolve_bounded_parent_targets() {
 }
 
 #[test]
-fn cmd_shim_v9_node_resolves_bounded_parent_target() {
+fn published_cmd_shim_v5_resolves_bounded_prefix_target() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let shim = local_bin(temp.path(), "agent");
-    let target = temp.path().join("node_modules/agent/bin/agent.js");
+    let shim = temp.path().join("prefix/agent.cmd");
+    let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
     let node = temp.path().join("trusted-node/node.exe");
-    write(&shim, &npm_v9_node("..\\agent\\bin\\agent.js"));
+    write(
+        &shim,
+        &published_cmd_shim_v5("node_modules\\agent\\bin\\agent.js"),
+    );
     write(&target, "fixture");
     write(&node, "fixture");
     let source_env = BTreeMap::from([(
@@ -119,7 +127,7 @@ fn cmd_shim_v9_node_resolves_bounded_parent_target() {
     )]);
     let launch =
         prepare_windows_batch_launch_from_source_env(shim, Vec::new(), &source_env, temp.path())
-            .expect("cmd-shim@9 Node plan");
+            .expect("published cmd-shim@5.0.0 Node plan");
     assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
     assert_eq!(
         launch.args,
@@ -138,7 +146,10 @@ fn legacy_corepack_shim_resolves_bounded_parent_target() {
     let shim = local_bin(temp.path(), "corepack");
     let target = temp.path().join("node_modules/dist/corepack.js");
     let node = temp.path().join("trusted-node/node.exe");
-    write(&shim, &legacy_cmd_shim("..\\dist\\corepack.js"));
+    write(
+        &shim,
+        &legacy_seven_line_corepack_shim("..\\dist\\corepack.js"),
+    );
     write(&target, "fixture");
     write(&node, "fixture");
     let source_env = BTreeMap::from([(
@@ -224,6 +235,13 @@ fn rejects_program_spellings_that_win32_normalizes_before_batch_classification()
         temp.path().join("agent.cmd."),
         temp.path().join("agent.cmd "),
         temp.path().join("review.").join("agent.cmd"),
+        temp.path().join("review ").join("agent.cmd"),
+        temp.path().join("CoM¹.cmd"),
+        temp.path().join("com².payload"),
+        temp.path().join("COM³.cmd"),
+        temp.path().join("lPt¹.cmd"),
+        temp.path().join("LPT².payload"),
+        temp.path().join("lpt³.cmd"),
     ] {
         let error = prepare_windows_batch_launch_from_source_env(
             program,
@@ -257,6 +275,13 @@ fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() 
         "C:\\agent.js",
         "\\\\?\\C:\\agent.js",
         "node_modules\\CON.js",
+        "node_modules\\CoM¹\\agent.js",
+        "node_modules\\com².payload\\agent.js",
+        "node_modules\\COM³\\agent.js",
+        "node_modules\\lPt¹\\agent.js",
+        "node_modules\\LPT².payload\\agent.js",
+        "node_modules\\lpt³\\agent.js",
+        "node_modules/agent.js",
         "node_modules\\%PROGRAMFILES%\\agent.js",
     ] {
         let shim = temp.path().join(format!("prefix/{}.cmd", target.len()));
@@ -297,10 +322,11 @@ fn rejects_target_reparse_escape_after_canonicalization() {
 }
 
 #[test]
-fn absolute_non_batch_programs_remain_unchanged() {
+fn absolute_non_batch_programs_remain_native_after_canonicalization() {
     let temp = tempfile::tempdir().expect("tempdir");
     let program = temp.path().join("agent.exe");
     let args = vec![OsString::from("--native")];
+    write(&program, "fixture");
     assert_eq!(
         prepare_windows_batch_launch_from_source_env(
             program.clone(),
@@ -309,6 +335,9 @@ fn absolute_non_batch_programs_remain_unchanged() {
             temp.path(),
         )
         .expect("non-batch program"),
-        WindowsNativeLaunch { program, args }
+        WindowsNativeLaunch {
+            program: program.canonicalize().expect("canonical program"),
+            args
+        }
     );
 }
