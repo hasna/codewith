@@ -165,10 +165,10 @@ WHERE owner_thread_id = ?
         let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let base_repo_path_key = path_keys::managed_worktree_path_key(&params.base_repo_path);
+        let worktree_path_key = path_keys::managed_worktree_path_key(&params.worktree_path);
         let base_repo_path = normalize_path_for_db(&params.base_repo_path);
         let worktree_path = normalize_path_for_db(&params.worktree_path);
-        let base_repo_path_key = path_keys::managed_worktree_path_key(&base_repo_path);
-        let worktree_path_key = path_keys::managed_worktree_path_key(&worktree_path);
         let base_repo_path = path_to_string(&base_repo_path);
         let worktree_path = path_to_string(&worktree_path);
         let sql = format!(
@@ -1690,6 +1690,41 @@ mod tests {
             owner_agent_run_id: None,
             cleanup_after: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keys_native_paths_before_display_normalization() -> anyhow::Result<()> {
+        let through_link_parent_runtime = test_runtime().await;
+        let through_link_parent_store = through_link_parent_runtime.managed_worktrees();
+        let mut through_link_parent = create_params("through-link-parent", "/repo");
+        through_link_parent.worktree_path = PathBuf::from("/repo/link/../wt");
+        through_link_parent_store
+            .create_managed_worktree(through_link_parent)
+            .await?;
+        let through_link_parent =
+            sqlx::query("SELECT worktree_path, worktree_path_key FROM managed_worktrees")
+                .fetch_one(through_link_parent_runtime.pool.as_ref())
+                .await?;
+
+        let direct_runtime = test_runtime().await;
+        let direct_store = direct_runtime.managed_worktrees();
+        let mut direct = create_params("direct", "/repo");
+        direct.worktree_path = PathBuf::from("/repo/wt");
+        direct_store.create_managed_worktree(direct).await?;
+        let direct = sqlx::query(
+            "SELECT worktree_path, worktree_path_key FROM managed_worktrees ORDER BY worktree_id",
+        )
+        .fetch_one(direct_runtime.pool.as_ref())
+        .await?;
+        assert_eq!("/repo/wt", through_link_parent.get::<String, _>(0));
+        assert_eq!("/repo/wt", direct.get::<String, _>(0));
+        assert_ne!(
+            through_link_parent.get::<Vec<u8>, _>(1),
+            direct.get::<Vec<u8>, _>(1)
+        );
+
+        Ok(())
     }
 
     #[tokio::test]

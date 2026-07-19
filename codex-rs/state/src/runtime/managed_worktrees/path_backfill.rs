@@ -20,93 +20,99 @@ struct LegacyManagedWorktreePathRow {
     worktree_path: String,
     base_repo_path_key: Option<Vec<u8>>,
     worktree_path_key: Option<Vec<u8>>,
+    base_repo_path_terminal: bool,
+    worktree_path_terminal: bool,
 }
 
 pub(crate) async fn backfill_legacy_managed_worktree_path_keys(
     pool: &SqlitePool,
 ) -> anyhow::Result<ManagedWorktreePathKeyBackfillOutcome> {
     let mut tx = pool.begin().await?;
-    let state: Option<(Option<String>, bool)> = sqlx::query_as(
-        r#"
-SELECT last_scanned_worktree_id, completed
-FROM managed_worktree_path_key_backfill_state
-WHERE id = 1
-        "#,
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if state.as_ref().is_some_and(|(_, completed)| *completed) {
-        tx.commit().await?;
-        return Ok(ManagedWorktreePathKeyBackfillOutcome {
-            completed: true,
-            ..Default::default()
-        });
-    }
-    let has_state = state.is_some();
-    let last_scanned_worktree_id =
-        state.and_then(|(last_scanned_worktree_id, _)| last_scanned_worktree_id);
-    let rows = sqlx::query_as::<_, (String, String, String, Option<Vec<u8>>, Option<Vec<u8>>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            bool,
+            bool,
+        ),
+    >(
         r#"
 SELECT
-    worktree_id,
-    base_repo_path,
-    worktree_path,
-    base_repo_path_key,
-    worktree_path_key
+    managed_worktrees.worktree_id,
+    managed_worktrees.base_repo_path,
+    managed_worktrees.worktree_path,
+    managed_worktrees.base_repo_path_key,
+    managed_worktrees.worktree_path_key,
+    COALESCE(managed_worktree_path_key_backfill_terminal.base_repo_path_terminal, 0),
+    COALESCE(managed_worktree_path_key_backfill_terminal.worktree_path_terminal, 0)
 FROM managed_worktrees
-WHERE (base_repo_path_key IS NULL OR worktree_path_key IS NULL)
-  AND (? IS NULL OR worktree_id > ?)
-ORDER BY worktree_id ASC
+LEFT JOIN managed_worktree_path_key_backfill_terminal
+    ON managed_worktree_path_key_backfill_terminal.worktree_id = managed_worktrees.worktree_id
+WHERE (managed_worktrees.base_repo_path_key IS NULL
+       AND COALESCE(managed_worktree_path_key_backfill_terminal.base_repo_path_terminal, 0) = 0)
+   OR (managed_worktrees.worktree_path_key IS NULL
+       AND COALESCE(managed_worktree_path_key_backfill_terminal.worktree_path_terminal, 0) = 0)
+ORDER BY managed_worktrees.worktree_id ASC
 LIMIT ?
         "#,
     )
-    .bind(last_scanned_worktree_id.as_deref())
-    .bind(last_scanned_worktree_id.as_deref())
     .bind(MANAGED_WORKTREE_PATH_KEY_BACKFILL_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await?
     .into_iter()
     .map(
-        |(worktree_id, base_repo_path, worktree_path, base_repo_path_key, worktree_path_key)| {
+        |(
+            worktree_id,
+            base_repo_path,
+            worktree_path,
+            base_repo_path_key,
+            worktree_path_key,
+            base_repo_path_terminal,
+            worktree_path_terminal,
+        )| {
             LegacyManagedWorktreePathRow {
                 worktree_id,
                 base_repo_path,
                 worktree_path,
                 base_repo_path_key,
                 worktree_path_key,
+                base_repo_path_terminal,
+                worktree_path_terminal,
             }
         },
     )
     .collect::<Vec<_>>();
-    let next_last_scanned_worktree_id = rows
-        .last()
-        .map(|row| row.worktree_id.clone())
-        .or(last_scanned_worktree_id);
-    let completed = if rows.is_empty() {
-        has_state
-    } else {
-        rows.len() < MANAGED_WORKTREE_PATH_KEY_BACKFILL_BATCH_SIZE as usize
-    };
     let mut outcome = ManagedWorktreePathKeyBackfillOutcome {
         scanned_rows: rows.len() as u32,
-        completed,
+        completed: rows.len() < MANAGED_WORKTREE_PATH_KEY_BACKFILL_BATCH_SIZE as usize,
         ..Default::default()
     };
 
     for row in rows {
-        let base_repo_path_key = row
-            .base_repo_path_key
-            .is_none()
-            .then(|| managed_worktree_path_key_from_db_string(&row.base_repo_path))
-            .flatten();
-        let worktree_path_key = row
-            .worktree_path_key
-            .is_none()
-            .then(|| managed_worktree_path_key_from_db_string(&row.worktree_path))
-            .flatten();
+        let base_repo_path_key = match (
+            row.base_repo_path_key.is_none(),
+            row.base_repo_path_terminal,
+        ) {
+            (true, false) => managed_worktree_path_key_from_db_string(&row.base_repo_path),
+            _ => None,
+        };
+        let worktree_path_key = match (row.worktree_path_key.is_none(), row.worktree_path_terminal)
+        {
+            (true, false) => managed_worktree_path_key_from_db_string(&row.worktree_path),
+            _ => None,
+        };
+        let base_repo_path_terminal = row.base_repo_path_key.is_none()
+            && !row.base_repo_path_terminal
+            && base_repo_path_key.is_none();
+        let worktree_path_terminal = row.worktree_path_key.is_none()
+            && !row.worktree_path_terminal
+            && worktree_path_key.is_none();
         let unkeyable_paths =
-            u32::from(row.base_repo_path_key.is_none() && base_repo_path_key.is_none())
-                + u32::from(row.worktree_path_key.is_none() && worktree_path_key.is_none());
+            u32::from(base_repo_path_terminal) + u32::from(worktree_path_terminal);
         if unkeyable_paths > 0 {
             outcome.unkeyable_paths += unkeyable_paths;
             warn!(
@@ -150,32 +156,37 @@ WHERE worktree_id = ?
             )
             .bind(base_repo_path_key)
             .bind(worktree_path_key)
-            .bind(row.worktree_id)
+            .bind(row.worktree_id.as_str())
             .execute(&mut *tx)
             .await?;
             outcome.updated_rows += updated.rows_affected() as u32;
         }
-    }
-    if !has_state && outcome.scanned_rows == 0 {
-        tx.commit().await?;
-        return Ok(outcome);
-    }
-    sqlx::query(
-        r#"
-INSERT INTO managed_worktree_path_key_backfill_state (
-    id,
-    last_scanned_worktree_id,
-    completed
-) VALUES (1, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    last_scanned_worktree_id = excluded.last_scanned_worktree_id,
-    completed = excluded.completed
-        "#,
+        if base_repo_path_terminal || worktree_path_terminal {
+            sqlx::query(
+                r#"
+INSERT INTO managed_worktree_path_key_backfill_terminal (
+    worktree_id,
+    base_repo_path_terminal,
+    worktree_path_terminal
+) VALUES (?, ?, ?)
+ON CONFLICT(worktree_id) DO UPDATE SET
+    base_repo_path_terminal = MAX(
+        managed_worktree_path_key_backfill_terminal.base_repo_path_terminal,
+        excluded.base_repo_path_terminal
+    ),
+    worktree_path_terminal = MAX(
+        managed_worktree_path_key_backfill_terminal.worktree_path_terminal,
+        excluded.worktree_path_terminal
     )
-    .bind(next_last_scanned_worktree_id)
-    .bind(completed)
-    .execute(&mut *tx)
-    .await?;
+                "#,
+            )
+            .bind(row.worktree_id.as_str())
+            .bind(base_repo_path_terminal)
+            .bind(worktree_path_terminal)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
     tx.commit().await?;
     if outcome.scanned_rows > 0 {
         info!(
@@ -268,6 +279,13 @@ INSERT INTO managed_worktrees (
             .collect::<Vec<_>>();
         assert!(indexes.contains(&"idx_managed_worktrees_base_repo_path_key".to_string()));
         assert!(indexes.contains(&"idx_managed_worktrees_worktree_path_key".to_string()));
+        let terminal_table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managed_worktree_path_key_backfill_terminal'",
+        )
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("query terminal marker table");
+        assert_eq!(1, terminal_table_count);
 
         let uniqueness: Vec<i64> = sqlx::query_scalar(
             "SELECT [unique] FROM pragma_index_list('managed_worktrees') WHERE name LIKE 'idx_managed_worktrees_%_path_key' ORDER BY name",
@@ -399,18 +417,18 @@ INSERT INTO managed_worktrees (
     }
 
     #[tokio::test]
-    async fn startup_backfill_advances_past_multiple_batches_of_partial_rows() {
+    async fn startup_backfill_marks_malformed_fields_terminal_without_starving_rows() {
         let (runtime, codex_home) = test_runtime().await;
         sqlx::query("PRAGMA ignore_check_constraints = ON")
             .execute(runtime.pool.as_ref())
             .await
             .expect("relax legacy check constraint");
-        for index in 0..201 {
+        for index in 0..101 {
             insert_legacy_worktree(
                 &runtime,
-                format!("partial-{index:03}").as_str(),
+                format!("malformed-{index:03}").as_str(),
                 "",
-                format!("/repos/project/partial-{index:03}").as_str(),
+                format!("/repos/project/malformed-{index:03}").as_str(),
             )
             .await;
         }
@@ -427,39 +445,81 @@ INSERT INTO managed_worktrees (
             .expect("restore check constraint enforcement");
         drop(runtime);
 
-        for expected_partial_keys in [100_i64, 200, 201] {
-            let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-                .await
-                .expect("restarted runtime should initialize");
-            let partial_keys: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM managed_worktrees WHERE worktree_id LIKE 'partial-%' AND worktree_path_key IS NOT NULL",
-            )
-            .fetch_one(runtime.pool.as_ref())
-            .await
-            .expect("count partial rows with worktree keys");
-            assert_eq!(expected_partial_keys, partial_keys);
-
-            let later_keys: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM managed_worktrees WHERE worktree_id = 'zzz-later-keyable' AND base_repo_path_key IS NOT NULL AND worktree_path_key IS NOT NULL",
-            )
-            .fetch_one(runtime.pool.as_ref())
-            .await
-            .expect("count later keyable row keys");
-            assert_eq!(i64::from(expected_partial_keys == 201), later_keys);
-            drop(runtime);
-        }
-
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
-            .expect("terminal restart should initialize");
-        let state = sqlx::query(
-            "SELECT last_scanned_worktree_id, completed FROM managed_worktree_path_key_backfill_state WHERE id = 1",
+            .expect("first restarted runtime should initialize");
+        let first_keyed_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktrees WHERE worktree_path_key IS NOT NULL",
         )
         .fetch_one(runtime.pool.as_ref())
         .await
-        .expect("backfill state should be observable");
-        assert_eq!("zzz-later-keyable", state.get::<String, _>(0));
-        assert_eq!(true, state.get::<bool, _>(1));
+        .expect("count first startup keys");
+        assert_eq!(100, first_keyed_rows);
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("second restarted runtime should initialize");
+        let terminal_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktree_path_key_backfill_terminal WHERE base_repo_path_terminal = 1",
+        )
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("count terminal malformed fields");
+        assert_eq!(101, terminal_rows);
+        let later_keys: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktrees WHERE worktree_id = 'zzz-later-keyable' AND base_repo_path_key IS NOT NULL AND worktree_path_key IS NOT NULL",
+        )
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("count later keyable row keys");
+        assert_eq!(1, later_keys);
+        drop(runtime);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn startup_backfill_rediscovers_late_legacy_rows_on_both_sides_of_old_cursor() {
+        let (runtime, codex_home) = test_runtime().await;
+        insert_legacy_worktree(
+            &runtime,
+            "middle-before-completion",
+            "/repos/project",
+            "/repos/project/middle-before-completion",
+        )
+        .await;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initial startup should complete the existing legacy row");
+        insert_legacy_worktree(
+            &runtime,
+            "aaa-inserted-after-completion",
+            "/repos/project",
+            "/repos/project/aaa-inserted-after-completion",
+        )
+        .await;
+        insert_legacy_worktree(
+            &runtime,
+            "zzz-inserted-after-completion",
+            "/repos/project",
+            "/repos/project/zzz-inserted-after-completion",
+        )
+        .await;
+        drop(runtime);
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("later startup should rediscover both legacy rows");
+        let keyed_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_worktrees WHERE worktree_id IN ('aaa-inserted-after-completion', 'zzz-inserted-after-completion') AND base_repo_path_key IS NOT NULL AND worktree_path_key IS NOT NULL",
+        )
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("count rediscovered late legacy rows");
+        assert_eq!(2, keyed_rows);
         drop(runtime);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
