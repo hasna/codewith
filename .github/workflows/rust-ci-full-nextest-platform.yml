@@ -86,7 +86,7 @@ jobs:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -384,7 +384,7 @@ jobs:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
         shell: bash
         run: |
           set -euo pipefail
