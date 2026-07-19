@@ -41,7 +41,9 @@ fn unix_path_key(path: &OsStr) -> Vec<u8> {
     let rooted = path.starts_with(b"/");
     let components = normalize_byte_components(path.split(|byte| *byte == b'/'), rooted);
     encode_byte_key(
-        if rooted {
+        if path.starts_with(b"//") && !path.starts_with(b"///") {
+            b"unix-double-slash-absolute"
+        } else if rooted {
             b"unix-absolute"
         } else {
             b"unix-relative"
@@ -228,9 +230,10 @@ fn normalize_components<'a, T>(
     normalized
 }
 
+#[cfg(unix)]
 fn encode_byte_key(kind: &[u8], components: Vec<&[u8]>) -> Vec<u8> {
     let mut key = key_prefix(kind);
-    push_length(&mut key, components.len());
+    push_length(&mut key, components.len() as u64);
     for component in components {
         push_bytes(&mut key, component);
     }
@@ -241,7 +244,7 @@ fn encode_byte_key(kind: &[u8], components: Vec<&[u8]>) -> Vec<u8> {
 fn encode_wide_key(kind: &[u8], prefix: &[u16], components: Vec<&[u16]>) -> Vec<u8> {
     let mut key = key_prefix(kind);
     push_wide_units(&mut key, prefix);
-    push_length(&mut key, components.len());
+    push_length(&mut key, components.len() as u64);
     for component in components {
         push_wide_units(&mut key, component);
     }
@@ -256,23 +259,19 @@ fn key_prefix(kind: &[u8]) -> Vec<u8> {
 }
 
 fn push_bytes(key: &mut Vec<u8>, value: &[u8]) {
-    push_length(key, value.len());
+    push_length(key, value.len() as u64);
     key.extend_from_slice(value);
 }
 
 #[cfg(any(windows, test))]
 fn push_wide_units(key: &mut Vec<u8>, value: &[u16]) {
-    push_length(key, value.len());
+    push_length(key, value.len() as u64);
     for unit in value {
         key.extend_from_slice(&unit.to_be_bytes());
     }
 }
 
-fn push_length(key: &mut Vec<u8>, length: usize) {
-    let length = match u32::try_from(length) {
-        Ok(length) => length,
-        Err(_) => panic!("managed worktree path key fields must fit in u32"),
-    };
+fn push_length(key: &mut Vec<u8>, length: u64) {
     key.extend_from_slice(&length.to_be_bytes());
 }
 
@@ -308,6 +307,19 @@ mod tests {
             unix_path_key(OsStr::new("run-b")),
             unix_path_key(OsStr::new("/run-b"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_keys_preserve_exactly_two_leading_slashes() {
+        let one_slash = unix_path_key(OsStr::new("/host/share"));
+        let exactly_two_slashes = unix_path_key(OsStr::new("//host/share"));
+        let three_slashes = unix_path_key(OsStr::new("///host/share"));
+        let four_slashes = unix_path_key(OsStr::new("////host/share"));
+
+        assert_ne!(one_slash, exactly_two_slashes);
+        assert_eq!(one_slash, three_slashes);
+        assert_eq!(three_slashes, four_slashes);
     }
 
     #[cfg(unix)]
@@ -422,5 +434,18 @@ mod tests {
             unix_path_key(path.as_os_str()),
             managed_worktree_path_key(path)
         );
+    }
+
+    #[test]
+    fn length_framing_preserves_values_beyond_u32() {
+        let mut u32_max = Vec::new();
+        let mut next_value = Vec::new();
+
+        push_length(&mut u32_max, u64::from(u32::MAX));
+        push_length(&mut next_value, u64::from(u32::MAX) + 1);
+
+        assert_eq!(u32_max, u64::from(u32::MAX).to_be_bytes());
+        assert_eq!(next_value, (u64::from(u32::MAX) + 1).to_be_bytes());
+        assert_ne!(u32_max, next_value);
     }
 }
