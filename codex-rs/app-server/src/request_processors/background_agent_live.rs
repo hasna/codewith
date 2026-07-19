@@ -4520,6 +4520,16 @@ done
         }
     }
 
+    impl Drop for TestWorkerFixture {
+        fn drop(&mut self) {
+            // Tests can return early after their worker has started. Releasing
+            // the shared sentinel lets every fixture worker exit before its
+            // temporary directory disappears; Drop must not mask the original
+            // test failure if that best-effort cleanup itself fails.
+            let _ = self.release();
+        }
+    }
+
     async fn wait_for_worker_process_exit(
         controller: &WorkerProcessController,
         handle: &WorkerProcessHandle,
@@ -4534,6 +4544,24 @@ done
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_worker_fixture_drop_releases_ready_worker_process() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let fixture = TestWorkerFixture::create(temp.path())?;
+        let controller = WorkerProcessController::default();
+        let handle = controller
+            .spawn(WorkerProcessCommand::new(
+                fixture.program.clone(),
+                temp.path().join("fixture-drop.stderr.log"),
+            ))
+            .await?;
+        fixture.wait_until_ready().await?;
+
+        drop(fixture);
+
+        wait_for_worker_process_exit(&controller, &handle).await
     }
 
     #[tokio::test]
