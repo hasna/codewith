@@ -43,51 +43,79 @@ fn local_bin(temp: &Path, name: &str) -> PathBuf {
     temp.join("node_modules/.bin").join(format!("{name}.cmd"))
 }
 
+fn node_source_env(temp: &Path) -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "PATH".into(),
+        temp.join("trusted-node").display().to_string(),
+    )])
+}
+
+fn expected_launch(program: &Path, args: Vec<OsString>) -> WindowsNativeLaunch {
+    WindowsNativeLaunch {
+        program: program.canonicalize().expect("canonical program"),
+        args,
+    }
+}
+
+fn expected_node_launch(target: &Path, node: &Path, args: Vec<OsString>) -> WindowsNativeLaunch {
+    let target = target
+        .canonicalize()
+        .expect("canonical target")
+        .into_os_string();
+    expected_launch(node, std::iter::once(target).chain(args).collect())
+}
+
+fn prepare_empty_args(
+    program: PathBuf,
+    source_env: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> Result<WindowsNativeLaunch, WindowsBatchLaunchError> {
+    prepare_windows_batch_launch_from_source_env(program, Vec::new(), source_env, cwd)
+}
+
+fn assert_node_shim_resolves(temp: &Path, shim: &Path, contents: &str, target: &Path) {
+    let node = temp.join("trusted-node/node.exe");
+    write(shim, contents);
+    write(target, "fixture");
+    write(&node, "fixture");
+    let source_env = node_source_env(temp);
+    let launch = prepare_empty_args(shim.to_path_buf(), &source_env, temp).expect("Node shim plan");
+    assert_eq!(launch, expected_node_launch(target, &node, Vec::new()));
+}
+
 #[test]
 fn recognizes_exact_static_generators_and_rejects_rewrites() {
     let global_target = "node_modules\\agent\\bin\\agent.js";
     let local_target = "..\\dist\\corepack.js";
     let claude = "..\\@anthropic-ai\\claude-code\\bin\\claude.exe";
-    assert_eq!(
-        recognized_shim(&released_cmd(CMD_SHIM_V5_NODE_GOLDEN)),
-        Some((global_target, ShimRuntime::Node))
-    );
-    assert_eq!(
-        recognized_shim(&released_cmd(CMD_SHIM_V9_NODE_GOLDEN)),
-        Some((global_target, ShimRuntime::Node))
-    );
-    assert_eq!(
-        recognized_shim(&npm_v9_direct(claude)),
-        Some((claude, ShimRuntime::DirectNative))
-    );
-    assert_eq!(
-        recognized_shim(&legacy_seven_line_corepack_shim(local_target)),
-        Some((local_target, ShimRuntime::Node))
-    );
-    assert_eq!(
-        recognized_shim(&released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("@ECHO off", "@ECHO off ")),
-        None
-    );
-    assert_eq!(
-        recognized_shim(
-            &released_cmd(CMD_SHIM_V9_NODE_GOLDEN)
-                .replace("\"%_prog%\"  ", "\"%_prog%\" --inspect ")
+    for (shim, target, runtime) in [
+        (
+            released_cmd(CMD_SHIM_V5_NODE_GOLDEN),
+            global_target,
+            ShimRuntime::Node,
         ),
-        None
-    );
-    assert_eq!(
-        recognized_shim(
-            &released_cmd(CMD_SHIM_V5_NODE_GOLDEN).replace("\r\n  SET PATHEXT", "\r\n SET PATHEXT")
+        (
+            released_cmd(CMD_SHIM_V9_NODE_GOLDEN),
+            global_target,
+            ShimRuntime::Node,
         ),
-        None
-    );
-    assert_eq!(
-        recognized_shim(
-            &legacy_seven_line_corepack_shim(local_target)
-                .replace("  @SET PATHEXT", " @SET PATHEXT",)
+        (npm_v9_direct(claude), claude, ShimRuntime::DirectNative),
+        (
+            legacy_seven_line_corepack_shim(local_target),
+            local_target,
+            ShimRuntime::Node,
         ),
-        None
-    );
+    ] {
+        assert_eq!(recognized_shim(&shim), Some((target, runtime)));
+    }
+    for shim in [
+        released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("@ECHO off", "@ECHO off "),
+        released_cmd(CMD_SHIM_V9_NODE_GOLDEN).replace("\"%_prog%\"  ", "\"%_prog%\" --inspect "),
+        released_cmd(CMD_SHIM_V5_NODE_GOLDEN).replace("\r\n  SET PATHEXT", "\r\n SET PATHEXT"),
+        legacy_seven_line_corepack_shim(local_target).replace("  @SET PATHEXT", " @SET PATHEXT"),
+    ] {
+        assert_eq!(recognized_shim(&shim), None);
+    }
 }
 
 #[test]
@@ -112,71 +140,23 @@ fn reparse_aliases_are_classified_by_their_canonical_batch_target() {
         temp.path(),
     )
     .expect("alias must use the canonical cmd target");
-    assert_eq!(
-        launch,
-        WindowsNativeLaunch {
-            program: target.canonicalize().expect("canonical target"),
-            args
-        }
-    );
+    assert_eq!(launch, expected_launch(&target, args));
 }
 
 #[test]
-fn published_cmd_shim_v5_node_fixture_resolves_bounded_prefix_target() {
+fn node_shim_fixtures_resolve_bounded_targets() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let shim = temp.path().join("prefix/agent.cmd");
-    let target = temp.path().join("prefix/node_modules/agent/bin/agent.js");
-    let node = temp.path().join("trusted-node/node.exe");
-    write(&shim, &released_cmd(CMD_SHIM_V5_NODE_GOLDEN));
-    write(&target, "fixture");
-    write(&node, "fixture");
-    let source_env = BTreeMap::from([(
-        "PATH".into(),
-        temp.path().join("trusted-node").display().to_string(),
-    )]);
-    let launch =
-        prepare_windows_batch_launch_from_source_env(shim, Vec::new(), &source_env, temp.path())
-            .expect("published cmd-shim@5.0.0 Node plan");
-    assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
-    assert_eq!(
-        launch.args,
-        vec![
-            target
-                .canonicalize()
-                .expect("canonical target")
-                .into_os_string()
-        ]
+    assert_node_shim_resolves(
+        temp.path(),
+        &temp.path().join("prefix/agent.cmd"),
+        &released_cmd(CMD_SHIM_V5_NODE_GOLDEN),
+        &temp.path().join("prefix/node_modules/agent/bin/agent.js"),
     );
-}
-
-#[test]
-fn legacy_corepack_shim_resolves_bounded_parent_target() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let shim = local_bin(temp.path(), "corepack");
-    let target = temp.path().join("node_modules/dist/corepack.js");
-    let node = temp.path().join("trusted-node/node.exe");
-    write(
-        &shim,
+    assert_node_shim_resolves(
+        temp.path(),
+        &local_bin(temp.path(), "corepack"),
         &legacy_seven_line_corepack_shim("..\\dist\\corepack.js"),
-    );
-    write(&target, "fixture");
-    write(&node, "fixture");
-    let source_env = BTreeMap::from([(
-        "PATH".into(),
-        temp.path().join("trusted-node").display().to_string(),
-    )]);
-    let launch =
-        prepare_windows_batch_launch_from_source_env(shim, Vec::new(), &source_env, temp.path())
-            .expect("legacy Corepack plan");
-    assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
-    assert_eq!(
-        launch.args,
-        vec![
-            target
-                .canonicalize()
-                .expect("canonical target")
-                .into_os_string()
-        ]
+        &temp.path().join("node_modules/dist/corepack.js"),
     );
 }
 
@@ -199,41 +179,22 @@ fn published_cmd_shim_v9_node_fixture_resolves_node_modules_and_keeps_os_argv() 
     ]
     .map(OsString::from)
     .to_vec();
-    let source_env = BTreeMap::from([
-        (
-            "PATH".into(),
-            temp.path().join("trusted-node").display().to_string(),
-        ),
-        (
-            "COMSPEC".into(),
-            temp.path().join("poisoned.cmd").display().to_string(),
-        ),
-    ]);
+    let mut source_env = node_source_env(temp.path());
+    source_env.insert(
+        "COMSPEC".into(),
+        temp.path().join("poisoned.cmd").display().to_string(),
+    );
     let launch =
         prepare_windows_batch_launch_from_source_env(shim, args.clone(), &source_env, temp.path())
             .expect("source PATH plan");
-    let mut expected = vec![
-        target
-            .canonicalize()
-            .expect("canonical target")
-            .into_os_string(),
-    ];
-    expected.extend(args);
-    assert_eq!(launch.args, expected);
-    assert_eq!(launch.program, node.canonicalize().expect("canonical node"));
-    assert_ne!(launch.program, temp.path().join("poisoned.cmd"));
+    assert_eq!(launch, expected_node_launch(&target, &node, args));
 }
 
 #[test]
 fn rejects_relative_program_before_classifying_or_reading_the_shim() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let error = prepare_windows_batch_launch_from_source_env(
-        PathBuf::from("agent.cmd"),
-        Vec::new(),
-        &BTreeMap::new(),
-        temp.path(),
-    )
-    .expect_err("relative shim must not bind to the host current directory");
+    let error = prepare_empty_args(PathBuf::from("agent.cmd"), &BTreeMap::new(), temp.path())
+        .expect_err("relative shim must not bind to the host current directory");
     assert!(matches!(error, WindowsBatchLaunchError::ProgramNotAbsolute));
 }
 
@@ -246,13 +207,8 @@ fn rejects_oversized_shim_before_utf8_decoding_or_line_splitting() {
     file.set_len((MAX_CMD_SHIM_BYTES + 1) as u64)
         .expect("extend oversized fixture");
 
-    let error = prepare_windows_batch_launch_from_source_env(
-        shim,
-        Vec::new(),
-        &BTreeMap::new(),
-        temp.path(),
-    )
-    .expect_err("oversized shim must be rejected by the bounded read");
+    let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
+        .expect_err("oversized shim must be rejected by the bounded read");
     assert!(matches!(
         error,
         WindowsBatchLaunchError::ReadShim(ref error)
@@ -275,13 +231,8 @@ fn rejects_program_spellings_that_win32_normalizes_before_batch_classification()
         temp.path().join("LPT².payload"),
         temp.path().join("lpt³.cmd"),
     ] {
-        let error = prepare_windows_batch_launch_from_source_env(
-            program,
-            Vec::new(),
-            &BTreeMap::new(),
-            temp.path(),
-        )
-        .expect_err("ambiguous program spelling must not bypass cmd-shim handling");
+        let error = prepare_empty_args(program, &BTreeMap::new(), temp.path())
+            .expect_err("ambiguous program spelling must not bypass cmd-shim handling");
         assert!(matches!(
             error,
             WindowsBatchLaunchError::AmbiguousProgramPath
@@ -318,13 +269,8 @@ fn rejects_noncanonical_and_ambiguous_target_grammar_before_filesystem_access() 
     ] {
         let shim = temp.path().join(format!("prefix/{}.cmd", target.len()));
         write(&shim, &v9_node_with_target(target));
-        let error = prepare_windows_batch_launch_from_source_env(
-            shim,
-            Vec::new(),
-            &BTreeMap::new(),
-            temp.path(),
-        )
-        .expect_err("ambiguous target must fail before filesystem access");
+        let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
+            .expect_err("ambiguous target must fail before filesystem access");
         assert!(matches!(error, WindowsBatchLaunchError::InvalidShimTarget));
     }
 }
@@ -340,13 +286,8 @@ fn rejects_target_reparse_escape_after_canonicalization() {
     std::fs::create_dir_all(linked.parent().expect("linked parent")).expect("create linked parent");
     std::os::windows::fs::symlink_file(&outside, &linked).expect("create fixture symlink");
 
-    let error = prepare_windows_batch_launch_from_source_env(
-        shim,
-        Vec::new(),
-        &BTreeMap::new(),
-        temp.path(),
-    )
-    .expect_err("symlink target outside node_modules must fail");
+    let error = prepare_empty_args(shim, &BTreeMap::new(), temp.path())
+        .expect_err("symlink target outside node_modules must fail");
     assert!(matches!(
         error,
         WindowsBatchLaunchError::TargetEscapesShimRoot { .. }
@@ -367,9 +308,6 @@ fn absolute_non_batch_programs_remain_native_after_canonicalization() {
             temp.path(),
         )
         .expect("non-batch program"),
-        WindowsNativeLaunch {
-            program: program.canonicalize().expect("canonical program"),
-            args
-        }
+        expected_launch(&program, args)
     );
 }
