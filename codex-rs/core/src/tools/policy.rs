@@ -2076,7 +2076,10 @@ mod tests {
             "infinity_run_get",
             "infinity_run_get",
         );
-        assert_eq!(policy.validate_mcp_manifest(&[info.clone()]), Ok(()));
+        assert_eq!(
+            policy.validate_mcp_manifest(std::slice::from_ref(&info)),
+            Ok(())
+        );
         let handler = crate::tools::handlers::McpHandler::new_infinity_agent_serial(info)
             .expect("MCP handler");
         assert_eq!(

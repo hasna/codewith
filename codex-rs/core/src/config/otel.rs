@@ -48,22 +48,6 @@ pub(crate) fn infinity_agent_disabled_config() -> OtelConfig {
     }
 }
 
-#[cfg(test)]
-mod infinity_agent_tests {
-    use super::*;
-
-    #[test]
-    fn infinity_agent_policy_disables_every_telemetry_export_path() {
-        let config = infinity_agent_disabled_config();
-        assert!(!config.log_user_prompt);
-        assert_eq!(config.exporter, OtelExporterKind::None);
-        assert_eq!(config.trace_exporter, OtelExporterKind::None);
-        assert_eq!(config.metrics_exporter, OtelExporterKind::None);
-        assert!(config.span_attributes.is_empty());
-        assert!(config.tracestate.is_empty());
-    }
-}
-
 fn resolve_span_attributes(
     span_attributes: Option<BTreeMap<String, String>>,
     startup_warnings: &mut Vec<String>,
@@ -142,4 +126,20 @@ fn push_invalid_config_warning(
     let message = format!("Ignoring invalid `{config_key}` config: {err}");
     tracing::warn!("{message}");
     startup_warnings.push(message);
+}
+
+#[cfg(test)]
+mod infinity_agent_tests {
+    use super::*;
+
+    #[test]
+    fn infinity_agent_policy_disables_every_telemetry_export_path() {
+        let config = infinity_agent_disabled_config();
+        assert!(!config.log_user_prompt);
+        assert_eq!(config.exporter, OtelExporterKind::None);
+        assert_eq!(config.trace_exporter, OtelExporterKind::None);
+        assert_eq!(config.metrics_exporter, OtelExporterKind::None);
+        assert!(config.span_attributes.is_empty());
+        assert!(config.tracestate.is_empty());
+    }
 }
