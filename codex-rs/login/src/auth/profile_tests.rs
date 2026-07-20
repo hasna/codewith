@@ -59,6 +59,62 @@ fn ensure_auth_profile_storage_dir_creates_private_profile_dir() -> anyhow::Resu
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn ensure_private_dir_mode_leaves_already_private_dir_untouched() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A directory that is already 0o700 must be accepted without error, taking
+    // the early-return branch that skips the chmod. That skip is what keeps a
+    // read-only CODEWITH_HOME from tripping EROFS during auth-profile
+    // preflight/health runs (BUG-PA14).
+    let codex_home = tempdir()?;
+    let profile_dir = codex_home.path().join("auth_profiles").join("account004");
+    std::fs::create_dir_all(&profile_dir)?;
+    std::fs::set_permissions(&profile_dir, std::fs::Permissions::from_mode(0o700))?;
+
+    ensure_private_dir_mode(&profile_dir)?;
+
+    assert_eq!(
+        std::fs::metadata(&profile_dir)?.permissions().mode() & 0o777,
+        0o700
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn ensure_private_dir_mode_tightens_permissions_when_writable() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let codex_home = tempdir()?;
+    let profile_dir = codex_home.path().join("auth_profiles").join("account005");
+    std::fs::create_dir_all(&profile_dir)?;
+    std::fs::set_permissions(&profile_dir, std::fs::Permissions::from_mode(0o755))?;
+
+    ensure_private_dir_mode(&profile_dir)?;
+
+    assert_eq!(
+        std::fs::metadata(&profile_dir)?.permissions().mode() & 0o777,
+        0o700
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn read_only_fs_errors_are_classified_for_tolerance() {
+    use std::io::Error;
+    use std::io::ErrorKind;
+
+    assert!(is_read_only_fs_error(&Error::from(ErrorKind::ReadOnlyFilesystem)));
+    assert!(is_read_only_fs_error(&Error::from(ErrorKind::PermissionDenied)));
+    assert!(!is_read_only_fs_error(&Error::from(ErrorKind::NotFound)));
+    assert!(!is_read_only_fs_error(&Error::from(ErrorKind::AlreadyExists)));
+}
+
 #[test]
 fn saves_lists_switches_and_removes_auth_profiles() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
