@@ -26,7 +26,10 @@ async fn pull_request_overview_reports_unavailable_in_band() -> Result<()> {
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
-        .send_raw_request("pullRequest/overview", Some(json!({ "baseRepoPath": null })))
+        .send_raw_request(
+            "pullRequest/overview",
+            Some(json!({ "baseRepoPath": null })),
+        )
         .await?;
     let response = read_json_response(&mut mcp, request_id).await?;
     let overview: PullRequestOverviewResponse = to_response(response)?;
@@ -106,8 +109,11 @@ async fn pull_request_methods_require_experimental_api_capability() -> Result<()
 
     let requests = vec![
         (
-            mcp.send_raw_request("pullRequest/overview", Some(json!({ "baseRepoPath": null })))
-                .await?,
+            mcp.send_raw_request(
+                "pullRequest/overview",
+                Some(json!({ "baseRepoPath": null })),
+            )
+            .await?,
             "pullRequest/overview",
         ),
         (
