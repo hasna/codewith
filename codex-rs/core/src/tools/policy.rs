@@ -640,6 +640,7 @@ pub(crate) fn test_dynamic_policy(tools: &[DynamicToolSpec]) -> Arc<VerifiedTool
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn test_mcp_policy(source_id: &str, raw_tool_names: &[&str]) -> Arc<VerifiedToolPolicy> {
     let entries = raw_tool_names
         .iter()
