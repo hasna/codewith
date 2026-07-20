@@ -777,11 +777,13 @@ fn infinity_agent_policy_active(turn_context: &TurnContext) -> bool {
 /// legacy `infinity_agent_allowlist_excludes_host_access` regression test keeps
 /// documenting host-tool exclusion; it participates in no runtime enforcement
 /// path. Do not treat it as a security boundary.
+#[cfg(test)]
 const INFINITY_AGENT_TOOL_ALLOWLIST: &[&str] = &["update_plan", "rename_session"];
 
 /// LEGACY helper for the vestigial [`INFINITY_AGENT_TOOL_ALLOWLIST`]. Not used by
 /// any runtime enforcement path; see that constant's note. Real admission is
 /// decided by `VerifiedToolPolicy` in `crate::tools::policy`.
+#[cfg(test)]
 fn infinity_agent_tool_allowed(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none()
         && INFINITY_AGENT_TOOL_ALLOWLIST.contains(&tool_name.name.as_str())

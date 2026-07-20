@@ -3178,10 +3178,6 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
         .is_none_or(|config| config.enabled)
 }
 
-fn resolve_tools_policy(config_toml: &ConfigToml) -> Option<ToolPolicy> {
-    config_toml.tools.as_ref().and_then(|tools| tools.policy)
-}
-
 fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     let base = code_mode_toml_config(config_toml.features.as_ref());
 
