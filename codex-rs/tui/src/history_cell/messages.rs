@@ -12,6 +12,25 @@ pub(crate) struct UserHistoryCell {
     pub remote_image_urls: Vec<String>,
 }
 
+/// Remove CSI sequences and control characters, preserving tabs and newlines.
+///
+/// A pasted or resumed user message can carry a raw CSI sequence that corrupts terminal
+/// scrollback (making the latest response or input appear missing). Stripping the escape
+/// bytes before they reach the composer or history rendering keeps the terminal safe without
+/// mutating stored message content.
+pub(crate) fn sanitize_user_text(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.next_if_eq(&'[').is_some() {
+            let _ = chars.find(|ch| ('@'..='~').contains(ch));
+        } else if matches!(ch, '\n' | '\t') || !ch.is_control() {
+            sanitized.push(ch);
+        }
+    }
+    sanitized
+}
+
 /// Build logical lines for a user message with styled text elements.
 ///
 /// This preserves explicit newlines while interleaving element spans and skips
@@ -94,6 +113,15 @@ fn trim_trailing_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>
 
 impl HistoryCell for UserHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        // Sanitize before rendering so a resumed conversation with an embedded CSI sequence renders
+        // safely without mutating stored content. If sanitization changed the text, the recorded
+        // element byte ranges no longer line up, so drop them and fall back to plain wrapping.
+        let message = sanitize_user_text(&self.message);
+        let text_elements = if message == self.message {
+            self.text_elements.as_slice()
+        } else {
+            &[]
+        };
         let wrap_width = width
             .saturating_sub(
                 LIVE_PREFIX_COLS + 1, /* keep a one-column right margin for wrapping */
@@ -118,10 +146,10 @@ impl HistoryCell for UserHistoryCell {
             ))
         };
 
-        let wrapped_message = if self.message.is_empty() && self.text_elements.is_empty() {
+        let wrapped_message = if message.is_empty() && text_elements.is_empty() {
             None
-        } else if self.text_elements.is_empty() {
-            let message_without_trailing_newlines = self.message.trim_end_matches(['\r', '\n']);
+        } else if text_elements.is_empty() {
+            let message_without_trailing_newlines = message.trim_end_matches(['\r', '\n']);
             let wrapped = adaptive_wrap_lines(
                 message_without_trailing_newlines
                     .split('\n')
@@ -134,8 +162,8 @@ impl HistoryCell for UserHistoryCell {
             (!wrapped.is_empty()).then_some(wrapped)
         } else {
             let raw_lines = build_user_message_lines_with_elements(
-                &self.message,
-                &self.text_elements,
+                &message,
+                text_elements,
                 style,
                 element_style,
             );
@@ -178,7 +206,8 @@ impl HistoryCell for UserHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = raw_lines_from_source(self.message.trim_end_matches(['\r', '\n']));
+        let message = sanitize_user_text(&self.message);
+        let mut lines = raw_lines_from_source(message.trim_end_matches(['\r', '\n']));
         if !self.remote_image_urls.is_empty() {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
