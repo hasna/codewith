@@ -16,7 +16,9 @@ use crate::bottom_pane::SelectionTab;
 use crate::minimax_usage::MiniMaxUsageSnapshot;
 use crate::minimax_usage::MiniMaxUsageWindow;
 use crate::slash_command::SlashCommand;
+use crate::status::format_reset_timestamp;
 use crate::status::format_status_limit_summary;
+use chrono::Local;
 use codex_model_provider_info::MINIMAX_PROVIDER_ID;
 use ratatui::widgets::Paragraph;
 
@@ -399,7 +401,14 @@ fn minimax_window_value(window: &MiniMaxUsageWindow) -> String {
         parts.push(counts);
     }
     if let Some(resets_at) = window.resets_at.as_ref() {
-        parts.push(format!("resets {}", resets_at.format("%H:%M")));
+        // Match the codex rate-limit rows: append the date when the reset is not
+        // today so a future (e.g. weekly) reset is not shown as a misleading bare
+        // time. Pass `Local::now()` as captured_at per the render-time convention
+        // documented on `compose_rate_limit_data`.
+        parts.push(format!(
+            "resets {}",
+            format_reset_timestamp(*resets_at, Local::now())
+        ));
     }
     parts.join(" · ")
 }
@@ -571,5 +580,30 @@ mod tests {
             Some("4 usage limit resets available · auto on")
         );
         assert!(!reset.actions.is_empty());
+    }
+
+    #[test]
+    fn minimax_window_value_includes_date_for_non_today_reset() {
+        use chrono::TimeZone;
+
+        // A MiniMax reset that lands on a future day (e.g. a weekly window) must
+        // not render as a misleading bare time; it should include the date,
+        // matching the codex rate-limit rows via `format_reset_timestamp`.
+        let resets_at = Local
+            .with_ymd_and_hms(2999, 12, 25, 14, 30, 0)
+            .single()
+            .expect("valid local datetime");
+        let window = MiniMaxUsageWindow {
+            remaining_percent: 42.0,
+            used_count: Some(3),
+            total_count: Some(10),
+            resets_at: Some(resets_at),
+        };
+
+        let value = minimax_window_value(&window);
+        assert!(
+            value.contains("resets 14:30 on 25 Dec"),
+            "expected a dated reset label for a non-today reset, got: {value}"
+        );
     }
 }
