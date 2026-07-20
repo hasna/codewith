@@ -9,6 +9,7 @@ use codex_login::CodexAuth;
 use codex_model_provider_info::ANTHROPIC_BASE_URL;
 use codex_model_provider_info::CEREBRAS_PROVIDER_ID;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
+use codex_model_provider_info::KIMI_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_API_BASE_URL;
@@ -532,7 +533,11 @@ impl ModelProvider for ConfiguredModelProvider {
         // support and expose flat tools instead.
         let namespace_tools = !matches!(
             self.provider_id.as_str(),
-            CEREBRAS_PROVIDER_ID | DEEPSEEK_PROVIDER_ID | NVIDIA_PROVIDER_ID | XAI_PROVIDER_ID
+            CEREBRAS_PROVIDER_ID
+                | DEEPSEEK_PROVIDER_ID
+                | KIMI_PROVIDER_ID
+                | NVIDIA_PROVIDER_ID
+                | XAI_PROVIDER_ID
         );
 
         ProviderCapabilities {
@@ -875,6 +880,11 @@ mod tests {
                 HostedWebSearchProvider::Disabled,
             ),
             (
+                KIMI_PROVIDER_ID,
+                ModelProviderInfo::create_kimi_provider(),
+                HostedWebSearchProvider::Disabled,
+            ),
+            (
                 CEREBRAS_PROVIDER_ID,
                 ModelProviderInfo::create_cerebras_provider(),
                 HostedWebSearchProvider::Disabled,
@@ -910,6 +920,7 @@ mod tests {
                 DEEPSEEK_PROVIDER_ID,
                 ModelProviderInfo::create_deepseek_provider(),
             ),
+            (KIMI_PROVIDER_ID, ModelProviderInfo::create_kimi_provider()),
             (
                 NVIDIA_PROVIDER_ID,
                 ModelProviderInfo::create_nvidia_provider(),

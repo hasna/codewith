@@ -12,6 +12,8 @@ use codex_protocol::provider_identity::DEEPSEEK_BASE_URL;
 use codex_protocol::provider_identity::DEEPSEEK_PROVIDER_ID;
 use codex_protocol::provider_identity::GOOGLE_BASE_URL;
 use codex_protocol::provider_identity::GOOGLE_PROVIDER_ID;
+use codex_protocol::provider_identity::KIMI_BASE_URL;
+use codex_protocol::provider_identity::KIMI_PROVIDER_ID;
 use codex_protocol::provider_identity::MINIMAX_BASE_URL;
 use codex_protocol::provider_identity::MINIMAX_PROVIDER_ID;
 use codex_protocol::provider_identity::NVIDIA_BASE_URL;
@@ -31,6 +33,7 @@ mod anthropic;
 mod cerebras;
 mod deepseek;
 mod google;
+mod kimi;
 mod minimax;
 mod nvidia;
 mod openai;
@@ -186,6 +189,14 @@ pub fn metadata_for_openai_compatible_response(
     if provider_matches(
         provider_id,
         provider_base_url,
+        KIMI_PROVIDER_ID,
+        KIMI_BASE_URL,
+    ) {
+        return kimi::metadata(slug);
+    }
+    if provider_matches(
+        provider_id,
+        provider_base_url,
         MINIMAX_PROVIDER_ID,
         MINIMAX_BASE_URL,
     ) {
@@ -258,6 +269,9 @@ pub fn metadata_for_local_fallback(
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), GOOGLE_PROVIDER_ID) => {
             google::metadata(slug)
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), KIMI_PROVIDER_ID) => {
+            kimi::metadata(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), MINIMAX_PROVIDER_ID) => {
             minimax::metadata(slug)
@@ -463,6 +477,9 @@ pub fn fallback_models_for_provider(provider_id: &str) -> &'static [KnownProvide
     if provider_id_matches(Some(provider_id), GOOGLE_PROVIDER_ID) {
         return google::FALLBACK_MODELS;
     }
+    if provider_id_matches(Some(provider_id), KIMI_PROVIDER_ID) {
+        return kimi::FALLBACK_MODELS;
+    }
     if provider_id_matches(Some(provider_id), MINIMAX_PROVIDER_ID) {
         return minimax::FALLBACK_MODELS;
     }
@@ -615,6 +632,79 @@ mod tests {
         // OpenAI-style reasoning-effort scale, so no effort presets are exposed.
         assert_eq!(
             reasoning_levels_for_local_fallback(Some(DEEPSEEK_PROVIDER_ID), "deepseek-v4-pro"),
+            (None, Vec::new())
+        );
+    }
+
+    #[test]
+    fn kimi_fallback_models_default_to_k3() {
+        let models = fallback_models_for_provider(KIMI_PROVIDER_ID);
+
+        assert_eq!(models[0].id, "kimi-k3");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "kimi-k2.7-code" && !model.is_default)
+        );
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "kimi-k2.6" && !model.is_default)
+        );
+    }
+
+    #[test]
+    fn kimi_k3_metadata_advertises_long_context_and_multimodal_input() {
+        assert_eq!(
+            metadata_for_local_fallback(Some(KIMI_PROVIDER_ID), "kimi-k3"),
+            Some(
+                KnownProviderModelMetadata::with_search_tool_and_input_modalities(
+                    "Kimi K3",
+                    /*context_window*/ 1_000_000,
+                    /*supports_tools*/ true,
+                    /*supports_parallel_tool_calls*/ false,
+                    /*supports_reasoning*/ true,
+                    /*supports_search_tool*/ false,
+                    DEFAULT_INPUT_MODALITIES,
+                )
+            )
+        );
+
+        // The dedicated coding model is text-only with a 256K context.
+        let code = metadata_for_openai_compatible_response(
+            Some(KIMI_PROVIDER_ID),
+            None,
+            None,
+            "kimi-k2.7-code",
+        )
+        .expect("kimi-k2.7-code metadata should exist");
+        assert_eq!(code.context_window, 262_144);
+        assert_eq!(code.input_modalities, TEXT_INPUT_MODALITIES);
+        assert!(code.supports_tools);
+
+        // The general-purpose model supports vision (text + image).
+        assert_eq!(
+            metadata_for_local_fallback(Some(KIMI_PROVIDER_ID), "kimi-k2.6")
+                .expect("kimi-k2.6 metadata should exist")
+                .input_modalities,
+            DEFAULT_INPUT_MODALITIES
+        );
+    }
+
+    #[test]
+    fn kimi_toggles_thinking_without_reasoning_effort_presets() {
+        // Like DeepSeek, Kimi toggles thinking with a provider-specific parameter
+        // rather than the OpenAI-style reasoning-effort scale, so it advertises
+        // reasoning support without exposing effort presets.
+        assert!(
+            metadata_for_local_fallback(Some(KIMI_PROVIDER_ID), "kimi-k3")
+                .expect("kimi-k3 metadata should exist")
+                .supports_reasoning
+        );
+        assert!(!provider_supports_reasoning_effort(Some(KIMI_PROVIDER_ID)));
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some(KIMI_PROVIDER_ID), "kimi-k3"),
             (None, Vec::new())
         );
     }
@@ -807,6 +897,7 @@ mod tests {
             (CEREBRAS_PROVIDER_ID, "gpt-oss-120b"),
             (DEEPSEEK_PROVIDER_ID, "deepseek-v4-flash"),
             (GOOGLE_PROVIDER_ID, "gemini-3.5-flash"),
+            (KIMI_PROVIDER_ID, "kimi-k3"),
             (MINIMAX_PROVIDER_ID, "MiniMax-M3"),
             (NVIDIA_PROVIDER_ID, "nvidia/nemotron-3-ultra-550b-a55b"),
             (OPENROUTER_PROVIDER_ID, "z-ai/glm-5.2"),
@@ -955,6 +1046,8 @@ mod tests {
             GOOGLE_BASE_URL,
             "https://generativelanguage.googleapis.com/v1beta/openai"
         );
+        assert_eq!(KIMI_PROVIDER_ID, "kimi");
+        assert_eq!(KIMI_BASE_URL, "https://api.moonshot.ai/v1");
         assert_eq!(MINIMAX_PROVIDER_ID, "minimax");
         assert_eq!(MINIMAX_BASE_URL, "https://api.minimax.io/v1");
         assert_eq!(NVIDIA_PROVIDER_ID, "nvidia");
