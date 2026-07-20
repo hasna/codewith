@@ -3430,6 +3430,41 @@
       ],
       "type": "object"
     },
+    "ThreadExternalAgentCloudArtifact": {
+      "description": "Durable artifact surfaced by a cloud external-agent run.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "ThreadExternalAgentCloudState": {
+      "description": "Lifecycle state of a cloud (hosted) external-agent run.",
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
     "ThreadExternalAgentEvent": {
       "oneOf": [
         {
@@ -3609,6 +3644,50 @@
             "message"
           ],
           "title": "StatusThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "description": "A durable artifact produced by a cloud (hosted) external-agent run, such\nas a pull request, patch bundle, or log URL.",
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ThreadExternalAgentCloudArtifact"
+            },
+            "type": {
+              "const": "cloudArtifact",
+              "title": "CloudArtifactThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "title": "CloudArtifactThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "description": "Lifecycle transition for a cloud (hosted) external-agent run.",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/ThreadExternalAgentCloudState"
+            },
+            "type": {
+              "const": "cloudStatus",
+              "title": "CloudStatusThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "state"
+          ],
+          "title": "CloudStatusThreadExternalAgentEvent",
           "type": "object"
         },
         {

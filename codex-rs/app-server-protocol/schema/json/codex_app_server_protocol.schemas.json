@@ -18541,6 +18541,41 @@
         "title": "ThreadCompactStartResponse",
         "type": "object"
       },
+      "ThreadExternalAgentCloudArtifact": {
+        "description": "Durable artifact surfaced by a cloud external-agent run.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
+      "ThreadExternalAgentCloudState": {
+        "description": "Lifecycle state of a cloud (hosted) external-agent run.",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "ThreadExternalAgentEvent": {
         "oneOf": [
           {
@@ -18723,6 +18758,50 @@
             "type": "object"
           },
           {
+            "description": "A durable artifact produced by a cloud (hosted) external-agent run, such\nas a pull request, patch bundle, or log URL.",
+            "properties": {
+              "artifact": {
+                "$ref": "#/definitions/v2/ThreadExternalAgentCloudArtifact"
+              },
+              "type": {
+                "const": "cloudArtifact",
+                "title": "CloudArtifactThreadExternalAgentEventType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "artifact"
+            ],
+            "title": "CloudArtifactThreadExternalAgentEvent",
+            "type": "object"
+          },
+          {
+            "description": "Lifecycle transition for a cloud (hosted) external-agent run.",
+            "properties": {
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/definitions/v2/ThreadExternalAgentCloudState"
+              },
+              "type": {
+                "const": "cloudStatus",
+                "title": "CloudStatusThreadExternalAgentEventType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "state"
+            ],
+            "title": "CloudStatusThreadExternalAgentEvent",
+            "type": "object"
+          },
+          {
             "properties": {
               "summary": {
                 "type": [
@@ -18803,12 +18882,51 @@
         "title": "ThreadExternalAgentEventNotification",
         "type": "object"
       },
+      "ThreadExternalAgentExecutionSurface": {
+        "description": "Execution surface an external-agent run should target.\n\n`acp` runs the runtime as a local ACP stdio subprocess, `sdk-local` runs the\nruntime's local SDK/CLI stream on this machine, and `cloud` delegates the run\nto the runtime's hosted (cloud) agent. The surface a run may use is bounded by\nthe runtime's advertised descriptor (see `ExternalAgentRuntimeDescriptor`).",
+        "enum": [
+          "acp",
+          "sdk-local",
+          "cloud"
+        ],
+        "type": "string"
+      },
       "ThreadExternalAgentMode": {
         "enum": [
           "plan",
           "propose"
         ],
         "type": "string"
+      },
+      "ThreadExternalAgentModel": {
+        "description": "A single discoverable model for an external-agent runtime.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "executionSurfaces": {
+            "description": "Execution surfaces this model can run on.",
+            "items": {
+              "$ref": "#/definitions/v2/ThreadExternalAgentExecutionSurface"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "executionSurfaces"
+        ],
+        "type": "object"
       },
       "ThreadExternalAgentPermissionOption": {
         "enum": [
