@@ -175,7 +175,11 @@ trusted_hash = {trusted_hash}
 }
 
 fn toml_basic_string(value: &str) -> String {
-    serde_json::to_string(value).expect("serializing a string cannot fail")
+    // Serializing a string to JSON is infallible and its output doubles as a
+    // TOML basic string. `unwrap_or_default` keeps the workspace
+    // `expect_used`/`unwrap_used` lints satisfied without introducing a panic
+    // path (the empty fallback is unreachable for a `&str`).
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 fn trusted_hash_for_config_path(config_toml_path: &Path) -> &'static str {
