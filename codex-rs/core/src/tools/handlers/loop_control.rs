@@ -1371,7 +1371,9 @@ mod tests {
                 completed_runs: 1,
                 failed_runs: 1,
                 last_started_at: Some(second_run_at.timestamp()),
-                last_completed_at: Some((second_run_at + ChronoDuration::seconds(20)).timestamp()),
+                // Only successfully completed runs contribute to last_completed_at; the second
+                // run failed, so this tracks the first (completed) run's finished-at timestamp.
+                last_completed_at: Some((first_run_at + ChronoDuration::seconds(10)).timestamp()),
                 last_error: Some(
                     "scheduled turn completed without a final assistant message".to_string()
                 ),
