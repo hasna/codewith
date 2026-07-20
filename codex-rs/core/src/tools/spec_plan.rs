@@ -95,7 +95,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
-const IMAGE_GEN_NAMESPACE: &str = "image_gen";
+const IMAGE_GEN_NAMESPACE: &str = "images";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;

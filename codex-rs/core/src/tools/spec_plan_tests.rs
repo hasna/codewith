@@ -371,13 +371,13 @@ struct ImagegenExtensionTool;
 #[async_trait::async_trait]
 impl ToolExecutor<ExtensionToolCall> for ImagegenExtensionTool {
     fn tool_name(&self) -> ToolName {
-        ToolName::namespaced("image_gen", "imagegen")
+        ToolName::namespaced("images", "imagegen")
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
-            name: "image_gen".to_string(),
-            description: codex_tools::default_namespace_description("image_gen"),
+            name: "images".to_string(),
+            description: codex_tools::default_namespace_description("images"),
             tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
                 name: "imagegen".to_string(),
                 description: "Generates images and edits images from text prompts.".to_string(),
@@ -1444,7 +1444,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     })
     .await;
     extension_flag_without_imagegen_tool.assert_visible_contains(&["image_generation"]);
-    extension_flag_without_imagegen_tool.assert_visible_lacks(&["image_gen"]);
+    extension_flag_without_imagegen_tool.assert_visible_lacks(&["images"]);
 
     let non_lite_imagegen_extension = probe_with(
         |turn| {
@@ -1463,8 +1463,8 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     )
     .await;
     non_lite_imagegen_extension.assert_visible_contains(&["image_generation"]);
-    non_lite_imagegen_extension.assert_visible_lacks(&["image_gen"]);
-    non_lite_imagegen_extension.assert_registered_lacks(&["image_genimagegen"]);
+    non_lite_imagegen_extension.assert_visible_lacks(&["images"]);
+    non_lite_imagegen_extension.assert_registered_lacks(&["imagesimagegen"]);
 
     let responses_lite_imagegen_flag_disabled = probe_with(
         |turn| {
@@ -1482,8 +1482,8 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
     )
     .await;
-    responses_lite_imagegen_flag_disabled.assert_visible_lacks(&["image_generation", "image_gen"]);
-    responses_lite_imagegen_flag_disabled.assert_registered_lacks(&["image_genimagegen"]);
+    responses_lite_imagegen_flag_disabled.assert_visible_lacks(&["image_generation", "images"]);
+    responses_lite_imagegen_flag_disabled.assert_registered_lacks(&["imagesimagegen"]);
 
     let responses_lite_standalone_imagegen = probe_with(
         |turn| {
@@ -1503,20 +1503,20 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     .await;
     responses_lite_standalone_imagegen.assert_visible_lacks(&["image_generation"]);
     assert_eq!(
-        responses_lite_standalone_imagegen.namespace_function_names("image_gen"),
+        responses_lite_standalone_imagegen.namespace_function_names("images"),
         &["imagegen".to_string()]
     );
     let ToolSpec::Namespace(imagegen_namespace) =
-        responses_lite_standalone_imagegen.visible_spec("image_gen")
+        responses_lite_standalone_imagegen.visible_spec("images")
     else {
-        panic!("expected image_gen namespace");
+        panic!("expected images namespace");
     };
     let [ResponsesApiNamespaceTool::Function(imagegen_function)] =
         imagegen_namespace.tools.as_slice()
     else {
-        panic!("expected one image_gen function");
+        panic!("expected one images function");
     };
-    assert_eq!(imagegen_namespace.name, "image_gen");
+    assert_eq!(imagegen_namespace.name, "images");
     assert_eq!(imagegen_function.name, "imagegen");
     assert_eq!(
         imagegen_function.description,
@@ -1548,8 +1548,8 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     )
     .await;
     code_mode_only_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
-    code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
-    code_mode_only_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
+    code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "images"]);
+    code_mode_only_standalone_imagegen.assert_registered_contains(&["imagesimagegen"]);
 
     let code_mode_standalone_imagegen = probe_with(
         |turn| {
@@ -1574,16 +1574,16 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     )
     .await;
     code_mode_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
-    code_mode_standalone_imagegen.assert_visible_lacks(&["image_generation", "image_gen"]);
-    code_mode_standalone_imagegen.assert_registered_contains(&["image_genimagegen"]);
+    code_mode_standalone_imagegen.assert_visible_lacks(&["image_generation", "images"]);
+    code_mode_standalone_imagegen.assert_registered_contains(&["imagesimagegen"]);
     let serialized_tools = code_mode_standalone_imagegen.serialized_tools();
     assert!(
         !has_serialized_tool_type(&serialized_tools, "image_generation"),
         "normal CodeMode should not expose hosted image generation when nested imagegen is registered: {serialized_tools:?}"
     );
     assert!(
-        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
-        "normal CodeMode should not expose reserved image_gen.imagegen top-level: {serialized_tools:?}"
+        !has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
+        "normal CodeMode should not expose reserved images.imagegen top-level: {serialized_tools:?}"
     );
 
     let excluded_code_mode_imagegen = probe_with(
@@ -1598,7 +1598,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
                 ],
             );
             update_config(turn, |config| {
-                config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+                config.code_mode.excluded_tool_namespaces = vec!["images".to_string()];
             });
             turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
             turn.model_info.use_responses_lite = false;
@@ -1616,26 +1616,26 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         codex_code_mode::WAIT_TOOL_NAME,
         "image_generation",
     ]);
-    excluded_code_mode_imagegen.assert_visible_lacks(&["image_gen"]);
-    excluded_code_mode_imagegen.assert_registered_lacks(&["image_genimagegen"]);
+    excluded_code_mode_imagegen.assert_visible_lacks(&["images"]);
+    excluded_code_mode_imagegen.assert_registered_lacks(&["imagesimagegen"]);
     let ToolSpec::Freeform(exec) =
         excluded_code_mode_imagegen.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
     else {
         panic!("expected code mode exec tool");
     };
     assert!(
-        !exec.description.contains("image_gen") && !exec.description.contains("imagegen"),
+        !exec.description.contains("images__imagegen") && !exec.description.contains("imagegen"),
         "excluded imagegen should not be registered as a CodeMode nested tool: {}",
         exec.description
     );
     let serialized_tools = excluded_code_mode_imagegen.serialized_tools();
     assert!(
         has_serialized_tool_type(&serialized_tools, "image_generation"),
-        "mixed CodeMode with excluded image_gen should fall back to hosted image generation: {serialized_tools:?}"
+        "mixed CodeMode with excluded images should fall back to hosted image generation: {serialized_tools:?}"
     );
     assert!(
-        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
-        "mixed CodeMode with excluded image_gen should not expose reserved image_gen.imagegen: {serialized_tools:?}"
+        !has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
+        "mixed CodeMode with excluded images should not expose reserved images.imagegen: {serialized_tools:?}"
     );
 
     let excluded_code_mode_only_imagegen = probe_with(
@@ -1651,7 +1651,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
                 ],
             );
             update_config(turn, |config| {
-                config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+                config.code_mode.excluded_tool_namespaces = vec!["images".to_string()];
             });
             turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
             turn.model_info.use_responses_lite = false;
@@ -1669,26 +1669,26 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         codex_code_mode::WAIT_TOOL_NAME,
         "image_generation",
     ]);
-    excluded_code_mode_only_imagegen.assert_visible_lacks(&["image_gen"]);
-    excluded_code_mode_only_imagegen.assert_registered_lacks(&["image_genimagegen"]);
+    excluded_code_mode_only_imagegen.assert_visible_lacks(&["images"]);
+    excluded_code_mode_only_imagegen.assert_registered_lacks(&["imagesimagegen"]);
     let ToolSpec::Freeform(exec) =
         excluded_code_mode_only_imagegen.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
     else {
         panic!("expected code mode exec tool");
     };
     assert!(
-        !exec.description.contains("image_gen") && !exec.description.contains("imagegen"),
+        !exec.description.contains("images__imagegen") && !exec.description.contains("imagegen"),
         "excluded imagegen should not be registered as a CodeModeOnly nested tool: {}",
         exec.description
     );
     let serialized_tools = excluded_code_mode_only_imagegen.serialized_tools();
     assert!(
         has_serialized_tool_type(&serialized_tools, "image_generation"),
-        "CodeModeOnly with excluded image_gen should fall back to hosted image generation: {serialized_tools:?}"
+        "CodeModeOnly with excluded images should fall back to hosted image generation: {serialized_tools:?}"
     );
     assert!(
-        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
-        "CodeModeOnly with excluded image_gen should not expose reserved image_gen.imagegen: {serialized_tools:?}"
+        !has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
+        "CodeModeOnly with excluded images should not expose reserved images.imagegen: {serialized_tools:?}"
     );
 
     let live_web_search = probe(|turn| {
@@ -2016,9 +2016,9 @@ async fn image_generation_serialized_tool_matrix_hides_reserved_namespace_when_u
             case.name
         );
         assert_eq!(
-            has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+            has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
             case.expected_standalone,
-            "standalone image_gen.imagegen mismatch for {}: {serialized_tools:?}",
+            "standalone images.imagegen mismatch for {}: {serialized_tools:?}",
             case.name
         );
     }
@@ -2069,7 +2069,7 @@ async fn code_mode_excluded_imagegen_follows_hosted_negative_gates() {
                     set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
                     set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
                     update_config(turn, |config| {
-                        config.code_mode.excluded_tool_namespaces = vec!["image_gen".to_string()];
+                        config.code_mode.excluded_tool_namespaces = vec!["images".to_string()];
                     });
                     turn.model_info.input_modalities =
                         vec![InputModality::Text, InputModality::Image];
@@ -2091,10 +2091,10 @@ async fn code_mode_excluded_imagegen_follows_hosted_negative_gates() {
                 "hosted image_generation should remain gated for {tool_mode:?} {case_name}: {serialized_tools:?}"
             );
             assert!(
-                !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
-                "reserved image_gen.imagegen should stay hidden for {tool_mode:?} {case_name}: {serialized_tools:?}"
+                !has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
+                "reserved images.imagegen should stay hidden for {tool_mode:?} {case_name}: {serialized_tools:?}"
             );
-            plan.assert_registered_lacks(&["image_genimagegen"]);
+            plan.assert_registered_lacks(&["imagesimagegen"]);
         }
     }
 }

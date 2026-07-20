@@ -29,11 +29,15 @@ use crate::IMAGEGEN_TOOL_NAME;
 const RESULT: &str = "cG5n";
 
 #[test]
-fn uses_reserved_image_gen_namespace() {
+fn uses_non_reserved_images_namespace() {
     let ToolSpec::Namespace(spec) = imagegen_tool_spec() else {
         panic!("imagegen should advertise a namespace tool");
     };
     assert_eq!(spec.name, IMAGE_GEN_NAMESPACE);
+    // Regression guard: the standalone tool must not register under the
+    // Responses-API-reserved `image_gen` namespace (wire name `image_gen.imagegen`),
+    // which triggers a runtime 400 "reserved for use by this model" error.
+    assert_ne!(spec.name, "image_gen");
     let ResponsesApiNamespaceTool::Function(function) = &spec.tools[0];
     assert_eq!(function.name, IMAGEGEN_TOOL_NAME);
 }
