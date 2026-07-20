@@ -378,6 +378,10 @@ fn test_merge_configured_model_providers_allows_anthropic_override() {
     expected_provider.base_url = Some("https://dedicated.anthropic.example.com/v1".to_string());
     expected_provider.env_key = Some("ANTHROPIC_DEDICATED_API_KEY".to_string());
     expected_provider.env_key_instructions = None;
+    // The override above explicitly opts back into the OpenAI-compatible Chat
+    // Completions surface, so the merged provider keeps that wire protocol even
+    // though the built-in Anthropic default is now the native Messages adapter.
+    expected_provider.wire_api = WireApi::Chat;
     expected.insert(ANTHROPIC_PROVIDER_ID.to_string(), expected_provider);
 
     assert_eq!(

@@ -103,6 +103,13 @@ pub enum WireApi {
     Responses,
     /// The OpenAI-compatible Chat Completions API exposed at `/v1/chat/completions`.
     Chat,
+    /// The native Anthropic Messages API exposed at `/v1/messages`.
+    ///
+    /// Selecting this wire protocol routes requests through the native Anthropic
+    /// runtime adapter instead of Anthropic's OpenAI-compatible Chat Completions
+    /// surface, so extended thinking, tool use, and Anthropic-native streaming
+    /// events round-trip without lossy translation.
+    Anthropic,
 }
 
 impl fmt::Display for WireApi {
@@ -110,6 +117,7 @@ impl fmt::Display for WireApi {
         let value = match self {
             Self::Responses => "responses",
             Self::Chat => "chat",
+            Self::Anthropic => "anthropic",
         };
         f.write_str(value)
     }
@@ -124,9 +132,10 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "responses" => Ok(Self::Responses),
             "chat" => Ok(Self::Chat),
+            "anthropic" => Ok(Self::Anthropic),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat"],
+                &["responses", "chat", "anthropic"],
             )),
         }
     }
@@ -582,7 +591,7 @@ impl ModelProviderInfo {
             experimental_bearer_token: None,
             auth: None,
             aws: None,
-            wire_api: WireApi::Chat,
+            wire_api: WireApi::Anthropic,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -877,7 +886,7 @@ const BUILT_IN_MODEL_PROVIDER_SPECS: &[BuiltInModelProviderSpec] = &[
         id: ANTHROPIC_PROVIDER_ID,
         factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_anthropic_provider),
         allows_partial_override: true,
-        default_override_wire_api: WireApi::Chat,
+        default_override_wire_api: WireApi::Anthropic,
     },
     BuiltInModelProviderSpec {
         id: CEREBRAS_PROVIDER_ID,

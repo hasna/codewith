@@ -285,6 +285,9 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
         WireApi::Chat => proto::WireApi::Chat,
+        // The remote thread-config proto has no native-Anthropic wire variant;
+        // downgrade to the OpenAI-compatible Chat surface for serialization.
+        WireApi::Anthropic => proto::WireApi::Chat,
     }
 }
 

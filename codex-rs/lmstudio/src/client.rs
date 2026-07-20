@@ -70,7 +70,10 @@ impl LMStudioClient {
         // and payload shape must follow the provider's configured wire_api.
         let base_url = self.base_url.trim_end_matches('/');
         let (url, request_body) = match self.wire_api {
-            WireApi::Chat => (
+            // LM Studio is a local OSS runtime that speaks the OpenAI wire
+            // protocols only; the native Anthropic wire has no local equivalent,
+            // so warm up via the chat-completions surface.
+            WireApi::Chat | WireApi::Anthropic => (
                 format!("{base_url}/chat/completions"),
                 serde_json::json!({
                     "model": model,

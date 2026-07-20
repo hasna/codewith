@@ -8,11 +8,13 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::EnvVarError;
 use http::HeaderMap;
 use http::HeaderValue;
 
+use crate::anthropic_auth_provider::AnthropicApiKeyAuthProvider;
 use crate::bearer_auth_provider::BearerAuthProvider;
 
 #[derive(Clone, Debug)]
@@ -81,6 +83,16 @@ pub(crate) fn resolve_provider_auth(
     auth: Option<&CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<SharedAuthProvider> {
+    // The native Anthropic Messages API authenticates API keys via the
+    // `x-api-key` header rather than `Authorization: Bearer`, so route the
+    // resolved key through the Anthropic-specific auth provider. When no API key
+    // is available (e.g. an `experimental_bearer_token` is configured instead)
+    // fall through to the bearer path below.
+    if provider.wire_api == WireApi::Anthropic
+        && let Some(api_key) = provider_api_key(provider)?
+    {
+        return Ok(Arc::new(AnthropicApiKeyAuthProvider::new(api_key)));
+    }
     if let Some(auth) = bearer_auth_for_provider(provider, MissingProviderKey::Error)? {
         return Ok(Arc::new(auth));
     }
