@@ -2,6 +2,7 @@ use crate::app_event::AppEvent;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
+use codex_external_agent::ExternalAgentMode;
 use codex_external_agent::ExternalAgentReadinessStatus;
 use codex_external_agent::ExternalAgentRuntimeDescriptor;
 use codex_external_agent::external_agent_runtime_readiness;
@@ -20,8 +21,13 @@ pub(crate) fn external_agent_picker_params() -> SelectionViewParams {
                 name: runtime.display_name.to_string(),
                 description: Some(runtime_picker_description(runtime)),
                 search_value: Some(format!(
-                    "{} {} {}",
-                    runtime.id, runtime.display_name, runtime.description
+                    "{} {} {} {} {} {}",
+                    runtime.id,
+                    runtime.display_name,
+                    runtime.description,
+                    runtime_surfaces_display(runtime),
+                    runtime_managed_display(runtime),
+                    runtime_default_model_display(runtime),
                 )),
                 dismiss_on_select: true,
                 actions,
@@ -52,10 +58,40 @@ fn runtime_picker_description(runtime: &'static ExternalAgentRuntimeDescriptor) 
         ExternalAgentReadinessStatus::Disabled => "disabled",
     };
     format!(
-        "{} Status: {status}. Command: {}",
+        "{} Status: {status}. Command: {}. Surfaces: {}. Managed: {}. Model: {}",
         runtime.description,
-        runtime_command_display(runtime)
+        runtime_command_display(runtime),
+        runtime_surfaces_display(runtime),
+        runtime_managed_display(runtime),
+        runtime_default_model_display(runtime),
     )
+}
+
+/// Execution surfaces the runtime advertises, e.g. `acp, sdk-local, cloud`.
+fn runtime_surfaces_display(runtime: &'static ExternalAgentRuntimeDescriptor) -> String {
+    runtime
+        .execution_surfaces
+        .iter()
+        .map(|surface| surface.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether the runtime can run in Codewith-managed action-mediation mode.
+fn runtime_managed_display(runtime: &'static ExternalAgentRuntimeDescriptor) -> &'static str {
+    if runtime.supports_mode(ExternalAgentMode::Managed) {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+/// The runtime's advertised default model id (or a fallback label).
+fn runtime_default_model_display(runtime: &'static ExternalAgentRuntimeDescriptor) -> &'static str {
+    runtime
+        .default_model()
+        .map(|model| model.id)
+        .unwrap_or("runtime default")
 }
 
 fn runtime_command_display(runtime: &'static ExternalAgentRuntimeDescriptor) -> String {
@@ -101,6 +137,15 @@ mod tests {
         assert!(descriptions[0].contains("Command: agent acp"));
         assert!(descriptions[1].contains("Command: grok --no-auto-update agent stdio"));
         assert!(descriptions[2].contains("Command: claude"));
+
+        // Cursor surfaces every execution surface, managed mode, and its default model.
+        assert!(descriptions[0].contains("Surfaces: acp, sdk-local, cloud"));
+        assert!(descriptions[0].contains("Managed: yes"));
+        assert!(descriptions[0].contains("Model: auto"));
+        // Grok Build and Claude Code stay gated out of managed mode for now.
+        assert!(descriptions[1].contains("Managed: no"));
+        assert!(descriptions[2].contains("Managed: no"));
+        assert!(descriptions[2].contains("Surfaces: sdk-local, cloud"));
     }
 
     #[test]
@@ -133,9 +178,9 @@ mod tests {
         subtitle: Choose a runtime; tasks open in linked agent threads.
         search: Type to filter runtimes...
         items:
-        - Cursor | Run Cursor's agent through an ACP-compatible harness. Status: <readiness>. Command: agent acp
-        - Grok Build | Run Grok Build through xAI's ACP stdio agent. Status: <readiness>. Command: grok --no-auto-update agent stdio
-        - Claude Code | Run Claude Code through Claude's CLI/Agent SDK stream. Status: <readiness>. Command: claude
+        - Cursor | Run Cursor's agent through an ACP-compatible harness. Status: <readiness>. Command: agent acp. Surfaces: acp, sdk-local, cloud. Managed: yes. Model: auto
+        - Grok Build | Run Grok Build through xAI's ACP stdio agent. Status: <readiness>. Command: grok --no-auto-update agent stdio. Surfaces: acp, cloud. Managed: no. Model: auto
+        - Claude Code | Run Claude Code through Claude's CLI/Agent SDK stream. Status: <readiness>. Command: claude. Surfaces: sdk-local, cloud. Managed: no. Model: default
         "###
         );
     }

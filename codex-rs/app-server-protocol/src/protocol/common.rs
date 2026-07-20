@@ -1107,6 +1107,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadExternalAgentPermissionRespondResponse,
     },
+    #[experimental("thread/externalAgent/models/list")]
+    ThreadExternalAgentModelsList => "thread/externalAgent/models/list" {
+        params: v2::ThreadExternalAgentModelsListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadExternalAgentModelsListResponse,
+    },
     ThreadApproveGuardianDeniedAction => "thread/approveGuardianDeniedAction" {
         params: v2::ThreadApproveGuardianDeniedActionParams,
         serialization: thread_id(params.thread_id),

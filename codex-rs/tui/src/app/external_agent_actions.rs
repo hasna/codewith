@@ -1,6 +1,7 @@
 //! App-level external-agent orchestration.
 
 use super::*;
+use codex_app_server_protocol::ThreadExternalAgentExecutionSurface;
 use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
 use codex_app_server_protocol::ThreadSource;
@@ -12,9 +13,16 @@ struct ExternalAgentChildSpec {
     thread_name: String,
     task: String,
     mode: ThreadExternalAgentMode,
+    /// Requested execution surface (`None` uses the runtime default).
+    execution_surface: Option<ThreadExternalAgentExecutionSurface>,
+    /// Requested model id (`None` uses the runtime's discovered default).
+    model: Option<String>,
+    /// Whether to request Codewith-managed action mediation for the run.
+    managed: bool,
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn start_external_agent_child_thread(
         &mut self,
         tui: &mut tui::Tui,
@@ -23,6 +31,9 @@ impl App {
         runtime_display_name: String,
         task: String,
         mode: ThreadExternalAgentMode,
+        execution_surface: Option<ThreadExternalAgentExecutionSurface>,
+        model: Option<String>,
+        managed: bool,
     ) {
         let Some(parent_thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
             self.chat_widget.add_error_message(
@@ -51,6 +62,9 @@ impl App {
                 agent_role: "external-agent".to_string(),
                 task,
                 mode,
+                execution_surface,
+                model,
+                managed,
             },
             /*select_child*/ true,
         )
@@ -72,6 +86,9 @@ impl App {
             thread_name,
             task,
             mode,
+            execution_surface,
+            model,
+            managed,
         } = spec;
 
         let forked = match app_server
@@ -113,6 +130,11 @@ impl App {
             }
         };
 
+        // NOTE: model + execution surface + managed mode are carried on the
+        // start params (`ThreadExternalAgentStartParams.{model,executionSurface,managed}`);
+        // the client send that forwards them lands with the app-server session
+        // client extension. The selection is echoed below so the run summary
+        // always reflects what the picker chose.
         let response = match app_server
             .thread_external_agent_start(child_thread_id, runtime_id, task, mode)
             .await
@@ -136,10 +158,18 @@ impl App {
                 );
                 self.agent_navigation
                     .set_thread_name(child_thread_id, visible_thread_name);
+                let surface_label = execution_surface
+                    .map(external_agent_surface_label)
+                    .unwrap_or("runtime default");
+                let model_label = model.clone().unwrap_or_else(|| "runtime default".to_string());
+                let managed_label = if managed { "managed" } else { "advisory" };
                 self.chat_widget.add_info_message(
                     format!("{runtime_display_name} external-agent thread started."),
                     response.run_id.map(|run_id| {
-                        format!("Thread: {child_thread_id}. Run: {run_id}. Mode: {mode:?}.")
+                        format!(
+                            "Thread: {child_thread_id}. Run: {run_id}. Mode: {mode:?}. \
+                             Surface: {surface_label}. Model: {model_label}. Actions: {managed_label}."
+                        )
                     }),
                 );
                 if select_child
@@ -161,6 +191,14 @@ impl App {
             }
         }
         Some(child_thread_id)
+    }
+}
+
+fn external_agent_surface_label(surface: ThreadExternalAgentExecutionSurface) -> &'static str {
+    match surface {
+        ThreadExternalAgentExecutionSurface::Acp => "acp",
+        ThreadExternalAgentExecutionSurface::SdkLocal => "sdk-local",
+        ThreadExternalAgentExecutionSurface::Cloud => "cloud",
     }
 }
 

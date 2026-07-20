@@ -1922,6 +1922,21 @@ pub enum ThreadExternalAgentMode {
     Propose,
 }
 
+/// Execution surface an external-agent run should target.
+///
+/// `acp` runs the runtime as a local ACP stdio subprocess, `sdk-local` runs the
+/// runtime's local SDK/CLI stream on this machine, and `cloud` delegates the run
+/// to the runtime's hosted (cloud) agent. The surface a run may use is bounded by
+/// the runtime's advertised descriptor (see `ExternalAgentRuntimeDescriptor`).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case", export_to = "v2/")]
+pub enum ThreadExternalAgentExecutionSurface {
+    Acp,
+    SdkLocal,
+    Cloud,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1930,6 +1945,23 @@ pub struct ThreadExternalAgentStartParams {
     pub runtime_id: String,
     pub task: String,
     pub mode: ThreadExternalAgentMode,
+    /// Optional model id to run within the selected runtime. When omitted the
+    /// runtime's advertised default model is used. Validated against the
+    /// runtime's discoverable models before the run starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Optional execution surface for the run. When omitted the runtime's
+    /// default execution surface is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_surface: Option<ThreadExternalAgentExecutionSurface>,
+    /// Request Codewith-managed action mediation for this run. When `true` the
+    /// run may propose file/terminal/network actions that Codewith executes
+    /// through its own approval + sandbox path (gated on the runtime advertising
+    /// managed-mode support).
+    #[serde(default)]
+    pub managed: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2014,6 +2046,18 @@ pub enum ThreadExternalAgentEvent {
     Status {
         message: String,
     },
+    /// A durable artifact produced by a cloud (hosted) external-agent run, such
+    /// as a pull request, patch bundle, or log URL.
+    CloudArtifact {
+        artifact: ThreadExternalAgentCloudArtifact,
+    },
+    /// Lifecycle transition for a cloud (hosted) external-agent run.
+    CloudStatus {
+        state: ThreadExternalAgentCloudState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        message: Option<String>,
+    },
     Completed {
         summary: Option<String>,
     },
@@ -2023,6 +2067,32 @@ pub enum ThreadExternalAgentEvent {
     Cancelled {
         reason: Option<String>,
     },
+}
+
+/// Durable artifact surfaced by a cloud external-agent run.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentCloudArtifact {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mime_type: Option<String>,
+}
+
+/// Lifecycle state of a cloud (hosted) external-agent run.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case", export_to = "v2/")]
+pub enum ThreadExternalAgentCloudState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2081,6 +2151,47 @@ pub struct ThreadExternalAgentPermissionRespondResponse {
     /// `true` when a pending request matched and received this decision.
     /// `false` for unknown, already-resolved, or replayed request ids.
     pub accepted: bool,
+}
+
+/// Parameters for `thread/externalAgent/models/list`. Discovers the models a
+/// runtime can run, optionally scoped to a single execution surface.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentModelsListParams {
+    pub thread_id: String,
+    pub runtime_id: String,
+    /// When set, only models runnable on this execution surface are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_surface: Option<ThreadExternalAgentExecutionSurface>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentModelsListResponse {
+    pub runtime_id: String,
+    pub models: Vec<ThreadExternalAgentModel>,
+    /// The model used when a run omits an explicit `model`, if the runtime
+    /// advertises one that matches the requested surface filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub default_model: Option<String>,
+}
+
+/// A single discoverable model for an external-agent runtime.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentModel {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    /// Execution surfaces this model can run on.
+    pub execution_surfaces: Vec<ThreadExternalAgentExecutionSurface>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

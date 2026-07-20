@@ -10,6 +10,7 @@ use codex_app_server_protocol::ThreadExternalAgentCancelParams;
 use codex_app_server_protocol::ThreadExternalAgentCancelResponse;
 use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadExternalAgentEventNotification;
+use codex_app_server_protocol::ThreadExternalAgentExecutionSurface;
 use codex_app_server_protocol::ThreadExternalAgentMode;
 use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
@@ -81,12 +82,12 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
 
     let external_agent_id = mcp
-        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
-            thread_id: thread.id.clone(),
-            runtime_id: "cursor".to_string(),
-            task: "inspect the auth wiring".to_string(),
-            mode: ThreadExternalAgentMode::Plan,
-        })
+        .send_thread_external_agent_start_request(external_agent_start_params(
+            thread.id.clone(),
+            "cursor",
+            "inspect the auth wiring",
+            ThreadExternalAgentMode::Plan,
+        ))
         .await?;
     let external_agent_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -196,12 +197,12 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     }
 
     let grok_alias_id = mcp
-        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
-            thread_id: thread.id.clone(),
-            runtime_id: "grok".to_string(),
-            task: "inspect the auth wiring".to_string(),
-            mode: ThreadExternalAgentMode::Plan,
-        })
+        .send_thread_external_agent_start_request(external_agent_start_params(
+            thread.id.clone(),
+            "grok",
+            "inspect the auth wiring",
+            ThreadExternalAgentMode::Plan,
+        ))
         .await?;
     let grok_alias_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -218,12 +219,12 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
     );
 
     let empty_task_id = mcp
-        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
-            thread_id: thread.id,
-            runtime_id: "grok-build".to_string(),
-            task: "   ".to_string(),
-            mode: ThreadExternalAgentMode::Plan,
-        })
+        .send_thread_external_agent_start_request(external_agent_start_params(
+            thread.id,
+            "grok-build",
+            "   ",
+            ThreadExternalAgentMode::Plan,
+        ))
         .await?;
     let empty_task_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -255,12 +256,12 @@ async fn thread_external_agent_start_emits_run_event_and_validates_runtime() -> 
         ..
     } = to_response(default_profile_thread_resp)?;
     let claude_id = mcp
-        .send_thread_external_agent_start_request(ThreadExternalAgentStartParams {
-            thread_id: default_profile_thread.id,
-            runtime_id: "claude".to_string(),
-            task: "inspect the auth wiring".to_string(),
-            mode: ThreadExternalAgentMode::Plan,
-        })
+        .send_thread_external_agent_start_request(external_agent_start_params(
+            default_profile_thread.id,
+            "claude",
+            "inspect the auth wiring",
+            ThreadExternalAgentMode::Plan,
+        ))
         .await?;
     let claude_resp: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -364,6 +365,242 @@ async fn thread_external_agent_permission_respond_unknown_request_is_not_accepte
     );
 
     Ok(())
+}
+
+fn external_agent_start_params(
+    thread_id: String,
+    runtime_id: &str,
+    task: &str,
+    mode: ThreadExternalAgentMode,
+) -> ThreadExternalAgentStartParams {
+    ThreadExternalAgentStartParams {
+        thread_id,
+        runtime_id: runtime_id.to_string(),
+        task: task.to_string(),
+        mode,
+        model: None,
+        execution_surface: None,
+        managed: false,
+    }
+}
+
+/// Managed Cursor runs are accepted end-to-end now that Codewith's action
+/// executor mediates them: `managed: true` no longer gates, and a run starts on
+/// the requested execution surface with a discovered model.
+#[tokio::test]
+async fn thread_external_agent_managed_cursor_run_is_accepted() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.as_path(),
+        "cursor-work",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+            last_permissions: None,
+        },
+    )?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    write_fake_executable(&bin_dir, "agent")?;
+    write_fake_executable(&bin_dir, "cursor-agent")?;
+    let path = path_with_fake_bin(&bin_dir)?;
+
+    let mut mcp = McpProcess::new_with_env(
+        codex_home.as_path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", Some("cursor-work")),
+            ("PATH", Some(path.as_str())),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    let mut params = external_agent_start_params(
+        thread.id.clone(),
+        "cursor",
+        "refactor the auth module",
+        ThreadExternalAgentMode::Plan,
+    );
+    params.managed = true;
+    params.execution_surface = Some(ThreadExternalAgentExecutionSurface::SdkLocal);
+    params.model = Some("auto".to_string());
+
+    let external_agent_id = mcp.send_thread_external_agent_start_request(params).await?;
+    let external_agent_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(external_agent_id)),
+    )
+    .await??;
+    let response: ThreadExternalAgentStartResponse = to_response(external_agent_resp)?;
+    assert_eq!(
+        response.status,
+        ThreadExternalAgentStartStatus::Started,
+        "managed cursor runs must be accepted: {}",
+        response.message
+    );
+    let run_id = response.run_id.expect("managed run id");
+
+    let started_notification = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/externalAgent/event"),
+    )
+    .await??;
+    let started: ThreadExternalAgentEventNotification = serde_json::from_value(
+        started_notification
+            .params
+            .expect("external-agent event params"),
+    )?;
+    assert_eq!(
+        started.event,
+        ThreadExternalAgentEvent::RunStarted {
+            runtime_id: "cursor".to_string(),
+            mode: ThreadExternalAgentMode::Plan,
+            task: "refactor the auth module".to_string(),
+        }
+    );
+
+    // Best-effort cancel so the fake harness subprocess does not linger.
+    let cancel_id = mcp
+        .send_thread_external_agent_cancel_request(ThreadExternalAgentCancelParams {
+            thread_id: thread.id.clone(),
+            run_id,
+        })
+        .await?;
+    let _cancel_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(cancel_id)),
+    )
+    .await??;
+
+    Ok(())
+}
+
+/// Execution-surface, model, and managed-mode selections are validated against
+/// each runtime's advertised descriptor before a run starts.
+#[tokio::test]
+async fn thread_external_agent_selection_is_validated_against_the_descriptor() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    write_mock_responses_config_toml(
+        codex_home.as_path(),
+        &server.uri(),
+        &BTreeMap::new(),
+        /*auto_compact_limit*/ 200_000,
+        /*requires_openai_auth*/ None,
+        "mock_provider",
+        "compact",
+    )?;
+    write_mock_provider_models_cache(codex_home.as_path())?;
+
+    let mut mcp = McpProcess::new(codex_home.as_path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(start_resp)?;
+
+    // The cloud execution surface is discoverable but gated pending the cloud harness.
+    let mut cloud = external_agent_start_params(
+        thread.id.clone(),
+        "cursor",
+        "inspect the repo",
+        ThreadExternalAgentMode::Plan,
+    );
+    cloud.execution_surface = Some(ThreadExternalAgentExecutionSurface::Cloud);
+    let cloud_response = send_external_agent_start(&mut mcp, cloud).await?;
+    assert_eq!(cloud_response.status, ThreadExternalAgentStartStatus::Gated);
+    assert!(
+        cloud_response.message.contains("cloud execution surface"),
+        "unexpected cloud gate message: {}",
+        cloud_response.message
+    );
+
+    // Unknown models are rejected against the descriptor's advertised set.
+    let mut bad_model = external_agent_start_params(
+        thread.id.clone(),
+        "cursor",
+        "inspect the repo",
+        ThreadExternalAgentMode::Plan,
+    );
+    bad_model.model = Some("totally-made-up-model".to_string());
+    let bad_model_response = send_external_agent_start(&mut mcp, bad_model).await?;
+    assert_eq!(
+        bad_model_response.status,
+        ThreadExternalAgentStartStatus::Gated
+    );
+    assert!(
+        bad_model_response.message.contains("unknown model"),
+        "unexpected model gate message: {}",
+        bad_model_response.message
+    );
+
+    // Managed mode is gated for runtimes that do not advertise it yet.
+    let mut managed_grok = external_agent_start_params(
+        thread.id,
+        "grok-build",
+        "inspect the repo",
+        ThreadExternalAgentMode::Plan,
+    );
+    managed_grok.managed = true;
+    let managed_grok_response = send_external_agent_start(&mut mcp, managed_grok).await?;
+    assert_eq!(
+        managed_grok_response.status,
+        ThreadExternalAgentStartStatus::Gated
+    );
+    assert!(
+        managed_grok_response
+            .message
+            .contains("does not support managed mode"),
+        "unexpected managed gate message: {}",
+        managed_grok_response.message
+    );
+
+    Ok(())
+}
+
+async fn send_external_agent_start(
+    mcp: &mut McpProcess,
+    params: ThreadExternalAgentStartParams,
+) -> Result<ThreadExternalAgentStartResponse> {
+    let request_id = mcp.send_thread_external_agent_start_request(params).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    Ok(to_response(response)?)
 }
 
 fn path_with_fake_bin(bin_dir: &Path) -> Result<String> {
