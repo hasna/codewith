@@ -143,6 +143,37 @@ pub struct GoalClearOutcome {
     pub plan_updates: Vec<codex_state::ThreadGoalPlanSnapshot>,
 }
 
+/// Request to transfer a native goal plan from a failed source thread onto a
+/// fresh recovery thread after a hard respawn.
+#[derive(Clone, Copy, Debug)]
+pub struct GoalPlanTransferRequest<'a> {
+    /// The thread that owns the plan (the failed/terminated session).
+    pub source_thread_id: ThreadId,
+    /// The freshly created recovery thread that should adopt the plan.
+    pub target_thread_id: ThreadId,
+    /// The identifier of the plan to transfer.
+    pub plan_id: &'a str,
+}
+
+/// Outcome of a successful [`GoalService::transfer_goal_plan_to_thread`] call.
+#[derive(Clone, Debug)]
+pub struct GoalPlanTransferOutcome {
+    /// The freshly created plan on the target thread.
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    /// The source thread the plan was transferred from.
+    pub source_thread_id: ThreadId,
+    /// The target thread the plan was transferred to.
+    pub target_thread_id: ThreadId,
+    /// The transferred plan id retained on the source thread as provenance.
+    pub source_plan_id: String,
+    /// The new plan id created on the target thread.
+    pub target_plan_id: String,
+    /// The number of nodes copied onto the target plan.
+    pub transferred_node_count: usize,
+    /// The number of completed nodes preserved as terminal provenance/evidence.
+    pub preserved_completed_node_count: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct GoalService {
     runtimes: Mutex<HashMap<String, Weak<GoalRuntimeHandle>>>,
@@ -551,6 +582,108 @@ impl GoalService {
         })
     }
 
+    /// Transfer an existing native goal plan from a failed source thread onto a
+    /// fresh recovery thread after a hard respawn, without resuming the failed
+    /// agent session.
+    ///
+    /// This is the supported recovery operation for terminal context or
+    /// compaction failure: instead of resuming a poisoned session, the caller
+    /// creates a fresh thread and hands the durable plan over to it. Completed
+    /// nodes stay completed (provenance and verification evidence, never
+    /// requeued); the previously active node and all pending, blocked, paused,
+    /// deferred, and limited nodes carry over as pending so the fresh thread can
+    /// re-drive them under the normal readiness and auto-execution rules. The
+    /// source plan is left intact as provenance.
+    ///
+    /// Fails closed (with [`GoalServiceError::InvalidRequest`]) when the source
+    /// or target thread is unknown, when the two threads have mismatched
+    /// project identity (different cwd or git origin), when the source session is
+    /// still live, when ownership of the plan is ambiguous, or when the target is
+    /// not a clean recovery thread. Only structured plan metadata is copied, so
+    /// no raw transcript or secret material is exposed.
+    pub async fn transfer_goal_plan_to_thread(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        request: GoalPlanTransferRequest<'_>,
+    ) -> Result<GoalPlanTransferOutcome, GoalServiceError> {
+        let GoalPlanTransferRequest {
+            source_thread_id,
+            target_thread_id,
+            plan_id,
+        } = request;
+        let plan_id = plan_id.trim();
+        if plan_id.is_empty() {
+            return Err(GoalServiceError::InvalidRequest(
+                "goal plan id must not be empty".to_string(),
+            ));
+        }
+        if source_thread_id == target_thread_id {
+            return Err(GoalServiceError::InvalidRequest(
+                "cannot transfer a goal plan onto the same thread".to_string(),
+            ));
+        }
+
+        // Fail closed on a live source session: a registered runtime means the
+        // source thread was not actually terminated, so ownership is ambiguous.
+        if self.runtime_for_thread(source_thread_id).is_some() {
+            return Err(GoalServiceError::InvalidRequest(
+                "cannot transfer a goal plan while the source thread session is still live"
+                    .to_string(),
+            ));
+        }
+
+        let source_thread = state_db
+            .get_thread(source_thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read source thread: {err}"))
+            })?
+            .ok_or_else(|| {
+                GoalServiceError::InvalidRequest(format!(
+                    "cannot transfer goal plan: source thread {source_thread_id} does not exist"
+                ))
+            })?;
+        let target_thread = state_db
+            .get_thread(target_thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read target thread: {err}"))
+            })?
+            .ok_or_else(|| {
+                GoalServiceError::InvalidRequest(format!(
+                    "cannot transfer goal plan: target thread {target_thread_id} does not exist"
+                ))
+            })?;
+        ensure_matching_project_identity(&source_thread, &target_thread)?;
+
+        let outcome = state_db
+            .thread_goals()
+            .transfer_thread_goal_plan(codex_state::ThreadGoalPlanTransferParams {
+                source_thread_id,
+                target_thread_id,
+                plan_id: plan_id.to_string(),
+            })
+            .await
+            .map_err(|err| match err {
+                codex_state::ThreadGoalPlanTransferError::Rejected(message) => {
+                    GoalServiceError::InvalidRequest(message)
+                }
+                codex_state::ThreadGoalPlanTransferError::Store(err) => {
+                    GoalServiceError::Internal(format!("failed to transfer goal plan: {err}"))
+                }
+            })?;
+
+        Ok(GoalPlanTransferOutcome {
+            target_plan_id: outcome.snapshot.plan.plan_id.clone(),
+            plan: outcome.snapshot,
+            source_thread_id,
+            target_thread_id,
+            source_plan_id: outcome.source_plan_id,
+            transferred_node_count: outcome.transferred_node_count,
+            preserved_completed_node_count: outcome.preserved_completed_node_count,
+        })
+    }
+
     pub(crate) fn register_runtime(&self, runtime: &Arc<GoalRuntimeHandle>) {
         self.runtimes()
             .insert(runtime.thread_id().to_string(), Arc::downgrade(runtime));
@@ -581,6 +714,29 @@ impl GoalService {
     fn runtimes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<GoalRuntimeHandle>>> {
         self.runtimes.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Enforce that a goal-plan transfer stays within the same project by requiring
+/// the source and target threads to share the same working directory and git
+/// origin. This is the fail-closed guard against a cross-project or mismatched
+/// recovery thread adopting a plan it does not belong to.
+fn ensure_matching_project_identity(
+    source: &codex_state::ThreadMetadata,
+    target: &codex_state::ThreadMetadata,
+) -> Result<(), GoalServiceError> {
+    if source.cwd != target.cwd {
+        return Err(GoalServiceError::InvalidRequest(
+            "cannot transfer goal plan: source and target threads have different working directories"
+                .to_string(),
+        ));
+    }
+    if source.git_origin_url != target.git_origin_url {
+        return Err(GoalServiceError::InvalidRequest(
+            "cannot transfer goal plan: source and target threads have different git origins"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn sync_external_goal_without_runtime(

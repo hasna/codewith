@@ -24,8 +24,10 @@ use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalObjectiveUpdate;
+use codex_goal_extension::GoalPlanTransferRequest;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
+use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTitleUpdate;
 use codex_goal_extension::GoalTokenBudgetUpdate;
@@ -3461,6 +3463,214 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
             arguments: arguments.to_string(),
         },
     }
+}
+
+async fn seed_thread_metadata_with_identity(
+    runtime: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    cwd: &std::path::Path,
+    git_origin_url: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut builder = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        runtime
+            .codex_home()
+            .join(format!("rollout-{thread_id}.jsonl")),
+        chrono::Utc::now(),
+        SessionSource::Cli,
+    );
+    builder.cwd = cwd.to_path_buf();
+    builder.git_origin_url = git_origin_url.map(str::to_string);
+    runtime.upsert_thread(&builder.build("test-provider")).await
+}
+
+/// Build a plan on `thread_id` whose first node is complete and whose dependent
+/// node is active, returning the source plan id.
+async fn seed_completed_then_active_plan(
+    runtime: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+) -> anyhow::Result<String> {
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "investigate".to_string(),
+                    objective: "Investigate the failure.".to_string(),
+                    assigned_thread_id: None,
+                    title: Some("Investigate failure".to_string()),
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                },
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "implement".to_string(),
+                    objective: "Implement the fix.".to_string(),
+                    assigned_thread_id: None,
+                    title: Some("Implement fix".to_string()),
+                    priority: 0,
+                    token_budget: Some(10_000),
+                    depends_on: vec!["investigate".to_string()],
+                },
+            ],
+        })
+        .await?;
+    let plan_id = created.snapshot.plan.plan_id.clone();
+    let first_goal = created
+        .activated_goal
+        .ok_or_else(|| anyhow::anyhow!("first ready goal should activate"))?;
+    let completed = runtime
+        .thread_goals()
+        .update_thread_goal(
+            thread_id,
+            codex_state::GoalUpdate {
+                objective: None,
+                title: None,
+                status: Some(codex_state::ThreadGoalStatus::Complete),
+                token_budget: None,
+                expected_goal_id: Some(first_goal.goal_id),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    runtime
+        .thread_goals()
+        .complete_goal_plan_node_and_maybe_advance(
+            thread_id,
+            &completed,
+            codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal plan should advance"))?;
+    Ok(plan_id)
+}
+
+#[tokio::test]
+async fn transfer_goal_plan_to_thread_preserves_completed_and_reseeds_active_node()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let source_thread_id = test_thread_id()?;
+    let target_thread_id = ThreadId::from_string("33333333-3333-4333-8333-333333333333")
+        .map_err(anyhow::Error::msg)?;
+    let cwd = runtime.codex_home().join("workspace");
+    let git_origin = Some("git@example.com:acme/widgets.git");
+    seed_thread_metadata_with_identity(runtime.as_ref(), source_thread_id, &cwd, git_origin)
+        .await?;
+    seed_thread_metadata_with_identity(runtime.as_ref(), target_thread_id, &cwd, git_origin)
+        .await?;
+    let plan_id = seed_completed_then_active_plan(runtime.as_ref(), source_thread_id).await?;
+
+    let api = GoalService::new();
+    let outcome = api
+        .transfer_goal_plan_to_thread(
+            runtime.as_ref(),
+            GoalPlanTransferRequest {
+                source_thread_id,
+                target_thread_id,
+                plan_id: &plan_id,
+            },
+        )
+        .await?;
+
+    assert_eq!(2, outcome.transferred_node_count);
+    assert_eq!(1, outcome.preserved_completed_node_count);
+    assert_eq!(plan_id, outcome.source_plan_id);
+    assert_eq!(outcome.plan.plan.plan_id, outcome.target_plan_id);
+    assert_ne!(plan_id, outcome.target_plan_id);
+    assert_eq!(target_thread_id, outcome.plan.plan.thread_id);
+
+    let investigate = outcome
+        .plan
+        .nodes
+        .iter()
+        .find(|node| node.key == "investigate")
+        .ok_or_else(|| anyhow::anyhow!("investigate node should transfer"))?;
+    let implement = outcome
+        .plan
+        .nodes
+        .iter()
+        .find(|node| node.key == "implement")
+        .ok_or_else(|| anyhow::anyhow!("implement node should transfer"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Complete,
+        investigate.status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Pending,
+        implement.status
+    );
+    assert_eq!(vec!["investigate".to_string()], implement.depends_on);
+    assert_eq!(Some(10_000), implement.token_budget);
+
+    // The transfer does not resume the failed session.
+    assert_eq!(
+        None,
+        runtime
+            .thread_goals()
+            .get_thread_goal(target_thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transfer_goal_plan_to_thread_fails_closed_on_project_mismatch() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let source_thread_id = test_thread_id()?;
+    let target_thread_id = ThreadId::from_string("33333333-3333-4333-8333-333333333333")
+        .map_err(anyhow::Error::msg)?;
+    seed_thread_metadata_with_identity(
+        runtime.as_ref(),
+        source_thread_id,
+        &runtime.codex_home().join("source-project"),
+        None,
+    )
+    .await?;
+    seed_thread_metadata_with_identity(
+        runtime.as_ref(),
+        target_thread_id,
+        &runtime.codex_home().join("target-project"),
+        None,
+    )
+    .await?;
+    let plan_id = seed_completed_then_active_plan(runtime.as_ref(), source_thread_id).await?;
+
+    let api = GoalService::new();
+    let err = api
+        .transfer_goal_plan_to_thread(
+            runtime.as_ref(),
+            GoalPlanTransferRequest {
+                source_thread_id,
+                target_thread_id,
+                plan_id: &plan_id,
+            },
+        )
+        .await
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("mismatched project identity should fail closed"))?;
+    match err {
+        GoalServiceError::InvalidRequest(message) => {
+            assert!(
+                message.contains("different working directories"),
+                "{message}"
+            );
+        }
+        GoalServiceError::Internal(message) => {
+            panic!("expected fail-closed rejection, got internal error: {message}")
+        }
+    }
+    // Nothing is created on the mismatched target.
+    assert!(
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(target_thread_id)
+            .await?
+            .is_empty()
+    );
+    Ok(())
 }
 
 async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {

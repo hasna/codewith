@@ -71,6 +71,67 @@ pub struct ThreadGoalPlanListPage {
     pub next_cursor: Option<String>,
 }
 
+/// Request to transfer a native goal plan from a failed source thread onto a
+/// fresh recovery thread after a hard respawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadGoalPlanTransferParams {
+    /// The thread that currently owns the plan (the failed/terminated session).
+    pub source_thread_id: ThreadId,
+    /// The freshly created recovery thread that should adopt the plan.
+    pub target_thread_id: ThreadId,
+    /// The identifier of the plan to transfer.
+    pub plan_id: String,
+}
+
+/// Outcome of a successful [`GoalStore::transfer_thread_goal_plan`] call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadGoalPlanTransferOutcome {
+    /// The freshly created plan on the target thread.
+    pub snapshot: crate::ThreadGoalPlanSnapshot,
+    /// The plan id that was transferred (retained on the source as provenance).
+    pub source_plan_id: String,
+    /// The source thread the plan was transferred from.
+    pub source_thread_id: ThreadId,
+    /// The target thread the plan was transferred to.
+    pub target_thread_id: ThreadId,
+    /// The number of nodes copied onto the target plan.
+    pub transferred_node_count: usize,
+    /// The number of completed nodes preserved as terminal provenance/evidence.
+    pub preserved_completed_node_count: usize,
+}
+
+/// Error returned by [`GoalStore::transfer_thread_goal_plan`].
+///
+/// [`Self::Rejected`] carries fail-closed validation failures (ambiguous
+/// ownership, a target that is not a clean recovery thread, and similar guard
+/// conditions) that are safe to surface to a caller. [`Self::Store`] wraps
+/// underlying store/IO failures.
+#[derive(Debug)]
+pub enum ThreadGoalPlanTransferError {
+    /// The transfer was refused by a fail-closed guard.
+    Rejected(String),
+    /// The transfer failed because of an underlying store error.
+    Store(anyhow::Error),
+}
+
+impl std::fmt::Display for ThreadGoalPlanTransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(message) => f.write_str(message),
+            Self::Store(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for ThreadGoalPlanTransferError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(_) => None,
+            Self::Store(err) => Some(err.as_ref()),
+        }
+    }
+}
+
 impl GoalStore {
     pub async fn create_thread_goal_plan(
         &self,
@@ -163,6 +224,266 @@ impl GoalStore {
             goal: Some(activated_goal.clone()),
             activated_goal: Some(activated_goal),
             created_plan: true,
+        })
+    }
+}
+
+impl GoalStore {
+    /// Transfer an existing native goal plan from a failed source thread onto a
+    /// fresh recovery thread after a hard respawn, without resuming the failed
+    /// agent session.
+    ///
+    /// The plan graph is preserved: objectives, titles, keys, dependencies,
+    /// priorities, per-node token budgets, and the recorded token/time usage that
+    /// serves as verification evidence are all copied onto a brand-new plan owned
+    /// by the target thread. Completed and cancelled nodes keep their terminal
+    /// status and are never requeued -- they carry across as provenance and
+    /// verification evidence only. Every other node (the previously active/current
+    /// node and any pending, blocked, paused, deferred, usage-limited, or
+    /// budget-limited node) is re-seeded as `pending` so the fresh thread can
+    /// re-drive the remaining work from a clean projected goal under the normal
+    /// readiness and auto-execution rules.
+    ///
+    /// The source plan and its nodes are left untouched so the failed thread keeps
+    /// its plan as provenance; no `thread_goals` row is created on the target, so
+    /// the transfer never resumes the failed session -- activation happens later
+    /// through the usual readiness path.
+    ///
+    /// Fails closed (returning [`ThreadGoalPlanTransferError::Rejected`]) when:
+    /// - the plan does not exist;
+    /// - the plan is not owned by `source_thread_id`;
+    /// - the plan has nodes delegated to other threads (ambiguous ownership);
+    /// - the plan has no goals to transfer; or
+    /// - the target thread is not a clean recovery target (it already owns a
+    ///   goal plan, already participates in a plan, or already has a goal).
+    ///
+    /// Callers are responsible for enforcing project/cwd identity between the two
+    /// threads before invoking this method.
+    pub async fn transfer_thread_goal_plan(
+        &self,
+        params: ThreadGoalPlanTransferParams,
+    ) -> Result<ThreadGoalPlanTransferOutcome, ThreadGoalPlanTransferError> {
+        let ThreadGoalPlanTransferParams {
+            source_thread_id,
+            target_thread_id,
+            plan_id,
+        } = params;
+        if source_thread_id == target_thread_id {
+            return Err(ThreadGoalPlanTransferError::Rejected(
+                "cannot transfer a goal plan onto the same thread".to_string(),
+            ));
+        }
+
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+
+        let plan_exists: Option<String> =
+            sqlx::query_scalar("SELECT plan_id FROM thread_goal_plans WHERE plan_id = ?")
+                .bind(&plan_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+        if plan_exists.is_none() {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "goal plan {plan_id} does not exist"
+            )));
+        }
+
+        let source = snapshot_thread_goal_plan_in_tx(&mut tx, &plan_id)
+            .await
+            .map_err(ThreadGoalPlanTransferError::Store)?;
+        if source.plan.thread_id != source_thread_id {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "goal plan {plan_id} is not owned by source thread {source_thread_id}"
+            )));
+        }
+        if source
+            .nodes
+            .iter()
+            .any(|node| node.assigned_thread_id != source_thread_id)
+        {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "goal plan {plan_id} has nodes delegated to other threads; transfer requires unambiguous single-thread ownership"
+            )));
+        }
+        if source.nodes.is_empty() {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "goal plan {plan_id} has no goals to transfer"
+            )));
+        }
+
+        // The target must be a clean recovery thread: no goal, no owned plan, and
+        // not already participating in another plan as an assignee.
+        let target_owns_plan: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM thread_goal_plans WHERE thread_id = ? LIMIT 1")
+                .bind(target_thread_id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+        if target_owns_plan.is_some() {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "target thread {target_thread_id} already owns a goal plan"
+            )));
+        }
+        let target_participates: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM thread_goal_plan_nodes WHERE assigned_thread_id = ? LIMIT 1",
+        )
+        .bind(target_thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+        if target_participates.is_some() {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "target thread {target_thread_id} already participates in a goal plan"
+            )));
+        }
+        let target_goal = get_thread_goal_in_tx(&mut tx, target_thread_id)
+            .await
+            .map_err(ThreadGoalPlanTransferError::Store)?;
+        if target_goal.is_some() {
+            return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                "target thread {target_thread_id} already has a goal"
+            )));
+        }
+
+        let new_plan_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    max_tokens,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&new_plan_id)
+        .bind(target_thread_id.to_string())
+        .bind(crate::ThreadGoalPlanStatus::Active.as_str())
+        .bind(source.plan.auto_execute.as_str())
+        .bind(source.plan.max_tokens)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+
+        let mut node_id_by_key: HashMap<String, String> =
+            HashMap::with_capacity(source.nodes.len());
+        let mut preserved_completed_node_count = 0usize;
+        for node in &source.nodes {
+            let new_node_id = Uuid::new_v4().to_string();
+            node_id_by_key.insert(node.key.clone(), new_node_id.clone());
+            let (status, projected_goal_id) = match node.status {
+                crate::ThreadGoalPlanNodeStatus::Complete => {
+                    preserved_completed_node_count += 1;
+                    (
+                        crate::ThreadGoalPlanNodeStatus::Complete,
+                        node.projected_goal_id.clone(),
+                    )
+                }
+                crate::ThreadGoalPlanNodeStatus::Cancelled => (
+                    crate::ThreadGoalPlanNodeStatus::Cancelled,
+                    node.projected_goal_id.clone(),
+                ),
+                // The previously active/current node and any pending, blocked,
+                // paused, usage/budget-limited, or deferred node re-seed as
+                // pending: the failed session is not resumed, so the fresh thread
+                // re-drives the remaining work from a clean projected goal.
+                _ => (crate::ThreadGoalPlanNodeStatus::Pending, None),
+            };
+            sqlx::query(
+                r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    assigned_thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    title,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    projected_goal_id,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&new_node_id)
+            .bind(&new_plan_id)
+            .bind(target_thread_id.to_string())
+            .bind(target_thread_id.to_string())
+            .bind(&node.key)
+            .bind(node.sequence)
+            .bind(node.priority)
+            .bind(&node.objective)
+            .bind(&node.title)
+            .bind(status.as_str())
+            .bind(node.token_budget)
+            .bind(node.tokens_used.max(0))
+            .bind(node.time_used_seconds.max(0))
+            .bind(projected_goal_id)
+            .bind(now_ms)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+        }
+
+        for node in &source.nodes {
+            let Some(node_id) = node_id_by_key.get(&node.key) else {
+                continue;
+            };
+            for dependency_key in &node.depends_on {
+                let Some(dependency_id) = node_id_by_key.get(dependency_key) else {
+                    return Err(ThreadGoalPlanTransferError::Rejected(format!(
+                        "goal node {} depends on unknown goal node {dependency_key}",
+                        node.key
+                    )));
+                };
+                sqlx::query(
+                    r#"
+INSERT INTO thread_goal_plan_dependencies (node_id, depends_on_node_id)
+VALUES (?, ?)
+                    "#,
+                )
+                .bind(node_id)
+                .bind(dependency_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+            }
+        }
+
+        recalculate_goal_plan_status_in_tx(&mut tx, &new_plan_id, now_ms)
+            .await
+            .map_err(ThreadGoalPlanTransferError::Store)?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, &new_plan_id)
+            .await
+            .map_err(ThreadGoalPlanTransferError::Store)?;
+        tx.commit()
+            .await
+            .map_err(|err| ThreadGoalPlanTransferError::Store(err.into()))?;
+
+        Ok(ThreadGoalPlanTransferOutcome {
+            transferred_node_count: snapshot.nodes.len(),
+            snapshot,
+            source_plan_id: plan_id,
+            source_thread_id,
+            target_thread_id,
+            preserved_completed_node_count,
         })
     }
 }
@@ -4495,5 +4816,325 @@ mod tests {
                 .map(|node| node.status)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn test_target_thread_id() -> ThreadId {
+        ThreadId::from_string("00000000-0000-0000-0000-000000000459").expect("valid thread id")
+    }
+
+    /// Drive `create_thread_goal_plan` into a plan whose first node is complete
+    /// and whose dependent node is active, returning the source plan id.
+    async fn seed_completed_then_active_plan(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+    ) -> String {
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+                max_tokens: Some(100_000),
+                nodes: vec![
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "investigate".to_string(),
+                        objective: "Investigate the failure.".to_string(),
+                        assigned_thread_id: None,
+                        title: Some("Investigate failure".to_string()),
+                        priority: 0,
+                        token_budget: None,
+                        depends_on: Vec::new(),
+                    },
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "implement".to_string(),
+                        objective: "Implement the fix.".to_string(),
+                        assigned_thread_id: None,
+                        title: Some("Implement fix".to_string()),
+                        priority: 0,
+                        token_budget: Some(10_000),
+                        depends_on: vec!["investigate".to_string()],
+                    },
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+        let plan_id = created.snapshot.plan.plan_id.clone();
+        let first_goal = created
+            .activated_goal
+            .expect("first ready goal should activate");
+        let completed = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: None,
+                    status: Some(crate::ThreadGoalStatus::Complete),
+                    token_budget: None,
+                    expected_goal_id: Some(first_goal.goal_id),
+                },
+            )
+            .await
+            .expect("goal should update")
+            .expect("goal should exist");
+        runtime
+            .thread_goals()
+            .complete_goal_plan_node_and_maybe_advance(
+                thread_id,
+                &completed,
+                crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+            )
+            .await
+            .expect("goal plan should advance")
+            .expect("goal plan outcome should exist");
+        plan_id
+    }
+
+    #[tokio::test]
+    async fn transfer_goal_plan_preserves_completed_and_reseeds_active_node() {
+        let runtime = test_runtime().await;
+        let source_thread_id = test_thread_id();
+        let target_thread_id = test_target_thread_id();
+        upsert_test_thread(&runtime, source_thread_id).await;
+        upsert_test_thread(&runtime, target_thread_id).await;
+        let plan_id = seed_completed_then_active_plan(&runtime, source_thread_id).await;
+
+        let outcome = runtime
+            .thread_goals()
+            .transfer_thread_goal_plan(ThreadGoalPlanTransferParams {
+                source_thread_id,
+                target_thread_id,
+                plan_id: plan_id.clone(),
+            })
+            .await
+            .expect("transfer should succeed");
+
+        assert_eq!(2, outcome.transferred_node_count);
+        assert_eq!(1, outcome.preserved_completed_node_count);
+        assert_eq!(plan_id, outcome.source_plan_id);
+        assert_ne!(plan_id, outcome.snapshot.plan.plan_id);
+        assert_eq!(target_thread_id, outcome.snapshot.plan.thread_id);
+        // A ready dependent node keeps the fresh plan active.
+        assert_eq!(
+            crate::ThreadGoalPlanStatus::Active,
+            outcome.snapshot.plan.status
+        );
+        // Auto-execute and plan-level budget are preserved.
+        assert_eq!(
+            crate::ThreadGoalPlanAutoExecute::ReadyOnly,
+            outcome.snapshot.plan.auto_execute
+        );
+        assert_eq!(Some(100_000), outcome.snapshot.plan.max_tokens);
+
+        let investigate = outcome
+            .snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key == "investigate")
+            .expect("investigate node should transfer");
+        let implement = outcome
+            .snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key == "implement")
+            .expect("implement node should transfer");
+        // Completed node keeps its terminal status (provenance/evidence, not requeued).
+        assert_eq!(
+            crate::ThreadGoalPlanNodeStatus::Complete,
+            investigate.status
+        );
+        // The previously active/current node is re-seeded as pending.
+        assert_eq!(crate::ThreadGoalPlanNodeStatus::Pending, implement.status);
+        // Dependencies, budgets, and assignment survive the transfer.
+        assert_eq!(vec!["investigate".to_string()], implement.depends_on);
+        assert_eq!(Some(10_000), implement.token_budget);
+        assert_eq!(target_thread_id, implement.assigned_thread_id);
+        // The re-seeded node has no stale projected goal from the failed session.
+        assert_eq!(None, implement.projected_goal_id);
+        // Fresh nodes get new stable ids distinct from the source plan.
+        assert!(
+            outcome
+                .snapshot
+                .nodes
+                .iter()
+                .all(|node| node.plan_id == outcome.snapshot.plan.plan_id)
+        );
+
+        // The transfer does not resume the failed session: no active goal is
+        // created on the target thread.
+        assert_eq!(
+            None,
+            runtime
+                .thread_goals()
+                .get_thread_goal(target_thread_id)
+                .await
+                .expect("target goal read should succeed")
+        );
+
+        // The source plan is retained untouched as provenance.
+        let source_plan = runtime
+            .thread_goals()
+            .get_thread_goal_plan_for_thread(source_thread_id, &plan_id)
+            .await
+            .expect("source plan read should succeed")
+            .expect("source plan should still exist");
+        let source_investigate = source_plan
+            .nodes
+            .iter()
+            .find(|node| node.key == "investigate")
+            .expect("source investigate node should exist");
+        let source_implement = source_plan
+            .nodes
+            .iter()
+            .find(|node| node.key == "implement")
+            .expect("source implement node should exist");
+        assert_eq!(
+            crate::ThreadGoalPlanNodeStatus::Complete,
+            source_investigate.status
+        );
+        assert_eq!(
+            crate::ThreadGoalPlanNodeStatus::Active,
+            source_implement.status
+        );
+    }
+
+    #[tokio::test]
+    async fn transfer_goal_plan_rejects_same_thread() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let plan_id = seed_completed_then_active_plan(&runtime, thread_id).await;
+
+        let err = runtime
+            .thread_goals()
+            .transfer_thread_goal_plan(ThreadGoalPlanTransferParams {
+                source_thread_id: thread_id,
+                target_thread_id: thread_id,
+                plan_id,
+            })
+            .await
+            .expect_err("same-thread transfer should be rejected");
+        assert!(matches!(
+            err,
+            crate::ThreadGoalPlanTransferError::Rejected(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn transfer_goal_plan_rejects_wrong_source_owner() {
+        let runtime = test_runtime().await;
+        let owner_thread_id = test_thread_id();
+        let other_thread_id = test_delegate_thread_id();
+        let target_thread_id = test_target_thread_id();
+        upsert_test_thread(&runtime, owner_thread_id).await;
+        upsert_test_thread(&runtime, other_thread_id).await;
+        upsert_test_thread(&runtime, target_thread_id).await;
+        let plan_id = seed_completed_then_active_plan(&runtime, owner_thread_id).await;
+
+        let err = runtime
+            .thread_goals()
+            .transfer_thread_goal_plan(ThreadGoalPlanTransferParams {
+                source_thread_id: other_thread_id,
+                target_thread_id,
+                plan_id,
+            })
+            .await
+            .expect_err("transfer with wrong source owner should be rejected");
+        match err {
+            crate::ThreadGoalPlanTransferError::Rejected(message) => {
+                assert!(message.contains("not owned by source thread"), "{message}");
+            }
+            crate::ThreadGoalPlanTransferError::Store(err) => {
+                panic!("expected rejection, got store error: {err}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_goal_plan_rejects_delegated_plan() {
+        let runtime = test_runtime().await;
+        let source_thread_id = test_thread_id();
+        let delegate_thread_id = test_delegate_thread_id();
+        let target_thread_id = test_target_thread_id();
+        upsert_test_thread(&runtime, source_thread_id).await;
+        upsert_test_thread(&runtime, delegate_thread_id).await;
+        upsert_test_thread(&runtime, target_thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id: source_thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::Off,
+                max_tokens: None,
+                nodes: vec![
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "owner".to_string(),
+                        objective: "Owner-owned work.".to_string(),
+                        assigned_thread_id: None,
+                        title: None,
+                        priority: 0,
+                        token_budget: None,
+                        depends_on: Vec::new(),
+                    },
+                    ThreadGoalPlanNodeCreateParams {
+                        key: "delegate".to_string(),
+                        objective: "Delegated work.".to_string(),
+                        assigned_thread_id: Some(delegate_thread_id),
+                        title: None,
+                        priority: 0,
+                        token_budget: None,
+                        depends_on: Vec::new(),
+                    },
+                ],
+            })
+            .await
+            .expect("delegated plan should be created");
+
+        let err = runtime
+            .thread_goals()
+            .transfer_thread_goal_plan(ThreadGoalPlanTransferParams {
+                source_thread_id,
+                target_thread_id,
+                plan_id: created.snapshot.plan.plan_id,
+            })
+            .await
+            .expect_err("delegated plan transfer should be rejected");
+        match err {
+            crate::ThreadGoalPlanTransferError::Rejected(message) => {
+                assert!(message.contains("delegated to other threads"), "{message}");
+            }
+            crate::ThreadGoalPlanTransferError::Store(err) => {
+                panic!("expected rejection, got store error: {err}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_goal_plan_rejects_non_fresh_target() {
+        let runtime = test_runtime().await;
+        let source_thread_id = test_thread_id();
+        let target_thread_id = test_target_thread_id();
+        upsert_test_thread(&runtime, source_thread_id).await;
+        upsert_test_thread(&runtime, target_thread_id).await;
+        let plan_id = seed_completed_then_active_plan(&runtime, source_thread_id).await;
+        // The target already owns its own plan, so it is not a clean recovery target.
+        seed_completed_then_active_plan(&runtime, target_thread_id).await;
+
+        let err = runtime
+            .thread_goals()
+            .transfer_thread_goal_plan(ThreadGoalPlanTransferParams {
+                source_thread_id,
+                target_thread_id,
+                plan_id,
+            })
+            .await
+            .expect_err("transfer onto a non-fresh target should be rejected");
+        match err {
+            crate::ThreadGoalPlanTransferError::Rejected(message) => {
+                assert!(message.contains("already"), "{message}");
+            }
+            crate::ThreadGoalPlanTransferError::Store(err) => {
+                panic!("expected rejection, got store error: {err}")
+            }
+        }
     }
 }

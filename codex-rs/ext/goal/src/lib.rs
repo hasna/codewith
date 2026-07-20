@@ -15,6 +15,8 @@ mod tool_plan;
 pub use api::GoalObjectiveUpdate;
 pub use api::GoalPlanAddOutcome;
 pub use api::GoalPlanAddRequest;
+pub use api::GoalPlanTransferOutcome;
+pub use api::GoalPlanTransferRequest;
 pub use api::GoalService;
 pub use api::GoalServiceError;
 pub use api::GoalSetOutcome;
