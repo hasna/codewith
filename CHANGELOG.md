@@ -42,6 +42,63 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.69] - 2026-07-20
+
+Tag: `rust-v0.1.69`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.69>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.68...rust-v0.1.69>
+
+Release rolling up the features, fixes, and test/CI work merged since 0.1.68:
+a Kimi (Moonshot) subscription provider, an external-agent ACP adapter seam,
+documented OpenAI context windows, mailbox-dispatcher hardening, a read-only
+auth-profile crash fix, goal-plan resume, and assorted protocol/state fixes,
+plus a clean rustfmt pass to keep CI green.
+
+### Added
+
+- Model providers: added a Kimi (Moonshot) subscription login provider. (#297)
+- External agents: a common ACP (Agent Client Protocol) adapter seam so
+  external-agent vendors share a single integration surface. (#285)
+- State: backfill managed worktree path keys. (#266)
+
+### Fixed
+
+- App server: the mailbox dispatcher now acknowledges mailbox claims before
+  waking and hardens dispatcher ownership, preventing duplicate or lost claim
+  handling. (#280)
+- Models: OpenAI API models now report their documented context windows instead
+  of a stale fallback (for example the GPT-4.1 family's 1,047,576 window and the
+  current GPT-5.x windows). (#281)
+- Login: auth-profile directory setup now tolerates a read-only `CODEWITH_HOME`
+  by classifying read-only and permission-denied filesystem errors, so
+  preflight/health runners no longer crash on immutable homes. (#284)
+- Goal plans: deferred goal-plan nodes now resume after an independent node
+  completes instead of stalling. (#289)
+- Protocol: preserve the originating HTTP status for `UnexpectedStatus` turn
+  errors. (#276)
+- Schedules: derive a schedule's `last_completed_at` from completed runs only.
+  (#277)
+- merge-pr: made preflight checks robust across `gh` CLI versions. (#275)
+- Core: repaired a broken `feedback_tags` doctest in `util.rs`. (#292)
+- Formatting: reapplied `cargo fmt` (`imports_granularity=Item`) across code
+  merged since 0.1.68 so the `cargo fmt --check` and `just fmt-check` CI gates
+  pass. (#308)
+
+### Tests
+
+- Model providers: added cross-provider integration coverage. (#293)
+- SDK/CI: added bun and npm install smoke tests for the TypeScript SDK. (#287)
+
+### CI / Docs
+
+- CI: added a PR-drain sandbox template for E2B. (#270)
+- CI: pin the workspace root in the apply_patch move-traversal test for the
+  Bazel sandbox. (#282)
+- CI: removed unsupported v8 rust-toolchain inputs. (#240)
+- Docs: documented building codex-rs on remote sandboxes (Blacksmith) instead of
+  locally. (#305)
+- Docs: added an open-codewith runtime development skill. (#269)
+
 ## [0.1.68] - 2026-07-20
 
 Tag: `rust-v0.1.68`
