@@ -110,8 +110,7 @@ const INFINITY_AGENT_DENIED_CAPABILITIES: &[&str] = &[
 /// output cannot diverge from what the binary actually enforces: weaken the
 /// allowlist or the denied set and this document changes with it. Equivalence is
 /// pinned by `infinity_agent_auth_capsule_capabilities_match_enforcement`.
-pub fn infinity_agent_auth_capsule_capabilities()
--> codex_config::AuthCapsulePolicyCapabilities {
+pub fn infinity_agent_auth_capsule_capabilities() -> codex_config::AuthCapsulePolicyCapabilities {
     codex_config::AuthCapsulePolicyCapabilities {
         schema_version: codex_config::AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION,
         // The verified tool policy engine exists in this binary and is applied
@@ -1464,7 +1463,10 @@ mod tests {
                     .iter()
                     .all(|name| name.starts_with("infinity_")),
         };
-        assert_eq!(probe, expected, "probe document must be derived from enforcement");
+        assert_eq!(
+            probe, expected,
+            "probe document must be derived from enforcement"
+        );
 
         // The schema version string is contractually fixed for the Infinity lane.
         assert_eq!(
