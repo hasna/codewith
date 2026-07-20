@@ -1182,6 +1182,7 @@ exit 2
         assert!(
             readiness
                 .detail
+                .as_ref()
                 .is_some_and(|detail| detail.contains("unsupported Windows batch shim")),
             "unsupported cmd shim must fail closed during readiness: {readiness:?}"
         );
