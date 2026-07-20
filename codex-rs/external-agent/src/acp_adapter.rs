@@ -125,7 +125,9 @@ pub trait AcpAgentAdapter: Send + Sync {
 pub fn default_acp_mode_id(mode: ExternalAgentMode) -> Option<&'static str> {
     match mode {
         ExternalAgentMode::Plan => Some("plan"),
-        ExternalAgentMode::Consult | ExternalAgentMode::Propose | ExternalAgentMode::Managed => None,
+        ExternalAgentMode::Consult | ExternalAgentMode::Propose | ExternalAgentMode::Managed => {
+            None
+        }
     }
 }
 
@@ -229,7 +231,10 @@ mod tests {
             visible: false,
         };
 
-        assert_eq!(adapter.runtime_id(), ExternalAgentRuntimeId::from("example"));
+        assert_eq!(
+            adapter.runtime_id(),
+            ExternalAgentRuntimeId::from("example")
+        );
         assert_eq!(
             adapter.program_candidates(&descriptor),
             vec!["example-agent".to_string()]
@@ -269,7 +274,10 @@ mod tests {
     fn grok_build_adapter_forwards_xai_auth() {
         let adapter = GrokBuildAcpAdapter;
 
-        assert_eq!(adapter.runtime_id(), ExternalAgentRuntimeId::from("grok-build"));
+        assert_eq!(
+            adapter.runtime_id(),
+            ExternalAgentRuntimeId::from("grok-build")
+        );
         assert_eq!(adapter.auth_env_vars(), &["XAI_API_KEY"]);
         assert_eq!(
             adapter.preferred_auth_methods(),
