@@ -10,6 +10,7 @@ mod acp;
 mod acp_adapter;
 mod claude;
 mod contract;
+mod grok;
 mod platform_sandbox;
 mod runtimes;
 #[cfg(windows)]
@@ -19,6 +20,7 @@ pub use acp::*;
 pub use acp_adapter::*;
 pub use claude::*;
 pub use contract::*;
+pub use grok::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
 #[cfg(windows)]

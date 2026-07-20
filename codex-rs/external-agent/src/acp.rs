@@ -235,6 +235,23 @@ impl AcpStdioHarness {
         self.adapter.as_ref()
     }
 
+    /// Drive the full ACP protocol against an already-prepared launch spec.
+    ///
+    /// This is a test seam so per-vendor adapters can exercise the end-to-end
+    /// harness (spawn, initialize, session lifecycle, mode selection, and
+    /// permission / server-request handling) against a fake ACP process without
+    /// going through the platform sandbox.
+    #[cfg(test)]
+    pub(crate) async fn run_test_launch(
+        &self,
+        request: ExternalAgentRequest,
+        host: impl ExternalAgentHost + Send + Sync,
+        launch: ExternalAgentSandboxedLaunchSpec,
+    ) -> Result<ExternalAgentResult, ExternalAgentError> {
+        self.validate_request(&request)?;
+        self.run_sandboxed_launch(request, host, launch).await
+    }
+
     pub fn launch_spec(
         &self,
         cwd: impl Into<PathBuf>,
