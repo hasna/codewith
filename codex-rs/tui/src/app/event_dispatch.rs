@@ -1321,6 +1321,12 @@ impl App {
                 task,
                 mode,
             } => {
+                // TODO(cursor-full): the picker/slash layer does not yet carry
+                // execution surface / model / managed selections on this event,
+                // so default to the runtime's advertised surface + model and
+                // advisory (non-managed) actions. Wiring the selection through
+                // `AppEvent::StartExternalAgentChildThread` and the slash flags
+                // is the remaining TUI-forwarding follow-up.
                 self.start_external_agent_child_thread(
                     tui,
                     app_server,
@@ -1328,6 +1334,9 @@ impl App {
                     runtime_display_name,
                     task,
                     mode,
+                    /* execution_surface */ None,
+                    /* model */ None,
+                    /* managed */ false,
                 )
                 .await;
             }

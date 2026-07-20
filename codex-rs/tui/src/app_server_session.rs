@@ -2277,6 +2277,13 @@ impl AppServerSession {
                     runtime_id,
                     task,
                     mode,
+                    // TODO(cursor-full): forward picker-selected model /
+                    // execution surface / managed toggle once the TUI event
+                    // carries them; the server defaults to the runtime's
+                    // advertised surface + model and advisory actions.
+                    model: None,
+                    execution_surface: None,
+                    managed: false,
                 },
             })
             .await
