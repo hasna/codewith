@@ -604,7 +604,12 @@ SELECT
     COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_runs,
     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_runs,
     MAX(started_at_ms) AS last_started_at_ms,
-    MAX(completed_at_ms) AS last_completed_at_ms
+    -- Only successfully completed runs contribute to last_completed_at. The
+    -- completed_at_ms column is also written for deferred and failed runs (it is
+    -- really a "finished at" timestamp), so deriving last_completed_at from the
+    -- raw MAX would populate it even when completed_runs is 0. Keeping this
+    -- filtered ensures last_completed_at is non-null iff completed_runs > 0.
+    MAX(CASE WHEN status = 'completed' THEN completed_at_ms END) AS last_completed_at_ms
 FROM thread_schedule_runs
 WHERE schedule_id = ?
             "#,
@@ -2634,7 +2639,9 @@ mod tests {
                 total_runs: 1,
                 failed_runs: 1,
                 last_started_at: Some(now),
-                last_completed_at: Some(now + chrono::Duration::seconds(10)),
+                // A failed run did not complete, so last_completed_at stays null
+                // to remain consistent with completed_runs == 0.
+                last_completed_at: None,
                 last_error: Some("model unavailable".to_string()),
                 ..crate::ThreadScheduleStats::default()
             },
@@ -2863,7 +2870,10 @@ mod tests {
                 total_runs: 1,
                 deferred_runs: 1,
                 last_started_at: Some(now),
-                last_completed_at: Some(completed_at),
+                // BUG-LOOP-001 regression: a deferred run re-arms the schedule
+                // and does not complete, so last_completed_at must stay null
+                // instead of reflecting the deferred run's finished-at timestamp.
+                last_completed_at: None,
                 last_error: None,
                 ..crate::ThreadScheduleStats::default()
             },
@@ -2872,6 +2882,115 @@ mod tests {
                 .get_thread_schedule_stats(&schedule_id)
                 .await
                 .expect("deferred run stats should load")
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_stats_last_completed_at_tracks_only_completed_runs() {
+        // BUG-LOOP-001 regression: with a mix of completed, deferred, and failed
+        // runs on one schedule, last_completed_at must reflect the completed
+        // run's finished-at timestamp only -- never a later deferred or failed
+        // run -- so that last_completed_at is non-null iff completed_runs > 0.
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 17);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "mixed status runs", Some(now)).await;
+        let schedule_id = schedule.schedule_id.clone();
+
+        // Run 1: completes at now + 5s and re-arms 5 minutes later.
+        let completed_at = now + chrono::Duration::seconds(5);
+        let second_run_at = now + chrono::Duration::minutes(5);
+        let claim_one = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-1", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run(
+                    &schedule_id,
+                    &claim_one.run.run_id,
+                    "lease-1",
+                    completed_at,
+                    Some(second_run_at),
+                )
+                .await
+                .expect("run should complete")
+        );
+
+        // Run 2: defers at second_run_at + 5s (later than the completed run) and
+        // re-arms 20 minutes later. A deferred finished-at must not leak in.
+        let deferred_at = second_run_at + chrono::Duration::seconds(5);
+        let third_run_at = second_run_at + chrono::Duration::minutes(20);
+        let claim_two = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(second_run_at, "lease-2", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        assert!(
+            runtime
+                .thread_schedules()
+                .defer_thread_schedule_run(
+                    &schedule_id,
+                    &claim_two.run.run_id,
+                    "lease-2",
+                    deferred_at,
+                    third_run_at,
+                    "waiting for usage window".to_string(),
+                )
+                .await
+                .expect("run should defer")
+        );
+
+        // Run 3: fails at third_run_at + 5s (the latest finished-at overall). A
+        // failed finished-at must not leak into last_completed_at either.
+        let failed_at = third_run_at + chrono::Duration::seconds(5);
+        let fourth_run_at = third_run_at + chrono::Duration::minutes(5);
+        let claim_three = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(third_run_at, "lease-3", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        assert!(
+            runtime
+                .thread_schedules()
+                .fail_thread_schedule_run(
+                    &schedule_id,
+                    &claim_three.run.run_id,
+                    "lease-3",
+                    failed_at,
+                    Some(fourth_run_at),
+                    "model unavailable".to_string(),
+                )
+                .await
+                .expect("run should fail")
+        );
+
+        assert_eq!(
+            crate::ThreadScheduleStats {
+                total_runs: 3,
+                completed_runs: 1,
+                deferred_runs: 1,
+                failed_runs: 1,
+                // Last claim (run 3) started at third_run_at.
+                last_started_at: Some(third_run_at),
+                // Only the completed run counts, even though the deferred and
+                // failed runs finished afterwards.
+                last_completed_at: Some(completed_at),
+                last_error: Some("model unavailable".to_string()),
+                ..crate::ThreadScheduleStats::default()
+            },
+            runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(&schedule_id)
+                .await
+                .expect("mixed status stats should load")
         );
     }
 
