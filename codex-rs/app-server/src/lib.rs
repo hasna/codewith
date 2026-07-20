@@ -86,6 +86,7 @@ mod dynamic_tools;
 mod error_code;
 mod extensions;
 mod filters;
+mod fs_scope;
 mod fs_watch;
 mod fuzzy_file_search;
 mod image_url;

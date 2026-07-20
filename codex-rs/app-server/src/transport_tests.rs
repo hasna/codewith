@@ -377,6 +377,121 @@ async fn command_execution_request_approval_keeps_additional_permissions_with_ca
 }
 
 #[tokio::test]
+async fn command_execution_request_approval_strips_available_decisions_without_capability() {
+    let connection_id = ConnectionId(14);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    );
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(ServerRequest::CommandExecutionRequestApproval {
+                request_id: RequestId::Integer(1),
+                params: codex_app_server_protocol::CommandExecutionRequestApprovalParams {
+                    thread_id: "thr_123".to_string(),
+                    turn_id: "turn_123".to_string(),
+                    item_id: "call_123".to_string(),
+                    started_at_ms: 0,
+                    approval_id: None,
+                    reason: Some("Need extra read access".to_string()),
+                    network_approval_context: None,
+                    command: Some("cat file".to_string()),
+                    cwd: Some(absolute_path("/tmp")),
+                    command_actions: None,
+                    additional_permissions: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    available_decisions: Some(vec![
+                        codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
+                        codex_app_server_protocol::CommandExecutionApprovalDecision::Decline,
+                    ]),
+                },
+            }),
+            write_complete_tx: None,
+        },
+    )
+    .await;
+
+    let message = writer_rx
+        .recv()
+        .await
+        .expect("request should be delivered to the connection");
+    let json = serde_json::to_value(message.message).expect("request should serialize");
+    assert_eq!(json["params"].get("availableDecisions"), None);
+}
+
+#[tokio::test]
+async fn command_execution_request_approval_keeps_available_decisions_with_capability() {
+    let connection_id = ConnectionId(15);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+
+    let mut connections = HashMap::new();
+    connections.insert(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    );
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::Request(ServerRequest::CommandExecutionRequestApproval {
+                request_id: RequestId::Integer(1),
+                params: codex_app_server_protocol::CommandExecutionRequestApprovalParams {
+                    thread_id: "thr_123".to_string(),
+                    turn_id: "turn_123".to_string(),
+                    item_id: "call_123".to_string(),
+                    started_at_ms: 0,
+                    approval_id: None,
+                    reason: Some("Need extra read access".to_string()),
+                    network_approval_context: None,
+                    command: Some("cat file".to_string()),
+                    cwd: Some(absolute_path("/tmp")),
+                    command_actions: None,
+                    additional_permissions: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    available_decisions: Some(vec![
+                        codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
+                        codex_app_server_protocol::CommandExecutionApprovalDecision::Decline,
+                    ]),
+                },
+            }),
+            write_complete_tx: None,
+        },
+    )
+    .await;
+
+    let message = writer_rx
+        .recv()
+        .await
+        .expect("request should be delivered to the connection");
+    let json = serde_json::to_value(message.message).expect("request should serialize");
+    assert_eq!(
+        json["params"]["availableDecisions"],
+        json!(["accept", "decline"])
+    );
+}
+
+#[tokio::test]
 async fn broadcast_does_not_block_on_slow_connection() {
     let fast_connection_id = ConnectionId(1);
     let slow_connection_id = ConnectionId(2);

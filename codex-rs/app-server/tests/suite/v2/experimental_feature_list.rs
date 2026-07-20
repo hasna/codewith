@@ -405,18 +405,33 @@ async fn experimental_feature_enablement_set_only_updates_named_features() -> Re
 }
 
 #[tokio::test]
-async fn experimental_feature_enablement_set_allows_remote_control() -> Result<()> {
+async fn experimental_feature_enablement_set_ignores_remote_control() -> Result<()> {
+    // `remote_control` is a removed feature (Feature::RemoteControl is Stage::Removed) and is no
+    // longer advertised as a live experimental-feature toggle: it was dropped from
+    // SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT, so the set path filters it out. Setting it must be
+    // ignored, leaving an empty response, rather than round-tripping the key as if still supported.
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
-    let remote_control_enabled = false;
-    let enablement = BTreeMap::from([("remote_control".to_string(), remote_control_enabled)]);
+    let enablement = BTreeMap::from([("remote_control".to_string(), true)]);
 
-    let actual = set_experimental_feature_enablement(&mut mcp, enablement.clone()).await?;
+    let actual = set_experimental_feature_enablement(&mut mcp, enablement).await?;
 
     assert_eq!(
         actual,
-        ExperimentalFeatureEnablementSetResponse { enablement }
+        ExperimentalFeatureEnablementSetResponse {
+            enablement: BTreeMap::new(),
+        }
+    );
+
+    // The removed key must also not appear in the config read echo of experimental features.
+    let ConfigReadResponse { config, .. } = read_config(&mut mcp, /*cwd*/ None).await?;
+    assert_eq!(
+        config
+            .additional
+            .get("features")
+            .and_then(|features| features.get("remote_control")),
+        None
     );
 
     Ok(())

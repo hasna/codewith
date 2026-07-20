@@ -413,15 +413,9 @@ pub enum SkillScope {
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     /// Legacy short_description from SKILL.md. Prefer SKILL.json interface.short_description.
     pub short_description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub interface: Option<SkillInterface>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub dependencies: Option<SkillDependencies>,
     pub path: AbsolutePathBuf,
     pub scope: SkillScope,
@@ -461,17 +455,9 @@ pub struct SkillToolDependency {
     #[ts(rename = "type")]
     pub r#type: String,
     pub value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub transport: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub command: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub url: Option<String>,
 }
 

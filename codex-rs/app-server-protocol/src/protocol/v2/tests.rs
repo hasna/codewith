@@ -2852,6 +2852,49 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 }
 
 #[test]
+fn mcp_tool_call_serializes_absent_resource_uri_as_null() {
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "server".to_string(),
+        tool: "tool".to_string(),
+        status: McpToolCallStatus::InProgress,
+        arguments: JsonValue::Null,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+
+    let value = serde_json::to_value(&item).expect("serialize mcp tool call");
+    let map = value.as_object().expect("thread item object");
+    assert!(
+        map.contains_key("mcpAppResourceUri"),
+        "mcpAppResourceUri should be present even when None"
+    );
+    assert_eq!(map["mcpAppResourceUri"], JsonValue::Null);
+}
+
+#[test]
+fn image_generation_serializes_absent_saved_path_as_null() {
+    let item = ThreadItem::ImageGeneration {
+        id: "img-1".to_string(),
+        status: "completed".to_string(),
+        revised_prompt: None,
+        result: "result".to_string(),
+        saved_path: None,
+    };
+
+    let value = serde_json::to_value(&item).expect("serialize image generation");
+    let map = value.as_object().expect("thread item object");
+    assert!(
+        map.contains_key("savedPath"),
+        "savedPath should be present even when None"
+    );
+    assert_eq!(map["savedPath"], JsonValue::Null);
+}
+
+#[test]
 fn user_input_into_core_preserves_image_detail() {
     assert_eq!(
         UserInput::Image {
@@ -2898,6 +2941,56 @@ fn skills_list_params_serialization_uses_force_reload() {
         json!({
             "cwds": ["/repo"],
             "forceReload": true,
+        }),
+    );
+}
+
+#[test]
+fn skill_metadata_serializes_absent_fields_as_present_null() {
+    assert_eq!(
+        serde_json::to_value(SkillMetadata {
+            name: "plan-work".to_string(),
+            description: "Plan the work".to_string(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            path: absolute_path("repo/.codewith/skills/plan-work/SKILL.md"),
+            scope: SkillScope::Repo,
+            enabled: true,
+        })
+        .unwrap(),
+        json!({
+            "name": "plan-work",
+            "description": "Plan the work",
+            "shortDescription": null,
+            "interface": null,
+            "dependencies": null,
+            "path": absolute_path_string("repo/.codewith/skills/plan-work/SKILL.md"),
+            "scope": "repo",
+            "enabled": true,
+        }),
+    );
+}
+
+#[test]
+fn skill_tool_dependency_serializes_absent_details_as_present_null() {
+    assert_eq!(
+        serde_json::to_value(SkillToolDependency {
+            r#type: "mcp".to_string(),
+            value: "linear".to_string(),
+            description: None,
+            transport: None,
+            command: None,
+            url: None,
+        })
+        .unwrap(),
+        json!({
+            "type": "mcp",
+            "value": "linear",
+            "description": null,
+            "transport": null,
+            "command": null,
+            "url": null,
         }),
     );
 }

@@ -5,17 +5,22 @@ import type { AbsolutePathBuf } from "../AbsolutePathBuf";
 
 /**
  * Remove a file or directory tree from the host filesystem.
+ *
+ * The target must resolve inside the session's authorized workspace scope; the
+ * server rejects paths (including symlink escapes) outside every workspace root.
  */
 export type FsRemoveParams = {
 /**
- * Absolute path to remove.
+ * Absolute path to remove. Must be inside an authorized workspace root.
  */
 path: AbsolutePathBuf,
 /**
- * Whether directory removal should recurse. Defaults to `true`.
+ * Whether directory removal should recurse. Defaults to `false`; recursive
+ * tree deletion must be requested explicitly.
  */
 recursive?: boolean | null,
 /**
- * Whether missing paths should be ignored. Defaults to `true`.
+ * Whether missing paths should be ignored. Defaults to `false`; ignoring
+ * missing targets must be requested explicitly.
  */
 force?: boolean | null, };
