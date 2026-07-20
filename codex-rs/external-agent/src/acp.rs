@@ -277,10 +277,39 @@ impl AcpStdioHarness {
             runtime: self.id(),
             status: ExternalAgentReadinessStatus::Ready,
             display_name: self.descriptor.display_name.to_string(),
-            version: None,
+            // Surface the adapter's selected runtime/model label (e.g.
+            // `composer-2.5`) so clients can show which model a run will drive.
+            version: self
+                .adapter
+                .default_model()
+                .map(std::string::ToString::to_string),
             supported_modes: self.descriptor.supported_modes.to_vec(),
             detail: Some(program.display().to_string()),
         }
+    }
+
+    /// Inject the adapter's selected model into an ACP params object over the
+    /// `_meta.model` extension channel. No-op when the adapter selects no model
+    /// or `params` is not a JSON object.
+    fn apply_model_meta(&self, params: &mut JsonValue) {
+        let Some(model) = self.adapter.default_model() else {
+            return;
+        };
+        let Some(object) = params.as_object_mut() else {
+            return;
+        };
+        let meta = object
+            .entry("_meta")
+            .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+        if let Some(meta) = meta.as_object_mut() {
+            meta.insert("model".to_string(), JsonValue::String(model.to_string()));
+        }
+    }
+
+    fn session_params_with_model(&self, request: &ExternalAgentRequest) -> JsonValue {
+        let mut params = session_params(request);
+        self.apply_model_meta(&mut params);
+        params
     }
 
     pub async fn readiness_with_env(
@@ -496,7 +525,7 @@ impl AcpStdioHarness {
         let session_result = process
             .request(
                 session_method(&request.session),
-                session_params(request),
+                self.session_params_with_model(request),
                 host,
                 AcpRequestContext {
                     request,
@@ -530,19 +559,21 @@ impl AcpStdioHarness {
                 .await?;
         }
 
+        let mut prompt_params = json!({
+            "sessionId": session
+                .external_session_id
+                .as_deref()
+                .unwrap_or_default(),
+            "prompt": [{
+                "type": "text",
+                "text": request.task.clone(),
+            }],
+        });
+        self.apply_model_meta(&mut prompt_params);
         process
             .request(
                 "session/prompt",
-                json!({
-                    "sessionId": session
-                        .external_session_id
-                        .as_deref()
-                        .unwrap_or_default(),
-                    "prompt": [{
-                        "type": "text",
-                        "text": request.task.clone(),
-                    }],
-                }),
+                prompt_params,
                 host,
                 AcpRequestContext {
                     request,
@@ -2601,6 +2632,66 @@ for line in sys.stdin:
         assert_eq!(
             grok_build.descriptor().command.args,
             ["--no-auto-update", "agent", "stdio"]
+        );
+    }
+
+    #[test]
+    fn cursor_harness_advertises_composer_2_5_over_session_meta() {
+        let harness = cursor_acp_harness().expect("cursor harness");
+        let request =
+            ExternalAgentRequest::new("cursor", "inspect README", "/repo", ExternalAgentMode::Plan);
+
+        // session/new (and session/load) carry the model over `_meta.model`.
+        let params = harness.session_params_with_model(&request);
+        assert_eq!(
+            params.pointer("/_meta/model"),
+            Some(&JsonValue::String("composer-2.5".to_string()))
+        );
+
+        // session/prompt carries the model too, without disturbing the prompt.
+        let mut prompt = json!({
+            "sessionId": "sess-1",
+            "prompt": [{"type": "text", "text": "inspect README"}],
+        });
+        harness.apply_model_meta(&mut prompt);
+        assert_eq!(
+            prompt.pointer("/_meta/model"),
+            Some(&JsonValue::String("composer-2.5".to_string()))
+        );
+        assert_eq!(
+            prompt.pointer("/prompt/0/text"),
+            Some(&JsonValue::String("inspect README".to_string()))
+        );
+    }
+
+    #[test]
+    fn cursor_harness_ready_readiness_reports_model_version() {
+        let harness = cursor_acp_harness().expect("cursor harness");
+
+        let readiness = harness.runtime_ready_readiness(Path::new("/usr/bin/cursor-agent"));
+
+        assert_eq!(readiness.version, Some("composer-2.5".to_string()));
+    }
+
+    #[test]
+    fn grok_build_harness_leaves_session_params_without_model_meta() {
+        let harness = grok_build_acp_harness().expect("grok-build harness");
+        let request = ExternalAgentRequest::new(
+            "grok-build",
+            "inspect README",
+            "/repo",
+            ExternalAgentMode::Plan,
+        );
+
+        let params = harness.session_params_with_model(&request);
+
+        assert_eq!(params, session_params(&request));
+        assert!(params.get("_meta").is_none());
+        assert!(
+            harness
+                .runtime_ready_readiness(Path::new("/usr/bin/grok"))
+                .version
+                .is_none()
         );
     }
 

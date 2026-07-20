@@ -32,6 +32,12 @@ pub const ACP_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// list. `cached_token` is the ACP-standard non-interactive method.
 pub const DEFAULT_ACP_AUTH_METHODS: &[&str] = &["cached_token"];
 
+/// Canonical label for Cursor's Composer 2.5 model.
+///
+/// Advertised to the Cursor ACP agent so a run selects Composer 2.5 rather than
+/// falling back to the agent's own session default.
+pub const CURSOR_COMPOSER_2_5_MODEL: &str = "composer-2.5";
+
 /// A subprocess readiness probe run after a vendor program resolves on `PATH`
 /// but before Codewith opens a session.
 ///
@@ -118,6 +124,23 @@ pub trait AcpAgentAdapter: Send + Sync {
     fn readiness_probe(&self) -> Option<AcpReadinessProbe> {
         None
     }
+
+    /// Runtime/model label advertised to the ACP agent for a run, if the vendor
+    /// exposes a selectable model.
+    ///
+    /// Core ACP has no first-class model field, so the harness carries this over
+    /// the protocol's `_meta` extension channel on `session/new`,
+    /// `session/load`, and `session/prompt`, and surfaces it as the runtime
+    /// version in readiness. `None` (the default) leaves the agent's own default
+    /// model in place.
+    ///
+    /// Note: the exact per-vendor `_meta` wire format is not standardized. For
+    /// Cursor specifically, model selection rides on ACP session metadata and a
+    /// non-fast tier request (e.g. standard Composer 2.5) can currently land as
+    /// the fast variant upstream; adapters should treat this as best-effort.
+    fn default_model(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Default Codewith-mode to ACP-`modeId` mapping shared by adapters that do not
@@ -130,6 +153,23 @@ pub fn default_acp_mode_id(mode: ExternalAgentMode) -> Option<&'static str> {
 }
 
 /// Built-in reference adapter for Cursor's ACP agent.
+///
+/// Cursor is driven ACP-first: Codewith speaks to Cursor's `agent acp` server
+/// over stdio (falling back to the `cursor-agent` wrapper) and mediates every
+/// file, terminal, and MCP action through its own approval and sandbox paths.
+/// The adapter selects Cursor's Composer 2.5 model
+/// ([`CURSOR_COMPOSER_2_5_MODEL`]) as the default runtime/model label and
+/// prefers the non-interactive `cursor_login` / `cached_token` auth methods. The
+/// paired runtime descriptor keeps the run conservative (plan/propose only, no
+/// direct project mutation).
+///
+/// # Deferred `@cursor/sdk` local execution
+///
+/// Cursor also ships an `@cursor/sdk` that can run the agent locally with direct
+/// tool access. That high-trust delegate path is intentionally **not** wired
+/// here: it stays deferred behind a future explicit opt-in until bypass tests
+/// prove it enforces the same approval and sandbox guarantees as this mediated
+/// ACP path. Until then the ACP flow is the only way Codewith reaches Cursor.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CursorAcpAdapter;
 
@@ -155,6 +195,10 @@ impl AcpAgentAdapter for CursorAcpAdapter {
 
     fn readiness_probe(&self) -> Option<AcpReadinessProbe> {
         Some(AcpReadinessProbe::new(["--help"]))
+    }
+
+    fn default_model(&self) -> Option<&'static str> {
+        Some(CURSOR_COMPOSER_2_5_MODEL)
     }
 }
 
@@ -239,6 +283,7 @@ mod tests {
         assert_eq!(adapter.mode_id(ExternalAgentMode::Plan), Some("plan"));
         assert_eq!(adapter.mode_id(ExternalAgentMode::Propose), None);
         assert!(adapter.readiness_probe().is_none());
+        assert_eq!(adapter.default_model(), None);
     }
 
     #[test]
@@ -266,6 +311,23 @@ mod tests {
     }
 
     #[test]
+    fn cursor_adapter_defaults_to_composer_2_5_model() {
+        let adapter = CursorAcpAdapter;
+
+        assert_eq!(adapter.default_model(), Some("composer-2.5"));
+        assert_eq!(adapter.default_model(), Some(CURSOR_COMPOSER_2_5_MODEL));
+        // Cursor's descriptor stays conservative: plan/propose only, never a
+        // direct-mutation managed mode.
+        let descriptor =
+            find_external_agent_runtime("cursor").unwrap_or_else(|| panic!("cursor runtime"));
+        assert!(
+            !descriptor
+                .supported_modes
+                .contains(&ExternalAgentMode::Managed)
+        );
+    }
+
+    #[test]
     fn grok_build_adapter_forwards_xai_auth() {
         let adapter = GrokBuildAcpAdapter;
 
@@ -276,6 +338,8 @@ mod tests {
             &["cached_token", "xai.api_key"]
         );
         assert!(adapter.readiness_probe().is_none());
+        // Grok Build has no bespoke model label; it uses the agent default.
+        assert_eq!(adapter.default_model(), None);
     }
 
     #[test]
