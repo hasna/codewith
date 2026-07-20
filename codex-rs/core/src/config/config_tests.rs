@@ -445,6 +445,7 @@ web_search = true
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            policy: None,
         })
     );
 }
@@ -464,6 +465,7 @@ web_search = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            policy: None,
         })
     );
 }
@@ -482,6 +484,7 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
+            policy: None,
         })
     );
 }
@@ -501,6 +504,7 @@ enabled = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
+            policy: None,
         })
     );
 }
@@ -515,6 +519,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
                 experimental_request_user_input: Some(ExperimentalRequestUserInput {
                     enabled: false,
                 }),
+                policy: None,
             }),
             ..ConfigToml::default()
         },

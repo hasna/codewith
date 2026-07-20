@@ -739,6 +739,22 @@ pub struct RealtimeAudioToml {
     pub speaker: Option<String>,
 }
 
+/// Hardened tool-exposure policy for the model toolset.
+///
+/// Selecting a policy switches Codewith into a native AuthCapsule enforcement
+/// mode. This is a first-class configuration key so that a `--strict-config`
+/// launch accepts `-c tools.policy="infinity-agent"` (or `[tools] policy =
+/// "infinity-agent"`) instead of rejecting it as an unknown field.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolsPolicy {
+    /// Infinity subscription AuthCapsule policy. Removes host filesystem tools,
+    /// host shell tools, and auth-profile control from the model toolset and
+    /// mediates every surviving tool call through the protected remote-tool
+    /// bridge. See `Config::tools_policy` and the tool planner for enforcement.
+    InfinityAgent,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ToolsToml {
@@ -748,6 +764,9 @@ pub struct ToolsToml {
     )]
     pub web_search: Option<WebSearchToolConfig>,
     pub experimental_request_user_input: Option<ExperimentalRequestUserInput>,
+    /// Optional hardened tool-exposure policy (e.g. the Infinity AuthCapsule
+    /// `infinity-agent` policy). `None` preserves default tool exposure.
+    pub policy: Option<ToolsPolicy>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

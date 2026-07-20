@@ -316,6 +316,12 @@ enum DebugSubcommand {
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
 
+    /// Print the native AuthCapsule policy capability document as JSON.
+    ///
+    /// Consumed by the Infinity subscription lane's native-policy probe to prove
+    /// this binary enforces the `infinity-agent` AuthCapsule policy.
+    AuthCapsulePolicy(DebugAuthCapsulePolicyCommand),
+
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
     TraceReduce(DebugTraceReduceCommand),
@@ -323,6 +329,20 @@ enum DebugSubcommand {
     /// Internal: reset local memory state for a fresh start.
     #[clap(hide = true)]
     ClearMemories,
+}
+
+#[derive(Debug, Parser)]
+struct DebugAuthCapsulePolicyCommand {
+    /// Output format for the capability document.
+    #[arg(long = "format", value_enum, default_value_t = DebugOutputFormat::Json)]
+    format: DebugOutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum DebugOutputFormat {
+    #[default]
+    Json,
 }
 
 #[derive(Debug, Parser)]
@@ -1854,6 +1874,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 )?;
                 run_debug_clear_memories_command(&root_config_overrides).await?;
             }
+            DebugSubcommand::AuthCapsulePolicy(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug auth-capsule-policy",
+                )?;
+                run_debug_auth_capsule_policy_command(cmd)?;
+            }
         },
         Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
             ExecpolicySubcommand::Check(cmd) => {
@@ -2369,6 +2397,24 @@ async fn run_debug_models_command(
 
     serde_json::to_writer(std::io::stdout(), &catalog)?;
     println!();
+    Ok(())
+}
+
+/// Emit the native AuthCapsule policy capability document for the Infinity
+/// subscription lane's native-policy probe. The document reports capabilities the
+/// binary actually enforces (host filesystem tools, host shell tools, and
+/// auth-profile control are removed under `tools.policy = "infinity-agent"`).
+///
+/// The document is written as a single JSON object to stdout with nothing else on
+/// stdout, so the probe's `parseStrictJson(stdout.trim())` succeeds.
+fn run_debug_auth_capsule_policy_command(cmd: DebugAuthCapsulePolicyCommand) -> anyhow::Result<()> {
+    let capabilities = codex_config::AuthCapsulePolicyCapabilities::infinity_agent();
+    match cmd.format {
+        DebugOutputFormat::Json => {
+            serde_json::to_writer(std::io::stdout(), &capabilities)?;
+            println!();
+        }
+    }
     Ok(())
 }
 

@@ -197,9 +197,24 @@ fn build_model_visible_specs_and_registry(
     planned_tools: PlannedTools,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
     let PlannedTools {
-        runtimes,
+        mut runtimes,
         hosted_specs,
     } = planned_tools;
+    // Protected remote-tool bridge choke point (AuthCapsule infinity-agent
+    // policy): reduce the toolset to the explicit allowlist of policy-safe tools.
+    // This drops every non-allowlisted tool from BOTH the model-visible specs and
+    // the dispatch registry, so a task has no in-binary path to host filesystem,
+    // host shell, auth-profile, or host-process access regardless of which tool
+    // sources ran above.
+    let infinity_agent = infinity_agent_policy_active(turn_context);
+    if infinity_agent {
+        runtimes.retain(|runtime| infinity_agent_tool_allowed(&runtime.tool_name()));
+    }
+    let hosted_specs = if infinity_agent {
+        Vec::new()
+    } else {
+        hosted_specs
+    };
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
     for runtime in &runtimes {
@@ -629,8 +644,57 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
                 .enabled(Feature::StandaloneWebSearch))
 }
 
+/// True when the hardened `infinity-agent` AuthCapsule tool policy is active.
+///
+/// Under this policy the model gets no host filesystem tools, no host shell
+/// tools, and no auth-profile control; surviving tool calls are mediated by the
+/// protected remote-tool bridge.
+fn infinity_agent_policy_active(turn_context: &TurnContext) -> bool {
+    matches!(
+        turn_context.config.tools_policy,
+        Some(codex_config::config_toml::ToolsPolicy::InfinityAgent)
+    )
+}
+
+/// Allowlist of tools permitted under the `infinity-agent` AuthCapsule policy.
+///
+/// This is the authoritative boundary enforced by the protected remote-tool
+/// bridge choke point in [`build_model_visible_specs_and_registry`]: under the
+/// policy, ONLY these plain, in-process, no-host-access control tools survive.
+/// Every other tool — host filesystem tools (`apply_patch`, `view_image`), host
+/// shell tools (`exec_command`/`write_stdin`/`shell_command`), auth-profile
+/// control (`manage_auth_profiles`/`get_usage`), MCP/extension/dynamic host
+/// executors, code-mode, agent/CSV spawn jobs, plugin install, tool search, and
+/// hosted web/image tools — is removed from both the model-visible specs and the
+/// dispatch registry. Host-affecting effects must be brokered externally through
+/// the Infinity remote-tool bridge. Keep this list minimal; adding a tool here
+/// asserts it cannot read the host filesystem, spawn host processes, or touch
+/// credentials.
+///
+/// MAINTENANCE INVARIANT: this allowlist is the authoritative security boundary
+/// for the infinity-agent policy. Any new host-capable tool is denied by default
+/// (it will simply not be on the list), but do not add a tool here without
+/// re-confirming it is host-safe. The `infinity_agent_allowlist_excludes_host_access`
+/// test guards representative host tool names; keep it in sync with new tools.
+const INFINITY_AGENT_TOOL_ALLOWLIST: &[&str] = &["update_plan", "rename_session"];
+
+/// Whether `tool_name` is permitted under the infinity-agent policy. Namespaced
+/// tools (MCP servers, extensions) are never allowed — only plain control tools
+/// on [`INFINITY_AGENT_TOOL_ALLOWLIST`].
+fn infinity_agent_tool_allowed(tool_name: &ToolName) -> bool {
+    tool_name.namespace.is_none()
+        && INFINITY_AGENT_TOOL_ALLOWLIST.contains(&tool_name.name.as_str())
+}
+
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.turn_context;
+    // The infinity-agent AuthCapsule policy removes every host shell tool
+    // (exec_command, write_stdin, shell_command). Because there is no native
+    // read_file/grep tool, this also removes the model's only host-filesystem
+    // read path via the shell. Effects must go through the remote-tool bridge.
+    if infinity_agent_policy_active(turn_context) {
+        return;
+    }
     let features = turn_context.features.get();
     let environment_mode = turn_context.tool_environment_mode();
     if !environment_mode.has_environment() {
@@ -695,8 +759,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
     planned_tools.add(RenameSessionHandler);
-    planned_tools.add(ManageAuthProfilesHandler);
-    planned_tools.add(GetUsageHandler);
+    // Auth-profile control is forbidden under the infinity-agent policy: the
+    // model may not list, inspect usage of, or switch credential profiles.
+    if !infinity_agent_policy_active(turn_context) {
+        planned_tools.add(ManageAuthProfilesHandler);
+        planned_tools.add(GetUsageHandler);
+    }
     if loop_tools_enabled(turn_context) {
         planned_tools.add(ManageLoopHandler);
         planned_tools.add(ManageMonitorHandler);
@@ -725,7 +793,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
+    if environment_mode.has_environment()
+        && turn_context.model_info.apply_patch_tool_type.is_some()
+        && !infinity_agent_policy_active(turn_context)
     {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ApplyPatchHandler::new(include_environment_id));
@@ -740,7 +810,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add(TestSyncHandler);
     }
 
-    if environment_mode.has_environment() {
+    if environment_mode.has_environment() && !infinity_agent_policy_active(turn_context) {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(

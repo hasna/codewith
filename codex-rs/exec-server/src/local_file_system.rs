@@ -87,6 +87,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<AbsolutePathBuf> {
+        enforce_read_not_denied(path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.canonicalize(path, sandbox).await
     }
@@ -108,6 +109,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<u8>> {
+        enforce_read_not_denied(path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.read_file(path, sandbox).await
     }
@@ -117,6 +119,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<u8>> {
+        enforce_read_not_denied(path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system
             .read_file_without_following_symlinks(path, sandbox)
@@ -148,6 +151,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<FileMetadata> {
+        enforce_read_not_denied(path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.get_metadata(path, sandbox).await
     }
@@ -157,6 +161,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         path: &AbsolutePathBuf,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<ReadDirectoryEntry>> {
+        enforce_read_not_denied(path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.read_directory(path, sandbox).await
     }
@@ -178,6 +183,7 @@ impl ExecutorFileSystem for LocalFileSystem {
         options: CopyOptions,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<()> {
+        enforce_read_not_denied(source_path, sandbox)?;
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system
             .copy(source_path, destination_path, options, sandbox)
@@ -522,6 +528,37 @@ impl ExecutorFileSystem for DirectFileSystem {
     }
 }
 
+/// Fail-closed, defense-in-depth read guard for the tool file-access layer.
+///
+/// Blocks the model's file tools from reading any path the sandbox context's
+/// policy denies (`deny_read`), independent of whether the platform sandbox is
+/// engaged. It runs before dispatch to either the sandboxed or the unsandboxed
+/// backend, so a `deny_read` on the auth-profile credential store is honored on
+/// the unsandboxed path too (where bwrap masking would not run). Codewith's own
+/// credential loading uses `std::fs` directly and never flows through here, so
+/// authentication keeps working while model-driven tool reads are blocked.
+///
+/// Structural limitation (not a model-reachable bypass under infinity-agent): the
+/// deny is path-based, so a pre-existing hardlink to a denied file placed at a
+/// non-denied path would not be caught by canonicalization (hardlinks have no
+/// resolvable target). Under infinity-agent the model has no tool that can create
+/// such a hardlink, so this is not exploitable; prefer denying the whole
+/// credential directory subtree (as done for auth_profiles) over individual files.
+fn enforce_read_not_denied(
+    path: &AbsolutePathBuf,
+    sandbox: Option<&FileSystemSandboxContext>,
+) -> io::Result<()> {
+    if let Some(sandbox) = sandbox
+        && sandbox.is_read_denied(path.as_path())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "read denied by filesystem sandbox policy (deny_read)",
+        ));
+    }
+    Ok(())
+}
+
 fn reject_sandbox_context(sandbox: Option<&FileSystemSandboxContext>) -> io::Result<()> {
     if sandbox.is_some() {
         return Err(io::Error::new(
@@ -806,6 +843,103 @@ mod tests {
             resolved,
             resolve_existing_path(temp_dir.path())?.join("secret.txt")
         );
+        Ok(())
+    }
+
+    /// SECURITY: the `deny_read` guard must prevent a model task from reading the
+    /// AuthCapsule credential store (`$CODEWITH_HOME/auth_profiles`) through the
+    /// tool file-access layer — including symlink, `..`, and directory spellings —
+    /// while Codewith's own credential loading (plain `std::fs`, outside this
+    /// layer) keeps working so it can still authenticate.
+    #[tokio::test]
+    async fn deny_read_blocks_auth_profiles_while_direct_read_still_works() -> io::Result<()> {
+        use codex_protocol::models::PermissionProfile;
+        use codex_protocol::permissions::FileSystemAccessMode;
+        use codex_protocol::permissions::FileSystemPath;
+        use codex_protocol::permissions::FileSystemSandboxEntry;
+        use codex_protocol::permissions::FileSystemSandboxPolicy;
+        use codex_protocol::permissions::NetworkSandboxPolicy;
+
+        // Simulate CODEWITH_HOME with an auth-profile credential store.
+        let codex_home = tempfile::TempDir::new()?;
+        let auth_profiles_dir = codex_home.path().join("auth_profiles");
+        let profile_dir = auth_profiles_dir.join("main");
+        std::fs::create_dir_all(&profile_dir)?;
+        let token_file = profile_dir.join("auth.json");
+        let secret = b"SUBSCRIPTION-TOKEN-PLACEHOLDER".to_vec();
+        std::fs::write(&token_file, &secret)?;
+
+        // A workspace file the task IS allowed to read.
+        let workspace = tempfile::TempDir::new()?;
+        let allowed_file = workspace.path().join("notes.txt");
+        std::fs::write(&allowed_file, b"ok")?;
+
+        // Build the infinity-agent-equivalent policy: read-only + deny_read on the
+        // credential store, exactly as `apply_infinity_agent_credential_deny` emits.
+        let auth_profiles_abs = AbsolutePathBuf::from_absolute_path(&auth_profiles_dir)?;
+        let mut fs_policy = FileSystemSandboxPolicy::read_only();
+        fs_policy.entries.push(FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: auth_profiles_abs,
+            },
+            access: FileSystemAccessMode::Deny,
+        });
+        let profile = PermissionProfile::from_runtime_permissions(
+            &fs_policy,
+            NetworkSandboxPolicy::Restricted,
+        );
+        let cwd = AbsolutePathBuf::from_absolute_path(workspace.path())?;
+        let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(profile, cwd);
+
+        let fs = LocalFileSystem::unsandboxed();
+        let token_abs = AbsolutePathBuf::from_absolute_path(&token_file)?;
+
+        // 1) End-to-end: the model's file tool cannot read the subscription token.
+        let denied = fs.read_file(&token_abs, Some(&sandbox)).await;
+        assert_eq!(
+            denied.as_ref().err().map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied),
+            "expected deny_read to block the token read, got {denied:?}"
+        );
+        // The tool-layer guard itself denies the read directly.
+        assert_eq!(
+            enforce_read_not_denied(&token_abs, Some(&sandbox))
+                .err()
+                .map(|err| err.kind()),
+            Some(io::ErrorKind::PermissionDenied),
+        );
+
+        // 2) Bypass attempts are also blocked (the matcher canonicalizes):
+        //    a) a symlink that points into the credential store,
+        let link = workspace.path().join("sneaky");
+        symlink(&auth_profiles_dir, &link)?;
+        let via_symlink = AbsolutePathBuf::from_absolute_path(link.join("main").join("auth.json"))?;
+        assert!(
+            sandbox.is_read_denied(via_symlink.as_path()),
+            "symlink into the credential store must be denied"
+        );
+        //    b) a `..` traversal that resolves back into the store,
+        let via_dotdot = AbsolutePathBuf::from_absolute_path(
+            profile_dir.join("..").join("main").join("auth.json"),
+        )?;
+        assert!(
+            sandbox.is_read_denied(via_dotdot.as_path()),
+            "`..` traversal into the credential store must be denied"
+        );
+        //    c) the credential directory itself.
+        let dir_abs = AbsolutePathBuf::from_absolute_path(&auth_profiles_dir)?;
+        assert!(sandbox.is_read_denied(dir_abs.as_path()));
+
+        // 3) An allowed workspace path is NOT denied by the guard.
+        let allowed_abs = AbsolutePathBuf::from_absolute_path(&allowed_file)?;
+        assert!(!sandbox.is_read_denied(allowed_abs.as_path()));
+        assert!(enforce_read_not_denied(&allowed_abs, Some(&sandbox)).is_ok());
+
+        // 4) Codewith's own auth loader reads via `std::fs` (outside the tool
+        //    layer) and is unaffected: the token is still readable, so
+        //    authentication keeps working.
+        assert_eq!(std::fs::read(&token_file)?, secret);
+
         Ok(())
     }
 }
