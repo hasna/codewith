@@ -720,7 +720,10 @@ fn ensure_private_dir_mode(path: &Path) -> std::io::Result<()> {
 /// preflight/health runners.
 #[cfg(unix)]
 fn is_read_only_fs_error(err: &std::io::Error) -> bool {
-    matches!(err.kind(), ErrorKind::ReadOnlyFilesystem | ErrorKind::PermissionDenied)
+    matches!(
+        err.kind(),
+        ErrorKind::ReadOnlyFilesystem | ErrorKind::PermissionDenied
+    )
 }
 
 fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {

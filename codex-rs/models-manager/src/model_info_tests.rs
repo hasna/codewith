@@ -124,7 +124,13 @@ fn openai_gpt_4_1_family_falls_back_to_documented_context_window() {
 fn openai_gpt_5_x_falls_back_to_documented_context_window() {
     // Even when a current GPT-5.x model is missing from the live catalog, the
     // known-model fallback must not pin it to the stale 272k window.
-    for slug in ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+    for slug in [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ] {
         let model = model_info_from_slug_for_provider(slug, Some("openai"));
         assert_eq!(
             model.context_window,

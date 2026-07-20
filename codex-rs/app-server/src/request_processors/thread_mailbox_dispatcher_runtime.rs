@@ -1209,8 +1209,8 @@ mod tests {
 
     #[test]
     fn local_active_fresh_after_tolerates_short_stalls() {
-        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, /*nsecs*/ 0)
-            .expect("valid timestamp");
+        let now =
+            DateTime::<Utc>::from_timestamp(1_700_000_000, /*nsecs*/ 0).expect("valid timestamp");
         let window = now - mailbox_local_active_fresh_after(now);
         assert!(
             window.num_seconds() >= 30,

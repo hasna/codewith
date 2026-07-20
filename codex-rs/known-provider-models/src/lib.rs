@@ -277,9 +277,7 @@ pub fn metadata_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), ZAI_PROVIDER_ID) => {
             zai::metadata(slug)
         }
-        Some(provider_id)
-            if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) =>
-        {
+        Some(provider_id) if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) => {
             openai::metadata(slug)
         }
         Some(_) => None,
@@ -440,9 +438,7 @@ pub fn reasoning_levels_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), ZAI_PROVIDER_ID) => {
             zai::reasoning_levels(slug)
         }
-        Some(provider_id)
-            if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) =>
-        {
+        Some(provider_id) if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) => {
             openai::reasoning_levels(slug)
         }
         Some(_) => no_reasoning_levels(),
@@ -1017,11 +1013,8 @@ mod tests {
     #[test]
     fn openai_gpt_4_1_family_uses_documented_context_window() {
         let expected = Some(KnownProviderModelMetadata::new(
-            "GPT-4.1",
-            /*context_window*/ 1_047_576,
-            /*supports_tools*/ true,
-            /*supports_parallel_tool_calls*/ true,
-            /*supports_reasoning*/ false,
+            "GPT-4.1", /*context_window*/ 1_047_576, /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true, /*supports_reasoning*/ false,
         ));
 
         assert_eq!(
@@ -1038,7 +1031,10 @@ mod tests {
                 metadata.context_window, 1_047_576,
                 "{slug} should report the documented GPT-4.1 context window"
             );
-            assert!(!metadata.supports_reasoning, "{slug} is not a reasoning model");
+            assert!(
+                !metadata.supports_reasoning,
+                "{slug} is not a reasoning model"
+            );
         }
 
         // GPT-4.1 models are not reasoning models, so no effort presets are exposed.
