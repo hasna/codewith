@@ -129,8 +129,11 @@ impl ScheduleStore {
         let schedule_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let spec = schedule_bindings(&params.schedule);
+        let cron_expression = spec.cron_expression.map(redact_state_string);
         let auth_profile_recorded = auth_profile.is_some();
-        let auth_profile = auth_profile.flatten();
+        let auth_profile = auth_profile.flatten().map(redact_state_string);
+        let prompt = redact_state_string(params.prompt);
+        let timezone = redact_state_string(params.timezone);
         let sql = schedule_returning(
             r#"
 INSERT INTO thread_schedules (
@@ -162,12 +165,12 @@ RETURNING
             .bind(nesting.parent_schedule_id)
             .bind(nesting.nesting_depth)
             .bind(params.prompt_source.as_str())
-            .bind(params.prompt)
+            .bind(prompt)
             .bind(spec.kind)
             .bind(spec.interval_amount)
             .bind(spec.interval_unit)
-            .bind(spec.cron_expression)
-            .bind(params.timezone)
+            .bind(cron_expression)
+            .bind(timezone)
             .bind(if auth_profile_recorded { 1_i64 } else { 0_i64 })
             .bind(auth_profile)
             .bind(params.status.as_str())
@@ -262,6 +265,9 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let next_run_at = update.next_run_at.unwrap_or(existing.next_run_at);
         let expires_at = update.expires_at.unwrap_or(existing.expires_at);
         let spec = schedule_bindings(&schedule);
+        let prompt = redact_state_string(prompt);
+        let timezone = redact_state_string(timezone);
+        let cron_expression = spec.cron_expression.map(redact_state_string);
         let sql = schedule_returning(
             r#"
 UPDATE thread_schedules
@@ -288,7 +294,7 @@ RETURNING
             .bind(spec.kind)
             .bind(spec.interval_amount)
             .bind(spec.interval_unit)
-            .bind(spec.cron_expression)
+            .bind(cron_expression)
             .bind(timezone)
             .bind(status.as_str())
             .bind(next_run_at.map(datetime_to_epoch_millis))
@@ -1020,7 +1026,7 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
             "#,
         )
         .bind(crate::ThreadScheduleRunStatus::Deferred.as_str())
-        .bind(error)
+        .bind(redact_state_string(error))
         .bind(completed_at_ms)
         .bind(schedule_id)
         .bind(run_id)
@@ -1105,6 +1111,7 @@ WHERE schedule_id = ? AND lease_id = ?
                 (crate::ThreadScheduleRunStatus::Failed, Some(error.as_str()))
             }
         };
+        let error = error.map(redact_state_string);
         let run_result = sqlx::query(
             r#"
 UPDATE thread_schedule_runs
