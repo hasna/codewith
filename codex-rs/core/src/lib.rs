@@ -16,6 +16,7 @@ mod responses_retry;
 pub(crate) mod session;
 pub use session::SteerInputError;
 mod codex_thread;
+mod compact_model_fallback;
 mod compact_remote;
 mod compact_remote_v2;
 mod config_lock;
