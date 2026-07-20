@@ -72,7 +72,7 @@ struct LegacyManagedWorktreePathRow {
 pub(crate) async fn backfill_legacy_managed_worktree_path_keys(
     pool: &SqlitePool,
 ) -> anyhow::Result<ManagedWorktreePathKeyBackfillOutcome> {
-    backfill_legacy_managed_worktree_path_keys_with_hook(pool, None).await
+    backfill_legacy_managed_worktree_path_keys_with_hook(pool, /*read_hook*/ None).await
 }
 
 async fn backfill_legacy_managed_worktree_path_keys_with_hook(
