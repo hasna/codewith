@@ -26,6 +26,7 @@ use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
+use codex_config::config_toml::ToolsPolicy;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::GoalsAutoExecuteToml;
 use codex_config::config_toml::GoalsConfigToml;
@@ -1072,6 +1073,13 @@ pub struct Config {
 
     /// Effective permission configuration for shell tool execution.
     pub permissions: Permissions,
+
+    /// Active hardened tool-exposure policy (`tools.policy`). When
+    /// `Some(ToolsPolicy::InfinityAgent)` the tool planner removes host
+    /// filesystem tools, host shell tools, and auth-profile control from the
+    /// model toolset and routes surviving tool calls through the protected
+    /// remote-tool bridge.
+    pub tools_policy: Option<ToolsPolicy>,
 
     /// Whether config explicitly selected named permissions profiles instead
     /// of the legacy `sandbox_mode` syntax.
@@ -2768,6 +2776,44 @@ fn apply_managed_filesystem_constraints(
     }
 }
 
+/// Deny the model's file/shell tools from reading Codewith's on-disk
+/// auth-profile credential store while the `infinity-agent` policy is active.
+///
+/// This is defense-in-depth: `infinity-agent` already removes host filesystem
+/// and host shell tools entirely, but any surviving or future path-bearing tool
+/// is still blocked from the credential directory. Codewith's own authentication
+/// reads these files directly in the host process (see
+/// `login/src/auth/profile.rs`), outside the tool/sandbox layer, so it keeps
+/// working; only model-driven tools are denied.
+fn apply_infinity_agent_credential_deny(
+    file_system_sandbox_policy: &mut FileSystemSandboxPolicy,
+    codex_home: &AbsolutePathBuf,
+) {
+    // Matches `AUTH_PROFILES_DIR` in `login/src/auth/profile.rs`.
+    let auth_profiles = codex_home.join("auth_profiles");
+    let deny_entry = codex_protocol::permissions::FileSystemSandboxEntry {
+        path: codex_protocol::permissions::FileSystemPath::Path {
+            path: auth_profiles,
+        },
+        access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+    };
+    if !file_system_sandbox_policy
+        .entries
+        .iter()
+        .any(|existing| existing == &deny_entry)
+    {
+        file_system_sandbox_policy.entries.push(deny_entry);
+    }
+    // deny_read is only honored on a Restricted policy (`has_denied_read_restrictions`
+    // requires `Restricted`). Guarantee the effective policy is Restricted so an
+    // unrestricted sandbox (e.g. `--sandbox danger-full-access`) cannot silently
+    // void the credential deny. `preserve_deny_read_restrictions_from` upgrades an
+    // Unrestricted policy to Restricted when deny entries are present, and is a
+    // no-op when the policy is already Restricted.
+    let reference = file_system_sandbox_policy.clone();
+    file_system_sandbox_policy.preserve_deny_read_restrictions_from(&reference);
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -2849,6 +2895,10 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
         .as_ref()
         .and_then(|tools| tools.experimental_request_user_input.as_ref())
         .is_none_or(|config| config.enabled)
+}
+
+fn resolve_tools_policy(config_toml: &ConfigToml) -> Option<ToolsPolicy> {
+    config_toml.tools.as_ref().and_then(|tools| tools.policy)
 }
 
 fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
@@ -3631,6 +3681,7 @@ impl Config {
         let web_search_config = resolve_web_search_config(&cfg);
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
+        let tools_policy = resolve_tools_policy(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let apps_mcp_path_override = if features.enabled(Feature::AppsMcpPathOverride) {
@@ -4018,6 +4069,12 @@ impl Config {
                 filesystem_requirements,
             );
         }
+        if tools_policy == Some(ToolsPolicy::InfinityAgent) {
+            apply_infinity_agent_credential_deny(
+                &mut effective_file_system_sandbox_policy,
+                &codex_home,
+            );
+        }
         let effective_file_system_sandbox_policy = effective_file_system_sandbox_policy
             .with_additional_readable_roots(resolved_cwd.as_path(), &helper_readable_roots);
         let effective_permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
@@ -4062,6 +4119,7 @@ impl Config {
                 windows_sandbox_mode,
                 windows_sandbox_private_desktop,
             },
+            tools_policy,
             explicit_permission_profile_mode,
             custom_permission_profiles,
             approvals_reviewer: constrained_approvals_reviewer.value(),

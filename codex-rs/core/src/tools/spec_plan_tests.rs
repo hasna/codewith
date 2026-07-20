@@ -1537,3 +1537,98 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         &ToolSpec::ZaiWebSearch { .. }
     ));
 }
+
+/// Honesty guard for the AuthCapsule capability document: the infinity-agent
+/// allowlist must exclude every host-filesystem, host-shell, auth-profile, and
+/// host-process tool, and permit only the policy-safe control tools. This ties
+/// the document's `host_filesystem_tools:false`, `host_shell_tools:false`, and
+/// `auth_profile_control:false` claims to the actual enforcement boundary.
+#[test]
+fn infinity_agent_allowlist_excludes_host_access() {
+    use super::infinity_agent_tool_allowed;
+
+    for denied in [
+        "exec_command",
+        "write_stdin",
+        "shell_command",
+        "apply_patch",
+        "view_image",
+        "manage_auth_profiles",
+        "get_usage",
+        "spawn_agents_on_csv",
+        "read_mcp_resource",
+        "list_mcp_resources",
+        "request_plugin_install",
+        "manage_loop",
+        "manage_schedule",
+    ] {
+        assert!(
+            !infinity_agent_tool_allowed(&ToolName::plain(denied)),
+            "{denied} must not be allowed under the infinity-agent policy"
+        );
+    }
+
+    // Namespaced tools (MCP servers, extensions) are never on the allowlist.
+    assert!(!infinity_agent_tool_allowed(&ToolName::namespaced(
+        "srv__", "read_file"
+    )));
+
+    // Only the policy-safe, no-host-access control tools survive.
+    assert!(infinity_agent_tool_allowed(&ToolName::plain("update_plan")));
+    assert!(infinity_agent_tool_allowed(&ToolName::plain(
+        "rename_session"
+    )));
+}
+
+/// End-to-end: tools that reach the host are registered normally, but under the
+/// infinity-agent policy the planner removes them from both the model-visible
+/// specs and the dispatch registry, leaving only the allowlist.
+#[tokio::test]
+async fn infinity_agent_policy_removes_host_tools_from_plan() {
+    let configure_host_tools = |turn: &mut TurnContext| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    };
+
+    // Baseline (no policy): the host tools are present.
+    let baseline = probe(configure_host_tools).await;
+    baseline.assert_registered_contains(&[
+        "exec_command",
+        "write_stdin",
+        "shell_command",
+        "apply_patch",
+        "manage_auth_profiles",
+        "get_usage",
+        "update_plan",
+        "rename_session",
+    ]);
+
+    // With the infinity-agent policy: every host tool is gone; only the
+    // allowlist survives.
+    let infinity = probe(|turn| {
+        configure_host_tools(turn);
+        update_config(turn, |config| {
+            config.tools_policy = Some(codex_config::config_toml::ToolsPolicy::InfinityAgent);
+        });
+    })
+    .await;
+    infinity.assert_registered_lacks(&[
+        "exec_command",
+        "write_stdin",
+        "shell_command",
+        "apply_patch",
+        "view_image",
+        "manage_auth_profiles",
+        "get_usage",
+    ]);
+    infinity.assert_visible_lacks(&[
+        "exec_command",
+        "write_stdin",
+        "shell_command",
+        "apply_patch",
+        "view_image",
+        "manage_auth_profiles",
+        "get_usage",
+    ]);
+    infinity.assert_registered_contains(&["update_plan", "rename_session"]);
+}
