@@ -1366,6 +1366,7 @@ pub enum EventMsg {
     ExitedReviewMode(ExitedReviewModeEvent),
 
     RawResponseItem(RawResponseItemEvent),
+    RawResponseCompleted(RawResponseCompletedEvent),
 
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
@@ -1711,6 +1712,15 @@ pub struct RawResponseItemEvent {
     pub item: ResponseItem,
 }
 
+/// Exact usage reported by one upstream Responses API completion.
+///
+/// Unlike TokenCountEvent, this is not accumulated, estimated, or replayed.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct RawResponseCompletedEvent {
+    pub response_id: String,
+    pub token_usage: Option<TokenUsage>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct ItemStartedEvent {
     pub thread_id: ThreadId,
@@ -1985,6 +1995,9 @@ pub struct TokenUsage {
     pub input_tokens: i64,
     #[ts(type = "number")]
     pub cached_input_tokens: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_write_input_tokens: i64,
     #[ts(type = "number")]
     pub output_tokens: i64,
     #[ts(type = "number")]
@@ -2183,6 +2196,7 @@ impl TokenUsage {
     pub fn add_assign(&mut self, other: &TokenUsage) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_write_input_tokens += other.cache_write_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
@@ -5777,6 +5791,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
@@ -5798,6 +5813,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,

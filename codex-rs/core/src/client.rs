@@ -2227,13 +2227,7 @@ where
                 }) => {
                     feedback_tags!(last_model_response_id = &response_id);
                     if let Some(usage) = &token_usage {
-                        session_telemetry.sse_event_completed(
-                            usage.input_tokens,
-                            usage.output_tokens,
-                            Some(usage.cached_input_tokens),
-                            Some(usage.reasoning_output_tokens),
-                            usage.total_tokens,
-                        );
+                        session_telemetry.sse_event_completed(usage);
                     }
                     inference_trace_attempt.record_completed(
                         &response_id,

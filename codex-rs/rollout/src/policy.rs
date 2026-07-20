@@ -122,6 +122,7 @@ pub fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
+        | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::McpToolCallBegin(_)

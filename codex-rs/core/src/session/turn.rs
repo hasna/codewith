@@ -97,6 +97,7 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
+use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::TurnDiffEvent;
@@ -1621,6 +1622,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
+        | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)
         | EventMsg::HookCompleted(_)
@@ -2265,15 +2267,23 @@ async fn try_run_sampling_request(
                 models_manager.refresh_if_new_etag(etag).await;
             }
             ResponseEvent::Completed {
+                response_id,
                 token_usage,
                 end_turn,
-                ..
             } => {
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
                     plan_mode_state.as_mut(),
                     &mut assistant_message_stream_parsers,
+                )
+                .await;
+                sess.send_event(
+                    &turn_context,
+                    EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                        response_id,
+                        token_usage: token_usage.clone(),
+                    }),
                 )
                 .await;
                 sess.record_token_usage_info(&turn_context, token_usage.as_ref())

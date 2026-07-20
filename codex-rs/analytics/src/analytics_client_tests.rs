@@ -349,6 +349,7 @@ fn sample_turn_token_usage_fact(thread_id: &str, turn_id: &str) -> TurnTokenUsag
             total_tokens: 321,
             input_tokens: 123,
             cached_input_tokens: 45,
+            cache_write_input_tokens: 7,
             output_tokens: 140,
             reasoning_output_tokens: 13,
         },
@@ -1953,6 +1954,7 @@ async fn guardian_review_event_ingests_custom_fact_with_optional_target_item() {
                     completed_at: Some(190),
                     input_tokens: None,
                     cached_input_tokens: None,
+                    cache_write_input_tokens: None,
                     output_tokens: None,
                     reasoning_output_tokens: None,
                     total_tokens: None,
@@ -3330,6 +3332,7 @@ fn turn_event_serializes_expected_shape() {
             image_generation_count: None,
             input_tokens: None,
             cached_input_tokens: None,
+            cache_write_input_tokens: None,
             output_tokens: None,
             reasoning_output_tokens: None,
             total_tokens: None,
@@ -3403,6 +3406,7 @@ fn turn_event_serializes_expected_shape() {
                 "image_generation_count": null,
                 "input_tokens": null,
                 "cached_input_tokens": null,
+                "cache_write_input_tokens": null,
                 "output_tokens": null,
                 "reasoning_output_tokens": null,
                 "total_tokens": null,
@@ -3732,6 +3736,10 @@ async fn turn_lifecycle_emits_turn_event() {
     assert_eq!(payload["event_params"]["duration_ms"], json!(1234));
     assert_eq!(payload["event_params"]["input_tokens"], json!(123));
     assert_eq!(payload["event_params"]["cached_input_tokens"], json!(45));
+    assert_eq!(
+        payload["event_params"]["cache_write_input_tokens"],
+        json!(7)
+    );
     assert_eq!(payload["event_params"]["output_tokens"], json!(140));
     assert_eq!(
         payload["event_params"]["reasoning_output_tokens"],
