@@ -837,6 +837,9 @@ pub enum ResponseItem {
 
         call_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        namespace: Option<String>,
         input: String,
     },
     // `custom_tool_call_output.output` uses the same wire encoding as
@@ -1513,6 +1516,18 @@ impl CallToolResult {
     }
 
     pub fn as_function_call_output_payload(&self) -> FunctionCallOutputPayload {
+        let content_items = convert_mcp_content_to_items(&self.content);
+        if content_items.as_ref().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item, FunctionCallOutputContentItem::EncryptedContent { .. }))
+        }) {
+            return FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::ContentItems(content_items.unwrap_or_default()),
+                success: Some(self.success()),
+            };
+        }
+
         if let Some(structured_content) = &self.structured_content
             && !structured_content.is_null()
         {
@@ -1542,8 +1557,6 @@ impl CallToolResult {
             }
         };
 
-        let content_items = convert_mcp_content_to_items(&self.content);
-
         let body = match content_items {
             Some(content_items) => FunctionCallOutputBody::ContentItems(content_items),
             None => FunctionCallOutputBody::Text(serialized_content),
@@ -1563,13 +1576,18 @@ impl CallToolResult {
 fn convert_mcp_content_to_items(
     contents: &[serde_json::Value],
 ) -> Option<Vec<FunctionCallOutputContentItem>> {
+    const CODEX_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";
     const CODEX_IMAGE_DETAIL_META_KEY: &str = "codex/imageDetail";
 
     #[derive(serde::Deserialize)]
     #[serde(tag = "type")]
     enum McpContent {
         #[serde(rename = "text")]
-        Text { text: String },
+        Text {
+            text: String,
+            #[serde(rename = "_meta", default)]
+            meta: Option<serde_json::Value>,
+        },
         #[serde(rename = "image")]
         Image {
             data: String,
@@ -1582,18 +1600,32 @@ fn convert_mcp_content_to_items(
         Unknown,
     }
 
-    let mut saw_image = false;
+    let mut saw_content_item = false;
     let mut items = Vec::with_capacity(contents.len());
 
     for content in contents {
         let item = match serde_json::from_value::<McpContent>(content.clone()) {
-            Ok(McpContent::Text { text }) => FunctionCallOutputContentItem::InputText { text },
+            Ok(McpContent::Text { text, meta }) => {
+                if meta
+                    .as_ref()
+                    .and_then(|meta| meta.get(CODEX_ENCRYPTED_CONTENT_META_KEY))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                {
+                    saw_content_item = true;
+                    FunctionCallOutputContentItem::EncryptedContent {
+                        encrypted_content: text,
+                    }
+                } else {
+                    FunctionCallOutputContentItem::InputText { text }
+                }
+            }
             Ok(McpContent::Image {
                 data,
                 mime_type,
                 meta,
             }) => {
-                saw_image = true;
+                saw_content_item = true;
                 let image_url = if data.starts_with("data:") {
                     data
                 } else {
@@ -1624,7 +1656,7 @@ fn convert_mcp_content_to_items(
         items.push(item);
     }
 
-    if saw_image { Some(items) } else { None }
+    if saw_content_item { Some(items) } else { None }
 }
 
 // Implement Display so callers can treat the payload like a plain string when logging or doing
@@ -2076,6 +2108,68 @@ mod tests {
         })];
 
         assert_eq!(convert_mcp_content_to_items(&contents), None);
+    }
+
+    #[test]
+    fn convert_mcp_content_to_items_marks_encrypted_text() {
+        let contents = vec![
+            serde_json::json!({
+                "type": "text",
+                "text": "Lookup completed",
+            }),
+            serde_json::json!({
+                "type": "text",
+                "text": "gAAAA-test",
+                "_meta": { "codex/encryptedContent": true },
+            }),
+        ];
+
+        let items = convert_mcp_content_to_items(&contents).expect("expected content items");
+        assert_eq!(
+            items,
+            vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "Lookup completed".to_string(),
+                },
+                FunctionCallOutputContentItem::EncryptedContent {
+                    encrypted_content: "gAAAA-test".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn encrypted_content_wins_over_structured_content() {
+        let call_tool_result = CallToolResult {
+            content: vec![
+                serde_json::json!({
+                    "type": "text",
+                    "text": "Lookup completed",
+                }),
+                serde_json::json!({
+                    "type": "text",
+                    "text": "gAAAA-test",
+                    "_meta": { "codex/encryptedContent": true },
+                }),
+            ],
+            structured_content: Some(serde_json::json!({ "encrypted_output": "ignored" })),
+            is_error: Some(false),
+            meta: None,
+        };
+
+        let payload = call_tool_result.into_function_call_output_payload();
+        assert_eq!(payload.success, Some(true));
+        assert_eq!(
+            payload.body,
+            FunctionCallOutputBody::ContentItems(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "Lookup completed".to_string(),
+                },
+                FunctionCallOutputContentItem::EncryptedContent {
+                    encrypted_content: "gAAAA-test".to_string(),
+                },
+            ])
+        );
     }
 
     #[test]

@@ -441,6 +441,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "js_repl".to_string(),
+            namespace: None,
             input: "view_image".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -503,6 +504,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "js_repl".to_string(),
+            namespace: None,
             input: "view_image".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -1043,6 +1045,7 @@ fn remove_first_item_handles_custom_tool_pair() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "my_tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -1341,6 +1344,7 @@ fn normalize_adds_missing_output_for_custom_tool_call() {
         status: None,
         call_id: "tool-x".to_string(),
         name: "custom".to_string(),
+        namespace: None,
         input: "{}".to_string(),
     }];
     let mut h = create_history_with_items(items);
@@ -1355,6 +1359,7 @@ fn normalize_adds_missing_output_for_custom_tool_call() {
                 status: None,
                 call_id: "tool-x".to_string(),
                 name: "custom".to_string(),
+                namespace: None,
                 input: "{}".to_string(),
             },
             ResponseItem::CustomToolCallOutput {
@@ -1460,6 +1465,7 @@ fn normalize_mixed_inserts_and_removals() {
             status: None,
             call_id: "t1".to_string(),
             name: "tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         // Local shell call also gets an inserted function call output
@@ -1499,6 +1505,7 @@ fn normalize_mixed_inserts_and_removals() {
                 status: None,
                 call_id: "t1".to_string(),
                 name: "tool".to_string(),
+                namespace: None,
                 input: "{}".to_string(),
             },
             ResponseItem::CustomToolCallOutput {
@@ -1597,6 +1604,7 @@ fn normalize_adds_missing_output_for_custom_tool_call_panics_in_debug() {
         status: None,
         call_id: "tool-x".to_string(),
         name: "custom".to_string(),
+        namespace: None,
         input: "{}".to_string(),
     }];
     let mut h = create_history_with_items(items);
@@ -1722,6 +1730,7 @@ fn normalize_mixed_inserts_and_removals_panics_in_debug() {
             status: None,
             call_id: "t1".to_string(),
             name: "tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         ResponseItem::LocalShellCall {
