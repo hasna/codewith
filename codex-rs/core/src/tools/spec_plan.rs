@@ -53,6 +53,7 @@ use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
 use crate::tools::hosted_spec::create_web_search_tool;
+use crate::tools::policy::PolicyMode;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -158,8 +159,123 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     params: ToolRouterParams<'_>,
 ) -> ToolRouter {
+    if turn_context.config.is_infinity_agent() {
+        return build_infinity_agent_tool_router(turn_context, params)
+            .unwrap_or_else(ToolRouter::from_policy_error);
+    }
     let (model_visible_specs, registry) = build_tool_specs_and_registry(turn_context, params);
     ToolRouter::from_parts(registry, model_visible_specs)
+}
+
+fn build_infinity_agent_tool_router(
+    turn_context: &TurnContext,
+    params: ToolRouterParams<'_>,
+) -> Result<ToolRouter, String> {
+    let policy = turn_context
+        .config
+        .infinity_agent_policy
+        .as_ref()
+        .ok_or_else(|| "Infinity Agent tool planning has no verified process policy".to_string())?;
+    policy
+        .ensure_active(chrono::Utc::now())
+        .map_err(|error| error.to_string())?;
+    if !namespace_tools_enabled(turn_context) {
+        return Err("Infinity Agent requires a provider with namespace-tool support".to_string());
+    }
+    let ToolRouterParams {
+        mcp_tools,
+        deferred_mcp_tools,
+        discoverable_tools,
+        extension_tool_executors,
+        dynamic_tools,
+    } = params;
+    if discoverable_tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+        || !extension_tool_executors.is_empty()
+    {
+        return Err(
+            "Infinity Agent tool planning received a forbidden extension or discoverable source"
+                .to_string(),
+        );
+    }
+
+    let direct_mcp = mcp_tools.unwrap_or_default();
+    let deferred_mcp = deferred_mcp_tools.unwrap_or_default();
+    let mut planned_tools = PlannedTools::default();
+    match policy.mode() {
+        PolicyMode::DynamicCliOnly => {
+            if !direct_mcp.is_empty() || !deferred_mcp.is_empty() {
+                return Err(
+                    "dynamic-cli-only Infinity Agent policy received an MCP runtime".to_string(),
+                );
+            }
+            policy
+                .validate_dynamic_manifest(dynamic_tools)
+                .map_err(|error| error.to_string())?;
+            for tool in dynamic_tools {
+                let handler = DynamicToolHandler::new(tool).ok_or_else(|| {
+                    format!("failed to construct signed dynamic tool `{}`", tool.name)
+                })?;
+                planned_tools.add(handler);
+            }
+        }
+        PolicyMode::McpOnly => {
+            if !dynamic_tools.is_empty() {
+                return Err("mcp-only Infinity Agent policy received a dynamic runtime".to_string());
+            }
+            let all_mcp = direct_mcp
+                .iter()
+                .chain(deferred_mcp.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            policy
+                .validate_mcp_manifest(&all_mcp)
+                .map_err(|error| error.to_string())?;
+            for tool in all_mcp {
+                let handler = McpHandler::new_infinity_agent_serial(tool).map_err(|error| {
+                    format!("failed to construct signed MCP tool runtime: {error}")
+                })?;
+                // The restricted route has no tool search. A tool that arrived
+                // through an ordinary deferred bucket is deliberately made
+                // direct only after the exact signed manifest check above.
+                planned_tools.add(handler);
+            }
+        }
+    }
+
+    let mut registered_names = planned_tools
+        .runtimes()
+        .iter()
+        .map(|runtime| runtime.tool_name())
+        .collect::<Vec<_>>();
+    registered_names.sort();
+    if registered_names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("Infinity Agent registered duplicate tool names".to_string());
+    }
+    let allowed_names = policy.allowed_tool_names();
+    if registered_names != allowed_names {
+        return Err(
+            "Infinity Agent registered tool names do not equal the signed allowlist".to_string(),
+        );
+    }
+    let (model_visible_specs, registry) =
+        build_model_visible_specs_and_registry(turn_context, planned_tools);
+    let visible_names = policy
+        .validate_model_visible_manifest(&model_visible_specs)
+        .map_err(|error| error.to_string())?;
+    tracing::info!(
+        target: "codex_core::tools::policy",
+        policy_digest = policy.digest(),
+        visible_tools = ?visible_names,
+        registered_tools = ?registered_names,
+        "planned exact Infinity Agent tool allowlist"
+    );
+    Ok(ToolRouter::from_infinity_policy(
+        registry,
+        model_visible_specs,
+        Arc::clone(policy),
+    ))
 }
 
 fn build_tool_specs_and_registry(
@@ -196,25 +312,17 @@ fn build_model_visible_specs_and_registry(
     turn_context: &TurnContext,
     planned_tools: PlannedTools,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
+    // NOTE: the Infinity Agent (`tools.policy = "infinity-agent"`) toolset is now
+    // built exclusively by `build_infinity_agent_tool_router`, which reduces the
+    // model toolset to the exact signed `VerifiedToolPolicy` allowlist and routes
+    // every surviving call through the protected remote-tool bridge. This helper
+    // therefore must NOT re-filter its inputs: for the Infinity path it receives
+    // the already-exact planned tools, and for the ordinary path there is nothing
+    // to reduce.
     let PlannedTools {
-        mut runtimes,
+        runtimes,
         hosted_specs,
     } = planned_tools;
-    // Protected remote-tool bridge choke point (AuthCapsule infinity-agent
-    // policy): reduce the toolset to the explicit allowlist of policy-safe tools.
-    // This drops every non-allowlisted tool from BOTH the model-visible specs and
-    // the dispatch registry, so a task has no in-binary path to host filesystem,
-    // host shell, auth-profile, or host-process access regardless of which tool
-    // sources ran above.
-    let infinity_agent = infinity_agent_policy_active(turn_context);
-    if infinity_agent {
-        runtimes.retain(|runtime| infinity_agent_tool_allowed(&runtime.tool_name()));
-    }
-    let hosted_specs = if infinity_agent {
-        Vec::new()
-    } else {
-        hosted_specs
-    };
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
     for runtime in &runtimes {
@@ -652,35 +760,28 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
 fn infinity_agent_policy_active(turn_context: &TurnContext) -> bool {
     matches!(
         turn_context.config.tools_policy,
-        Some(codex_config::config_toml::ToolsPolicy::InfinityAgent)
+        Some(codex_config::config_toml::ToolPolicy::InfinityAgent)
     )
 }
 
-/// Allowlist of tools permitted under the `infinity-agent` AuthCapsule policy.
+/// LEGACY / VESTIGIAL — no longer an enforcement boundary.
 ///
-/// This is the authoritative boundary enforced by the protected remote-tool
-/// bridge choke point in [`build_model_visible_specs_and_registry`]: under the
-/// policy, ONLY these plain, in-process, no-host-access control tools survive.
-/// Every other tool — host filesystem tools (`apply_patch`, `view_image`), host
-/// shell tools (`exec_command`/`write_stdin`/`shell_command`), auth-profile
-/// control (`manage_auth_profiles`/`get_usage`), MCP/extension/dynamic host
-/// executors, code-mode, agent/CSV spawn jobs, plugin install, tool search, and
-/// hosted web/image tools — is removed from both the model-visible specs and the
-/// dispatch registry. Host-affecting effects must be brokered externally through
-/// the Infinity remote-tool bridge. Keep this list minimal; adding a tool here
-/// asserts it cannot read the host filesystem, spawn host processes, or touch
-/// credentials.
-///
-/// MAINTENANCE INVARIANT: this allowlist is the authoritative security boundary
-/// for the infinity-agent policy. Any new host-capable tool is denied by default
-/// (it will simply not be on the list), but do not add a tool here without
-/// re-confirming it is host-safe. The `infinity_agent_allowlist_excludes_host_access`
-/// test guards representative host tool names; keep it in sync with new tools.
+/// This 2-element list was the old (pre-unification) infinity-agent allowlist,
+/// applied as a post-filter in `build_model_visible_specs_and_registry`. That
+/// enforcement model has been REPLACED: the `infinity-agent` policy is now
+/// enforced exclusively by the signed [`crate::tools::policy::VerifiedToolPolicy`]
+/// via [`build_infinity_agent_tool_router`] (tool planning) and the router's
+/// dispatch-time recheck. The authoritative admission allowlist is
+/// `INFINITY_AGENT_PUBLIC_TOOL_NAMES` in `crate::tools::policy` (enforced in
+/// `validate_payload`), NOT this constant. This item is retained only so the
+/// legacy `infinity_agent_allowlist_excludes_host_access` regression test keeps
+/// documenting host-tool exclusion; it participates in no runtime enforcement
+/// path. Do not treat it as a security boundary.
 const INFINITY_AGENT_TOOL_ALLOWLIST: &[&str] = &["update_plan", "rename_session"];
 
-/// Whether `tool_name` is permitted under the infinity-agent policy. Namespaced
-/// tools (MCP servers, extensions) are never allowed — only plain control tools
-/// on [`INFINITY_AGENT_TOOL_ALLOWLIST`].
+/// LEGACY helper for the vestigial [`INFINITY_AGENT_TOOL_ALLOWLIST`]. Not used by
+/// any runtime enforcement path; see that constant's note. Real admission is
+/// decided by `VerifiedToolPolicy` in `crate::tools::policy`.
 fn infinity_agent_tool_allowed(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none()
         && INFINITY_AGENT_TOOL_ALLOWLIST.contains(&tool_name.name.as_str())
