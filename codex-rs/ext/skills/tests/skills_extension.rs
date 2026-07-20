@@ -18,8 +18,10 @@ use codex_extension_api::TurnInputEnvironment;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
+use codex_skills_extension::HostSkillProvider;
 use codex_skills_extension::SkillProviders;
 use codex_skills_extension::catalog::SkillAuthority;
+use codex_skills_extension::catalog::SkillAvailability;
 use codex_skills_extension::catalog::SkillCatalog;
 use codex_skills_extension::catalog::SkillCatalogEntry;
 use codex_skills_extension::catalog::SkillPackageId;
@@ -122,6 +124,89 @@ async fn installed_extension_loads_host_skills_from_legacy_roots() -> TestResult
         .get::<InjectedHostSkillPrompts>()
         .ok_or("host skill prompt marker should be set")?;
     assert!(injected_host_skill_prompts.contains_path(&skill_path_string));
+
+    std::fs::remove_dir_all(codex_home)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_provider_maps_manual_only_policy_to_deferred_and_disabled_takes_precedence()
+-> TestResult {
+    let codex_home = test_codex_home();
+    let skill_path = codex_home.join("skills").join("demo").join("SKILL.md");
+    let skill_dir = skill_path
+        .parent()
+        .ok_or("skill path should have a parent")?;
+    std::fs::create_dir_all(skill_dir.join("agents"))?;
+    std::fs::write(
+        &skill_path,
+        "---\nname: demo\ndescription: Demo skill.\n---\n# Demo\n",
+    )?;
+    std::fs::write(
+        skill_dir.join("agents").join("openai.yaml"),
+        "policy:\n  allow_implicit_invocation: false\n",
+    )?;
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.clone())
+        .fallback_cwd(Some(codex_home.clone()))
+        .build()
+        .await?;
+    let manager = SkillsManager::new(config.codex_home.clone(), config.bundled_skills_enabled());
+    let input = SkillsLoadInput::new(
+        config.cwd.clone(),
+        Vec::new(),
+        config.config_layer_stack.clone(),
+        config.bundled_skills_enabled(),
+    );
+    let loaded_skills = manager.skills_for_config(&input, /*fs*/ None).await;
+    let loaded_skill = loaded_skills
+        .skills
+        .iter()
+        .find(|skill| skill.name == "demo")
+        .ok_or("demo skill should load")?;
+    let loaded_skill_path = loaded_skill.path_to_skills_md.clone();
+    let provider = HostSkillProvider::new();
+    let catalog = provider
+        .list(SkillListQuery {
+            turn_id: "turn-1".to_string(),
+            executor_authorities: Vec::new(),
+            host: Some(Arc::new(HostLoadedSkills::new(Arc::new(
+                loaded_skills.clone(),
+            )))),
+            include_host_skills: true,
+            include_bundled_skills: true,
+            include_remote_skills: true,
+        })
+        .await?;
+    let deferred_entry = catalog
+        .entries
+        .iter()
+        .find(|entry| entry.name == "demo")
+        .ok_or("demo catalog entry should exist")?;
+    assert_eq!(deferred_entry.availability, SkillAvailability::Deferred);
+    assert!(deferred_entry.is_searchable());
+    assert!(deferred_entry.is_explicitly_loadable());
+
+    let mut disabled_skills = loaded_skills;
+    disabled_skills.disabled_paths.insert(loaded_skill_path);
+    let disabled_catalog = provider
+        .list(SkillListQuery {
+            turn_id: "turn-2".to_string(),
+            executor_authorities: Vec::new(),
+            host: Some(Arc::new(HostLoadedSkills::new(Arc::new(disabled_skills)))),
+            include_host_skills: true,
+            include_bundled_skills: true,
+            include_remote_skills: true,
+        })
+        .await?;
+    let disabled_entry = disabled_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.name == "demo")
+        .ok_or("disabled demo catalog entry should exist")?;
+    assert_eq!(disabled_entry.availability, SkillAvailability::Disabled);
+    assert!(!disabled_entry.is_searchable());
+    assert!(!disabled_entry.is_explicitly_loadable());
 
     std::fs::remove_dir_all(codex_home)?;
     Ok(())
@@ -248,8 +333,29 @@ async fn installed_extension_injects_available_catalog_and_selected_entrypoint()
 }
 
 #[tokio::test]
-async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
+async fn deferred_skill_is_searchable_and_loadable_but_disabled_skill_is_not() -> TestResult {
     let read_requests = Arc::new(Mutex::new(Vec::new()));
+    let deferred_entry = test_entry(
+        SkillSourceKind::Host,
+        "host",
+        "host/deferred-skill",
+        "deferred-skill/SKILL.md",
+    )
+    .deferred();
+    let disabled_entry = test_entry(
+        SkillSourceKind::Host,
+        "host",
+        "host/disabled-skill",
+        "disabled-skill/SKILL.md",
+    )
+    .disabled();
+    assert!(!deferred_entry.is_prompt_visible());
+    assert!(deferred_entry.is_searchable());
+    assert!(deferred_entry.is_explicitly_loadable());
+    assert!(!disabled_entry.is_prompt_visible());
+    assert!(!disabled_entry.is_searchable());
+    assert!(!disabled_entry.is_explicitly_loadable());
+
     let provider = Arc::new(StaticSkillProvider {
         catalog: SkillCatalog {
             entries: vec![
@@ -259,13 +365,8 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
                     "host/visible-skill",
                     "visible-skill/SKILL.md",
                 ),
-                test_entry(
-                    SkillSourceKind::Host,
-                    "host",
-                    "host/hidden-skill",
-                    "hidden-skill/SKILL.md",
-                )
-                .hidden_from_prompt(),
+                deferred_entry,
+                disabled_entry,
             ],
             warnings: Vec::new(),
         },
@@ -294,7 +395,7 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
             TurnInputContext {
                 turn_id: "turn-1".to_string(),
                 user_input: vec![UserInput::Text {
-                    text: "$hidden-skill".to_string(),
+                    text: "$deferred-skill $disabled-skill".to_string(),
                     text_elements: Vec::new(),
                 }],
                 environments: Vec::new(),
@@ -308,13 +409,19 @@ async fn prompt_hidden_skill_can_still_be_invoked() -> TestResult {
     assert_eq!(2, fragments.len());
     let catalog_fragment = fragments[0].render();
     assert!(catalog_fragment.contains("visible-skill"));
-    assert!(!catalog_fragment.contains("hidden-skill"));
-    assert!(fragments[1].render().contains("<name>hidden-skill</name>"));
+    assert!(!catalog_fragment.contains("deferred-skill"));
+    assert!(!catalog_fragment.contains("disabled-skill"));
+    assert!(
+        fragments[1]
+            .render()
+            .contains("<name>deferred-skill</name>")
+    );
+    assert!(!fragments[1].render().contains("disabled-skill"));
     assert_eq!(
         vec![(
             SkillAuthority::new(SkillSourceKind::Host, "host"),
-            SkillPackageId("host/hidden-skill".to_string()),
-            SkillResourceId("hidden-skill/SKILL.md".to_string()),
+            SkillPackageId("host/deferred-skill".to_string()),
+            SkillResourceId("deferred-skill/SKILL.md".to_string()),
         )],
         read_request_keys(&read_requests)
     );
