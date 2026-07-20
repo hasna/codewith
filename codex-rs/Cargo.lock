@@ -3276,6 +3276,7 @@ dependencies = [
  "codex-aws-auth",
  "codex-client",
  "codex-feedback",
+ "codex-known-provider-models",
  "codex-login",
  "codex-model-provider-info",
  "codex-models-manager",
