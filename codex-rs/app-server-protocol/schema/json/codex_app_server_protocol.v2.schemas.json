@@ -13024,6 +13024,38 @@
       ],
       "type": "object"
     },
+    "RawResponseCompletedNotification": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
+      "properties": {
+        "responseId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TokenUsageBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "responseId"
+      ],
+      "title": "RawResponseCompletedNotification",
+      "type": "object"
+    },
     "RawResponseItemCompletedNotification": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -22134,6 +22166,11 @@
     },
     "TokenUsageBreakdown": {
       "properties": {
+        "cacheWriteInputTokens": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "cachedInputTokens": {
           "format": "int64",
           "type": "integer"
