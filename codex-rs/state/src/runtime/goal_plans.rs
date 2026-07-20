@@ -4732,6 +4732,7 @@ mod tests {
             "Preserve prior work.",
             resumed
                 .activated_goal
+                .as_ref()
                 .expect("deferred node should reactivate")
                 .objective
         );
@@ -4763,6 +4764,7 @@ mod tests {
             "Finish downstream work.",
             after
                 .activated_goal
+                .as_ref()
                 .expect("downstream node should activate")
                 .objective
         );
@@ -4844,6 +4846,7 @@ mod tests {
             "Work the second goal.",
             resumed
                 .activated_goal
+                .as_ref()
                 .expect("requested node should reactivate")
                 .objective
         );
