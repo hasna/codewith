@@ -10,6 +10,10 @@ mod acp;
 mod acp_adapter;
 mod claude;
 mod contract;
+mod cursor;
+mod cursor_cloud;
+mod cursor_models;
+pub(crate) mod cursor_sdk;
 mod platform_sandbox;
 mod runtimes;
 #[cfg(windows)]
@@ -19,6 +23,10 @@ pub use acp::*;
 pub use acp_adapter::*;
 pub use claude::*;
 pub use contract::*;
+pub use cursor::*;
+pub use cursor_cloud::*;
+pub use cursor_models::*;
+pub use cursor_sdk::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
 #[cfg(windows)]

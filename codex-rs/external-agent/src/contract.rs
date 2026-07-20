@@ -153,6 +153,12 @@ pub struct ExternalAgentRequest {
     pub task: String,
     pub cwd: PathBuf,
     pub mode: ExternalAgentMode,
+    /// Optional runtime-specific model selection (for example a Cursor Composer
+    /// model id such as `composer-2.5`). Runtimes that discover their own model
+    /// list resolve this against that list and fall back to their default when
+    /// it is unset or unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub capabilities: ExternalAgentCapabilities,
     pub session: ExternalAgentSessionRequest,
     pub context: ExternalAgentContext,
@@ -171,11 +177,28 @@ impl ExternalAgentRequest {
             task: task.into(),
             cwd: cwd.into(),
             mode,
+            model: None,
             capabilities: ExternalAgentCapabilities::for_mode(mode),
             session: ExternalAgentSessionRequest::New,
             context: ExternalAgentContext::default(),
             metadata: BTreeMap::new(),
         }
+    }
+
+    /// Select a runtime-specific model for this run.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Resume an existing external session by its runtime session id.
+    #[must_use]
+    pub fn with_resumed_session(mut self, external_session_id: impl Into<String>) -> Self {
+        self.session = ExternalAgentSessionRequest::Resume {
+            external_session_id: external_session_id.into(),
+        };
+        self
     }
 }
 
@@ -359,6 +382,11 @@ pub struct ExternalAgentArtifact {
     pub label: String,
     pub path: Option<PathBuf>,
     pub mime_type: Option<String>,
+    /// Remote location for artifacts that do not live on the local filesystem,
+    /// such as a Cursor cloud-agent (`bc-`) pull-request or diff URL. Local
+    /// artifacts leave this unset and use [`ExternalAgentArtifact::path`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -470,6 +498,7 @@ mod tests {
             task: "inspect this repo".to_string(),
             cwd: PathBuf::from("/repo"),
             mode: ExternalAgentMode::Managed,
+            model: None,
             capabilities: ExternalAgentCapabilities {
                 filesystem: FileSystemCapability::ManagedReadWrite,
                 terminal: TerminalCapability::Managed,
@@ -483,6 +512,84 @@ mod tests {
         };
 
         assert_eq!(request, expected);
+    }
+
+    #[test]
+    fn model_selection_is_optional_and_omitted_when_unset() {
+        let request =
+            ExternalAgentRequest::new("cursor", "inspect", "/repo", ExternalAgentMode::Plan);
+        assert_eq!(request.model, None);
+        let value =
+            serde_json::to_value(&request).unwrap_or_else(|err| panic!("serialize: {err}"));
+        assert!(
+            value.get("model").is_none(),
+            "unset model must not serialize: {value}"
+        );
+
+        let selected =
+            ExternalAgentRequest::new("cursor", "inspect", "/repo", ExternalAgentMode::Plan)
+                .with_model("composer-2.5");
+        assert_eq!(selected.model.as_deref(), Some("composer-2.5"));
+        let value =
+            serde_json::to_value(&selected).unwrap_or_else(|err| panic!("serialize: {err}"));
+        assert_eq!(
+            value.get("model").and_then(JsonValue::as_str),
+            Some("composer-2.5")
+        );
+
+        // Requests persisted before the field existed still deserialize.
+        let legacy = serde_json::json!({
+            "runtime": "cursor",
+            "task": "inspect",
+            "cwd": "/repo",
+            "mode": "plan",
+            "capabilities": serde_json::to_value(ExternalAgentCapabilities::for_mode(
+                ExternalAgentMode::Plan
+            ))
+            .unwrap(),
+            "session": {"type": "new"},
+            "context": ExternalAgentContext::default(),
+            "metadata": {},
+        });
+        let parsed: ExternalAgentRequest =
+            serde_json::from_value(legacy).unwrap_or_else(|err| panic!("deserialize: {err}"));
+        assert_eq!(parsed.model, None);
+    }
+
+    #[test]
+    fn resume_helper_sets_session_request() {
+        let request = ExternalAgentRequest::new("cursor", "inspect", "/repo", ExternalAgentMode::Plan)
+            .with_resumed_session("bc-42");
+        assert_eq!(
+            request.session,
+            ExternalAgentSessionRequest::Resume {
+                external_session_id: "bc-42".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn artifact_uri_is_optional_and_omitted_when_unset() {
+        let local = ExternalAgentArtifact {
+            label: "diff".to_string(),
+            path: Some(PathBuf::from("/repo/patch.diff")),
+            mime_type: Some("text/x-diff".to_string()),
+            uri: None,
+        };
+        let value = serde_json::to_value(&local).unwrap_or_else(|err| panic!("serialize: {err}"));
+        assert!(value.get("uri").is_none(), "unset uri must not serialize");
+
+        let remote = ExternalAgentArtifact {
+            label: "pull request".to_string(),
+            path: None,
+            mime_type: None,
+            uri: Some("https://cursor.com/agents/bc-1".to_string()),
+        };
+        let value = serde_json::to_value(&remote).unwrap_or_else(|err| panic!("serialize: {err}"));
+        assert_eq!(
+            value.get("uri").and_then(JsonValue::as_str),
+            Some("https://cursor.com/agents/bc-1")
+        );
     }
 
     #[test]
