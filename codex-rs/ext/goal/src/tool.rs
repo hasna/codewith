@@ -605,7 +605,7 @@ impl GoalToolExecutor {
         let Some(outcome) = self
             .state_db
             .thread_goals()
-            .resume_deferred_goal_plan_node(self.thread_id, None)
+            .resume_deferred_goal_plan_node(self.thread_id, /*node_id*/ None)
             .await
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!(
