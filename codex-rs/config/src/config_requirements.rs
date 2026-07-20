@@ -1563,7 +1563,6 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use codex_utils_absolute_path::AbsolutePathBufGuard;
     use pretty_assertions::assert_eq;
-    use std::path::Path;
     use toml::from_str;
 
     fn tokens(cmd: &[&str]) -> Vec<String> {
@@ -1703,12 +1702,18 @@ mod tests {
                 requirement_source: RequirementSource::Unknown,
             })
         );
+        // Normalize the expected path through the same conversion the loader
+        // uses so the assertion is platform-independent: on Windows a rooted but
+        // drive-less path like `/etc/...` is absolutized to the current drive.
+        let expected_trust_key =
+            AbsolutePathBuf::from_absolute_path("/etc/codewith/infinity-agent-ed25519.pub")
+                .expect("absolute trust key");
         assert_eq!(
             requirements
                 .infinity_agent_trust_key
                 .as_ref()
                 .map(|path| path.value.as_path()),
-            Some(Path::new("/etc/codewith/infinity-agent-ed25519.pub"))
+            Some(expected_trust_key.as_path())
         );
         assert_eq!(
             requirements
