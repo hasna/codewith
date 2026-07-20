@@ -1090,7 +1090,7 @@ mod thread_processor_behavior_tests {
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();
         let persisted_metadata =
-            test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
+            test_thread_metadata(Some("gpt-5.6"), Some(ReasoningEffort::High))?;
 
         merge_persisted_resume_metadata(
             &mut request_overrides,
@@ -1098,10 +1098,7 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(
-            typesafe_overrides.model,
-            Some("gpt-5.1-codex-max".to_string())
-        );
+        assert_eq!(typesafe_overrides.model, Some("gpt-5.6".to_string()));
         assert_eq!(
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())

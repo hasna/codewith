@@ -114,6 +114,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
+use crate::remote_compaction_budget::RemoteCompactionRequestBudget;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::map_api_error;
 use codex_feedback::FeedbackRequestTags;
@@ -165,6 +166,7 @@ pub(crate) struct CompactConversationRequestSettings {
     pub(crate) effort: Option<ReasoningEffortConfig>,
     pub(crate) summary: ReasoningSummaryConfig,
     pub(crate) service_tier: Option<String>,
+    pub(crate) request_budget: RemoteCompactionRequestBudget,
 }
 
 /// Session-scoped state shared by all [`ModelClient`] clones.
@@ -560,16 +562,19 @@ impl ModelClient {
         }
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(
-            session_telemetry,
-            AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                PendingUnauthorizedRetry::default(),
-            ),
-            RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
-            self.state.auth_env_telemetry.clone(),
-        );
+        let request_telemetry =
+            settings
+                .request_budget
+                .counting_telemetry(Self::build_request_telemetry(
+                    session_telemetry,
+                    AuthRequestTelemetryContext::new(
+                        client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                        client_setup.api_auth.as_ref(),
+                        PendingUnauthorizedRetry::default(),
+                    ),
+                    RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
+                    self.state.auth_env_telemetry.clone(),
+                ));
         let request = self.build_responses_request(
             &client_setup.api_provider,
             prompt,
@@ -624,9 +629,12 @@ impl ModelClient {
             .api_provider
             .stream_idle_timeout
             .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
-        let client =
-            ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
+        let mut api_provider = client_setup.api_provider;
+        api_provider.retry.max_attempts = settings
+            .request_budget
+            .max_retries_for_next_request(api_provider.retry.max_attempts);
+        let client = ApiCompactClient::new(transport, api_provider, client_setup.api_auth)
+            .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
         let result = client
             .compact_input(&payload, extra_headers, compact_request_timeout)
@@ -1389,6 +1397,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         turn_metadata_header: Option<&str>,
         inference_trace: &InferenceTraceContext,
+        request_budget: Option<&RemoteCompactionRequestBudget>,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1396,6 +1405,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
+            ensure_remote_compaction_request_budget_available(request_budget)?;
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let request_auth_context = AuthRequestTelemetryContext::new(
@@ -1409,6 +1419,11 @@ impl ModelClientSession {
                 RequestRouteTelemetry::for_endpoint(RESPONSES_ENDPOINT),
                 self.client.state.auth_env_telemetry.clone(),
             );
+            let request_telemetry = if let Some(request_budget) = request_budget {
+                request_budget.counting_telemetry(request_telemetry)
+            } else {
+                request_telemetry
+            };
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
             let mut options = self
                 .build_responses_options(
@@ -1418,8 +1433,13 @@ impl ModelClientSession {
                 )
                 .await;
 
+            let mut api_provider = client_setup.api_provider;
+            if let Some(request_budget) = request_budget {
+                api_provider.retry.max_attempts =
+                    request_budget.max_retries_for_next_request(api_provider.retry.max_attempts);
+            }
             let request = self.client.build_responses_request(
-                &client_setup.api_provider,
+                &api_provider,
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1429,12 +1449,8 @@ impl ModelClientSession {
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let client = ApiResponsesClient::new(transport, api_provider, client_setup.api_auth)
+                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
             let stream_result = client.stream_request(request, options).await;
 
             match stream_result {
@@ -1506,6 +1522,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         turn_metadata_header: Option<&str>,
         inference_trace: &InferenceTraceContext,
+        request_budget: Option<&RemoteCompactionRequestBudget>,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1513,6 +1530,7 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
+            ensure_remote_compaction_request_budget_available(request_budget)?;
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let request_auth_context = AuthRequestTelemetryContext::new(
@@ -1526,6 +1544,11 @@ impl ModelClientSession {
                 RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
                 self.client.state.auth_env_telemetry.clone(),
             );
+            let request_telemetry = if let Some(request_budget) = request_budget {
+                request_budget.counting_telemetry(request_telemetry)
+            } else {
+                request_telemetry
+            };
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
             let mut options = self
                 .build_responses_options(
@@ -1535,8 +1558,13 @@ impl ModelClientSession {
                 )
                 .await;
 
+            let mut api_provider = client_setup.api_provider;
+            if let Some(request_budget) = request_budget {
+                api_provider.retry.max_attempts =
+                    request_budget.max_retries_for_next_request(api_provider.retry.max_attempts);
+            }
             let request = self.client.build_responses_request(
-                &client_setup.api_provider,
+                &api_provider,
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1546,12 +1574,9 @@ impl ModelClientSession {
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
-            let client = ApiChatCompletionsClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let client =
+                ApiChatCompletionsClient::new(transport, api_provider, client_setup.api_auth)
+                    .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
             let stream_result = client.stream_request(request, options).await;
 
             match stream_result {
@@ -1625,6 +1650,7 @@ impl ModelClientSession {
         warmup: bool,
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
+        request_budget: Option<&RemoteCompactionRequestBudget>,
     ) -> Result<WebsocketStreamOutcome> {
         let auth_manager = self.client.state.provider.auth_manager();
 
@@ -1670,6 +1696,7 @@ impl ModelClientSession {
                 ws_payload.generate = Some(false);
             }
 
+            consume_remote_compaction_request_budget(request_budget)?;
             match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
@@ -1822,6 +1849,7 @@ impl ModelClientSession {
                 /*warmup*/ true,
                 current_span_w3c_trace_context(),
                 &disabled_trace,
+                /*request_budget*/ None,
             )
             .await
         {
@@ -1864,6 +1892,60 @@ impl ModelClientSession {
         turn_metadata_header: Option<&str>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        self.stream_with_request_budget(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            turn_metadata_header,
+            inference_trace,
+            /*request_budget*/ None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_remote_compaction(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        turn_metadata_header: Option<&str>,
+        inference_trace: &InferenceTraceContext,
+        request_budget: &RemoteCompactionRequestBudget,
+    ) -> Result<ResponseStream> {
+        self.stream_with_request_budget(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            turn_metadata_header,
+            inference_trace,
+            Some(request_budget),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_with_request_budget(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        turn_metadata_header: Option<&str>,
+        inference_trace: &InferenceTraceContext,
+        request_budget: Option<&RemoteCompactionRequestBudget>,
+    ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
@@ -1881,6 +1963,7 @@ impl ModelClientSession {
                             /*warmup*/ false,
                             request_trace,
                             inference_trace,
+                            request_budget,
                         )
                         .await?
                     {
@@ -1900,6 +1983,7 @@ impl ModelClientSession {
                     service_tier,
                     turn_metadata_header,
                     inference_trace,
+                    request_budget,
                 )
                 .await
             }
@@ -1913,6 +1997,7 @@ impl ModelClientSession {
                     service_tier,
                     turn_metadata_header,
                     inference_trace,
+                    request_budget,
                 )
                 .await
             }
@@ -1936,6 +2021,33 @@ impl ModelClientSession {
         self.websocket_session = WebsocketSession::default();
         activated
     }
+}
+
+fn consume_remote_compaction_request_budget(
+    request_budget: Option<&RemoteCompactionRequestBudget>,
+) -> Result<()> {
+    if request_budget.is_some_and(RemoteCompactionRequestBudget::try_start_request) {
+        return Ok(());
+    }
+    if request_budget.is_none() {
+        return Ok(());
+    }
+    Err(CodexErr::Stream(
+        "remote compaction request attempt budget exhausted".to_string(),
+        /*requested_delay*/ None,
+    ))
+}
+
+fn ensure_remote_compaction_request_budget_available(
+    request_budget: Option<&RemoteCompactionRequestBudget>,
+) -> Result<()> {
+    if request_budget.is_some_and(|request_budget| request_budget.remaining() == 0) {
+        return Err(CodexErr::Stream(
+            "remote compaction request attempt budget exhausted".to_string(),
+            /*requested_delay*/ None,
+        ));
+    }
+    Ok(())
 }
 
 /// Parses per-turn metadata into an HTTP header value.

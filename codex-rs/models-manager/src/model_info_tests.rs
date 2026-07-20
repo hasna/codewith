@@ -462,9 +462,21 @@ fn bundled_openai_gpt_5_5_uses_upstream_context_window() {
 #[test]
 fn bundled_openai_gpt_5_6_preview_models_use_current_metadata() {
     let response = crate::bundled_models_response().expect("bundled catalog should parse");
+    let visible_slugs = response
+        .models
+        .iter()
+        .filter(|model| {
+            model.slug.starts_with("gpt-5.6") && model.visibility == ModelVisibility::List
+        })
+        .map(|model| model.slug.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        visible_slugs,
+        vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    );
 
     for (slug, display_name, default_reasoning_level) in [
-        ("gpt-5.6", "GPT-5.6", ReasoningEffort::High),
         ("gpt-5.6-sol", "GPT-5.6 Sol", ReasoningEffort::High),
         ("gpt-5.6-terra", "GPT-5.6 Terra", ReasoningEffort::Medium),
         ("gpt-5.6-luna", "GPT-5.6 Luna", ReasoningEffort::Medium),

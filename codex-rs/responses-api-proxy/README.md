@@ -77,16 +77,13 @@ codex-responses-api-proxy [--port <PORT>] [--server-info <FILE>] [--http-shutdow
 - `--http-shutdown`: If set, enables `GET /shutdown` to exit the process with code `0`.
 - `--upstream-url <URL>`: Absolute URL to forward requests to. Defaults to `https://api.openai.com/v1/responses`.
 - `--dump-dir <DIR>`: If set, writes one request JSON file and one response JSON file per accepted proxy call under this directory. Filenames use a shared sequence/timestamp prefix so each pair is easy to correlate.
-- Authentication is fixed to `Authorization: Bearer <key>` to match Codewith expectations.
+- Authentication is fixed to `Authorization: Bearer <key>` to match Codewith expectations. Upstreams that require an `api-key` header need a different proxy mode.
 
-For Azure, for example (ensure your deployment accepts `Authorization: Bearer <key>`):
+For Azure OpenAI, `--upstream-url` can point at the current v1 Responses endpoint. The v1 path is shaped as `https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/responses` and does not need a dated `api-version` query parameter.
 
-```shell
-printenv AZURE_OPENAI_API_KEY | env -u AZURE_OPENAI_API_KEY codex-responses-api-proxy \
-  --http-shutdown \
-  --server-info /tmp/server-info.json \
-  --upstream-url "https://YOUR_PROJECT_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT/responses?api-version=2025-04-01-preview"
-```
+Azure documents both Microsoft Entra bearer-token authentication and API-key authentication. This proxy always injects `Authorization: Bearer <stdin>` and its stdin parser is currently limited to OpenAI-style token bytes. Azure REST examples that use `api-key: $AZURE_OPENAI_API_KEY` and typical Entra JWT access tokens are not supported by this proxy yet; they need a separate Azure auth mode.
+
+Legacy dated endpoints remain selectable because `--upstream-url` accepts a full URL, including a query string, but they have the same authentication limitation.
 
 ## Notes
 

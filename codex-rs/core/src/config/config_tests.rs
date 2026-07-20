@@ -61,6 +61,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::UsageLimitToml;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
@@ -5585,6 +5586,39 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
     .await?;
 
     assert!(enabled_config.usage_self_heal.enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_usage_limit_auto_reset() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!default_config.usage_limit.auto_reset_enabled);
+
+    let enabled_config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            usage_limit: Some(UsageLimitToml {
+                auto_reset_enabled: Some(true),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(enabled_config.usage_limit.auto_reset_enabled);
 
     Ok(())
 }

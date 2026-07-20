@@ -2080,9 +2080,75 @@ async fn token_info_for_current_model_preserves_chatgpt_replay_window() {
         model_context_window: Some(2_000),
     };
 
-    let actual = Session::token_info_for_current_model(info.clone(), &turn_context);
+    let actual = Session::token_info_for_current_model(
+        info.clone(),
+        &turn_context,
+        /*preserve_chatgpt_replay_window*/ true,
+    );
 
     assert_eq!(actual, info);
+}
+
+#[tokio::test]
+async fn token_info_for_current_model_refreshes_chatgpt_profile_switch_window() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    turn_context.auth_manager = Some(AuthManager::from_auth_for_testing(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn_context.model_info.context_window = Some(272_000);
+    turn_context.model_info.max_context_window = Some(272_000);
+    turn_context.model_info.effective_context_window_percent = 95;
+
+    let info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 30,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 7,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(997_500),
+    };
+
+    let actual = Session::token_info_for_current_model(
+        info,
+        &turn_context,
+        /*preserve_chatgpt_replay_window*/ false,
+    );
+
+    assert_eq!(actual.model_context_window, Some(258_400));
+}
+
+#[tokio::test]
+async fn token_info_for_current_model_caps_stale_chatgpt_replay_window() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    turn_context.auth_manager = Some(AuthManager::from_auth_for_testing(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn_context.model_info.context_window = Some(272_000);
+    turn_context.model_info.max_context_window = Some(272_000);
+    turn_context.model_info.effective_context_window_percent = 95;
+
+    let info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 30,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 7,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(997_500),
+    };
+
+    let actual = Session::token_info_for_current_model(
+        info,
+        &turn_context,
+        /*preserve_chatgpt_replay_window*/ true,
+    );
+
+    assert_eq!(actual.model_context_window, Some(258_400));
 }
 
 #[tokio::test]
@@ -2103,7 +2169,11 @@ async fn token_info_for_current_model_clears_api_replay_window_without_current_w
         model_context_window: Some(258_400),
     };
 
-    let actual = Session::token_info_for_current_model(info.clone(), &turn_context);
+    let actual = Session::token_info_for_current_model(
+        info.clone(),
+        &turn_context,
+        /*preserve_chatgpt_replay_window*/ false,
+    );
 
     assert_eq!(
         actual,
@@ -2167,6 +2237,7 @@ async fn profile_switch_updates_token_context_window_for_api_profile() -> anyhow
         match event.msg {
             EventMsg::ThreadSettingsApplied(_) => saw_settings_applied = true,
             EventMsg::TokenCount(token_count) => break token_count,
+            EventMsg::Error(error) => panic!("profile switch failed: {}", error.message),
             _ => {}
         }
     };
@@ -2184,6 +2255,81 @@ async fn profile_switch_updates_token_context_window_for_api_profile() -> anyhow
             .expect("session token info")
             .model_context_window,
         Some(997_500)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn profile_switch_updates_token_context_window_for_chatgpt_profile() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "chatgpt",
+        &chatgpt_auth_dot_json_for_tests(),
+    )?;
+    let (session, _turn_context, rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("api-key"),
+        Vec::new(),
+        codex_home.path(),
+        |config| {
+            config.model = Some("gpt-5.5".to_string());
+        },
+    )
+    .await;
+
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 12_400_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 53_800,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(997_500),
+        }));
+    }
+
+    handlers::update_thread_settings(
+        &session,
+        "switch-profile".to_string(),
+        ThreadSettingsOverrides {
+            auth_profile: Some(Some("chatgpt".to_string())),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let mut saw_settings_applied = false;
+    let token_count = loop {
+        let event = tokio::time::timeout(StdDuration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for profile switch events")
+            .expect("event");
+        match event.msg {
+            EventMsg::ThreadSettingsApplied(_) => saw_settings_applied = true,
+            EventMsg::TokenCount(token_count) => break token_count,
+            EventMsg::Error(error) => panic!("profile switch failed: {}", error.message),
+            _ => {}
+        }
+    };
+
+    assert!(saw_settings_applied);
+    let info = token_count.info.expect("token info");
+    assert_eq!(info.model_context_window, Some(258_400));
+    assert_eq!(info.last_token_usage.total_tokens, 53_800);
+    assert_eq!(
+        session
+            .state
+            .lock()
+            .await
+            .token_info()
+            .expect("session token info")
+            .model_context_window,
+        Some(258_400)
     );
     Ok(())
 }
@@ -3942,6 +4088,44 @@ async fn turn_context_with_model_updates_model_fields() {
     );
 }
 
+#[tokio::test]
+async fn turn_context_with_bare_gpt_5_6_applies_auth_scoped_resolution() {
+    let (chatgpt_session, chatgpt_turn, _rx_event) =
+        make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |_config| {},
+        )
+        .await;
+    let chatgpt_updated = chatgpt_turn
+        .with_model(
+            "gpt-5.6".to_string(),
+            &chatgpt_session.services.models_manager,
+        )
+        .await;
+    let persisted_chatgpt_turn = chatgpt_updated.to_turn_context_item();
+
+    assert_eq!(chatgpt_updated.config.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(chatgpt_updated.collaboration_mode.model(), "gpt-5.6-sol");
+    assert_eq!(chatgpt_updated.model_info.slug, "gpt-5.6-sol");
+    assert_eq!(persisted_chatgpt_turn.model, "gpt-5.6-sol");
+    assert_eq!(
+        persisted_chatgpt_turn
+            .collaboration_mode
+            .as_ref()
+            .map(CollaborationMode::model),
+        Some("gpt-5.6-sol")
+    );
+
+    let (api_session, api_turn) = make_session_and_context().await;
+    let api_updated = api_turn
+        .with_model("gpt-5.6".to_string(), &api_session.services.models_manager)
+        .await;
+    assert_eq!(api_updated.config.model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(api_updated.collaboration_mode.model(), "gpt-5.6");
+    assert_eq!(api_updated.model_info.slug, "gpt-5.6");
+}
+
 #[test]
 fn falls_back_to_content_when_structured_is_null() {
     let ctr = McpCallToolResult {
@@ -4102,6 +4286,42 @@ fn api_key_auth_dot_json_for_tests(api_key: &str) -> codex_login::AuthDotJson {
         agent_identity: None,
         personal_access_token: None,
     }
+}
+
+fn chatgpt_auth_dot_json_for_tests() -> codex_login::AuthDotJson {
+    let id_token = chatgpt_jwt_for_account("account_id");
+    codex_login::AuthDotJson {
+        auth_mode: Some(codex_app_server_protocol::AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(codex_login::TokenData {
+            id_token: codex_login::token_data::parse_chatgpt_jwt_claims(&id_token)
+                .expect("test JWT should parse"),
+            access_token: "Access Token".to_string(),
+            refresh_token: "test".to_string(),
+            account_id: Some("account_id".to_string()),
+        }),
+        last_refresh: Some(chrono::Utc::now()),
+        agent_identity: None,
+        personal_access_token: None,
+    }
+}
+
+fn chatgpt_jwt_for_account(account_id: &str) -> String {
+    use base64::Engine as _;
+
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let header_b64 = encode(br#"{"alg":"none","typ":"JWT"}"#);
+    let payload_b64 = encode(
+        serde_json::to_string(&json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+            }
+        }))
+        .expect("payload should serialize")
+        .as_bytes(),
+    );
+    let signature_b64 = encode(b"sig");
+    format!("{header_b64}.{payload_b64}.{signature_b64}")
 }
 
 fn session_telemetry(
@@ -7744,7 +7964,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
         .expect("ephemeral guardian review should receive a shutdown op");
 }
 
-async fn make_session_and_context_with_auth_and_config_and_rx<F>(
+pub(crate) async fn make_session_and_context_with_auth_and_config_and_rx<F>(
     auth: CodexAuth,
     dynamic_tools: Vec<DynamicToolSpec>,
     configure_config: F,

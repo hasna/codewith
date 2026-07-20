@@ -29,6 +29,7 @@ use crate::types::SmartSuggestConfigToml;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
+use crate::types::UsageLimitToml;
 use crate::types::UsageSelfHealToml;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
@@ -354,6 +355,10 @@ pub struct ConfigToml {
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     #[serde(default)]
     pub usage_self_heal: Option<UsageSelfHealToml>,
+
+    /// Usage-limit reset behavior.
+    #[serde(default)]
+    pub usage_limit: Option<UsageLimitToml>,
 
     /// Lightweight recap generation for returning to interactive sessions.
     #[serde(default)]

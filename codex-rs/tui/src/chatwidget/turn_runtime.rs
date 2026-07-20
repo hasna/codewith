@@ -442,7 +442,32 @@ impl ChatWidget {
                     | Some(RateLimitReachedType::RateLimitReached)
                     | None
             );
-        let retry_delay = should_retry
+        let auto_reset_check = if should_retry {
+            self.request_usage_limit_auto_reset_check()
+        } else {
+            UsageLimitAutoResetCheckOutcome::Unavailable
+        };
+        let reset_owns_failed_turn = matches!(
+            auto_reset_check,
+            UsageLimitAutoResetCheckOutcome::Started
+                | UsageLimitAutoResetCheckOutcome::AlreadyInProgress
+        );
+        let reset_recovery_was_opted_out =
+            matches!(auto_reset_check, UsageLimitAutoResetCheckOutcome::OptedOut);
+        let profile_fallback_owns_failed_turn = should_retry
+            && matches!(
+                auto_reset_check,
+                UsageLimitAutoResetCheckOutcome::Unavailable
+            )
+            && self.manual_usage_limit_reset_is_active()
+            && self.try_auth_profile_switch_after_reset_unavailable();
+        if profile_fallback_owns_failed_turn {
+            self.resume_after_usage_limit_reset();
+        }
+        let retry_delay = (should_retry
+            && !reset_owns_failed_turn
+            && !reset_recovery_was_opted_out
+            && !profile_fallback_owns_failed_turn)
             .then(|| {
                 self.maybe_schedule_usage_self_heal_retry(
                     UsageSelfHealErrorKind::UsageLimit,
@@ -450,6 +475,10 @@ impl ChatWidget {
                 )
             })
             .flatten();
+        let drain_queue = retry_delay.is_none()
+            && !reset_owns_failed_turn
+            && !reset_recovery_was_opted_out
+            && !profile_fallback_owns_failed_turn;
 
         match rate_limit_reached_type {
             Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
@@ -462,7 +491,7 @@ impl ChatWidget {
                 self.on_error_with_queue_drain(
                     "Usage limit reached. You've reached your usage limit. Increase your limits to continue using Codewith."
                         .to_string(),
-                    retry_delay.is_none(),
+                    drain_queue,
                 );
                 self.add_usage_self_heal_retry_message(retry_delay);
             }
@@ -471,12 +500,12 @@ impl ChatWidget {
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::Credits);
             }
             Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) => {
-                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.on_error_with_queue_drain(message, drain_queue);
                 self.add_usage_self_heal_retry_message(retry_delay);
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::UsageLimit);
             }
             Some(RateLimitReachedType::RateLimitReached) | None => {
-                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.on_error_with_queue_drain(message, drain_queue);
                 self.add_usage_self_heal_retry_message(retry_delay);
             }
         }

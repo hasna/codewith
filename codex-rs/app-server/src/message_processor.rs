@@ -423,6 +423,8 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            cfg!(debug_assertions)
+                && matches!(plugin_startup_tasks, crate::PluginStartupTasks::Skip),
         );
         let active_session_processor = ActiveSessionRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -1868,6 +1870,11 @@ impl MessageProcessor {
             }
             ClientRequest::GetAccountRateLimits { params, .. } => {
                 self.account_processor.get_account_rate_limits(params).await
+            }
+            ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
+                self.account_processor
+                    .consume_account_rate_limit_reset_credit(params)
+                    .await
             }
             ClientRequest::GetAccountTokenUsage { .. } => {
                 self.account_processor.get_account_token_usage().await

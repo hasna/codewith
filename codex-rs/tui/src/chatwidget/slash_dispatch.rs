@@ -568,6 +568,12 @@ impl ChatWidget {
     }
 
     pub(super) fn handle_service_tier_command_dispatch(&mut self, command: ServiceTierCommand) {
+        if !self.ensure_command_allowed_during_usage_limit_reset(
+            &command.name,
+            /*available*/ false,
+        ) {
+            return;
+        }
         if self.active_side_conversation {
             self.add_error_message(format!(
                 "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
@@ -586,6 +592,12 @@ impl ChatWidget {
         command: ServiceTierCommand,
         args: String,
     ) {
+        if !self.ensure_command_allowed_during_usage_limit_reset(
+            &command.name,
+            /*available*/ false,
+        ) {
+            return;
+        }
         if self.active_side_conversation {
             self.add_error_message(format!(
                 "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
@@ -962,6 +974,12 @@ impl ChatWidget {
             return;
         }
         if !self.ensure_side_command_allowed_outside_review(cmd) {
+            return;
+        }
+        if !self.ensure_command_allowed_during_usage_limit_reset(
+            cmd.command(),
+            cmd.available_during_usage_limit_reset(),
+        ) {
             return;
         }
         if !cmd.available_during_task() && self.bottom_pane.is_task_running() {
@@ -1510,6 +1528,12 @@ impl ChatWidget {
         if !self.ensure_side_command_allowed_outside_review(cmd) {
             return;
         }
+        if !self.ensure_command_allowed_during_usage_limit_reset(
+            cmd.command(),
+            cmd.available_during_usage_limit_reset(),
+        ) {
+            return;
+        }
         if !cmd.supports_inline_args() {
             self.dispatch_command(cmd);
             return;
@@ -1807,7 +1831,7 @@ impl ChatWidget {
                 }
                 match parse_workflow_slash_args(trimmed) {
                     Ok(WorkflowSlashCommand::Draft { request }) => {
-                        if self.bottom_pane.is_task_running() {
+                        if self.is_user_turn_pending_or_running() {
                             self.add_error_message(
                                 "'/workflow draft' is disabled while a task is in progress."
                                     .to_string(),
@@ -2825,6 +2849,22 @@ impl ChatWidget {
             cmd.command()
         ));
         self.bottom_pane.drain_pending_submission_state();
+        false
+    }
+
+    fn ensure_command_allowed_during_usage_limit_reset(
+        &mut self,
+        command_name: &str,
+        available: bool,
+    ) -> bool {
+        if !self.automatic_usage_limit_reset_owns_failed_turn() || available {
+            return true;
+        }
+        self.add_to_history(history_cell::new_error_event(format!(
+            "'/{command_name}' is disabled while automatic usage-limit recovery is in progress."
+        )));
+        self.bottom_pane.drain_pending_submission_state();
+        self.request_redraw();
         false
     }
 

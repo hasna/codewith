@@ -246,7 +246,9 @@ fn permission_profile_from_history(
         InitialHistory::Resumed(resumed) => {
             permission_profile_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => permission_profile_from_items(items, None),
+        InitialHistory::Forked(items) => {
+            permission_profile_from_items(items, /*thread_id*/ None)
+        }
     }
 }
 
@@ -280,7 +282,7 @@ fn approval_policy_from_history(
         InitialHistory::Resumed(resumed) => {
             approval_policy_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => approval_policy_from_items(items, None),
+        InitialHistory::Forked(items) => approval_policy_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -314,7 +316,9 @@ fn approvals_reviewer_from_history(
         InitialHistory::Resumed(resumed) => {
             approvals_reviewer_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => approvals_reviewer_from_items(items, None),
+        InitialHistory::Forked(items) => {
+            approvals_reviewer_from_items(items, /*thread_id*/ None)
+        }
     }
 }
 
@@ -341,7 +345,7 @@ fn cwd_from_history(thread_history: &InitialHistory) -> Option<PathBuf> {
         InitialHistory::Resumed(resumed) => {
             cwd_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => cwd_from_items(items, None),
+        InitialHistory::Forked(items) => cwd_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -375,7 +379,7 @@ fn workspace_roots_from_history(thread_history: &InitialHistory) -> Option<Vec<A
         InitialHistory::Resumed(resumed) => {
             workspace_roots_from_items(resumed.history.as_slice(), Some(resumed.conversation_id))
         }
-        InitialHistory::Forked(items) => workspace_roots_from_items(items, None),
+        InitialHistory::Forked(items) => workspace_roots_from_items(items, /*thread_id*/ None),
     }
 }
 
@@ -584,6 +588,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) background_agent_workers: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub(super) background_agent_worker_processes:
         Arc<Mutex<HashMap<String, codex_background_agent::process_lifecycle::WorkerProcessHandle>>>,
+    pub(super) background_agent_worker_process_cleanup_pending: Arc<Mutex<HashSet<String>>>,
     pub(super) background_agent_supervisor_token: CancellationToken,
     pub(super) background_agent_worker_process: bool,
     pub(super) external_agent_runs: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -630,6 +635,7 @@ impl ThreadRequestProcessor {
                 super::background_agent_live::new_background_agent_supervisor_id(),
             background_agent_workers: Arc::new(Mutex::new(HashMap::new())),
             background_agent_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             background_agent_supervisor_token: CancellationToken::new(),
             background_agent_worker_process,
             external_agent_runs: Arc::new(Mutex::new(HashMap::new())),

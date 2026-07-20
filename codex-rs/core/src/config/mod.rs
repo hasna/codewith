@@ -65,6 +65,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::UsageLimitToml;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginsConfigInput;
@@ -277,6 +278,11 @@ impl Default for UsageSelfHealConfig {
             max_reset_retry_delay_secs: DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UsageLimitConfig {
+    pub auto_reset_enabled: bool,
 }
 
 pub const DEFAULT_SESSION_RECAP_MODEL: &str = "zai-org/GLM-5.1";
@@ -616,6 +622,15 @@ fn resolve_usage_self_heal_config(config: Option<UsageSelfHealToml>) -> UsageSel
         max_reset_retry_delay_secs: config
             .max_reset_retry_delay_secs
             .unwrap_or(defaults.max_reset_retry_delay_secs),
+    }
+}
+
+fn resolve_usage_limit_config(config: Option<UsageLimitToml>) -> UsageLimitConfig {
+    let Some(config) = config else {
+        return UsageLimitConfig::default();
+    };
+    UsageLimitConfig {
+        auto_reset_enabled: config.auto_reset_enabled.unwrap_or(false),
     }
 }
 
@@ -1261,6 +1276,9 @@ pub struct Config {
 
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     pub usage_self_heal: UsageSelfHealConfig,
+
+    /// Usage-limit reset behavior.
+    pub usage_limit: UsageLimitConfig,
 
     /// Lightweight recap behavior for returning to interactive TUI sessions.
     pub session_recap: SessionRecapConfig,
@@ -3259,6 +3277,7 @@ impl Config {
         let auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
         let usage_self_heal = resolve_usage_self_heal_config(cfg.usage_self_heal.clone());
+        let usage_limit = resolve_usage_limit_config(cfg.usage_limit.clone());
         let session_recap = resolve_session_recap_config(cfg.session_recap.clone());
         let goals = resolve_goals_config(cfg.goals.clone());
         let worktrees = resolve_worktrees_config(cfg.worktrees.clone());
@@ -4144,6 +4163,7 @@ impl Config {
             selected_auth_profile,
             auth_profile_auto_switch,
             usage_self_heal,
+            usage_limit,
             session_recap,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"

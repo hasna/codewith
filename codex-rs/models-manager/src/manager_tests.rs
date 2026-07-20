@@ -26,6 +26,7 @@ const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
 const GPT_5_4_CONTEXT_WINDOW: i64 = 1_050_000;
+const CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW: i64 = 272_000;
 
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
@@ -282,6 +283,94 @@ fn openai_manager_for_tests_with_provider_key(
         endpoint_client,
         auth_manager,
     )
+}
+
+#[tokio::test]
+async fn chatgpt_explicit_bare_gpt_5_6_resolves_to_sol() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6-sol");
+}
+
+#[tokio::test]
+async fn api_key_explicit_bare_gpt_5_6_remains_unchanged() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests_with_auth(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6");
+}
+
+#[tokio::test]
+async fn chatgpt_model_resolution_only_migrates_exact_bare_openai_gpt_5_6() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+    let openai_config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let migrated = manager.get_model_info("gpt-5.6", &openai_config).await;
+    assert_eq!(migrated.slug, "gpt-5.6-sol");
+
+    for model in [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6",
+    ] {
+        let resolved = manager.get_model_info(model, &openai_config).await;
+        assert_eq!(resolved.slug, model);
+    }
+
+    let custom_config = ModelsManagerConfig {
+        model_provider_id: Some("custom-openai-compatible".to_string()),
+        ..Default::default()
+    };
+    let custom_default = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &custom_config,
+            RefreshStrategy::Offline,
+        )
+        .await;
+    assert_eq!(custom_default, "gpt-5.6");
+    let custom_info = manager.get_model_info("gpt-5.6", &custom_config).await;
+    assert_eq!(custom_info.slug, "gpt-5.6");
 }
 
 fn openai_manager_for_tests_with_provider_key_and_catalog(
@@ -562,6 +651,108 @@ async fn get_model_info_keeps_chatgpt_remote_gpt_5_5_context_window() {
 }
 
 #[tokio::test]
+async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_auth() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    for (slug, expected_fallback_metadata) in [
+        ("gpt-5.4", false),
+        ("gpt-5.5", false),
+        ("gpt-5.6", false),
+        ("gpt-5.6-sol", false),
+        ("gpt-5.6-terra", false),
+        ("gpt-5.6-luna", false),
+        ("openai/gpt-5.5", false),
+    ] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(
+            model_info.context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default context window"
+        );
+        assert_eq!(
+            model_info.max_context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default max context window"
+        );
+        assert_eq!(
+            model_info.used_fallback_model_metadata, expected_fallback_metadata,
+            "{slug} fallback metadata state"
+        );
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_auth_caps_api_sized_remote_gpt_context_window() {
+    let mut remote = remote_model(GPT_5_5_MODEL_ID, "GPT-5.5", /*priority*/ 0);
+    remote.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    remote.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![vec![remote]]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(
+        model_info.context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert_eq!(
+        model_info.max_context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_explicit_gpt_context_window_override() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(model_info.context_window, Some(500_000));
+    assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_api_sized_gpt_context_window_for_non_openai_provider() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openrouter".to_string()),
+        ..Default::default()
+    };
+
+    for slug in [GPT_5_5_MODEL_ID, "openrouter/gpt-5.5"] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(model_info.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+        assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    }
+}
+
+#[tokio::test]
 async fn get_model_info_keeps_chatgpt_remote_gpt_5_4_context_window() {
     let remote_context_window = 273_000;
     let remote_max_context_window = 274_000;
@@ -761,17 +952,22 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(vec![remote_models]);
     let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
-    let bundled_slug = load_remote_models_from_file()
-        .expect("bundled models should parse")
-        .first()
-        .expect("bundled models should contain at least one model")
-        .slug
-        .clone();
 
     manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
         .await
         .expect("refresh succeeds");
+    let remote_models = manager.get_remote_models().await;
+    let bundled_slug = load_remote_models_from_file()
+        .expect("bundled models should parse")
+        .into_iter()
+        .find(|bundled| {
+            !remote_models
+                .iter()
+                .any(|remote| remote.slug == bundled.slug)
+        })
+        .expect("bundled models should contain at least one non-required model")
+        .slug;
 
     let model_info = manager
         .get_model_info(&bundled_slug, &ModelsManagerConfig::default())
@@ -825,6 +1021,42 @@ async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_remo
     let models = manager.get_remote_models().await;
     assert_models_contain(&models, &remote_models);
     assert_required_bundled_models_available_once(&models, &required_models);
+}
+
+#[tokio::test]
+async fn chatgpt_remote_catalog_omission_injects_only_supported_gpt_5_6_variants() {
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 1),
+        remote_model(
+            "chatgpt-authoritative-model-info",
+            "ChatGPT Model Info",
+            /*priority*/ 10,
+        ),
+    ];
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let gpt_5_6_models = manager
+        .list_models(RefreshStrategy::Offline)
+        .await
+        .into_iter()
+        .filter(|model| model.model.starts_with("gpt-5.6"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        gpt_5_6_models
+            .iter()
+            .map(|model| model.model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    );
+    assert!(gpt_5_6_models[0].is_default);
 }
 
 #[tokio::test]
@@ -933,11 +1165,14 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
 
 #[tokio::test]
 async fn refresh_available_models_uses_provider_catalog_without_bundled_fallback() {
-    let remote_models = vec![remote_model(
-        "provider-visible-remote",
-        "Provider Visible",
-        /*priority*/ 0,
-    )];
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 0),
+        remote_model(
+            "provider-visible-remote",
+            "Provider Visible",
+            /*priority*/ 1,
+        ),
+    ];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
         has_provider_auth: true,

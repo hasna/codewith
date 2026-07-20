@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "deleted": {
       "type": "boolean"
@@ -9,8 +9,8 @@
     }
   },
   "required": [
-    "deleted",
-    "monitorId"
+    "monitorId",
+    "deleted"
   ],
   "title": "ThreadMonitorDeleteResponse",
   "type": "object"

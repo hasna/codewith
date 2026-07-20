@@ -1,0 +1,39 @@
+{
+  "pr_view": {
+    "baseRefName": "main",
+    "headRefName": "feature",
+    "headRefOid": "3333333333333333333333333333333333333333",
+    "headRepositoryOwner": {
+      "login": "hasna"
+    },
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "number": 215,
+    "reviewDecision": "APPROVED",
+    "reviews": [
+      {
+        "author": {
+          "login": "reviewer-a"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "state": "OPEN",
+    "url": "https://github.com/hasna/codewith/pull/215"
+  },
+  "checks": [
+    {
+      "bucket": "pending",
+      "link": "https://github.com/hasna/codewith/actions/runs/3/job/1",
+      "name": "current pending check",
+      "state": "PENDING",
+      "workflow": "rust-ci"
+    },
+    {
+      "link": "https://github.com/hasna/codewith/actions/runs/3/job/2",
+      "name": "legacy queued check",
+      "status": "queued"
+    }
+  ]
+}

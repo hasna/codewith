@@ -31,16 +31,94 @@ Known evidence gaps:
   `npm view @hasna/codewith versions` currently starts at `0.1.2`.
 - `0.1.27`, `0.1.28`, and `0.1.46` live on release branches, not
   `origin/main`; `0.1.46` was cut from `fix/loops-runtime-0.1.46`.
-- `origin/main` remains at Codewith `0.1.45` until the `0.1.46` hotfix branch
-  is merged, cherry-picked, or superseded by a later release.
+- `origin/main` now carries the `rust-v0.1.66` release tag. Earlier notes about
+  `origin/main` lagging at `0.1.45` were superseded by later release trains.
 - The `rust-v0.1.46` GitHub Release is metadata-only and is not marked latest;
-  use `rust-v0.1.45` for the latest asset-bearing platform binary release until
-  a later full asset release supersedes it.
+  use a later full asset-bearing release once platform assets are available for
+  that tag.
 - This file intentionally excludes pre-fork alpha tags
   `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
   SDK tags, and `rusty-v8-v*` dependency artifact tags.
 
 ## [Unreleased]
+
+## [0.1.67] - 2026-07-16
+
+Tag: `rust-v0.1.67`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.67>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.66...rust-v0.1.67>
+
+Hotfix release for ChatGPT subscription GPT-5.6 model compatibility. This
+release carries forward the banked usage-reset controls and remote-compaction
+history preservation shipped in `0.1.66`.
+
+### Fixed
+
+- Model selection: removed the unsupported bare `gpt-5.6` entry from ChatGPT
+  model catalogs and defaults, and normalized exact legacy ChatGPT/OpenAI
+  selections to `gpt-5.6-sol` across startup, resume, per-turn switching, and
+  spawned agents. OpenAI API-key profiles and custom-provider model semantics
+  remain unchanged.
+
+## [0.1.66] - 2026-07-16
+
+Tag: `rust-v0.1.66`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.66>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66>
+
+Hotfix release for banked usage-limit resets and remote-compaction history
+preservation.
+
+### Added
+
+- Usage limits: `/usage` can now redeem an available banked reset, and a new
+  default-off `/config` toggle can automatically redeem an exact weekly reset
+  after Codewith revalidates the account, profile, credit, exhaustion window,
+  and reset generation immediately before consumption.
+
+### Fixed
+
+- Compaction: V1 and V2 remote compaction now stop when the provider rejects
+  the request for context overflow, preserving the complete unsummarized
+  semantic history and leaving live history unchanged instead of deleting an
+  older prefix before retrying.
+
+## [0.1.65] - 2026-07-14
+
+Tag: `rust-v0.1.65`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.65>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.64...rust-v0.1.65>
+
+Hotfix release for GPT-5.6 Sol backend version gating.
+
+### Fixed
+
+- Model selection: Codewith now advertises upstream Codex API compatibility
+  `0.144.4` instead of the fork's low `0.1.x` package version, so
+  `gpt-5.6-sol` requests do not fail with the backend "requires a newer version
+  of Codex" gate.
+- Model discovery: ChatGPT model catalog refreshes now use the same advertised
+  Codex API compatibility version for model-list cache/version checks, keeping
+  model availability aligned with request headers.
+
+## [0.1.64] - 2026-07-13
+
+Tag: `rust-v0.1.64`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.64>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.63...rust-v0.1.64>
+
+Hotfix release for ChatGPT subscription context-window compaction.
+
+### Fixed
+
+- Compaction: ChatGPT-authenticated OpenAI GPT-5.4, GPT-5.5, and GPT-5.6
+  model metadata now clamps API-sized fallback or stale remote context windows
+  to the subscription-sized 272K raw window by default, so auto-compaction uses
+  the 244.8K default compact threshold and the 258.4K effective full-window cap
+  instead of waiting for a 1M-class API budget.
+- Status: ChatGPT profile switches and resumed/forked token-count replay now
+  refresh or clamp stale API-sized context-window denominators while preserving
+  smaller backend-reported ChatGPT replay windows.
 
 ## [0.1.61] - 2026-07-09
 

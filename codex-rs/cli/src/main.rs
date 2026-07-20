@@ -3693,8 +3693,14 @@ mod tests {
     }
 
     #[test]
-    fn tmux_handoff_uses_exact_target_from_tui() {
-        let handoff = TmuxHandoffExit {
+    fn tmux_handoff_uses_exact_attach_target_from_tui() {
+        let attach_handoff = TmuxHandoffExit {
+            session_name: "dev".to_string(),
+            window_name: "dev".to_string(),
+            target: "=dev".to_string(),
+            attach_mode: TmuxHandoffAttachMode::Attach,
+        };
+        let switch_handoff = TmuxHandoffExit {
             session_name: "dev".to_string(),
             window_name: "codewith".to_string(),
             target: "=dev:@42".to_string(),
@@ -3702,7 +3708,11 @@ mod tests {
         };
 
         assert_eq!(
-            tmux_handoff_command_parts(&handoff),
+            tmux_handoff_command_parts(&attach_handoff),
+            ("attach-session", "=dev")
+        );
+        assert_eq!(
+            tmux_handoff_command_parts(&switch_handoff),
             ("switch-client", "=dev:@42")
         );
     }

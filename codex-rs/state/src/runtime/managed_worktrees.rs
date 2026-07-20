@@ -6,6 +6,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+// The codec is exercised as a test-only staging specification until a later
+// persistence and admission stage owns production identity keys.
+#[cfg(test)]
+mod path_keys;
+
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
 

@@ -255,6 +255,9 @@ impl ChatWidget {
                 .into_iter()
                 .map(config_selection_item)
                 .collect();
+        if section == crate::common_config_options::CommonConfigSection::AccountAutomation {
+            items.insert(0, rate_limit_reset_config_item());
+        }
         items.push(back_to_config_menu_item());
 
         let mut header = ColumnRenderable::new();
@@ -308,6 +311,9 @@ impl ChatWidget {
             }
             "auth_profile_auto_switch.on_weekly_limit" => {
                 self.config.auth_profile_auto_switch.on_weekly_limit = enabled;
+            }
+            "usage_limit.auto_reset_enabled" => {
+                self.set_usage_limit_auto_reset_enabled(enabled);
             }
             "check_for_update_on_startup" => {
                 self.config.check_for_update_on_startup = false;
@@ -559,6 +565,20 @@ fn back_to_config_menu_item() -> SelectionItem {
         description: Some("Return to the config section menu.".to_string()),
         actions,
         dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn rate_limit_reset_config_item() -> SelectionItem {
+    let actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+        tx.send(AppEvent::OpenRateLimitResetConfirm);
+    })];
+    SelectionItem {
+        name: "Use a usage limit reset".to_string(),
+        description: Some("Refresh and choose an exact banked reset.".to_string()),
+        actions,
+        dismiss_on_select: true,
+        search_value: Some("usage limit reset banked credit manual".to_string()),
         ..Default::default()
     }
 }

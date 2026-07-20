@@ -1191,6 +1191,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_interaction_event_sequence_migration_survives_vacuum() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        migrator_through(&STATE_MIGRATOR, /*version*/ 55)
+            .run(&pool)
+            .await
+            .expect("apply pre-sequence state schema");
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode
+) VALUES ('thread-1', '', 0, 0, 'cli', 'test-provider', '/', 'fixture', 'workspace-write', 'on-request')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert pending interaction event thread");
+        sqlx::query(
+            r#"
+INSERT INTO thread_pending_interactions (
+    interaction_id,
+    thread_id,
+    source_kind,
+    kind,
+    status,
+    request_payload_json,
+    request_payload_sha256,
+    request_payload_preview,
+    request_redactions_json,
+    no_client_policy,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('interaction-1', 'thread-1', 'thread', 'permission_grant', 'pending', '{}', ?, 'fixture', '[]', 'fixture', 0, 0)
+            "#,
+        )
+        .bind("0".repeat(64))
+        .execute(&pool)
+        .await
+        .expect("insert pending interaction event parent");
+
+        for (event_id, event_kind, status) in [
+            ("event-z-first", "created", "pending"),
+            ("event-a-second", "delivered", "delivered"),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES (?, 'interaction-1', 'thread-1', ?, ?, '{}', ?, 'fixture', '[]', 1700000000000)
+                "#,
+            )
+            .bind(event_id)
+            .bind(event_kind)
+            .bind(status)
+            .bind("0".repeat(64))
+            .execute(&pool)
+            .await
+            .expect("insert pre-migration event using named columns");
+        }
+
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("apply pending interaction event sequence migration");
+        let table_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_pending_interaction_events'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated table definition");
+        assert!(table_sql.contains("insertion_seq INTEGER PRIMARY KEY AUTOINCREMENT"));
+
+        let before_vacuum: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read migrated event order");
+        sqlx::query("VACUUM")
+            .execute(&pool)
+            .await
+            .expect("vacuum migrated state db");
+        let after_vacuum: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read vacuumed event order");
+        assert_eq!(before_vacuum, after_vacuum);
+
+        sqlx::query(
+            r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES ('event-m-after', 'interaction-1', 'thread-1', 'responded', 'responded', '{}', ?, 'fixture', '[]', 1700000000000)
+            "#,
+        )
+        .bind("0".repeat(64))
+        .execute(&pool)
+        .await
+        .expect("named-column insert should remain compatible after migration");
+        let event_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read post-migration event order");
+        assert_eq!(
+            event_ids,
+            vec![
+                "event-z-first".to_string(),
+                "event-a-second".to_string(),
+                "event-m-after".to_string(),
+            ]
+        );
+
+        pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn sqlite_integrity_check_reports_ok_for_valid_db() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)

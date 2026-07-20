@@ -406,7 +406,7 @@ SELECT
     created_at_ms
 FROM thread_pending_interaction_events
 WHERE interaction_id = ?
-ORDER BY created_at_ms ASC, event_id ASC
+ORDER BY created_at_ms ASC, insertion_seq ASC
             "#,
         )
         .bind(interaction_id)
@@ -903,6 +903,75 @@ mod tests {
                     terminal_status: PendingInteractionStatus::Denied,
                 })
                 .await?
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn events_with_equal_timestamps_preserve_insertion_order() -> anyhow::Result<()> {
+        let runtime = test_runtime_with_thread().await?;
+        let thread_id = test_thread_id();
+        let interaction = create_test_interaction(
+            runtime.as_ref(),
+            "interaction-event-order",
+            thread_id,
+            PendingInteractionKind::PermissionGrant,
+            "turn-1",
+            "request-1",
+        )
+        .await?;
+        let payload_json = serde_json::to_string(&json!({"status": "pending"}))?;
+        let payload_sha256 = payload_sha256(payload_json.as_bytes());
+        let created_at_ms = 1_700_000_000_000_i64;
+
+        sqlx::query("DELETE FROM thread_pending_interaction_events WHERE interaction_id = ?")
+            .bind(interaction.interaction_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await?;
+        for (event_id, event_kind, status) in [
+            ("event-z-first", "created", "pending"),
+            ("event-a-second", "delivered", "delivered"),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(event_id)
+            .bind(interaction.interaction_id.as_str())
+            .bind(thread_id.to_string())
+            .bind(event_kind)
+            .bind(status)
+            .bind(payload_json.as_str())
+            .bind(payload_sha256.as_str())
+            .bind("pending")
+            .bind("[]")
+            .bind(created_at_ms)
+            .execute(runtime.pool.as_ref())
+            .await?;
+        }
+
+        let events = runtime
+            .list_thread_pending_interaction_events(interaction.interaction_id.as_str())
+            .await?;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-z-first", "event-a-second"]
         );
 
         Ok(())

@@ -1515,7 +1515,7 @@ fn schedule_turn_error(error: &codex_app_server_protocol::TurnError) -> String {
 }
 
 fn schedule_run_error(error: impl AsRef<str>) -> String {
-    schedule_run_error_with_classification(error.as_ref(), None)
+    schedule_run_error_with_classification(error.as_ref(), /*classification*/ None)
 }
 
 fn schedule_run_error_with_classification(

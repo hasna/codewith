@@ -22,7 +22,10 @@
         },
         "message": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "updatedInput": {
           "default": null,
@@ -42,9 +45,12 @@
       "additionalProperties": false,
       "properties": {
         "decision": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/PermissionRequestDecisionWire"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
@@ -66,16 +72,22 @@
       "type": "boolean"
     },
     "hookSpecificOutput": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/PermissionRequestHookSpecificOutputWire"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null
     },
     "stopReason": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "suppressOutput": {
       "default": false,
@@ -83,7 +95,10 @@
     },
     "systemMessage": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "permission-request.command.output",

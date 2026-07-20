@@ -11,10 +11,16 @@
   },
   "properties": {
     "agent_id": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "agent_type": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "cwd": {
       "type": "string"
@@ -56,17 +62,17 @@
     }
   },
   "required": [
+    "session_id",
+    "turn_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
     "model",
     "permission_mode",
-    "session_id",
-    "tool_input",
     "tool_name",
+    "tool_input",
     "tool_response",
-    "tool_use_id",
-    "transcript_path",
-    "turn_id"
+    "tool_use_id"
   ],
   "title": "post-tool-use.command.input",
   "type": "object"

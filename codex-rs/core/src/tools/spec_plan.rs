@@ -223,8 +223,7 @@ fn build_model_visible_specs_and_registry(
             continue;
         }
         let exposure = runtime.exposure();
-        if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
-        {
+        if exposure.is_direct() && !is_hidden_by_code_mode(turn_context, &tool_name, exposure) {
             let spec = runtime.spec();
             specs.push(spec_for_model_request(
                 turn_context,
@@ -379,25 +378,49 @@ fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool {
-    if !image_generation_runtime_enabled(turn_context) || !namespace_tools_enabled(turn_context) {
-        return false;
-    }
-
-    if turn_context.model_info.use_responses_lite {
-        return true;
-    }
-
-    turn_context.features.get().enabled(Feature::ImageGenExt)
+    standalone_image_generation_runtime_available(turn_context)
+        && turn_context.model_info.use_responses_lite
 }
 
 fn standalone_image_generation_available(
     turn_context: &TurnContext,
     extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
 ) -> bool {
-    standalone_image_generation_model_visible(turn_context)
+    if image_generation_excluded_from_code_mode(turn_context) {
+        return false;
+    }
+
+    standalone_image_generation_extension_registerable(turn_context)
         && extension_tools.iter().any(|executor| {
             executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
         })
+}
+
+fn standalone_image_generation_runtime_available(turn_context: &TurnContext) -> bool {
+    image_generation_runtime_enabled(turn_context)
+        && namespace_tools_enabled(turn_context)
+        && turn_context.features.get().enabled(Feature::ImageGenExt)
+}
+
+fn standalone_image_generation_extension_registerable(turn_context: &TurnContext) -> bool {
+    standalone_image_generation_model_visible(turn_context)
+        || (standalone_image_generation_runtime_available(turn_context)
+            && matches!(
+                turn_context.tool_mode,
+                ToolMode::CodeMode | ToolMode::CodeModeOnly
+            ))
+}
+
+fn image_generation_excluded_from_code_mode(turn_context: &TurnContext) -> bool {
+    matches!(
+        turn_context.tool_mode,
+        ToolMode::CodeMode | ToolMode::CodeModeOnly
+    ) && turn_context
+        .config
+        .code_mode
+        .excluded_tool_namespaces
+        .iter()
+        .any(|namespace| namespace == IMAGE_GEN_NAMESPACE)
 }
 
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
@@ -438,16 +461,25 @@ fn agent_type_description(
     }
 }
 
-fn is_hidden_by_code_mode_only(
+fn is_hidden_by_code_mode(
     turn_context: &TurnContext,
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
-    turn_context.tool_mode == ToolMode::CodeModeOnly
-        && exposure != ToolExposure::DirectModelOnly
-        && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
-            tool_name,
-        ))
+    if exposure == ToolExposure::DirectModelOnly {
+        return false;
+    }
+
+    match turn_context.tool_mode {
+        ToolMode::CodeMode => {
+            tool_name == &ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+                && standalone_image_generation_extension_registerable(turn_context)
+        }
+        ToolMode::CodeModeOnly => codex_code_mode::is_code_mode_nested_tool(
+            &codex_tools::code_mode_name_for_tool_name(tool_name),
+        ),
+        ToolMode::Direct => false,
+    }
 }
 
 fn is_excluded_from_code_mode(turn_context: &TurnContext, tool_name: &ToolName) -> bool {
@@ -1000,7 +1032,8 @@ fn append_extension_tool_executors(
             continue;
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
-            && !standalone_image_generation_model_visible(turn_context)
+            && (!standalone_image_generation_extension_registerable(turn_context)
+                || image_generation_excluded_from_code_mode(turn_context))
         {
             continue;
         }

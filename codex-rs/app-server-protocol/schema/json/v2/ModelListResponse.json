@@ -1,21 +1,16 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "InputModality": {
       "description": "Canonical user-input modality tags advertised by a model.",
       "oneOf": [
         {
+          "const": "text",
           "description": "Plain text turns and tool payloads.",
-          "enum": [
-            "text"
-          ],
           "type": "string"
         },
         {
+          "const": "image",
           "description": "Image attachments included in user turns.",
-          "enum": [
-            "image"
-          ],
           "type": "string"
         }
       ]
@@ -33,7 +28,7 @@
         "availabilityNux": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ModelAvailabilityNux"
+              "$ref": "#/$defs/ModelAvailabilityNux"
             },
             {
               "type": "null"
@@ -41,7 +36,7 @@
           ]
         },
         "defaultReasoningEffort": {
-          "$ref": "#/definitions/ReasoningEffort"
+          "$ref": "#/$defs/ReasoningEffort"
         },
         "defaultServiceTier": {
           "default": null,
@@ -69,7 +64,7 @@
             "image"
           ],
           "items": {
-            "$ref": "#/definitions/InputModality"
+            "$ref": "#/$defs/InputModality"
           },
           "type": "array"
         },
@@ -83,7 +78,7 @@
           "type": "string"
         },
         "modelGatewayKind": {
-          "$ref": "#/definitions/ModelGatewayKind"
+          "$ref": "#/$defs/ModelGatewayKind"
         },
         "modelGatewayName": {
           "type": "string"
@@ -94,13 +89,13 @@
         "serviceTiers": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/ModelServiceTier"
+            "$ref": "#/$defs/ModelServiceTier"
           },
           "type": "array"
         },
         "supportedReasoningEfforts": {
           "items": {
-            "$ref": "#/definitions/ReasoningEffortOption"
+            "$ref": "#/$defs/ReasoningEffortOption"
           },
           "type": "array"
         },
@@ -117,7 +112,7 @@
         "upgradeInfo": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ModelUpgradeInfo"
+              "$ref": "#/$defs/ModelUpgradeInfo"
             },
             {
               "type": "null"
@@ -132,18 +127,18 @@
         }
       },
       "required": [
-        "defaultReasoningEffort",
-        "description",
-        "displayName",
-        "hidden",
         "id",
-        "isDefault",
         "model",
-        "modelGateway",
-        "modelGatewayKind",
-        "modelGatewayName",
         "modelProvider",
-        "supportedReasoningEfforts"
+        "modelGateway",
+        "modelGatewayName",
+        "modelGatewayKind",
+        "displayName",
+        "description",
+        "hidden",
+        "supportedReasoningEfforts",
+        "defaultReasoningEffort",
+        "isDefault"
       ],
       "type": "object"
     },
@@ -178,9 +173,9 @@
         }
       },
       "required": [
-        "description",
         "id",
-        "name"
+        "name",
+        "description"
       ],
       "type": "object"
     },
@@ -224,25 +219,26 @@
           "type": "string"
         },
         "reasoningEffort": {
-          "$ref": "#/definitions/ReasoningEffort"
+          "$ref": "#/$defs/ReasoningEffort"
         }
       },
       "required": [
-        "description",
-        "reasoningEffort"
+        "reasoningEffort",
+        "description"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/Model"
+        "$ref": "#/$defs/Model"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
       "type": [
         "string",
         "null"
