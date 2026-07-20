@@ -1361,8 +1361,22 @@ exit 2
             ("XAI_API_KEY".to_string(), "test-value".to_string()),
         ]);
 
+        // On Windows the launch spec canonicalizes an absolute program, so use a
+        // real fixture there; the sanitized env asserted below depends only on
+        // `source`, not on the program or cwd.
+        #[cfg(windows)]
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        #[cfg(windows)]
+        let (cwd, program) = {
+            let program = temp_dir.path().join("claude.exe");
+            write_windows_fixture(&program, "fixture");
+            (temp_dir.path().to_path_buf(), program)
+        };
+        #[cfg(not(windows))]
+        let (cwd, program) = (PathBuf::from("/repo"), PathBuf::from("/usr/bin/claude"));
+
         let spec = harness
-            .launch_spec("/repo", "/usr/bin/claude", &source)
+            .launch_spec(cwd, program, &source)
             .expect("native launch spec should build");
 
         assert_eq!(
