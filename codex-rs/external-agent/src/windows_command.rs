@@ -130,7 +130,14 @@ mod tests {
         let resolved = resolve_windows_program_from_source_env("claude", &source_env, &launch_cwd)
             .expect("relative source PATH should resolve against launch cwd");
 
-        assert_eq!(resolved, agent);
+        // Resolution appends the source PATHEXT extension verbatim (`.CMD`), so the
+        // resolved path can differ in case from the on-disk `claude.cmd`. Windows
+        // `Path` equality is case-sensitive, so compare case-insensitively to match
+        // the case-insensitive filesystem the launcher actually targets.
+        assert_eq!(
+            resolved.to_string_lossy().to_ascii_lowercase(),
+            agent.to_string_lossy().to_ascii_lowercase()
+        );
         assert!(resolved.is_absolute());
     }
 }
