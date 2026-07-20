@@ -2959,11 +2959,31 @@
       ],
       "type": "string"
     },
+    "ToolsPolicy": {
+      "description": "Hardened tool-exposure policy for the model toolset.\n\nSelecting a policy switches Codewith into a native AuthCapsule enforcement mode. This is a first-class configuration key so that a `--strict-config` launch accepts `-c tools.policy=\"infinity-agent\"` (or `[tools] policy = \"infinity-agent\"`) instead of rejecting it as an unknown field.",
+      "oneOf": [
+        {
+          "description": "Infinity subscription AuthCapsule policy. Removes host filesystem tools, host shell tools, and auth-profile control from the model toolset and mediates every surviving tool call through the protected remote-tool bridge. See `Config::tools_policy` and the tool planner for enforcement.",
+          "enum": [
+            "infinity-agent"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ToolsToml": {
       "additionalProperties": false,
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ToolsPolicy"
+            }
+          ],
+          "description": "Optional hardened tool-exposure policy (e.g. the Infinity AuthCapsule `infinity-agent` policy). `None` preserves default tool exposure."
         },
         "web_search": {
           "allOf": [
