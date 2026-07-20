@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,35 @@ def run_preflight(fixture: str, mode: str = "preflight", artifacts: list[Path] |
     return json.loads(result.stdout)
 
 
+def current_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def reviewer_artifact(
+    reviewer_identity: str,
+    *,
+    include_blocking_findings: bool = True,
+) -> dict[str, object]:
+    artifact: dict[str, object] = {
+        "repository": "hasna/codewith",
+        "pr_number": 215,
+        "head_sha": "1111111111111111111111111111111111111111",
+        "reviewer_identity": reviewer_identity,
+        "timestamp": current_timestamp(),
+        "verdict": "approve",
+        "checked_risks_summary": "Focused merge preflight artifact validation.",
+    }
+    if include_blocking_findings:
+        artifact["blocking_findings"] = []
+    return artifact
+
+
+def write_artifact(directory: Path, name: str, artifact: dict[str, object]) -> Path:
+    path = directory / name
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    return path
+
+
 class MergePrPreflightTests(unittest.TestCase):
     def test_current_success_shape_is_mergeable_with_artifact_warning(self) -> None:
         snapshot = run_preflight("checks_success_current.json")
@@ -68,6 +98,18 @@ class MergePrPreflightTests(unittest.TestCase):
 
     def test_backcompat_failure_and_cancelled_checks_block(self) -> None:
         snapshot = run_preflight("checks_failure_backcompat.json")
+
+        self.assertEqual(snapshot["verdict"], "not_mergeable")
+        self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
+
+    def test_backcompat_startup_failure_check_blocks(self) -> None:
+        snapshot = run_preflight("checks_startup_failure_backcompat.json")
+
+        self.assertEqual(snapshot["verdict"], "not_mergeable")
+        self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
+
+    def test_backcompat_stale_check_blocks(self) -> None:
+        snapshot = run_preflight("checks_stale_backcompat.json")
 
         self.assertEqual(snapshot["verdict"], "not_mergeable")
         self.assertIn("checks_not_successful", snapshot["blocking_reasons"])
@@ -112,6 +154,52 @@ class MergePrPreflightTests(unittest.TestCase):
         self.assertEqual(snapshot["verdict"], "mergeable")
         self.assertNotIn("artifact_1_non_passing_verdict", snapshot["blocking_reasons"])
         self.assertNotIn("artifact_2_non_passing_verdict", snapshot["blocking_reasons"])
+        self.assertNotIn("fewer_than_two_reviewer_artifacts", snapshot["blocking_reasons"])
+
+    def test_missing_blocking_findings_blocks_actual_merge_artifacts(self) -> None:
+        with TemporaryDirectory() as directory:
+            artifact_dir = Path(directory)
+            artifacts = [
+                write_artifact(
+                    artifact_dir,
+                    "artifact-a.json",
+                    reviewer_artifact("reviewer-a", include_blocking_findings=False),
+                ),
+                write_artifact(
+                    artifact_dir,
+                    "artifact-b.json",
+                    reviewer_artifact("reviewer-b", include_blocking_findings=False),
+                ),
+            ]
+            snapshot = run_preflight(
+                "checks_success_current.json",
+                mode="immediate-merge",
+                artifacts=artifacts,
+            )
+
+        self.assertEqual(snapshot["verdict"], "not_mergeable")
+        self.assertIn("artifact_1_missing_blocking_findings", snapshot["blocking_reasons"])
+        self.assertIn("artifact_2_missing_blocking_findings", snapshot["blocking_reasons"])
+        self.assertNotIn("fewer_than_two_reviewer_artifacts", snapshot["blocking_reasons"])
+
+    def test_empty_blocking_findings_allows_valid_actual_merge_artifacts(self) -> None:
+        with TemporaryDirectory() as directory:
+            artifact_dir = Path(directory)
+            artifacts = [
+                write_artifact(artifact_dir, "artifact-a.json", reviewer_artifact("reviewer-a")),
+                write_artifact(artifact_dir, "artifact-b.json", reviewer_artifact("reviewer-b")),
+            ]
+            snapshot = run_preflight(
+                "checks_success_current.json",
+                mode="immediate-merge",
+                artifacts=artifacts,
+            )
+
+        artifact_blockers = [
+            reason for reason in snapshot["blocking_reasons"] if reason.startswith("artifact_")
+        ]
+        self.assertEqual(snapshot["verdict"], "mergeable")
+        self.assertEqual(artifact_blockers, [])
         self.assertNotIn("fewer_than_two_reviewer_artifacts", snapshot["blocking_reasons"])
 
 

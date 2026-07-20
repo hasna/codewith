@@ -31,6 +31,8 @@ BLOCKING_CHECK_STATES = {
     "fail",
     "failed",
     "failure",
+    "stale",
+    "startup_failure",
     "timed_out",
 }
 PENDING_CHECK_STATES = {
@@ -292,7 +294,9 @@ def artifact_decision(
         verdict = str(artifact.get("verdict") or "").strip().lower()
         if verdict not in {"approve", "approved", "pass", "no_blockers"}:
             blockers.append(f"{prefix}_non_passing_verdict")
-        if artifact.get("blocking_findings"):
+        if "blocking_findings" not in artifact:
+            blockers.append(f"{prefix}_missing_blocking_findings")
+        elif artifact.get("blocking_findings"):
             blockers.append(f"{prefix}_blocking_findings")
         valid_count += 1
 
