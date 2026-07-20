@@ -372,7 +372,14 @@ async fn thread_shell_command_uses_existing_active_turn() -> Result<()> {
     .await??;
     let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
     assert_eq!(thread.turns.len(), 1);
-    assert_no_command_executions(&thread.turns[0].items, "thread/read");
+    // Regression: resumed/replayed history must include reconstructed command
+    // executions (here the declined agent command) so a resuming client renders
+    // the tool call just like a live session.
+    let command = assert_has_command_execution(&thread.turns[0].items, "thread/read");
+    assert!(
+        command.contains("print(42)"),
+        "expected reconstructed agent command execution, got {command:?}"
+    );
 
     Ok(())
 }
@@ -382,8 +389,20 @@ fn assert_no_command_executions(items: &[ThreadItem], context: &str) {
         items
             .iter()
             .all(|item| !matches!(item, ThreadItem::CommandExecution { .. })),
-        "{context} should always exclude command executions from returned turns"
+        "{context}: user shell commands are recorded as context fragments, not command-execution items"
     );
+}
+
+fn assert_has_command_execution(items: &[ThreadItem], context: &str) -> String {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ThreadItem::CommandExecution { command, .. } => Some(command.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!("{context} should include reconstructed command executions from returned turns")
+        })
 }
 
 fn current_shell_output_command(text: &str) -> Result<(String, String)> {

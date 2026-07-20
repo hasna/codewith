@@ -339,7 +339,10 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn build_api_turns_filters_reconstructed_command_executions() {
+    fn build_api_turns_includes_reconstructed_command_executions() {
+        // Regression: resumed/replayed threads must render reconstructed command
+        // executions (tool calls + output) just like a live session. Stripping
+        // them here made resume show only assistant text messages.
         let items = vec![
             RolloutItem::EventMsg(EventMsg::UserMessage(
                 codex_protocol::protocol::UserMessageEvent {
@@ -370,13 +373,23 @@ mod thread_processor_behavior_tests {
         let turns = build_api_turns_from_rollout_items(&items);
 
         assert_eq!(turns.len(), 1);
-        assert!(
-            turns[0]
-                .items
-                .iter()
-                .all(|item| !matches!(item, ThreadItem::CommandExecution { .. })),
-            "history APIs should not include command execution items"
-        );
+        let command_execution = turns[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ThreadItem::CommandExecution {
+                    id,
+                    command,
+                    aggregated_output,
+                    ..
+                } => Some((id.clone(), command.clone(), aggregated_output.clone())),
+                _ => None,
+            })
+            .expect("history APIs should include reconstructed command execution items");
+        let (id, command, aggregated_output) = command_execution;
+        assert_eq!(id, "call-1");
+        assert_eq!(command, "echo hi");
+        assert_eq!(aggregated_output.as_deref(), Some("hi\n"));
     }
 
     #[test]
