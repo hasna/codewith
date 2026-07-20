@@ -1,7 +1,7 @@
 use super::*;
 use crate::BackgroundAgentWorkspaceMode;
+use crate::runtime::managed_worktrees::managed_worktree_path_key;
 use crate::runtime::managed_worktrees::path_to_db_string;
-use std::path::Path;
 
 impl StateRuntime {
     pub async fn list_background_agent_worktree_leases(
@@ -62,8 +62,10 @@ LIMIT ? OFFSET ?
         params: &BackgroundAgentWorktreeLeaseCreateParams,
     ) -> anyhow::Result<BackgroundAgentWorktreeLease> {
         let now = Utc::now().timestamp();
-        let base_repo_path = path_to_db_string(Path::new(params.base_repo_path.as_str()));
-        let worktree_path = path_to_db_string(Path::new(params.worktree_path.as_str()));
+        let base_repo_path_key = managed_worktree_path_key(&params.base_repo_path);
+        let worktree_path_key = managed_worktree_path_key(&params.worktree_path);
+        let base_repo_path = path_to_db_string(&params.base_repo_path);
+        let worktree_path = path_to_db_string(&params.worktree_path);
         let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
         let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
@@ -153,6 +155,8 @@ INSERT INTO managed_worktrees (
     mode,
     base_repo_path,
     worktree_path,
+    base_repo_path_key,
+    worktree_path_key,
     branch,
     base_sha,
     head_sha,
@@ -166,7 +170,7 @@ INSERT INTO managed_worktrees (
     created_at_ms,
     updated_at_ms,
     cleanup_after_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(params.id.as_str())
@@ -174,6 +178,8 @@ INSERT INTO managed_worktrees (
         .bind(params.mode.as_str())
         .bind(base_repo_path.as_str())
         .bind(worktree_path.as_str())
+        .bind(base_repo_path_key)
+        .bind(worktree_path_key)
         .bind(params.branch.as_deref())
         .bind(params.head_sha.as_deref())
         .bind(params.head_sha.as_deref())
