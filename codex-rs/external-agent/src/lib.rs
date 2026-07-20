@@ -11,6 +11,7 @@ mod claude;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
+mod safety;
 #[cfg(windows)]
 mod windows_cmd_shim;
 
@@ -19,6 +20,7 @@ pub use claude::*;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
+pub use safety::*;
 #[cfg(windows)]
 pub use windows_cmd_shim::WindowsBatchLaunchError;
 #[cfg(windows)]

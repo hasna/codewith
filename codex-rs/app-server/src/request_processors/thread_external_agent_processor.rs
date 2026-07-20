@@ -6,6 +6,8 @@ use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadExternalAgentPermissionRequest;
 use codex_external_agent::AcpStdioHarness;
 use codex_external_agent::ClaudeCodeHarness;
+use codex_external_agent::ExternalAgentActionDecision;
+use codex_external_agent::ExternalAgentActionGuard;
 use codex_external_agent::ExternalAgentActionRequest;
 use codex_external_agent::ExternalAgentActionResult;
 use codex_external_agent::ExternalAgentError;
@@ -193,6 +195,16 @@ impl ThreadRequestProcessor {
                 .permissions
                 .windows_sandbox_private_desktop,
         };
+        // The action guard is the single authority that maps a runtime's
+        // proposed actions onto Codewith's sandbox/approval model. It is built
+        // from the same permission profile that scopes the process sandbox so an
+        // action can never resolve outside the run's readable roots.
+        let action_guard = ExternalAgentActionGuard::from_permission_profile(
+            runtime_request.mode,
+            runtime_request.capabilities.clone(),
+            &sandbox_config.permission_profile,
+            runtime_request.cwd.clone(),
+        );
         let response = ThreadExternalAgentStartResponse {
             status: ThreadExternalAgentStartStatus::Started,
             run_id: Some(run_id),
@@ -222,6 +234,7 @@ impl ThreadRequestProcessor {
                     thread_id,
                     run_id,
                     cancellation_token,
+                    action_guard,
                 ),
                 run_registry: self.external_agent_runs.clone(),
                 run_key,
@@ -646,6 +659,7 @@ struct AppServerExternalAgentHost {
     terminal_sent: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
     permission_timeout: Duration,
+    action_guard: ExternalAgentActionGuard,
 }
 
 impl AppServerExternalAgentHost {
@@ -655,6 +669,7 @@ impl AppServerExternalAgentHost {
         thread_id: ThreadId,
         run_id: String,
         cancellation_token: CancellationToken,
+        action_guard: ExternalAgentActionGuard,
     ) -> Self {
         Self {
             outgoing,
@@ -664,6 +679,60 @@ impl AppServerExternalAgentHost {
             terminal_sent: Arc::new(AtomicBool::new(false)),
             cancellation_token,
             permission_timeout: EXTERNAL_AGENT_PERMISSION_TIMEOUT,
+            action_guard,
+        }
+    }
+
+    /// Perform a guard-authorized read through Codewith's own filesystem path.
+    ///
+    /// The path has already passed the guard's lexical check. We canonicalize
+    /// and re-check so a symlink inside a readable root cannot smuggle an
+    /// out-of-sandbox target past the guard, and cap the size so the read
+    /// channel cannot be used to exfiltrate an unbounded file.
+    async fn perform_guarded_read(
+        &self,
+        path: PathBuf,
+    ) -> Result<ExternalAgentActionResult, ExternalAgentError> {
+        let read_path = match tokio::fs::canonicalize(&path).await {
+            Ok(canonical) => {
+                if !self.action_guard.can_read(&canonical) {
+                    return Ok(ExternalAgentActionResult::Rejected {
+                        reason: format!(
+                            "path `{}` resolves outside the sandbox readable roots",
+                            canonical.display()
+                        ),
+                    });
+                }
+                canonical
+            }
+            Err(err) => {
+                return Ok(ExternalAgentActionResult::Rejected {
+                    reason: format!("cannot read `{}`: {err}", path.display()),
+                });
+            }
+        };
+        match tokio::fs::metadata(&read_path).await {
+            Ok(metadata) if metadata.len() > self.action_guard.max_read_bytes() => {
+                return Ok(ExternalAgentActionResult::Rejected {
+                    reason: format!(
+                        "file `{}` exceeds the {}-byte external-agent read limit",
+                        read_path.display(),
+                        self.action_guard.max_read_bytes()
+                    ),
+                });
+            }
+            Ok(_) => {}
+            Err(err) => {
+                return Ok(ExternalAgentActionResult::Rejected {
+                    reason: format!("cannot stat `{}`: {err}", read_path.display()),
+                });
+            }
+        }
+        match tokio::fs::read_to_string(&read_path).await {
+            Ok(content) => Ok(ExternalAgentActionResult::FileContent { content }),
+            Err(err) => Ok(ExternalAgentActionResult::Rejected {
+                reason: format!("cannot read `{}`: {err}", read_path.display()),
+            }),
         }
     }
 
@@ -836,13 +905,33 @@ impl ExternalAgentHost for AppServerExternalAgentHost {
         &self,
         action: ExternalAgentActionRequest,
     ) -> Result<ExternalAgentActionResult, ExternalAgentError> {
+        // Audit every proposed action to the transcript before Codewith acts on
+        // it, so the transcript records the request even if it is later denied.
         self.emit(ThreadExternalAgentEvent::ProposedAction {
             proposal: action_json(&action),
         })
         .await;
-        Ok(ExternalAgentActionResult::Rejected {
-            reason: "external-agent managed action routing is not enabled yet".to_string(),
-        })
+
+        match self.action_guard.decide(&action) {
+            ExternalAgentActionDecision::PerformRead { path } => {
+                self.perform_guarded_read(path).await
+            }
+            ExternalAgentActionDecision::RecordProposal { edit, reason } => {
+                // The runtime tried to mutate the workspace. Codewith records the
+                // edit as a proposal for promotion and refuses the direct write.
+                self.emit(ThreadExternalAgentEvent::Status {
+                    message: format!(
+                        "Recorded workspace edit proposal for `{}` (not applied)",
+                        edit.path.display()
+                    ),
+                })
+                .await;
+                Ok(ExternalAgentActionResult::Rejected { reason })
+            }
+            ExternalAgentActionDecision::Deny { reason, .. } => {
+                Ok(ExternalAgentActionResult::Rejected { reason })
+            }
+        }
     }
 
     async fn is_cancelled(&self) -> bool {
@@ -939,10 +1028,39 @@ mod tests {
     use super::*;
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
+    use codex_external_agent::ExternalAgentCapabilities;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+
+    /// A Propose-mode guard whose readable roots are `roots`.
+    fn action_guard_for_roots(roots: &[&Path]) -> ExternalAgentActionGuard {
+        let policy = FileSystemSandboxPolicy::restricted(
+            roots
+                .iter()
+                .map(|root| FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: AbsolutePathBuf::from_absolute_path(root).expect("absolute root"),
+                    },
+                    access: FileSystemAccessMode::Read,
+                })
+                .collect(),
+        );
+        let cwd = roots.first().copied().unwrap_or(Path::new("/"));
+        ExternalAgentActionGuard::new(
+            ExternalAgentMode::Propose,
+            ExternalAgentCapabilities::for_mode(ExternalAgentMode::Propose),
+            policy,
+            NetworkSandboxPolicy::Restricted,
+            cwd,
+        )
+    }
+
+    /// A guard for tests that never exercise `perform_action`.
+    fn test_action_guard() -> ExternalAgentActionGuard {
+        action_guard_for_roots(&[Path::new("/tmp")])
+    }
 
     #[tokio::test]
     async fn external_agent_host_targets_subscribed_thread_connections() {
@@ -971,6 +1089,7 @@ mod tests {
             thread_id,
             "run-1".to_string(),
             CancellationToken::new(),
+            test_action_guard(),
         );
 
         host.emit(ThreadExternalAgentEvent::Status {
@@ -1030,6 +1149,7 @@ mod tests {
             thread_id,
             run_id.to_string(),
             CancellationToken::new(),
+            test_action_guard(),
         )
         .with_permission_timeout(permission_timeout);
         (host, rx)
@@ -1282,6 +1402,7 @@ mod tests {
             thread_id,
             "run-1".to_string(),
             CancellationToken::new(),
+            test_action_guard(),
         );
 
         host.emit(ThreadExternalAgentEvent::Status {
@@ -1290,6 +1411,176 @@ mod tests {
         .await;
 
         assert!(rx.try_recv().is_err());
+    }
+
+    /// A host wired to `guard` with no subscribers (event emits no-op), used to
+    /// exercise `perform_action` action routing in isolation.
+    fn host_with_action_guard(guard: ExternalAgentActionGuard) -> AppServerExternalAgentHost {
+        let (tx, _rx) = mpsc::channel(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000501")
+            .expect("thread id should parse");
+        AppServerExternalAgentHost::new(
+            outgoing,
+            ThreadStateManager::new(),
+            thread_id,
+            "run-guard".to_string(),
+            CancellationToken::new(),
+            guard,
+        )
+    }
+
+    #[tokio::test]
+    async fn perform_action_reads_file_within_workspace() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = tokio::fs::canonicalize(dir.path())
+            .await
+            .expect("canonical root");
+        let file = root.join("hello.txt");
+        tokio::fs::write(&file, b"hi from repo")
+            .await
+            .expect("write fixture");
+        let host = host_with_action_guard(action_guard_for_roots(&[root.as_path()]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile { path: file })
+            .await
+            .expect("perform read");
+
+        assert_eq!(
+            result,
+            ExternalAgentActionResult::FileContent {
+                content: "hi from repo".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn perform_action_rejects_read_outside_workspace() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = tokio::fs::canonicalize(dir.path())
+            .await
+            .expect("canonical root");
+        let host = host_with_action_guard(action_guard_for_roots(&[root.as_path()]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile {
+                path: PathBuf::from("/etc/passwd"),
+            })
+            .await
+            .expect("perform read");
+
+        match result {
+            ExternalAgentActionResult::Rejected { reason } => {
+                assert!(
+                    reason.contains("outside the sandbox readable roots"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn perform_action_rejects_traversal_escape_read() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = tokio::fs::canonicalize(dir.path())
+            .await
+            .expect("canonical root");
+        let escape = root.join("..").join("..").join("etc").join("passwd");
+        let host = host_with_action_guard(action_guard_for_roots(&[root.as_path()]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile { path: escape })
+            .await
+            .expect("perform read");
+
+        assert!(
+            matches!(result, ExternalAgentActionResult::Rejected { .. }),
+            "traversal escape must be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn perform_action_records_write_as_proposal_without_writing() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = tokio::fs::canonicalize(dir.path())
+            .await
+            .expect("canonical root");
+        let target = root.join("staged.txt");
+        let host = host_with_action_guard(action_guard_for_roots(&[root.as_path()]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::WriteFile {
+                path: target.clone(),
+                content: "should not be written".to_string(),
+            })
+            .await
+            .expect("perform write");
+
+        match result {
+            ExternalAgentActionResult::Rejected { reason } => {
+                assert!(
+                    reason.contains("promoted by Codewith"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
+        assert!(
+            !target.exists(),
+            "a write proposal must never touch the filesystem"
+        );
+    }
+
+    #[tokio::test]
+    async fn perform_action_denies_shell_command() {
+        let host = host_with_action_guard(action_guard_for_roots(&[Path::new("/tmp")]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::RunCommand {
+                command: vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
+                cwd: None,
+            })
+            .await
+            .expect("perform command");
+
+        match result {
+            ExternalAgentActionResult::Rejected { reason } => {
+                assert!(
+                    reason.contains("native exec runtime"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn perform_action_denies_mcp_call() {
+        let host = host_with_action_guard(action_guard_for_roots(&[Path::new("/tmp")]));
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::McpToolCall {
+                server: "github".to_string(),
+                tool: "create_pr".to_string(),
+                arguments: serde_json::json!({"title": "x"}),
+            })
+            .await
+            .expect("perform mcp");
+
+        match result {
+            ExternalAgentActionResult::Rejected { reason } => {
+                assert!(
+                    reason.contains("native MCP approval path"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
     }
 
     #[test]
