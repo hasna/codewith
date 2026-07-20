@@ -167,6 +167,10 @@ impl AsyncManagedClient {
         let startup_tool_filter = tool_filter;
         let startup_complete = Arc::new(AtomicBool::new(false));
         let startup_complete_for_fut = Arc::clone(&startup_complete);
+        let startup_timeout = server
+            .configured_config()
+            .and_then(|config| config.startup_timeout_sec)
+            .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let cancel_token_for_fut = cancel_token.clone();
         let fut = async move {
             let outcome = match async {
@@ -174,24 +178,30 @@ impl AsyncManagedClient {
                     return Err(error.into());
                 }
 
-                let client = Arc::new(
+                let client = match tokio::time::timeout(
+                    startup_timeout,
                     make_rmcp_client(
                         &server_name,
                         server.clone(),
                         store_mode,
                         runtime_context,
                         runtime_auth_provider,
-                    )
-                    .await?,
-                );
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => Arc::new(result?),
+                    Err(_) => {
+                        return Err(StartupOutcomeError::from(anyhow!(
+                            "MCP client startup timed out after {startup_timeout:?}"
+                        )));
+                    }
+                };
                 start_server_task(
                     server_name,
                     client,
                     StartServerTaskParams {
-                        startup_timeout: server
-                            .configured_config()
-                            .and_then(|config| config.startup_timeout_sec)
-                            .or(Some(DEFAULT_STARTUP_TIMEOUT)),
+                        startup_timeout: Some(startup_timeout),
                         tool_timeout: server
                             .configured_config()
                             .and_then(|config| config.tool_timeout_sec)
