@@ -2357,6 +2357,12 @@ async fn workflow_run_slash_commands_emit_management_events() {
             },
         ),
         (
+            "/workflow delete workflow-1",
+            crate::app_event::ThreadWorkflowAction::Delete {
+                workflow_record_id: "workflow-1".to_string(),
+            },
+        ),
+        (
             "/workflow run",
             crate::app_event::ThreadWorkflowAction::RunList,
         ),
@@ -2527,6 +2533,7 @@ async fn workflow_commands_are_inert_when_feature_is_disabled() {
     for command in [
         "/workflow",
         "/workflow list",
+        "/workflow delete workflow-1",
         "/workflow draft build a SaaS that collects leads for dentists",
         "/workflow run",
         "/workflow run start workflow-1",

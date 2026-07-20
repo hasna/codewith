@@ -50,6 +50,15 @@ impl ThreadWorkflowRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_workflow_delete(
+        &self,
+        params: ThreadWorkflowDeleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_workflow_delete_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_workflow_run_list(
         &self,
         params: ThreadWorkflowRunListParams,
@@ -170,6 +179,34 @@ impl ThreadWorkflowRequestProcessor {
             data,
             next_cursor: page.next_cursor,
         })
+    }
+
+    async fn thread_workflow_delete_inner(
+        &self,
+        params: ThreadWorkflowDeleteParams,
+    ) -> Result<ThreadWorkflowDeleteResponse, JSONRPCErrorError> {
+        self.ensure_enabled()?;
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        let workflow_record_id = params.workflow_record_id;
+        let outcome = retry_transient_sqlite_busy("delete thread workflow", || {
+            state_db
+                .workflows()
+                .delete_thread_workflow_spec(thread_id, workflow_record_id.as_str())
+        })
+        .await
+        .map_err(|err| internal_error(format!("failed to delete thread workflow: {err}")))?;
+        match outcome {
+            codex_state::WorkflowSpecDeleteOutcome::Deleted => {
+                Ok(ThreadWorkflowDeleteResponse { deleted: true })
+            }
+            codex_state::WorkflowSpecDeleteOutcome::NotFound => {
+                Ok(ThreadWorkflowDeleteResponse { deleted: false })
+            }
+            codex_state::WorkflowSpecDeleteOutcome::BlockedByActiveRun => Err(invalid_request(
+                "workflow has an active run; stop it before deleting",
+            )),
+        }
     }
 
     async fn thread_workflow_run_list_inner(
