@@ -444,6 +444,7 @@ const CLAUDE_STABLE_CONFIG_ENV_VARS: &[&str] = &[
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
     "CLAUDE_CONFIG_DIR",
+    "PATHEXT",
 ];
 
 fn external_agent_source_env(

@@ -588,6 +588,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) background_agent_workers: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub(super) background_agent_worker_processes:
         Arc<Mutex<HashMap<String, codex_background_agent::process_lifecycle::WorkerProcessHandle>>>,
+    pub(super) background_agent_worker_process_cleanup_pending: Arc<Mutex<HashSet<String>>>,
     pub(super) background_agent_supervisor_token: CancellationToken,
     pub(super) background_agent_worker_process: bool,
     pub(super) external_agent_runs: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -634,6 +635,7 @@ impl ThreadRequestProcessor {
                 super::background_agent_live::new_background_agent_supervisor_id(),
             background_agent_workers: Arc::new(Mutex::new(HashMap::new())),
             background_agent_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            background_agent_worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
             background_agent_supervisor_token: CancellationToken::new(),
             background_agent_worker_process,
             external_agent_runs: Arc::new(Mutex::new(HashMap::new())),

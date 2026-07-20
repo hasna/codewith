@@ -47,6 +47,10 @@ on:
         required: false
         default: false
         type: boolean
+      hosted_linux_preinstalled_tool_cleanup:
+        required: false
+        default: false
+        type: boolean
       archive_timeout_minutes:
         required: false
         default: 60
@@ -82,19 +86,23 @@ jobs:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
         shell: bash
         run: |
           set -euo pipefail
           df -h
-          sudo rm -rf \
-            /opt/ghc \
-            /opt/hostedtoolcache \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/share/dotnet
-          docker system prune -af --volumes || true
-          sudo apt-get clean || true
+          for path in /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet; do
+            case "${path}" in
+              /opt/ghc|/usr/local/lib/android|/usr/local/share/boost|/usr/share/dotnet) ;;
+              *)
+                echo "refusing to remove unexpected path: ${path}" >&2
+                exit 1
+                ;;
+            esac
+            if [[ -e "${path}" ]]; then
+              sudo rm -rf --one-file-system -- "${path}"
+            fi
+          done
           df -h
 
       - name: Configure Dev Drive (Windows)
@@ -374,6 +382,26 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
+      - name: Free hosted runner disk space (Linux)
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          for path in /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet; do
+            case "${path}" in
+              /opt/ghc|/usr/local/lib/android|/usr/local/share/boost|/usr/share/dotnet) ;;
+              *)
+                echo "refusing to remove unexpected path: ${path}" >&2
+                exit 1
+                ;;
+            esac
+            if [[ -e "${path}" ]]; then
+              sudo rm -rf --one-file-system -- "${path}"
+            fi
+          done
+          df -h
 
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
