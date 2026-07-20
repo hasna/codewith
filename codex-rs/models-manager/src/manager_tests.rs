@@ -974,7 +974,15 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    // The ChatGPT remote catalog is authoritative, so a bundled slug absent from
+    // it is resolved via a fallback rather than the bundled catalog's own entry.
+    // Authoritative catalog entries carry a `List`/`Hide` visibility; both the
+    // generic and the known-provider (e.g. OpenAI GPT-5.x) fallbacks yield
+    // `None`, which is the reliable signal that the bundled entry was not used.
+    assert_eq!(
+        model_info.visibility,
+        codex_protocol::openai_models::ModelVisibility::None,
+    );
 }
 
 #[tokio::test]
