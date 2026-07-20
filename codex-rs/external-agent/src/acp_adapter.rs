@@ -118,6 +118,19 @@ pub trait AcpAgentAdapter: Send + Sync {
     fn readiness_probe(&self) -> Option<AcpReadinessProbe> {
         None
     }
+
+    /// Static default model id the harness advertises through a session's
+    /// best-effort `_meta`, or `None` when the vendor exposes no model concept.
+    ///
+    /// This intentionally returns a `&'static str`: the harness wires it into
+    /// `_meta` on a hot path where it cannot await Cursor's asynchronous model
+    /// discovery. Vendors with a live catalog (see
+    /// [`crate::discover_cursor_composer_models`]) keep this in lockstep with
+    /// their discovery fallback so the advertised default never drifts from the
+    /// list the model picker resolves.
+    fn default_model(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Default Codewith-mode to ACP-`modeId` mapping shared by adapters that do not
@@ -155,6 +168,12 @@ impl AcpAgentAdapter for CursorAcpAdapter {
 
     fn readiness_probe(&self) -> Option<AcpReadinessProbe> {
         Some(AcpReadinessProbe::new(["--help"]))
+    }
+
+    fn default_model(&self) -> Option<&'static str> {
+        // Kept identical to the live-discovery fallback so the advertised model
+        // and the discovered default agree even when discovery is unavailable.
+        Some(crate::CURSOR_DEFAULT_COMPOSER_MODEL_ID)
     }
 }
 
@@ -242,6 +261,7 @@ mod tests {
         assert_eq!(adapter.mode_id(ExternalAgentMode::Plan), Some("plan"));
         assert_eq!(adapter.mode_id(ExternalAgentMode::Propose), None);
         assert!(adapter.readiness_probe().is_none());
+        assert_eq!(adapter.default_model(), None);
     }
 
     #[test]
@@ -269,6 +289,26 @@ mod tests {
     }
 
     #[test]
+    fn cursor_adapter_default_model_matches_discovery_fallback() {
+        let adapter = CursorAcpAdapter;
+
+        // The advertised static default must equal the discovery fallback's
+        // default id so `_meta` and the live model picker never disagree.
+        assert_eq!(
+            adapter.default_model(),
+            Some(crate::CURSOR_DEFAULT_COMPOSER_MODEL_ID)
+        );
+        assert_eq!(adapter.default_model(), Some("composer-2.5"));
+
+        let fallback = crate::cursor_composer_fallback_models();
+        let fallback_default = fallback
+            .iter()
+            .find(|model| model.is_default)
+            .unwrap_or_else(|| panic!("fallback must have a default model"));
+        assert_eq!(adapter.default_model(), Some(fallback_default.id.as_str()));
+    }
+
+    #[test]
     fn grok_build_adapter_forwards_xai_auth() {
         let adapter = GrokBuildAcpAdapter;
 
@@ -279,6 +319,7 @@ mod tests {
             &["cached_token", "xai.api_key"]
         );
         assert!(adapter.readiness_probe().is_none());
+        assert_eq!(adapter.default_model(), None);
     }
 
     #[test]
