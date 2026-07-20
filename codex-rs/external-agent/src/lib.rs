@@ -8,6 +8,7 @@
 
 mod acp;
 mod claude;
+mod claude_acp;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
@@ -16,6 +17,7 @@ mod windows_cmd_shim;
 
 pub use acp::*;
 pub use claude::*;
+pub use claude_acp::*;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;

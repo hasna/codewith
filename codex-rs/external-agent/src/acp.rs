@@ -574,6 +574,9 @@ fn acp_runtime_auth_env_vars(runtime_id: &str) -> &'static [&'static str] {
     match runtime_id {
         ExternalAgentRuntimeId::CURSOR => CURSOR_AUTH_ENV_VARS,
         ExternalAgentRuntimeId::GROK_BUILD => GROK_BUILD_AUTH_ENV_VARS,
+        // SPIKE: allow the Claude ACP bridge (see `crate::claude_acp`) to receive
+        // Anthropic auth env through the same sanitized-env seam Cursor/Grok use.
+        ExternalAgentRuntimeId::CLAUDE_ACP => crate::claude_acp::CLAUDE_ACP_AUTH_ENV_VARS,
         _ => &[],
     }
 }
@@ -606,12 +609,25 @@ fn acp_auth_method(
     let preferred = match runtime.as_str() {
         ExternalAgentRuntimeId::CURSOR => &["cursor_login", "cached_token"][..],
         ExternalAgentRuntimeId::GROK_BUILD => &["cached_token", "xai.api_key"][..],
+        // SPIKE: Claude ACP bridge auth-method ids are not yet contract-frozen; see the
+        // `claude-acp` fallback below.
+        ExternalAgentRuntimeId::CLAUDE_ACP => {
+            &["anthropic-api-key", "claude-login", "oauth", "cached_token"][..]
+        }
         _ => &["cached_token"][..],
     };
     for method_id in preferred {
         if ids.contains(method_id) {
             return Ok(Some((*method_id).to_string()));
         }
+    }
+    // SPIKE: the Claude bridge is still stabilizing its ACP auth-method ids, so accept the
+    // first advertised method rather than failing closed. Shipped runtimes keep fail-closed
+    // semantics. This must be revisited before the Claude ACP path is promoted.
+    if runtime.as_str() == ExternalAgentRuntimeId::CLAUDE_ACP
+        && let Some(first) = ids.first()
+    {
+        return Ok(Some((*first).to_string()));
     }
     Err(protocol_error(
         runtime,
@@ -1900,6 +1916,44 @@ sys.stderr.flush()
             err.to_string(),
             "external agent runtime `cursor` protocol error: unsupported ACP auth methods: browser_popup"
         );
+    }
+
+    #[test]
+    fn acp_auth_method_selects_and_falls_back_for_claude_bridge() {
+        // Preferred id is chosen when advertised.
+        let known = json!({ "authMethods": [{"id": "anthropic-api-key"}, {"id": "other"}] });
+        assert_eq!(
+            acp_auth_method(&ExternalAgentRuntimeId::from("claude-acp"), &known)
+                .expect("claude bridge auth"),
+            Some("anthropic-api-key".to_string())
+        );
+
+        // SPIKE fallback: unknown ids do not fail closed for the claude-acp bridge.
+        let unknown = json!({ "authMethods": [{"id": "brand-new-login"}] });
+        assert_eq!(
+            acp_auth_method(&ExternalAgentRuntimeId::from("claude-acp"), &unknown)
+                .expect("claude bridge fallback"),
+            Some("brand-new-login".to_string())
+        );
+
+        // No advertised methods means no authenticate step.
+        let none = json!({ "authMethods": [] });
+        assert_eq!(
+            acp_auth_method(&ExternalAgentRuntimeId::from("claude-acp"), &none)
+                .expect("claude bridge no-auth"),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_acp_runtime_forwards_anthropic_auth_env() {
+        let vars = acp_runtime_auth_env_vars(ExternalAgentRuntimeId::CLAUDE_ACP);
+
+        assert!(vars.contains(&"ANTHROPIC_API_KEY"));
+        assert!(vars.contains(&"CLAUDE_CONFIG_DIR"));
+        // Unrelated subscription runtimes must not leak into the Claude passthrough.
+        assert!(!vars.contains(&"CURSOR_API_KEY"));
+        assert!(!vars.contains(&"XAI_API_KEY"));
     }
 
     #[cfg(unix)]

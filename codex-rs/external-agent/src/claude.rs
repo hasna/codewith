@@ -650,7 +650,7 @@ fn add_agent_sdk_auth_env(
     }
 }
 
-fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
+pub(crate) fn has_agent_sdk_auth_env(source_env: &BTreeMap<String, String>) -> bool {
     env_value_is_set(source_env, "ANTHROPIC_API_KEY")
         || env_value_is_set(source_env, "ANTHROPIC_AUTH_TOKEN")
         || env_flag_is_enabled(source_env, "CLAUDE_CODE_USE_BEDROCK")

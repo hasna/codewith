@@ -18,6 +18,10 @@ impl ExternalAgentRuntimeId {
     pub const CURSOR: &'static str = "cursor";
     pub const GROK_BUILD: &'static str = "grok-build";
     pub const CLAUDE: &'static str = "claude";
+    /// SPIKE: identifier for the Claude Code adapter driven over ACP through a
+    /// Node bridge (distinct from [`Self::CLAUDE`], the CLI print-mode delegate).
+    /// See `crate::claude_acp` for scope and findings.
+    pub const CLAUDE_ACP: &'static str = "claude-acp";
 
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
