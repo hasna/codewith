@@ -9,6 +9,7 @@
 mod acp;
 mod claude;
 mod contract;
+mod cursor;
 mod platform_sandbox;
 mod runtimes;
 #[cfg(windows)]
@@ -17,6 +18,7 @@ mod windows_cmd_shim;
 pub use acp::*;
 pub use claude::*;
 pub use contract::*;
+pub use cursor::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
 #[cfg(windows)]
