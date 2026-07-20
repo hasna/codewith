@@ -42,6 +42,25 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.68] - 2026-07-20
+
+Tag: `rust-v0.1.68`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.68>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.67...rust-v0.1.68>
+
+Hotfix release fixing a standalone image-generation runtime 400 and restoring a
+clean workspace compile.
+
+### Fixed
+
+- Image generation: moved the standalone imagegen tool off the Responses-API
+  reserved `image_gen` namespace to the non-reserved `images` namespace (new
+  wire name `images.imagegen`, code-mode name `images__imagegen`). This fixes a
+  runtime `400 Function 'image_gen.imagegen' is reserved for use by this model`
+  error while keeping `image_gen` in the reserved-namespace allowlists.
+- thread-manager-sample: added the missing `tools_policy` field to `Config`,
+  restoring a clean workspace compile.
+
 ## [0.1.67] - 2026-07-16
 
 Tag: `rust-v0.1.67`
