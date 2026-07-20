@@ -33,6 +33,7 @@ mod deepseek;
 mod google;
 mod minimax;
 mod nvidia;
+mod openai;
 mod openrouter;
 mod qwen;
 mod xai;
@@ -276,6 +277,11 @@ pub fn metadata_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), ZAI_PROVIDER_ID) => {
             zai::metadata(slug)
         }
+        Some(provider_id)
+            if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) =>
+        {
+            openai::metadata(slug)
+        }
         Some(_) => None,
         None => metadata_for_unqualified_slug(slug),
     }
@@ -434,6 +440,11 @@ pub fn reasoning_levels_for_local_fallback(
         Some(provider_id) if provider_id_matches(Some(provider_id), ZAI_PROVIDER_ID) => {
             zai::reasoning_levels(slug)
         }
+        Some(provider_id)
+            if provider_id_matches(Some(provider_id), openai::OPENAI_PROVIDER_ID) =>
+        {
+            openai::reasoning_levels(slug)
+        }
         Some(_) => no_reasoning_levels(),
         None => reasoning_levels_for_unqualified_slug(slug),
     }
@@ -517,13 +528,20 @@ fn base_url_matches(provider_base_url: Option<&str>, expected_base_url: &str) ->
 }
 
 fn metadata_for_unqualified_slug(slug: &str) -> Option<KnownProviderModelMetadata> {
-    cerebras::metadata(slug)
+    // Unqualified slugs default to OpenAI's own API models; only fall through to
+    // the Cerebras-hosted OpenAI-compatible catalog (e.g. `gpt-oss-120b`) when the
+    // slug is not a known first-party OpenAI model.
+    openai::metadata(slug).or_else(|| cerebras::metadata(slug))
 }
 
 fn reasoning_levels_for_unqualified_slug(
     slug: &str,
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
-    cerebras::reasoning_levels(slug)
+    if openai::metadata(slug).is_some() {
+        openai::reasoning_levels(slug)
+    } else {
+        cerebras::reasoning_levels(slug)
+    }
 }
 
 fn no_reasoning_levels() -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
@@ -991,5 +1009,97 @@ mod tests {
                 "{provider_id} should not match an unrelated provider"
             );
         }
+    }
+
+    /// GPT-4.1-class OpenAI API models expose their documented 1,047,576-token
+    /// context window instead of the generic 272k fallback, whether the provider
+    /// id is the explicit `openai` id or an unqualified default.
+    #[test]
+    fn openai_gpt_4_1_family_uses_documented_context_window() {
+        let expected = Some(KnownProviderModelMetadata::new(
+            "GPT-4.1",
+            /*context_window*/ 1_047_576,
+            /*supports_tools*/ true,
+            /*supports_parallel_tool_calls*/ true,
+            /*supports_reasoning*/ false,
+        ));
+
+        assert_eq!(
+            metadata_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), "gpt-4.1"),
+            expected
+        );
+        // Unqualified (no provider id) resolves the same first-party metadata.
+        assert_eq!(metadata_for_local_fallback(None, "gpt-4.1"), expected);
+
+        for slug in ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"] {
+            let metadata = metadata_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), slug)
+                .unwrap_or_else(|| panic!("{slug} metadata should exist"));
+            assert_eq!(
+                metadata.context_window, 1_047_576,
+                "{slug} should report the documented GPT-4.1 context window"
+            );
+            assert!(!metadata.supports_reasoning, "{slug} is not a reasoning model");
+        }
+
+        // GPT-4.1 models are not reasoning models, so no effort presets are exposed.
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), "gpt-4.1"),
+            (None, Vec::new())
+        );
+    }
+
+    /// Current GPT-5.x OpenAI API models report their documented 1,050,000-token
+    /// context window in the local fallback so known models are never pinned to
+    /// the stale 272k default when they are missing from the live catalog.
+    #[test]
+    fn openai_gpt_5_x_models_use_documented_context_window() {
+        for slug in [
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ] {
+            let metadata = metadata_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), slug)
+                .unwrap_or_else(|| panic!("{slug} metadata should exist"));
+            assert_eq!(
+                metadata.context_window, 1_050_000,
+                "{slug} should report the documented GPT-5.x context window"
+            );
+            assert!(metadata.supports_reasoning, "{slug} is a reasoning model");
+
+            let (default_effort, presets) =
+                reasoning_levels_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), slug);
+            assert_eq!(default_effort, Some(ReasoningEffort::Medium));
+            assert_eq!(
+                presets,
+                vec![
+                    reasoning_preset(ReasoningEffort::Low, "Minimal reasoning"),
+                    reasoning_preset(ReasoningEffort::Medium, "Moderate reasoning"),
+                    reasoning_preset(ReasoningEffort::High, "Extensive reasoning"),
+                ]
+            );
+        }
+    }
+
+    /// Genuinely unknown OpenAI slugs stay conservative (no metadata), so callers
+    /// fall through to the documented generic fallback.
+    #[test]
+    fn openai_unknown_slug_stays_conservative() {
+        assert_eq!(
+            metadata_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), "gpt-does-not-exist"),
+            None
+        );
+    }
+
+    /// Adding OpenAI first-party metadata must not shadow the Cerebras-hosted
+    /// `gpt-oss-120b` model reachable through the unqualified path.
+    #[test]
+    fn unqualified_gpt_oss_still_resolves_to_cerebras_catalog() {
+        assert_eq!(
+            metadata_for_local_fallback(None, "gpt-oss-120b"),
+            metadata_for_local_fallback(Some(CEREBRAS_PROVIDER_ID), "gpt-oss-120b")
+        );
     }
 }
