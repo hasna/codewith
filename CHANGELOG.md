@@ -42,6 +42,32 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.70] - 2026-07-20
+
+Tag: `rust-v0.1.70`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.70>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.69...rust-v0.1.70>
+
+Feature release delivering the unified Infinity Agent tool-policy and
+attestation layer.
+
+### Added
+
+- Policy: unified the Infinity Agent tool policy and attestation onto a single
+  fail-closed enforcement path. A signed (ed25519) `VerifiedToolPolicy`
+  envelope is now the single source of truth for the `infinity-agent` tool
+  policy: the tool router plans only the exact signed allowlist,
+  dispatch-time rechecks reject any tool not authorized by the verified process
+  policy, and construction fails closed when no policy is bound or the system
+  trust key is missing. Consolidates the previous duplicate `ToolsPolicy` enum
+  onto the single `ToolPolicy` enum (`ConfigRequirements` gains
+  `allowed_tool_policies` + `infinity_agent_trust_key`), derives the
+  auth-capsule capability document from the enforced allowlist, and — under the
+  Infinity Agent policy — disables auth-profile auto-switch, usage self-heal,
+  session recap, optional features, external instructions, history, and
+  telemetry, forbids named auth profiles, and constrains MCP bridges to signed,
+  credential-free HTTPS sources. (#307)
+
 ## [0.1.69] - 2026-07-20
 
 Tag: `rust-v0.1.69`
