@@ -154,6 +154,103 @@ async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn resume_goal_reactivates_deferred_node_after_independent_node_completes()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    // Plan: preservation (independent) is worked first, consolidate is an
+    // independent node, and downstream depends on preservation.
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan",
+            json!({
+                "goals": [
+                    { "key": "preservation", "objective": "Preserve prior work" },
+                    { "key": "consolidate", "objective": "Consolidate independent results" },
+                    {
+                        "key": "downstream",
+                        "objective": "Finish downstream work",
+                        "depends_on": ["preservation"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    // Defer the active preservation node; only the independent consolidate node
+    // is ready, so it activates automatically.
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let defer = tool_call(
+        "update_goal",
+        "call-defer-preservation",
+        json!({ "status": "deferred" }),
+    );
+    let output = update_tool.handle(defer.clone()).await?;
+    let result = output.code_mode_result(&defer.payload);
+    assert_eq!(result["goal"]["status"], "deferred");
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Consolidate independent results"
+    );
+
+    // Complete the independent consolidate node. Downstream still depends on the
+    // deferred preservation node, so nothing new activates and the plan stalls.
+    let complete_consolidate = tool_call(
+        "update_goal",
+        "call-complete-consolidate",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(complete_consolidate.clone()).await?;
+    let result = output.code_mode_result(&complete_consolidate.payload);
+    assert_eq!(
+        result["goal"]["objective"],
+        "Consolidate independent results"
+    );
+    assert_eq!(result["goal"]["status"], "complete");
+    assert_eq!(result["activatedGoal"], serde_json::Value::Null);
+
+    // Explicit user resume: with no directly resumable current goal, resume_goal
+    // revives the deferred preservation node instead of failing.
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+    let resume = tool_call("resume_goal", "call-resume-goal", json!({}));
+    let output = resume_tool.handle(resume.clone()).await?;
+    let result = output.code_mode_result(&resume.payload);
+    assert_eq!(result["goal"]["objective"], "Preserve prior work");
+    assert_eq!(result["goal"]["status"], "active");
+    assert_eq!(result["activatedGoal"]["objective"], "Preserve prior work");
+    let node_statuses = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
+        .iter()
+        .map(|node| node["status"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(vec!["active", "complete", "pending"], node_statuses);
+
+    // Completing the resumed node now satisfies the downstream dependency, which
+    // activates without replacing plan history.
+    let complete_preservation = tool_call(
+        "update_goal",
+        "call-complete-preservation",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(complete_preservation.clone()).await?;
+    let result = output.code_mode_result(&complete_preservation.payload);
+    assert_eq!(result["goal"]["objective"], "Preserve prior work");
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Finish downstream work"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
