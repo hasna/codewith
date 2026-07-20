@@ -33,6 +33,8 @@ pub mod types;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 
+pub use auth_capsule_policy::AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION;
+pub use auth_capsule_policy::AuthCapsulePolicyCapabilities;
 pub use cloud_config_bundle::CloudConfigBundle;
 pub use cloud_config_bundle::CloudConfigBundleLayers;
 pub use cloud_config_bundle::CloudConfigBundleLoadError;
@@ -49,8 +51,6 @@ pub use codex_app_server_protocol::ConfigLayerSource;
 pub use codex_protocol::config_types::ProfileV2Name;
 pub use codex_protocol::config_types::ProfileV2NameParseError;
 pub use codex_utils_absolute_path::AbsolutePathBuf;
-pub use auth_capsule_policy::AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION;
-pub use auth_capsule_policy::AuthCapsulePolicyCapabilities;
 pub use config_layer_source::format_config_layer_source;
 pub use config_requirements::AppRequirementToml;
 pub use config_requirements::AppToolRequirementToml;

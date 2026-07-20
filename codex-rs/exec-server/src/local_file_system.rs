@@ -884,8 +884,10 @@ mod tests {
             },
             access: FileSystemAccessMode::Deny,
         });
-        let profile =
-            PermissionProfile::from_runtime_permissions(&fs_policy, NetworkSandboxPolicy::Restricted);
+        let profile = PermissionProfile::from_runtime_permissions(
+            &fs_policy,
+            NetworkSandboxPolicy::Restricted,
+        );
         let cwd = AbsolutePathBuf::from_absolute_path(workspace.path())?;
         let sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(profile, cwd);
 
@@ -917,8 +919,9 @@ mod tests {
             "symlink into the credential store must be denied"
         );
         //    b) a `..` traversal that resolves back into the store,
-        let via_dotdot =
-            AbsolutePathBuf::from_absolute_path(profile_dir.join("..").join("main").join("auth.json"))?;
+        let via_dotdot = AbsolutePathBuf::from_absolute_path(
+            profile_dir.join("..").join("main").join("auth.json"),
+        )?;
         assert!(
             sandbox.is_read_denied(via_dotdot.as_path()),
             "`..` traversal into the credential store must be denied"

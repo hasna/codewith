@@ -2407,9 +2407,7 @@ async fn run_debug_models_command(
 ///
 /// The document is written as a single JSON object to stdout with nothing else on
 /// stdout, so the probe's `parseStrictJson(stdout.trim())` succeeds.
-fn run_debug_auth_capsule_policy_command(
-    cmd: DebugAuthCapsulePolicyCommand,
-) -> anyhow::Result<()> {
+fn run_debug_auth_capsule_policy_command(cmd: DebugAuthCapsulePolicyCommand) -> anyhow::Result<()> {
     let capabilities = codex_config::AuthCapsulePolicyCapabilities::infinity_agent();
     match cmd.format {
         DebugOutputFormat::Json => {

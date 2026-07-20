@@ -2131,7 +2131,8 @@ fn infinity_agent_allowlist_excludes_host_access() {
 
     // Namespaced tools (MCP servers, extensions) are never on the allowlist.
     assert!(!infinity_agent_tool_allowed(&ToolName::namespaced(
-        "srv__", "read_file"
+        "srv__",
+        "read_file"
     )));
 
     // Only the policy-safe, no-host-access control tools survive.
