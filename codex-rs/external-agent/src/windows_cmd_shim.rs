@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Component;
 #[cfg(windows)]
 use std::path::Path;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -68,7 +68,7 @@ fn npm_node_shim_target(program: &Path) -> Result<PathBuf, WindowsBatchLaunchErr
     target.canonicalize().map_err(WindowsBatchLaunchError::CanonicalizeTarget)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn npm_cmd_shim_v1_target(shim: &str) -> Option<&str> {
     const HEADER: [&str; 8] = [
         "@ECHO off",
@@ -91,7 +91,7 @@ fn npm_cmd_shim_v1_target(shim: &str) -> Option<&str> {
     })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn corepack_cmd_shim_v1_target(shim: &str) -> Option<&str> {
     let lines = shim.lines().collect::<Vec<_>>();
     (lines.len() == 5).then_some(())?;
@@ -103,7 +103,7 @@ fn corepack_cmd_shim_v1_target(shim: &str) -> Option<&str> {
     (first == second).then_some(first)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn npm_node_invocation_target<'a>(line: &'a str, interpreter: &str) -> Option<&'a str> {
     let target = line.strip_prefix(interpreter)?.trim_start();
     ["\"%dp0%\\", "\"%~dp0\\"]
@@ -156,7 +156,7 @@ fn is_native_node_exe(path: &Path) -> bool {
 }
 
 /// Rejects physical command-line boundaries before a batch shim is parsed.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn validate_windows_batch_command_component(
     component: &'static str,
     value: &str,
@@ -177,7 +177,7 @@ pub(crate) fn is_windows_batch_program(program: &Path) -> bool {
         })
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WindowsBatchLaunchError {
     #[error("Windows batch launch rejects {component} containing CR or LF")]
@@ -200,32 +200,16 @@ pub(crate) enum WindowsBatchLaunchError {
     NodeNotNative,
 }
 
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
+// The npm/corepack shim grammar is pure text parsing that is identical on every
+// host, so it is verified on all platforms even though the launch it prepares is
+// Windows-only. This keeps the exact-forwarding contract (recognize only the
+// known safe passthrough shims, reject anything that could rewrite arguments)
+// covered by the Linux CI job as well as the Windows one.
+#[cfg(test)]
+mod grammar_tests {
+    use super::corepack_cmd_shim_v1_target;
+    use super::npm_cmd_shim_v1_target;
     use pretty_assertions::assert_eq;
-    use std::collections::BTreeMap;
-    use tokio::process::Command;
-
-    fn write_npm_cmd_shim_v1(path: &Path, target: &str) {
-        std::fs::write(
-            path,
-            format!(
-                "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET \"_prog=node\"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\{target}\" %*\r\n"
-            ),
-        )
-        .expect("write npm cmd-shim v1 fixture");
-    }
-
-    fn source_environment() -> BTreeMap<String, String> {
-        let path = std::env::var("PATH").expect("Windows CI supplies PATH with node.exe");
-        let mut environment = std::env::vars().collect::<BTreeMap<_, _>>();
-        environment.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
-        environment.retain(|key, _| !key.eq_ignore_ascii_case("PATHEXT"));
-        environment.insert("pAtH".to_string(), path);
-        environment.insert("PaThExT".to_string(), ".EXE;.CMD".to_string());
-        environment
-    }
 
     #[test]
     fn recognizes_cmd_shim_v1_for_claude_cursor_grok_and_npm() {
@@ -258,6 +242,34 @@ mod tests {
             assert_eq!(npm_cmd_shim_v1_target(shim), None);
             assert_eq!(corepack_cmd_shim_v1_target(shim), None);
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::collections::BTreeMap;
+    use tokio::process::Command;
+
+    fn write_npm_cmd_shim_v1(path: &Path, target: &str) {
+        std::fs::write(
+            path,
+            format!(
+                "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nSET \"_prog=node\"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" \"%dp0%\\{target}\" %*\r\n"
+            ),
+        )
+        .expect("write npm cmd-shim v1 fixture");
+    }
+
+    fn source_environment() -> BTreeMap<String, String> {
+        let path = std::env::var("PATH").expect("Windows CI supplies PATH with node.exe");
+        let mut environment = std::env::vars().collect::<BTreeMap<_, _>>();
+        environment.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
+        environment.retain(|key, _| !key.eq_ignore_ascii_case("PATHEXT"));
+        environment.insert("pAtH".to_string(), path);
+        environment.insert("PaThExT".to_string(), ".EXE;.CMD".to_string());
+        environment
     }
 
     #[test]
