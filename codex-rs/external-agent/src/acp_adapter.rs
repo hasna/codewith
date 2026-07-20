@@ -226,6 +226,9 @@ mod tests {
             },
             supported_modes: &[ExternalAgentMode::Plan],
             default_mode: ExternalAgentMode::Plan,
+            execution_surfaces: &[crate::ExternalAgentExecutionSurface::Acp],
+            default_execution_surface: crate::ExternalAgentExecutionSurface::Acp,
+            models: &[],
             visible: false,
         };
 

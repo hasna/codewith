@@ -2,26 +2,39 @@ use super::thread_processor::ThreadRequestProcessor;
 use super::*;
 use codex_app_server_protocol::ThreadExternalAgentEvent;
 use codex_app_server_protocol::ThreadExternalAgentEventNotification;
+use codex_app_server_protocol::ThreadExternalAgentExecutionSurface;
+use codex_app_server_protocol::ThreadExternalAgentModel;
+use codex_app_server_protocol::ThreadExternalAgentModelsListParams;
+use codex_app_server_protocol::ThreadExternalAgentModelsListResponse;
 use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
 use codex_app_server_protocol::ThreadExternalAgentPermissionRequest;
 use codex_external_agent::AcpStdioHarness;
 use codex_external_agent::ClaudeCodeHarness;
 use codex_external_agent::ExternalAgentActionRequest;
 use codex_external_agent::ExternalAgentActionResult;
+use codex_external_agent::ExternalAgentCapabilities;
 use codex_external_agent::ExternalAgentError;
 use codex_external_agent::ExternalAgentEvent;
+use codex_external_agent::ExternalAgentExecutionSurface;
 use codex_external_agent::ExternalAgentHost;
 use codex_external_agent::ExternalAgentMode;
+use codex_external_agent::ExternalAgentModelDescriptor;
 use codex_external_agent::ExternalAgentPermissionDecision;
 use codex_external_agent::ExternalAgentPermissionOption;
 use codex_external_agent::ExternalAgentPermissionRequest;
 use codex_external_agent::ExternalAgentReadiness;
 use codex_external_agent::ExternalAgentReadinessStatus;
 use codex_external_agent::ExternalAgentRequest;
+use codex_external_agent::ExternalAgentRuntimeDescriptor;
 use codex_external_agent::ExternalAgentRuntimeId;
 use codex_external_agent::ExternalAgentSandboxConfig;
+use codex_external_agent::FileSystemCapability;
+use codex_external_agent::McpCapability;
+use codex_external_agent::NetworkCapability;
+use codex_external_agent::TerminalCapability;
 use codex_external_agent::claude_code_harness;
 use codex_external_agent::cursor_acp_harness;
+use codex_external_agent::find_external_agent_runtime;
 use codex_external_agent::grok_build_acp_harness;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_protocol::ThreadId;
@@ -74,6 +87,36 @@ impl ThreadRequestProcessor {
         Ok(None)
     }
 
+    pub(crate) async fn thread_external_agent_models_list(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadExternalAgentModelsListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let response = self.thread_external_agent_models_list_inner(params).await?;
+        self.outgoing.send_response(request_id, response).await;
+        Ok(None)
+    }
+
+    async fn thread_external_agent_models_list_inner(
+        &self,
+        params: ThreadExternalAgentModelsListParams,
+    ) -> Result<ThreadExternalAgentModelsListResponse, JSONRPCErrorError> {
+        let ThreadExternalAgentModelsListParams {
+            thread_id,
+            runtime_id,
+            execution_surface,
+        } = params;
+        let runtime_id = runtime_id.trim();
+        // Resolve the thread so unknown ids surface as an error, matching the
+        // other external-agent RPCs.
+        let (_thread_id, _thread) = self.load_thread(&thread_id).await?;
+        let descriptor = find_external_agent_runtime(runtime_id).ok_or_else(|| {
+            invalid_request(format!("unsupported external-agent runtime `{runtime_id}`"))
+        })?;
+        let surface = execution_surface.map(external_agent_execution_surface);
+        Ok(external_agent_models_response(runtime_id, descriptor, surface))
+    }
+
     pub(crate) async fn thread_external_agent_permission_respond(
         &self,
         request_id: ConnectionRequestId,
@@ -120,9 +163,13 @@ impl ThreadRequestProcessor {
             runtime_id,
             task,
             mode,
+            model,
+            execution_surface,
+            managed,
         } = params;
         let runtime_id = runtime_id.trim();
         let task = task.trim();
+        let requested_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         if runtime_id.is_empty() {
             return Ok(ExternalAgentStartOutcome::gated(
                 "runtimeId must not be empty",
@@ -133,17 +180,76 @@ impl ThreadRequestProcessor {
                 "use runtimeId `grok-build` for Grok Build external-agent runs",
             ));
         }
-        if !matches!(runtime_id, "cursor" | "grok-build" | "claude") {
+        let Some(descriptor) = find_external_agent_runtime(runtime_id) else {
             return Ok(ExternalAgentStartOutcome::gated(format!(
                 "unsupported external-agent runtime `{runtime_id}`"
             )));
-        }
+        };
         if task.is_empty() {
             return Ok(ExternalAgentStartOutcome::gated("task must not be empty"));
         }
-        match mode {
-            ThreadExternalAgentMode::Plan | ThreadExternalAgentMode::Propose => {}
+
+        // Resolve the execution surface (requested or the runtime default) and
+        // gate anything the runtime does not advertise.
+        let surface = match execution_surface {
+            Some(surface) => external_agent_execution_surface(surface),
+            None => descriptor.default_execution_surface,
+        };
+        if !descriptor.supports_execution_surface(surface) {
+            return Ok(ExternalAgentStartOutcome::gated(format!(
+                "external-agent runtime `{runtime_id}` does not support the {} execution surface",
+                surface.as_str()
+            )));
         }
+
+        // Resolve + validate the requested model against the runtime's advertised
+        // models on this surface, falling back to the runtime default.
+        let resolved_model = match requested_model {
+            Some(model) => match descriptor.find_model(model) {
+                Some(descriptor_model)
+                    if descriptor_model.execution_surfaces.contains(&surface) =>
+                {
+                    Some(descriptor_model.id.to_string())
+                }
+                Some(_) => {
+                    return Ok(ExternalAgentStartOutcome::gated(format!(
+                        "model `{model}` is not available on the {} execution surface for `{runtime_id}`",
+                        surface.as_str()
+                    )));
+                }
+                None => {
+                    return Ok(ExternalAgentStartOutcome::gated(format!(
+                        "unknown model `{model}` for external-agent runtime `{runtime_id}`"
+                    )));
+                }
+            },
+            None => descriptor
+                .models_for_surface(surface)
+                .next()
+                .map(|descriptor_model| descriptor_model.id.to_string()),
+        };
+
+        // Resolve the runtime mode, honoring managed requests only for runtimes
+        // whose Codewith-mediated action executor has landed.
+        let runtime_mode = if managed {
+            if !descriptor.supports_mode(ExternalAgentMode::Managed) {
+                return Ok(ExternalAgentStartOutcome::gated(format!(
+                    "external-agent runtime `{runtime_id}` does not support managed mode"
+                )));
+            }
+            ExternalAgentMode::Managed
+        } else {
+            external_agent_mode(mode)
+        };
+
+        // The hosted (cloud) surface needs the cloud harness, which is not part
+        // of this build yet; keep it discoverable but gate runs cleanly.
+        if surface == ExternalAgentExecutionSurface::Cloud {
+            return Ok(ExternalAgentStartOutcome::gated(format!(
+                "external-agent runtime `{runtime_id}` cloud execution surface is not available in this build yet; use the acp or sdk-local surface"
+            )));
+        }
+
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
         let thread_config = thread.config().await;
         if let Err(message) = validate_external_agent_subscription_profile(
@@ -155,14 +261,21 @@ impl ThreadRequestProcessor {
         }
 
         let run_id = format!("ext_{}", Uuid::new_v4());
-        let runtime_mode = external_agent_mode(mode);
-        let runtime_request = ExternalAgentRequest::new(
+        let mut runtime_request = ExternalAgentRequest::new(
             runtime_id,
             task,
             thread_config.cwd.to_path_buf(),
             runtime_mode,
         );
-        let runner = runner_for_runtime(runtime_id).ok_or_else(|| {
+        runtime_request
+            .metadata
+            .insert("executionSurface".to_string(), surface.as_str().to_string());
+        if let Some(model) = resolved_model.as_ref() {
+            runtime_request
+                .metadata
+                .insert("model".to_string(), model.clone());
+        }
+        let runner = runner_for_runtime(runtime_id, surface).ok_or_else(|| {
             invalid_request(format!("unsupported external-agent runtime `{runtime_id}`"))
         })?;
         let source_env = external_agent_source_env(
@@ -180,6 +293,16 @@ impl ThreadRequestProcessor {
             &thread_config.workspace_roots,
             runtime_id,
             &source_env,
+        );
+        // The Codewith-mediated action executor (Comp2) enforces the run's mode
+        // capabilities against the same permission profile that scopes the
+        // sandboxed subprocess: reads within granted roots are auto-served, while
+        // writes/commands/network egress require explicit per-action consent.
+        let action_executor = external_agent_action_executor(
+            &permission_profile,
+            runtime_mode,
+            &thread_config.cwd,
+            &thread_config.workspace_roots,
         );
         let sandbox_config = ExternalAgentSandboxConfig {
             use_legacy_landlock: external_agent_use_legacy_landlock(
@@ -222,7 +345,8 @@ impl ThreadRequestProcessor {
                     thread_id,
                     run_id,
                     cancellation_token,
-                ),
+                )
+                .with_action_executor(action_executor),
                 run_registry: self.external_agent_runs.clone(),
                 run_key,
                 response,
@@ -646,6 +770,7 @@ struct AppServerExternalAgentHost {
     terminal_sent: Arc<AtomicBool>,
     cancellation_token: CancellationToken,
     permission_timeout: Duration,
+    action_executor: Arc<ExternalAgentActionExecutor>,
 }
 
 impl AppServerExternalAgentHost {
@@ -664,7 +789,15 @@ impl AppServerExternalAgentHost {
             terminal_sent: Arc::new(AtomicBool::new(false)),
             cancellation_token,
             permission_timeout: EXTERNAL_AGENT_PERMISSION_TIMEOUT,
+            // Deny-all by default; a real run attaches the executor built from
+            // its permission profile via `with_action_executor`.
+            action_executor: Arc::new(ExternalAgentActionExecutor::deny_all()),
         }
+    }
+
+    fn with_action_executor(mut self, action_executor: ExternalAgentActionExecutor) -> Self {
+        self.action_executor = Arc::new(action_executor);
+        self
     }
 
     #[cfg(test)]
@@ -836,13 +969,14 @@ impl ExternalAgentHost for AppServerExternalAgentHost {
         &self,
         action: ExternalAgentActionRequest,
     ) -> Result<ExternalAgentActionResult, ExternalAgentError> {
+        // Audit the proposed action before executing so replay stays
+        // deterministic even if execution or consent later fails.
         self.emit(ThreadExternalAgentEvent::ProposedAction {
             proposal: action_json(&action),
         })
         .await;
-        Ok(ExternalAgentActionResult::Rejected {
-            reason: "external-agent managed action routing is not enabled yet".to_string(),
-        })
+        let executor = self.action_executor.clone();
+        Ok(executor.execute(action, self).await)
     }
 
     async fn is_cancelled(&self) -> bool {
@@ -850,14 +984,94 @@ impl ExternalAgentHost for AppServerExternalAgentHost {
     }
 }
 
-fn runner_for_runtime(runtime_id: &str) -> Option<ExternalAgentRunner> {
-    match runtime_id {
-        ExternalAgentRuntimeId::CURSOR => cursor_acp_harness().map(ExternalAgentRunner::Acp),
-        ExternalAgentRuntimeId::GROK_BUILD => {
-            grok_build_acp_harness().map(ExternalAgentRunner::Acp)
+fn runner_for_runtime(
+    runtime_id: &str,
+    surface: ExternalAgentExecutionSurface,
+) -> Option<ExternalAgentRunner> {
+    match surface {
+        // The hosted cloud harness (Comp1) is not part of this build yet; cloud
+        // runs are gated before this point. Guard here defensively.
+        ExternalAgentExecutionSurface::Cloud => None,
+        // The acp and sdk-local surfaces both resolve to the runtime's local
+        // harness: ACP stdio for Cursor/Grok, the Agent SDK stream for Claude.
+        ExternalAgentExecutionSurface::Acp | ExternalAgentExecutionSurface::SdkLocal => {
+            match runtime_id {
+                ExternalAgentRuntimeId::CURSOR => {
+                    cursor_acp_harness().map(ExternalAgentRunner::Acp)
+                }
+                ExternalAgentRuntimeId::GROK_BUILD => {
+                    grok_build_acp_harness().map(ExternalAgentRunner::Acp)
+                }
+                ExternalAgentRuntimeId::CLAUDE => {
+                    claude_code_harness().map(ExternalAgentRunner::Claude)
+                }
+                _ => None,
+            }
         }
-        ExternalAgentRuntimeId::CLAUDE => claude_code_harness().map(ExternalAgentRunner::Claude),
-        _ => None,
+    }
+}
+
+fn external_agent_execution_surface(
+    surface: ThreadExternalAgentExecutionSurface,
+) -> ExternalAgentExecutionSurface {
+    match surface {
+        ThreadExternalAgentExecutionSurface::Acp => ExternalAgentExecutionSurface::Acp,
+        ThreadExternalAgentExecutionSurface::SdkLocal => ExternalAgentExecutionSurface::SdkLocal,
+        ThreadExternalAgentExecutionSurface::Cloud => ExternalAgentExecutionSurface::Cloud,
+    }
+}
+
+fn api_execution_surface(
+    surface: ExternalAgentExecutionSurface,
+) -> ThreadExternalAgentExecutionSurface {
+    match surface {
+        ExternalAgentExecutionSurface::Acp => ThreadExternalAgentExecutionSurface::Acp,
+        ExternalAgentExecutionSurface::SdkLocal => ThreadExternalAgentExecutionSurface::SdkLocal,
+        ExternalAgentExecutionSurface::Cloud => ThreadExternalAgentExecutionSurface::Cloud,
+    }
+}
+
+fn external_agent_model_api(model: &ExternalAgentModelDescriptor) -> ThreadExternalAgentModel {
+    ThreadExternalAgentModel {
+        id: model.id.to_string(),
+        display_name: model.display_name.to_string(),
+        description: Some(model.description.to_string()),
+        execution_surfaces: model
+            .execution_surfaces
+            .iter()
+            .map(|surface| api_execution_surface(*surface))
+            .collect(),
+    }
+}
+
+/// Build the models-list response for a runtime, optionally filtered to a single
+/// execution surface. This is the Comp3 discovery source: the runtime's built-in
+/// advertised models, which a live per-account discovery path can later refine.
+fn external_agent_models_response(
+    runtime_id: &str,
+    descriptor: &ExternalAgentRuntimeDescriptor,
+    surface: Option<ExternalAgentExecutionSurface>,
+) -> ThreadExternalAgentModelsListResponse {
+    let models = descriptor
+        .models
+        .iter()
+        .filter(|model| match surface {
+            Some(surface) => model.execution_surfaces.contains(&surface),
+            None => true,
+        })
+        .map(external_agent_model_api)
+        .collect::<Vec<_>>();
+    let default_model = match surface {
+        Some(surface) => descriptor
+            .models_for_surface(surface)
+            .next()
+            .map(|model| model.id.to_string()),
+        None => descriptor.default_model().map(|model| model.id.to_string()),
+    };
+    ThreadExternalAgentModelsListResponse {
+        runtime_id: runtime_id.to_string(),
+        models,
+        default_model,
     }
 }
 
@@ -866,6 +1080,341 @@ fn external_agent_mode(mode: ThreadExternalAgentMode) -> ExternalAgentMode {
         ThreadExternalAgentMode::Plan => ExternalAgentMode::Plan,
         ThreadExternalAgentMode::Propose => ExternalAgentMode::Propose,
     }
+}
+
+/// Default upper bound on how long a delegated command may run before the
+/// executor abandons it.
+const EXTERNAL_AGENT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Codewith-mediated executor for external-agent managed actions (Comp2).
+///
+/// Built from the run's [`PermissionProfile`] plus the mode capabilities. File
+/// reads inside the granted roots are auto-served; writes ("write-promote"),
+/// terminal commands ("exec-delegate"), and network egress ("egress-consent")
+/// require explicit per-action client consent routed through the host. This is
+/// the single decision + execution point that replaced the old inline
+/// reject-everything path, so managed runtimes never mutate the workspace
+/// without Codewith approval + scope enforcement.
+struct ExternalAgentActionExecutor {
+    capabilities: ExternalAgentCapabilities,
+    readable_roots: Vec<AbsolutePathBuf>,
+    writable_roots: Vec<AbsolutePathBuf>,
+    network: NetworkSandboxPolicy,
+    cwd: PathBuf,
+    command_timeout: Duration,
+}
+
+/// How the executor should handle a classified action before it is performed.
+enum ActionDisposition {
+    /// Perform immediately (reads within granted roots).
+    Allow,
+    /// Ask the client for per-action consent before performing.
+    NeedsConsent,
+    /// Reject outright with the given reason.
+    Deny(String),
+}
+
+impl ExternalAgentActionExecutor {
+    fn new(
+        capabilities: ExternalAgentCapabilities,
+        readable_roots: Vec<AbsolutePathBuf>,
+        writable_roots: Vec<AbsolutePathBuf>,
+        network: NetworkSandboxPolicy,
+        cwd: PathBuf,
+    ) -> Self {
+        Self {
+            capabilities,
+            readable_roots,
+            writable_roots,
+            network,
+            cwd,
+            command_timeout: EXTERNAL_AGENT_COMMAND_TIMEOUT,
+        }
+    }
+
+    /// An executor that rejects every action; the default until a run attaches
+    /// the executor built from its permission profile.
+    fn deny_all() -> Self {
+        Self::new(
+            ExternalAgentCapabilities::for_mode(ExternalAgentMode::Plan),
+            Vec::new(),
+            Vec::new(),
+            NetworkSandboxPolicy::Restricted,
+            PathBuf::new(),
+        )
+    }
+
+    #[cfg(test)]
+    fn with_command_timeout(mut self, command_timeout: Duration) -> Self {
+        self.command_timeout = command_timeout;
+        self
+    }
+
+    async fn execute(
+        &self,
+        action: ExternalAgentActionRequest,
+        host: &AppServerExternalAgentHost,
+    ) -> ExternalAgentActionResult {
+        match self.classify(&action) {
+            ActionDisposition::Deny(reason) => ExternalAgentActionResult::Rejected { reason },
+            ActionDisposition::Allow => self.perform(action).await,
+            ActionDisposition::NeedsConsent => {
+                if self.request_consent(host, action.clone()).await {
+                    self.perform(action).await
+                } else {
+                    ExternalAgentActionResult::Rejected {
+                        reason: consent_denied_reason(&action),
+                    }
+                }
+            }
+        }
+    }
+
+    fn classify(&self, action: &ExternalAgentActionRequest) -> ActionDisposition {
+        match action {
+            ExternalAgentActionRequest::ReadFile { path } => {
+                if matches!(self.capabilities.filesystem, FileSystemCapability::None) {
+                    return ActionDisposition::Deny(
+                        "this run mode does not permit file reads".to_string(),
+                    );
+                }
+                if !self.path_is_readable(path) {
+                    return ActionDisposition::Deny(format!(
+                        "read path `{}` is outside the run's granted roots",
+                        path.display()
+                    ));
+                }
+                ActionDisposition::Allow
+            }
+            ExternalAgentActionRequest::WriteFile { path, .. } => {
+                if !matches!(self.capabilities.filesystem, FileSystemCapability::ManagedReadWrite) {
+                    return ActionDisposition::Deny(
+                        "this run mode does not permit file writes".to_string(),
+                    );
+                }
+                if !self.path_is_writable(path) {
+                    return ActionDisposition::Deny(format!(
+                        "write path `{}` is outside the run's writable workspace roots",
+                        path.display()
+                    ));
+                }
+                ActionDisposition::NeedsConsent
+            }
+            ExternalAgentActionRequest::RunCommand { command, .. } => {
+                if !matches!(self.capabilities.terminal, TerminalCapability::Managed) {
+                    return ActionDisposition::Deny(
+                        "this run mode does not permit terminal commands".to_string(),
+                    );
+                }
+                if command.is_empty() {
+                    return ActionDisposition::Deny("cannot run an empty command".to_string());
+                }
+                ActionDisposition::NeedsConsent
+            }
+            ExternalAgentActionRequest::NetworkAccess { .. } => {
+                if !matches!(self.capabilities.network, NetworkCapability::Managed)
+                    || self.network != NetworkSandboxPolicy::Enabled
+                {
+                    return ActionDisposition::Deny(
+                        "this run mode does not permit network egress".to_string(),
+                    );
+                }
+                ActionDisposition::NeedsConsent
+            }
+            ExternalAgentActionRequest::McpToolCall { server, tool, .. } => {
+                if matches!(self.capabilities.mcp, McpCapability::None) {
+                    return ActionDisposition::Deny(
+                        "this run mode does not permit MCP tool calls".to_string(),
+                    );
+                }
+                ActionDisposition::Deny(format!(
+                    "no MCP facade is configured for this run (server `{server}`, tool `{tool}`)"
+                ))
+            }
+            ExternalAgentActionRequest::Other { label, .. } => {
+                ActionDisposition::Deny(format!("unsupported managed action `{label}`"))
+            }
+        }
+    }
+
+    async fn request_consent(
+        &self,
+        host: &AppServerExternalAgentHost,
+        action: ExternalAgentActionRequest,
+    ) -> bool {
+        let request = ExternalAgentPermissionRequest {
+            id: format!("act_{}", Uuid::new_v4()),
+            action,
+            options: vec![
+                ExternalAgentPermissionOption::AllowOnce,
+                ExternalAgentPermissionOption::RejectOnce,
+            ],
+        };
+        matches!(
+            host.await_permission_decision(request).await,
+            ExternalAgentPermissionDecision::AllowOnce
+        )
+    }
+
+    async fn perform(&self, action: ExternalAgentActionRequest) -> ExternalAgentActionResult {
+        match action {
+            ExternalAgentActionRequest::ReadFile { path } => match std::fs::read_to_string(&path) {
+                Ok(content) => ExternalAgentActionResult::FileContent { content },
+                Err(err) => {
+                    rejected(format!("failed to read `{}`: {err}", path.display()))
+                }
+            },
+            ExternalAgentActionRequest::WriteFile { path, content } => {
+                if let Some(parent) = path.parent()
+                    && let Err(err) = std::fs::create_dir_all(parent)
+                {
+                    return rejected(format!("failed to prepare `{}`: {err}", path.display()));
+                }
+                match std::fs::write(&path, content) {
+                    Ok(()) => ExternalAgentActionResult::WriteAccepted,
+                    Err(err) => rejected(format!("failed to write `{}`: {err}", path.display())),
+                }
+            }
+            ExternalAgentActionRequest::RunCommand { command, cwd } => {
+                self.run_command(command, cwd).await
+            }
+            ExternalAgentActionRequest::NetworkAccess { .. } => {
+                ExternalAgentActionResult::NetworkAccessReady
+            }
+            ExternalAgentActionRequest::McpToolCall { .. }
+            | ExternalAgentActionRequest::Other { .. } => {
+                rejected("unsupported managed action".to_string())
+            }
+        }
+    }
+
+    async fn run_command(
+        &self,
+        command: Vec<String>,
+        cwd: Option<PathBuf>,
+    ) -> ExternalAgentActionResult {
+        let Some((program, args)) = command.split_first() else {
+            return rejected("cannot run an empty command".to_string());
+        };
+        let working_dir = cwd.unwrap_or_else(|| self.cwd.clone());
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args)
+            .current_dir(&working_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = match tokio::time::timeout(self.command_timeout, cmd.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(err)) => return rejected(format!("failed to run `{program}`: {err}")),
+            Err(_) => return rejected(format!("command `{program}` timed out")),
+        };
+        ExternalAgentActionResult::CommandOutput {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+
+    fn path_is_readable(&self, path: &Path) -> bool {
+        self.path_within(path, &self.readable_roots) || self.path_within(path, &self.writable_roots)
+    }
+
+    fn path_is_writable(&self, path: &Path) -> bool {
+        self.path_within(path, &self.writable_roots)
+    }
+
+    fn path_within(&self, path: &Path, roots: &[AbsolutePathBuf]) -> bool {
+        if roots.is_empty() {
+            return false;
+        }
+        let candidate = self.absolutize(path);
+        roots
+            .iter()
+            .any(|root| candidate.starts_with(normalize_lexically(root.as_path())))
+    }
+
+    fn absolutize(&self, path: &Path) -> PathBuf {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        normalize_lexically(&joined)
+    }
+}
+
+fn rejected(reason: String) -> ExternalAgentActionResult {
+    ExternalAgentActionResult::Rejected { reason }
+}
+
+fn consent_denied_reason(action: &ExternalAgentActionRequest) -> String {
+    match action {
+        ExternalAgentActionRequest::WriteFile { path, .. } => {
+            format!("write to `{}` was not approved", path.display())
+        }
+        ExternalAgentActionRequest::RunCommand { command, .. } => format!(
+            "command `{}` was not approved",
+            command.first().map(String::as_str).unwrap_or_default()
+        ),
+        ExternalAgentActionRequest::NetworkAccess { target, .. } => {
+            format!("network egress to `{target}` was not approved")
+        }
+        _ => "the requested action was not approved".to_string(),
+    }
+}
+
+/// Lexically normalize a path (resolve `.`/`..` without touching the
+/// filesystem) so root-containment checks cannot be bypassed with `..`.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Build the Comp2 action executor from the run's permission profile and mode.
+fn external_agent_action_executor(
+    permission_profile: &PermissionProfile,
+    mode: ExternalAgentMode,
+    cwd: &AbsolutePathBuf,
+    workspace_roots: &[AbsolutePathBuf],
+) -> ExternalAgentActionExecutor {
+    let (file_system, network) = permission_profile.to_runtime_permissions();
+    let readable_roots = file_system
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.path {
+            FileSystemPath::Path { path } if entry.access == FileSystemAccessMode::Read => {
+                Some(path.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Managed runs may promote writes within the workspace roots (each write is
+    // still consented per-action); non-managed runs get no writable scope.
+    let writable_roots = if matches!(mode, ExternalAgentMode::Managed) {
+        if workspace_roots.is_empty() {
+            vec![cwd.clone()]
+        } else {
+            workspace_roots.to_vec()
+        }
+    } else {
+        Vec::new()
+    };
+    ExternalAgentActionExecutor::new(
+        ExternalAgentCapabilities::for_mode(mode),
+        readable_roots,
+        writable_roots,
+        network,
+        cwd.to_path_buf(),
+    )
 }
 
 fn api_external_agent_event(event: ExternalAgentEvent) -> ThreadExternalAgentEvent {
@@ -1409,11 +1958,94 @@ mod tests {
 
     #[test]
     fn claude_runtime_uses_claude_runner() {
-        let Some(runner) = runner_for_runtime(ExternalAgentRuntimeId::CLAUDE) else {
+        let Some(runner) =
+            runner_for_runtime(ExternalAgentRuntimeId::CLAUDE, ExternalAgentExecutionSurface::SdkLocal)
+        else {
             panic!("claude runner");
         };
 
         assert!(matches!(runner, ExternalAgentRunner::Claude(_)));
+    }
+
+    #[test]
+    fn runner_selection_follows_execution_surface() {
+        let Some(cursor_acp) =
+            runner_for_runtime(ExternalAgentRuntimeId::CURSOR, ExternalAgentExecutionSurface::Acp)
+        else {
+            panic!("cursor acp runner");
+        };
+        assert!(matches!(cursor_acp, ExternalAgentRunner::Acp(_)));
+
+        let Some(cursor_sdk) = runner_for_runtime(
+            ExternalAgentRuntimeId::CURSOR,
+            ExternalAgentExecutionSurface::SdkLocal,
+        ) else {
+            panic!("cursor sdk-local runner");
+        };
+        assert!(matches!(cursor_sdk, ExternalAgentRunner::Acp(_)));
+
+        // The hosted cloud harness is not part of this build yet.
+        assert!(
+            runner_for_runtime(
+                ExternalAgentRuntimeId::CURSOR,
+                ExternalAgentExecutionSurface::Cloud
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn execution_surface_round_trips_between_protocol_and_runtime() {
+        for (api, runtime) in [
+            (
+                ThreadExternalAgentExecutionSurface::Acp,
+                ExternalAgentExecutionSurface::Acp,
+            ),
+            (
+                ThreadExternalAgentExecutionSurface::SdkLocal,
+                ExternalAgentExecutionSurface::SdkLocal,
+            ),
+            (
+                ThreadExternalAgentExecutionSurface::Cloud,
+                ExternalAgentExecutionSurface::Cloud,
+            ),
+        ] {
+            assert_eq!(external_agent_execution_surface(api), runtime);
+            assert_eq!(api_execution_surface(runtime), api);
+        }
+    }
+
+    #[test]
+    fn cursor_models_response_advertises_auto_default_and_filters_by_surface() {
+        let cursor = find_external_agent_runtime(ExternalAgentRuntimeId::CURSOR)
+            .expect("cursor descriptor");
+        let all = external_agent_models_response(ExternalAgentRuntimeId::CURSOR, cursor, None);
+        assert_eq!(all.runtime_id, "cursor");
+        assert_eq!(all.default_model.as_deref(), Some("auto"));
+        assert!(all.models.iter().any(|model| model.id == "auto"));
+        assert!(all.models.iter().any(|model| model.id == "gpt-5-codex"));
+        for model in &all.models {
+            assert!(
+                model
+                    .execution_surfaces
+                    .contains(&ThreadExternalAgentExecutionSurface::Acp),
+                "cursor models should advertise the acp surface"
+            );
+        }
+
+        let cloud = external_agent_models_response(
+            ExternalAgentRuntimeId::CURSOR,
+            cursor,
+            Some(ExternalAgentExecutionSurface::Cloud),
+        );
+        assert!(!cloud.models.is_empty());
+        for model in &cloud.models {
+            assert!(
+                model
+                    .execution_surfaces
+                    .contains(&ThreadExternalAgentExecutionSurface::Cloud)
+            );
+        }
     }
 
     #[test]
@@ -1621,6 +2253,364 @@ mod tests {
             )
             .expect_err("mismatch should fail"),
             "external-agent runtime `cursor` requires an active Cursor auth profile or a ChatGPT profile, but `grok-work` is tied to Grok"
+        );
+    }
+
+    fn managed_executor(
+        readable_roots: Vec<AbsolutePathBuf>,
+        writable_roots: Vec<AbsolutePathBuf>,
+        cwd: PathBuf,
+    ) -> ExternalAgentActionExecutor {
+        ExternalAgentActionExecutor::new(
+            ExternalAgentCapabilities::for_mode(ExternalAgentMode::Managed),
+            readable_roots,
+            writable_roots,
+            NetworkSandboxPolicy::Enabled,
+            cwd,
+        )
+    }
+
+    /// Drive `perform_action` for an action that needs consent, answer with
+    /// `decision`, and return the executor result.
+    async fn perform_with_consent(
+        host: &AppServerExternalAgentHost,
+        rx: &mut mpsc::Receiver<OutgoingEnvelope>,
+        thread_id: ThreadId,
+        run_id: &str,
+        action: ExternalAgentActionRequest,
+        decision: ThreadExternalAgentPermissionOption,
+    ) -> ExternalAgentActionResult {
+        let action_host = host.clone();
+        let handle = tokio::spawn(async move { action_host.perform_action(action).await });
+
+        // Every managed action is audited before it runs.
+        assert!(matches!(
+            recv_external_agent_event(rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+
+        // Then the executor asks for explicit per-action consent.
+        let ThreadExternalAgentEvent::PermissionRequested { request } =
+            recv_external_agent_event(rx).await
+        else {
+            panic!("expected a permission request for the mediated action");
+        };
+        let key = external_agent_permission_key(run_id, &request.id);
+        let thread_state = host.thread_state_manager.thread_state(thread_id).await;
+        assert!(
+            thread_state
+                .lock()
+                .await
+                .respond_external_agent_permission(&key, decision)
+        );
+
+        let result = handle.await.expect("join").expect("action result");
+        assert!(matches!(
+            recv_external_agent_event(rx).await,
+            ThreadExternalAgentEvent::PermissionResolved { .. }
+        ));
+        result
+    }
+
+    #[tokio::test]
+    async fn managed_read_auto_allows_within_granted_roots() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "hello world").expect("seed file");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000501")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile { path: file })
+            .await
+            .expect("read result");
+        assert_eq!(
+            result,
+            ExternalAgentActionResult::FileContent {
+                content: "hello world".to_string()
+            }
+        );
+        // Reads within scope only surface the proposed-action audit; no consent.
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_read_outside_roots_is_rejected() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000502")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let escape = dir.path().join("..").join("outside.txt");
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile { path: escape })
+            .await
+            .expect("read result");
+        assert!(
+            matches!(result, ExternalAgentActionResult::Rejected { .. }),
+            "reads outside the granted roots must be rejected: {result:?}"
+        );
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_write_promote_writes_after_consent() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+        let target = dir.path().join("nested").join("generated.txt");
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000503")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let result = perform_with_consent(
+            &host,
+            &mut rx,
+            thread_id,
+            "run-exec",
+            ExternalAgentActionRequest::WriteFile {
+                path: target.clone(),
+                content: "generated by codewith".to_string(),
+            },
+            ThreadExternalAgentPermissionOption::AllowOnce,
+        )
+        .await;
+
+        assert_eq!(result, ExternalAgentActionResult::WriteAccepted);
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("written file"),
+            "generated by codewith"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_write_promote_denied_leaves_file_untouched() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+        let target = dir.path().join("denied.txt");
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000504")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let result = perform_with_consent(
+            &host,
+            &mut rx,
+            thread_id,
+            "run-exec",
+            ExternalAgentActionRequest::WriteFile {
+                path: target.clone(),
+                content: "should not land".to_string(),
+            },
+            ThreadExternalAgentPermissionOption::RejectOnce,
+        )
+        .await;
+
+        assert!(matches!(result, ExternalAgentActionResult::Rejected { .. }));
+        assert!(!target.exists(), "a denied write must not touch the file");
+    }
+
+    #[tokio::test]
+    async fn managed_exec_delegate_runs_command_after_consent() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000505")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let command = if cfg!(windows) {
+            vec![
+                "cmd".to_string(),
+                "/C".to_string(),
+                "echo codewith".to_string(),
+            ]
+        } else {
+            vec!["/bin/echo".to_string(), "codewith".to_string()]
+        };
+        let result = perform_with_consent(
+            &host,
+            &mut rx,
+            thread_id,
+            "run-exec",
+            ExternalAgentActionRequest::RunCommand {
+                command,
+                cwd: None,
+            },
+            ThreadExternalAgentPermissionOption::AllowOnce,
+        )
+        .await;
+
+        let ExternalAgentActionResult::CommandOutput {
+            exit_code, stdout, ..
+        } = result
+        else {
+            panic!("expected command output, got {result:?}");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(
+            stdout.contains("codewith"),
+            "delegated command stdout should carry output: {stdout:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_network_egress_ready_after_consent() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000506")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let result = perform_with_consent(
+            &host,
+            &mut rx,
+            thread_id,
+            "run-exec",
+            ExternalAgentActionRequest::NetworkAccess {
+                target: "https://api.cursor.com".to_string(),
+                purpose: Some("model discovery".to_string()),
+            },
+            ThreadExternalAgentPermissionOption::AllowOnce,
+        )
+        .await;
+
+        assert_eq!(result, ExternalAgentActionResult::NetworkAccessReady);
+    }
+
+    #[tokio::test]
+    async fn propose_mode_rejects_writes_and_commands_without_consent() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = ExternalAgentActionExecutor::new(
+            ExternalAgentCapabilities::for_mode(ExternalAgentMode::Propose),
+            vec![root.clone()],
+            Vec::new(),
+            NetworkSandboxPolicy::Enabled,
+            dir.path().to_path_buf(),
+        );
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000507")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(executor);
+
+        let write = host
+            .perform_action(ExternalAgentActionRequest::WriteFile {
+                path: dir.path().join("x.txt"),
+                content: "nope".to_string(),
+            })
+            .await
+            .expect("write result");
+        assert!(matches!(write, ExternalAgentActionResult::Rejected { .. }));
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+
+        let command = host
+            .perform_action(ExternalAgentActionRequest::RunCommand {
+                command: vec!["/bin/echo".to_string(), "nope".to_string()],
+                cwd: None,
+            })
+            .await
+            .expect("command result");
+        assert!(matches!(command, ExternalAgentActionResult::Rejected { .. }));
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+        // Neither rejected action asked the client for consent.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_rejects_reads() {
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000508")
+            .expect("thread id should parse");
+        let (host, mut rx) = subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let host = host.with_action_executor(ExternalAgentActionExecutor::deny_all());
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::ReadFile {
+                path: PathBuf::from("/etc/hosts"),
+            })
+            .await
+            .expect("read result");
+        assert!(matches!(result, ExternalAgentActionResult::Rejected { .. }));
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_action_rejected_when_run_is_cancelled() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = AbsolutePathBuf::from_absolute_path(dir.path()).expect("abs root");
+        let executor = managed_executor(vec![root.clone()], vec![root], dir.path().to_path_buf());
+
+        let thread_id = ThreadId::from_string("00000000-0000-4000-8000-000000000509")
+            .expect("thread id should parse");
+        let (mut host, mut rx) =
+            subscribed_host(thread_id, "run-exec", Duration::from_secs(30)).await;
+        let token = CancellationToken::new();
+        host.cancellation_token = token.clone();
+        token.cancel();
+        let host = host.with_action_executor(executor);
+
+        let result = host
+            .perform_action(ExternalAgentActionRequest::WriteFile {
+                path: dir.path().join("late.txt"),
+                content: "too late".to_string(),
+            })
+            .await
+            .expect("write result");
+        assert!(matches!(result, ExternalAgentActionResult::Rejected { .. }));
+        // Proposed audit, then a superseded resolution because the run is gone.
+        assert!(matches!(
+            recv_external_agent_event(&mut rx).await,
+            ThreadExternalAgentEvent::ProposedAction { .. }
+        ));
+        let resolved = recv_external_agent_event(&mut rx).await;
+        let ThreadExternalAgentEvent::PermissionResolved {
+            decision,
+            resolution,
+            ..
+        } = resolved
+        else {
+            panic!("expected a permission-resolved audit, got {resolved:?}");
+        };
+        assert_eq!(decision, ThreadExternalAgentPermissionOption::RejectOnce);
+        assert_eq!(
+            resolution,
+            ThreadExternalAgentPermissionResolution::Superseded
         );
     }
 }

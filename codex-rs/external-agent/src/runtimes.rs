@@ -6,6 +6,41 @@ use crate::ExternalAgentReadiness;
 use crate::ExternalAgentReadinessStatus;
 use crate::ExternalAgentRuntimeId;
 
+/// Execution surface a runtime can be reached through.
+///
+/// `Acp` runs the runtime as a local ACP stdio subprocess, `SdkLocal` runs the
+/// runtime's local SDK/CLI stream on this machine, and `Cloud` delegates the run
+/// to the runtime's hosted (cloud) agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalAgentExecutionSurface {
+    Acp,
+    SdkLocal,
+    Cloud,
+}
+
+impl ExternalAgentExecutionSurface {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Acp => "acp",
+            Self::SdkLocal => "sdk-local",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
+/// A model an external-agent runtime advertises as runnable.
+///
+/// This is the built-in, statically-known set. Live per-account discovery
+/// (`thread/externalAgent/models/list`) may refine or extend it, but the
+/// descriptor set is always a safe, offline default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalAgentModelDescriptor {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub description: &'static str,
+    pub execution_surfaces: &'static [ExternalAgentExecutionSurface],
+}
+
 /// User-facing metadata for a built-in external-agent runtime adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalAgentRuntimeDescriptor {
@@ -15,6 +50,9 @@ pub struct ExternalAgentRuntimeDescriptor {
     pub command: ExternalAgentCommandSpec,
     pub supported_modes: &'static [ExternalAgentMode],
     pub default_mode: ExternalAgentMode,
+    pub execution_surfaces: &'static [ExternalAgentExecutionSurface],
+    pub default_execution_surface: ExternalAgentExecutionSurface,
+    pub models: &'static [ExternalAgentModelDescriptor],
     pub visible: bool,
 }
 
@@ -28,6 +66,36 @@ impl ExternalAgentRuntimeDescriptor {
             supported_modes: self.supported_modes.to_vec(),
             detail: None,
         }
+    }
+
+    /// Whether this runtime advertises support for `mode`.
+    pub fn supports_mode(&self, mode: ExternalAgentMode) -> bool {
+        self.supported_modes.contains(&mode)
+    }
+
+    /// Whether this runtime can be reached through `surface`.
+    pub fn supports_execution_surface(&self, surface: ExternalAgentExecutionSurface) -> bool {
+        self.execution_surfaces.contains(&surface)
+    }
+
+    /// The model used when a run omits an explicit selection.
+    pub fn default_model(&self) -> Option<&'static ExternalAgentModelDescriptor> {
+        self.models.first()
+    }
+
+    /// Look up an advertised model by id.
+    pub fn find_model(&self, id: &str) -> Option<&'static ExternalAgentModelDescriptor> {
+        self.models.iter().find(|model| model.id == id)
+    }
+
+    /// Advertised models runnable on `surface`.
+    pub fn models_for_surface(
+        &self,
+        surface: ExternalAgentExecutionSurface,
+    ) -> impl Iterator<Item = &'static ExternalAgentModelDescriptor> {
+        self.models
+            .iter()
+            .filter(move |model| model.execution_surfaces.contains(&surface))
     }
 }
 
@@ -151,6 +219,85 @@ impl ExternalAgentPlatformSandbox {
 
 const PLAN_PROPOSE: &[ExternalAgentMode] = &[ExternalAgentMode::Plan, ExternalAgentMode::Propose];
 
+/// Cursor's action executor (Codewith-mediated) has landed, so Cursor advertises
+/// managed mode alongside the safe plan/propose defaults.
+const PLAN_PROPOSE_MANAGED: &[ExternalAgentMode] = &[
+    ExternalAgentMode::Plan,
+    ExternalAgentMode::Propose,
+    ExternalAgentMode::Managed,
+];
+
+const ACP_SDK_CLOUD_SURFACES: &[ExternalAgentExecutionSurface] = &[
+    ExternalAgentExecutionSurface::Acp,
+    ExternalAgentExecutionSurface::SdkLocal,
+    ExternalAgentExecutionSurface::Cloud,
+];
+const ACP_CLOUD_SURFACES: &[ExternalAgentExecutionSurface] = &[
+    ExternalAgentExecutionSurface::Acp,
+    ExternalAgentExecutionSurface::Cloud,
+];
+const SDK_CLOUD_SURFACES: &[ExternalAgentExecutionSurface] = &[
+    ExternalAgentExecutionSurface::SdkLocal,
+    ExternalAgentExecutionSurface::Cloud,
+];
+
+const CURSOR_MODELS: &[ExternalAgentModelDescriptor] = &[
+    ExternalAgentModelDescriptor {
+        id: "auto",
+        display_name: "Auto (Cursor-selected)",
+        description: "Let Cursor pick the best available model for the task.",
+        execution_surfaces: ACP_SDK_CLOUD_SURFACES,
+    },
+    ExternalAgentModelDescriptor {
+        id: "gpt-5-codex",
+        display_name: "GPT-5 Codex",
+        description: "OpenAI GPT-5 Codex, served through Cursor.",
+        execution_surfaces: ACP_SDK_CLOUD_SURFACES,
+    },
+    ExternalAgentModelDescriptor {
+        id: "claude-sonnet-4.5",
+        display_name: "Claude Sonnet 4.5",
+        description: "Anthropic Claude Sonnet 4.5, served through Cursor.",
+        execution_surfaces: ACP_SDK_CLOUD_SURFACES,
+    },
+];
+
+const GROK_BUILD_MODELS: &[ExternalAgentModelDescriptor] = &[
+    ExternalAgentModelDescriptor {
+        id: "auto",
+        display_name: "Auto (Grok-selected)",
+        description: "Let Grok Build pick the best available model for the task.",
+        execution_surfaces: ACP_CLOUD_SURFACES,
+    },
+    ExternalAgentModelDescriptor {
+        id: "grok-code",
+        display_name: "Grok Code",
+        description: "xAI Grok coding model, served through Grok Build.",
+        execution_surfaces: ACP_CLOUD_SURFACES,
+    },
+];
+
+const CLAUDE_MODELS: &[ExternalAgentModelDescriptor] = &[
+    ExternalAgentModelDescriptor {
+        id: "default",
+        display_name: "Default (Claude-selected)",
+        description: "Use the model configured for the active Claude CLI session.",
+        execution_surfaces: SDK_CLOUD_SURFACES,
+    },
+    ExternalAgentModelDescriptor {
+        id: "claude-opus-4.5",
+        display_name: "Claude Opus 4.5",
+        description: "Anthropic Claude Opus 4.5, served through Claude Code.",
+        execution_surfaces: SDK_CLOUD_SURFACES,
+    },
+    ExternalAgentModelDescriptor {
+        id: "claude-sonnet-4.5",
+        display_name: "Claude Sonnet 4.5",
+        description: "Anthropic Claude Sonnet 4.5, served through Claude Code.",
+        execution_surfaces: SDK_CLOUD_SURFACES,
+    },
+];
+
 pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &[
     ExternalAgentRuntimeDescriptor {
         id: ExternalAgentRuntimeId::CURSOR,
@@ -160,8 +307,11 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
             program: "agent",
             args: &["acp"],
         },
-        supported_modes: PLAN_PROPOSE,
+        supported_modes: PLAN_PROPOSE_MANAGED,
         default_mode: ExternalAgentMode::Plan,
+        execution_surfaces: ACP_SDK_CLOUD_SURFACES,
+        default_execution_surface: ExternalAgentExecutionSurface::Acp,
+        models: CURSOR_MODELS,
         visible: true,
     },
     ExternalAgentRuntimeDescriptor {
@@ -174,6 +324,9 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
         },
         supported_modes: PLAN_PROPOSE,
         default_mode: ExternalAgentMode::Plan,
+        execution_surfaces: ACP_CLOUD_SURFACES,
+        default_execution_surface: ExternalAgentExecutionSurface::Acp,
+        models: GROK_BUILD_MODELS,
         visible: true,
     },
     ExternalAgentRuntimeDescriptor {
@@ -186,6 +339,9 @@ pub const BUILTIN_EXTERNAL_AGENT_RUNTIMES: &[ExternalAgentRuntimeDescriptor] = &
         },
         supported_modes: PLAN_PROPOSE,
         default_mode: ExternalAgentMode::Plan,
+        execution_surfaces: SDK_CLOUD_SURFACES,
+        default_execution_surface: ExternalAgentExecutionSurface::SdkLocal,
+        models: CLAUDE_MODELS,
         visible: true,
     },
 ];
@@ -239,16 +395,59 @@ mod tests {
     }
 
     #[test]
-    fn visible_runtimes_do_not_advertise_managed_mode() {
+    fn cursor_advertises_managed_mode_once_executor_enforcement_lands() {
+        let cursor = find_external_agent_runtime("cursor").expect("cursor runtime");
+        assert!(
+            cursor.supports_mode(ExternalAgentMode::Managed),
+            "cursor advertises managed mode now that Codewith action mediation exists"
+        );
+
         for runtime in visible_external_agent_runtimes() {
+            if runtime.id == ExternalAgentRuntimeId::CURSOR {
+                continue;
+            }
             assert!(
-                !runtime
-                    .supported_modes
-                    .contains(&ExternalAgentMode::Managed),
-                "{} must stay gated until process sandbox enforcement lands",
+                !runtime.supports_mode(ExternalAgentMode::Managed),
+                "{} must stay gated until its managed executor lands",
                 runtime.id
             );
         }
+    }
+
+    #[test]
+    fn runtimes_register_execution_surfaces_and_models() {
+        let cursor = find_external_agent_runtime("cursor").expect("cursor runtime");
+        assert_eq!(
+            cursor.default_execution_surface,
+            ExternalAgentExecutionSurface::Acp
+        );
+        for surface in [
+            ExternalAgentExecutionSurface::Acp,
+            ExternalAgentExecutionSurface::SdkLocal,
+            ExternalAgentExecutionSurface::Cloud,
+        ] {
+            assert!(
+                cursor.supports_execution_surface(surface),
+                "cursor should register the {} surface",
+                surface.as_str()
+            );
+        }
+        assert_eq!(cursor.default_model().map(|model| model.id), Some("auto"));
+        assert!(cursor.find_model("gpt-5-codex").is_some());
+        assert!(cursor.find_model("does-not-exist").is_none());
+        assert!(
+            cursor
+                .models_for_surface(ExternalAgentExecutionSurface::Cloud)
+                .any(|model| model.id == "auto")
+        );
+
+        let claude = find_external_agent_runtime("claude").expect("claude runtime");
+        assert_eq!(
+            claude.default_execution_surface,
+            ExternalAgentExecutionSurface::SdkLocal
+        );
+        assert!(!claude.supports_execution_surface(ExternalAgentExecutionSurface::Acp));
+        assert!(claude.supports_execution_surface(ExternalAgentExecutionSurface::SdkLocal));
     }
 
     #[test]
@@ -281,6 +480,6 @@ mod tests {
 
         assert_eq!(readiness.runtime, ExternalAgentRuntimeId::from("cursor"));
         assert_eq!(readiness.display_name, "Cursor");
-        assert_eq!(readiness.supported_modes, PLAN_PROPOSE);
+        assert_eq!(readiness.supported_modes, PLAN_PROPOSE_MANAGED);
     }
 }
