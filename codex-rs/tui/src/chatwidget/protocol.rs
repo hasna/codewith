@@ -329,6 +329,17 @@ impl ChatWidget {
                     .map(|reason| format!("External agent cancelled: {reason}"))
                     .unwrap_or_else(|| "External agent cancelled.".to_string()),
             ),
+            ThreadExternalAgentEvent::CloudArtifact { artifact } => {
+                let detail = match artifact.uri {
+                    Some(uri) => format!("Run: {run_id}. {}: {uri}", artifact.label),
+                    None => format!("Run: {run_id}. {}", artifact.label),
+                };
+                self.add_info_message("External agent artifact.".to_string(), Some(detail));
+            }
+            ThreadExternalAgentEvent::CloudStatus { state, message } => self.add_info_message(
+                format!("External agent cloud run {state:?}."),
+                message.or_else(|| Some(format!("Run: {run_id}"))),
+            ),
         }
     }
 
