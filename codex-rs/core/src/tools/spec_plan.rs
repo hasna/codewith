@@ -669,7 +669,13 @@ fn infinity_agent_policy_active(turn_context: &TurnContext) -> bool {
 /// dispatch registry. Host-affecting effects must be brokered externally through
 /// the Infinity remote-tool bridge. Keep this list minimal; adding a tool here
 /// asserts it cannot read the host filesystem, spawn host processes, or touch
-/// credentials. Covered by `infinity_agent_allowlist_excludes_host_access`.
+/// credentials.
+///
+/// MAINTENANCE INVARIANT: this allowlist is the authoritative security boundary
+/// for the infinity-agent policy. Any new host-capable tool is denied by default
+/// (it will simply not be on the list), but do not add a tool here without
+/// re-confirming it is host-safe. The `infinity_agent_allowlist_excludes_host_access`
+/// test guards representative host tool names; keep it in sync with new tools.
 const INFINITY_AGENT_TOOL_ALLOWLIST: &[&str] = &["update_plan", "rename_session"];
 
 /// Whether `tool_name` is permitted under the infinity-agent policy. Namespaced

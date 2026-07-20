@@ -537,6 +537,13 @@ impl ExecutorFileSystem for DirectFileSystem {
 /// the unsandboxed path too (where bwrap masking would not run). Codewith's own
 /// credential loading uses `std::fs` directly and never flows through here, so
 /// authentication keeps working while model-driven tool reads are blocked.
+///
+/// Structural limitation (not a model-reachable bypass under infinity-agent): the
+/// deny is path-based, so a pre-existing hardlink to a denied file placed at a
+/// non-denied path would not be caught by canonicalization (hardlinks have no
+/// resolvable target). Under infinity-agent the model has no tool that can create
+/// such a hardlink, so this is not exploitable; prefer denying the whole
+/// credential directory subtree (as done for auth_profiles) over individual files.
 fn enforce_read_not_denied(
     path: &AbsolutePathBuf,
     sandbox: Option<&FileSystemSandboxContext>,
