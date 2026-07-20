@@ -109,10 +109,16 @@ fn read_only_fs_errors_are_classified_for_tolerance() {
     use std::io::Error;
     use std::io::ErrorKind;
 
-    assert!(is_read_only_fs_error(&Error::from(ErrorKind::ReadOnlyFilesystem)));
-    assert!(is_read_only_fs_error(&Error::from(ErrorKind::PermissionDenied)));
+    assert!(is_read_only_fs_error(&Error::from(
+        ErrorKind::ReadOnlyFilesystem
+    )));
+    assert!(is_read_only_fs_error(&Error::from(
+        ErrorKind::PermissionDenied
+    )));
     assert!(!is_read_only_fs_error(&Error::from(ErrorKind::NotFound)));
-    assert!(!is_read_only_fs_error(&Error::from(ErrorKind::AlreadyExists)));
+    assert!(!is_read_only_fs_error(&Error::from(
+        ErrorKind::AlreadyExists
+    )));
 }
 
 #[test]

@@ -67,7 +67,10 @@ pub(crate) fn reasoning_levels(
     }
 }
 
-fn non_reasoning_model(display_name: &'static str, context_window: i64) -> KnownProviderModelMetadata {
+fn non_reasoning_model(
+    display_name: &'static str,
+    context_window: i64,
+) -> KnownProviderModelMetadata {
     KnownProviderModelMetadata::new(
         display_name,
         context_window,
