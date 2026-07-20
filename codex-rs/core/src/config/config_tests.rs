@@ -11936,3 +11936,79 @@ fn test_tui_notification_condition_rejects_unknown_value() {
         "unexpected error: {err}"
     );
 }
+
+/// `docs/config.md` is the canonical config reference. Keep the documented usage
+/// recovery defaults bound to the source-of-truth defaults resolved here so the
+/// docs cannot silently drift from the code.
+#[test]
+fn docs_document_usage_recovery_defaults() {
+    const CONFIG_DOC: &str = include_str!("../../../../docs/config.md");
+    const EXAMPLE_DOC: &str = include_str!("../../../../docs/example-config.md");
+
+    let usage_limit = UsageLimitConfig::default();
+    let self_heal = UsageSelfHealConfig::default();
+    let auto_switch = AuthProfileAutoSwitchConfig::default();
+
+    let documented_defaults = [
+        (
+            "auto_reset_enabled",
+            usage_limit.auto_reset_enabled.to_string(),
+        ),
+        ("max_retries", self_heal.max_retries.to_string()),
+        (
+            "initial_backoff_secs",
+            self_heal.initial_backoff_secs.to_string(),
+        ),
+        ("max_backoff_secs", self_heal.max_backoff_secs.to_string()),
+        (
+            "reset_retry_buffer_secs",
+            self_heal.reset_retry_buffer_secs.to_string(),
+        ),
+        (
+            "max_reset_retry_delay_secs",
+            self_heal.max_reset_retry_delay_secs.to_string(),
+        ),
+        ("on_5h_limit", auto_switch.on_5h_limit.to_string()),
+        ("on_weekly_limit", auto_switch.on_weekly_limit.to_string()),
+        (
+            "heartbeat_interval_secs",
+            auto_switch.heartbeat_interval_secs.to_string(),
+        ),
+        (
+            "heartbeat_freshness_secs",
+            auto_switch.heartbeat_freshness_secs.to_string(),
+        ),
+    ];
+
+    for (key, value) in documented_defaults {
+        let row = CONFIG_DOC
+            .lines()
+            .find(|line| line.contains(&format!("`{key}`")))
+            .unwrap_or_else(|| panic!("docs/config.md is missing a documented row for `{key}`"));
+        assert!(
+            row.contains(&format!("`{value}`")),
+            "docs/config.md must document `{key}` default `{value}`; found row: {row}"
+        );
+    }
+
+    for block in [
+        "[usage_limit]",
+        "[usage_self_heal]",
+        "[auth_profile_auto_switch]",
+    ] {
+        assert!(
+            CONFIG_DOC.contains(block),
+            "docs/config.md must document the `{block}` block"
+        );
+        assert!(
+            EXAMPLE_DOC.contains(block),
+            "docs/example-config.md must include the `{block}` block"
+        );
+    }
+
+    // Both auth-profile switch strategies must remain documented.
+    assert!(
+        CONFIG_DOC.contains("highest_available") && CONFIG_DOC.contains("ordered"),
+        "docs/config.md must document both auth_profile_auto_switch strategies"
+    );
+}
