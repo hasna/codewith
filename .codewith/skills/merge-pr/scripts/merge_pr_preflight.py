@@ -41,6 +41,18 @@ PENDING_CHECK_STATES = {
     "requested",
     "waiting",
 }
+# Preferred `gh pr checks --json` fields, richest first. Older or differently
+# built gh releases may reject some of these, so the collector feature-detects
+# the supported subset and falls back to the minimal portable set below.
+CHECK_JSON_FIELDS = ("name", "state", "bucket", "workflow", "startedAt", "completedAt", "link")
+CHECK_JSON_FIELDS_MINIMAL = ("name", "state", "bucket")
+# stderr fragments gh emits when a PR/branch legitimately has zero checks. These
+# are a real "no checks" signal, not a command failure.
+NO_CHECKS_STDERR_MARKERS = (
+    "no checks reported",
+    "no checks found",
+    "no commit statuses",
+)
 
 
 def utc_now() -> str:
@@ -137,6 +149,94 @@ def checks_decision(checks: list[dict[str, Any]]) -> tuple[str | None, list[str]
     return None, []
 
 
+def run_command(command: list[str]) -> tuple[int, str, str]:
+    """Run a command without raising, returning (returncode, stdout, stderr)."""
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return result.returncode, result.stdout or "", result.stderr or ""
+
+
+def _loads_or_none(text: str) -> Any:
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _split_fields(text: str) -> list[str]:
+    return [token for token in text.replace(",", " ").split() if token]
+
+
+def parse_available_fields(stderr: str) -> list[str]:
+    """Extract the field names gh lists after an 'Unknown JSON field' error."""
+    fields: list[str] = []
+    capturing = False
+    for line in stderr.splitlines():
+        lowered = line.strip().lower()
+        if lowered.startswith("available fields"):
+            capturing = True
+            if ":" in line:
+                fields.extend(_split_fields(line.split(":", 1)[1]))
+            continue
+        if capturing:
+            fields.extend(_split_fields(line))
+    return fields
+
+
+def collect_checks(
+    pr: int | None,
+    repo: str | None,
+    runner=run_command,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Read PR checks via `gh pr checks --json`, robust across gh versions.
+
+    Returns (checks, error). Rules:
+    - Valid JSON on stdout is used regardless of exit code, because some gh
+      versions signal failure/pending state with a non-zero exit while still
+      emitting the JSON body (JSON mode on gh >= 2.x exits 0).
+    - Requested fields are feature-detected: an "Unknown JSON field" error is
+      retried with the supported subset, then with the minimal portable set.
+    - A genuine "no checks reported" stderr yields ([], None).
+    - Any other command failure yields (None, error) so callers surface it
+      instead of masquerading as "no checks observed".
+    """
+    fields = list(CHECK_JSON_FIELDS)
+    tried_minimal = False
+    while True:
+        command = ["gh", "pr", "checks", str(pr), "--json", ",".join(fields)]
+        if repo:
+            command.extend(["--repo", repo])
+        code, out, err = runner(command)
+
+        data = _loads_or_none(out)
+        if isinstance(data, list):
+            return data, None
+        if data is not None:
+            return None, f"gh pr checks returned unexpected JSON output (exit {code})"
+
+        err_lowered = err.lower()
+        if "unknown json field" in err_lowered or "unknown field" in err_lowered:
+            available = parse_available_fields(err)
+            if available:
+                supported = [field for field in fields if field in available]
+                if supported and set(supported) != set(fields):
+                    fields = supported
+                    continue
+            if not tried_minimal and set(fields) != set(CHECK_JSON_FIELDS_MINIMAL):
+                fields = list(CHECK_JSON_FIELDS_MINIMAL)
+                tried_minimal = True
+                continue
+            return None, f"gh pr checks rejected requested JSON fields: {err.strip()}"
+
+        if any(marker in err_lowered for marker in NO_CHECKS_STDERR_MARKERS):
+            return [], None
+        if code == 0 and not out.strip():
+            return [], None
+        return None, f"gh pr checks failed (exit {code}): {err.strip() or 'no output'}"
+
+
 def artifact_decision(
     artifacts: list[dict[str, Any]],
     repo: str | None,
@@ -223,6 +323,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     fixture = load_json(args.fixture)
     pr_view = fixture.get("pr_view") if isinstance(fixture, dict) and "pr_view" in fixture else fixture
     checks = fixture.get("checks", []) if isinstance(fixture, dict) else []
+    checks_error: str | None = None
     artifacts = []
     for artifact_path in args.artifact:
         artifacts.append(load_json(artifact_path))
@@ -246,21 +347,10 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         if args.repo:
             command.extend(["--repo", args.repo])
         pr_view = run_json(command)
-        checks_command = [
-            "gh",
-            "pr",
-            "checks",
-            str(args.pr),
-            "--json",
-            "name,state,bucket,workflow,startedAt,completedAt,link",
-        ]
-        if args.repo:
-            checks_command.extend(["--repo", args.repo])
-        try:
-            checks = run_json(checks_command)
-        except subprocess.CalledProcessError as error:
+        checks, checks_error = collect_checks(args.pr, args.repo)
+        if checks_error is not None:
             checks = []
-            print(f"warning: unable to read checks: {error.stderr.strip()}", file=sys.stderr)
+            print(f"warning: unable to read checks: {checks_error}", file=sys.stderr)
 
     repo = normalize_repo(args.repo, pr_view)
     pr_number = pr_view.get("number") or args.pr
@@ -283,7 +373,10 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     review_verdict, review_blockers, review_warnings = review_decision(
         pr_view.get("reviewDecision"), pr_view.get("reviews") or []
     )
-    check_verdict, check_notes = checks_decision(checks or [])
+    if checks_error is not None:
+        check_verdict, check_notes = None, []
+    else:
+        check_verdict, check_notes = checks_decision(checks or [])
     artifact_blockers, artifact_warnings = artifact_decision(
         artifacts,
         repo,
@@ -296,6 +389,8 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     blocking_reasons.extend(review_blockers)
     warnings.extend(merge_state_warnings)
     warnings.extend(review_warnings)
+    if checks_error is not None:
+        blocking_reasons.append("checks_command_error")
     if check_verdict == "pending":
         warnings.extend(check_notes)
     else:
@@ -338,6 +433,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "review_decision": pr_view.get("reviewDecision"),
         },
         "checks": checks or [],
+        "checks_error": checks_error,
         "reviews": pr_view.get("reviews") or [],
         "reviewer_artifacts": artifacts,
         "active_goal": None,
