@@ -48,6 +48,28 @@ Keep shared helpers under subdirectories such as `tests/common/mod.rs`; top-leve
 
 For new feature work, create the standalone integration binary before the suite gets slow. Keep the aggregate `tests/all.rs` as the broad compatibility run, but do not make it the only way to exercise a frequently edited API area.
 
+## Tiered Validation (PR-drain lanes)
+
+For PR-drain and multi-lane validation, use `just validate <tier>` instead of
+hand-picking crates. It runs the cheapest sufficient tier on a persistent
+per-lane target dir and auto-scopes to the crates that own the changed files:
+
+```bash
+just validate fmt                 # T0 format gate
+just validate check               # T1 compile boundary, changed crates only
+just validate test                # T2 scoped nextest, changed crates only
+just validate test --rdeps        # T2 + workspace crates that depend on them
+just validate full                # T3 whole-workspace gate
+just changed-crates [--rdeps]     # preview the resolved -p selection
+```
+
+Scoping to changed crates is the main wall-time lever: a one-crate change stops
+paying to compile and link every other crate's aggregate test binary. Scoping
+auto-escalates to the whole workspace when a workspace-root manifest/config
+changes, so nothing is silently under-validated. Each lane gets its own
+`CARGO_TARGET_DIR` (override with `--target-dir` or `CARGO_TARGET_DIR`) so
+parallel lanes stay warm and never contend on one target lock.
+
 ## CI And Release Gates
 
 - Use `just test-fast` and `just check-fast` as the local inner loop.
