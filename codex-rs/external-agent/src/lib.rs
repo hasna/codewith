@@ -16,6 +16,7 @@ mod cursor_models;
 pub(crate) mod cursor_sdk;
 mod platform_sandbox;
 mod runtimes;
+mod safety;
 #[cfg(windows)]
 mod windows_cmd_shim;
 
@@ -29,6 +30,7 @@ pub use cursor_models::*;
 pub use cursor_sdk::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
+pub use safety::*;
 #[cfg(windows)]
 pub use windows_cmd_shim::WindowsBatchLaunchError;
 #[cfg(windows)]
