@@ -73,6 +73,10 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::PullRequestListResponse;
+use codex_app_server_protocol::PullRequestOverviewResponse;
+use codex_app_server_protocol::PullRequestQueryState;
+use codex_app_server_protocol::PullRequestReadResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
@@ -102,6 +106,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// In-band message returned for `pullRequest/*` queries until the backing
+/// `PullRequestRequestProcessor` is implemented (todos task 1ca04ab4).
+const PULL_REQUEST_UNAVAILABLE_MESSAGE: &str = "pull request data source is not available yet";
 
 #[derive(Clone)]
 struct ExternalAuthRefreshBridge {
@@ -1536,6 +1544,36 @@ impl MessageProcessor {
                     .worktree_merge_candidate_dismiss(params)
                     .await
             }
+            ClientRequest::PullRequestOverview { .. } => {
+                // The pull-request data source (PullRequestRequestProcessor) is
+                // not wired up yet, so report the outcome in-band rather than
+                // failing the JSON-RPC request.
+                Ok(Some(
+                    PullRequestOverviewResponse {
+                        query_state: PullRequestQueryState::Unavailable,
+                        overview: None,
+                        message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                    }
+                    .into(),
+                ))
+            }
+            ClientRequest::PullRequestList { .. } => Ok(Some(
+                PullRequestListResponse {
+                    query_state: PullRequestQueryState::Unavailable,
+                    data: Vec::new(),
+                    next_cursor: None,
+                    message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                }
+                .into(),
+            )),
+            ClientRequest::PullRequestRead { .. } => Ok(Some(
+                PullRequestReadResponse {
+                    query_state: PullRequestQueryState::Unavailable,
+                    pull_request: None,
+                    message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                }
+                .into(),
+            )),
             ClientRequest::MachineRegistryList { params, .. } => {
                 self.machine_registry_processor.list(params).await
             }
