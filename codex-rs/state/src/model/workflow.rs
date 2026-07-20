@@ -333,6 +333,9 @@ pub struct WorkflowRunStep {
     pub reason_code: Option<String>,
     pub parallel_group: Option<String>,
     pub approval_gate: Option<String>,
+    /// Explicit user approval decision for a gated step: `None` when the step has
+    /// no approval gate, otherwise `pending`, `approved`, or `rejected`.
+    pub approval_state: Option<String>,
     pub model_route_json: Option<Value>,
     pub workspace_json: Option<Value>,
     pub background_agent_run_id: Option<String>,
@@ -524,6 +527,7 @@ pub(crate) struct WorkflowRunStepRow {
     pub reason_code: Option<String>,
     pub parallel_group: Option<String>,
     pub approval_gate: Option<String>,
+    pub approval_state: Option<String>,
     pub model_route_json: Option<String>,
     pub workspace_json: Option<String>,
     pub background_agent_run_id: Option<String>,
@@ -550,6 +554,7 @@ impl WorkflowRunStepRow {
             reason_code: row.try_get("reason_code")?,
             parallel_group: row.try_get("parallel_group")?,
             approval_gate: row.try_get("approval_gate")?,
+            approval_state: row.try_get("approval_state")?,
             model_route_json: row.try_get("model_route_json")?,
             workspace_json: row.try_get("workspace_json")?,
             background_agent_run_id: row.try_get("background_agent_run_id")?,
@@ -580,6 +585,7 @@ impl TryFrom<WorkflowRunStepRow> for WorkflowRunStep {
             reason_code: row.reason_code,
             parallel_group: row.parallel_group,
             approval_gate: row.approval_gate,
+            approval_state: row.approval_state,
             model_route_json: row
                 .model_route_json
                 .map(|value| parse_workflow_json(value, "model_route_json"))
