@@ -592,6 +592,50 @@ impl GoalToolExecutor {
         )
     }
 
+    /// Attempt to resume a deferred goal-plan node for this thread when the
+    /// current goal is no longer resumable (for example it completed or was
+    /// cancelled) but the active plan still holds a deferred node. This lets an
+    /// explicit user resume revive a node that was set aside earlier, so the
+    /// plan can continue to its downstream dependents without discarding plan
+    /// history. Returns `Ok(None)` when there is no resumable deferred node.
+    async fn try_resume_deferred_plan_node(
+        &self,
+        invocation: &ToolCall,
+    ) -> Result<Option<Box<dyn ToolOutput>>, FunctionCallError> {
+        let Some(outcome) = self
+            .state_db
+            .thread_goals()
+            .resume_deferred_goal_plan_node(self.thread_id, None)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to resume deferred goal plan node: {err}"
+                ))
+            })?
+        else {
+            return Ok(None);
+        };
+        self.event_emitter.thread_goal_plan_updated(
+            format!("{}-goal-plan", invocation.call_id),
+            Some(invocation.turn_id.clone()),
+            outcome.snapshot.clone(),
+        );
+        let activated_goal = self
+            .apply_activated_goal_from_plan(invocation, outcome.activated_goal)
+            .await?;
+        let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
+            outcome.snapshot,
+            self.thread_id,
+        )];
+        let response = goal_response_with_plan(
+            activated_goal.clone(),
+            activated_goal,
+            goal_plans,
+            CompletionBudgetReport::Omit,
+        )?;
+        Ok(Some(response))
+    }
+
     async fn handle_resume(
         &self,
         invocation: ToolCall,
@@ -635,12 +679,18 @@ impl GoalToolExecutor {
                 ));
             }
             codex_state::ThreadGoalStatus::Complete => {
+                if let Some(response) = self.try_resume_deferred_plan_node(&invocation).await? {
+                    return Ok(response);
+                }
                 return Err(FunctionCallError::RespondToModel(
                     "cannot resume a completed goal; create a new goal only when explicitly requested"
                         .to_string(),
                 ));
             }
             codex_state::ThreadGoalStatus::Cancelled => {
+                if let Some(response) = self.try_resume_deferred_plan_node(&invocation).await? {
+                    return Ok(response);
+                }
                 return Err(FunctionCallError::RespondToModel(
                     "cannot resume a cancelled goal; create a new goal only when explicitly requested"
                         .to_string(),

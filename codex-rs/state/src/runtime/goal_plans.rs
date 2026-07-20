@@ -764,6 +764,39 @@ WHERE plan_id = ?
             activated_goal: Some(activated_goal),
         }))
     }
+
+    /// Resume a goal-plan node that was previously deferred, re-activating it as
+    /// the thread's current goal without disturbing the rest of the plan.
+    ///
+    /// This is the escape hatch for a plan that has stalled after a deferral: an
+    /// independent node can complete while an earlier node stays deferred, which
+    /// leaves the plan with no active or ready node even though a resumable
+    /// deferred node (and its downstream dependents) remain. When `node_id` is
+    /// provided the matching deferred node is resumed; otherwise the
+    /// highest-priority deferred node in the thread's active plan is selected.
+    /// Returns `Ok(None)` when no matching resumable deferred node exists.
+    pub async fn resume_deferred_goal_plan_node(
+        &self,
+        thread_id: ThreadId,
+        node_id: Option<&str>,
+    ) -> anyhow::Result<Option<ThreadGoalPlanAdvanceOutcome>> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let Some((plan_id, target_node_id)) =
+            resumable_deferred_node_in_tx(&mut tx, thread_id, node_id).await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let activated_goal =
+            activate_node_in_tx(&mut tx, thread_id, target_node_id.as_str(), now_ms).await?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, &plan_id).await?;
+        tx.commit().await?;
+        Ok(Some(ThreadGoalPlanAdvanceOutcome {
+            snapshot,
+            activated_goal: Some(activated_goal),
+        }))
+    }
 }
 
 async fn activate_next_ready_node_in_tx(
@@ -1414,7 +1447,7 @@ SELECT
 	FROM thread_goal_plan_nodes
 WHERE node_id = ?
 	  AND assigned_thread_id = ?
-	  AND status = 'pending'
+	  AND status IN ('pending', 'deferred')
 	        "#,
     )
     .bind(node_id)
@@ -1502,7 +1535,7 @@ SET
     time_used_seconds = 0,
     updated_at_ms = ?
 WHERE node_id = ?
-  AND status = 'pending'
+  AND status IN ('pending', 'deferred')
         "#,
     )
     .bind(crate::ThreadGoalPlanNodeStatus::from(status).as_str())
@@ -1592,7 +1625,7 @@ JOIN thread_goal_plans plan
   ON plan.plan_id = candidate.plan_id
 WHERE candidate.assigned_thread_id = ?
   AND candidate.node_id = ?
-  AND candidate.status = 'pending'
+  AND candidate.status IN ('pending', 'deferred')
   AND plan.status = 'active'
   AND (
       plan.max_tokens IS NULL
@@ -1626,6 +1659,59 @@ WHERE candidate.assigned_thread_id = ?
     .await?;
     row.map(|row| row.try_get("plan_id").map_err(anyhow::Error::from))
         .transpose()
+}
+
+/// Locate a deferred goal-plan node that is eligible to be resumed for the
+/// thread. When `node_id` is supplied only that node is considered; otherwise
+/// the highest-priority (then earliest) deferred node in the thread's active
+/// plan is selected. Returns `(plan_id, node_id)` when a match is found.
+async fn resumable_deferred_node_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    thread_id: ThreadId,
+    node_id: Option<&str>,
+) -> anyhow::Result<Option<(String, String)>> {
+    let row = if let Some(node_id) = node_id {
+        sqlx::query(
+            r#"
+SELECT candidate.plan_id, candidate.node_id
+FROM thread_goal_plan_nodes candidate
+JOIN thread_goal_plans plan
+  ON plan.plan_id = candidate.plan_id
+WHERE candidate.assigned_thread_id = ?
+  AND candidate.node_id = ?
+  AND candidate.status = 'deferred'
+  AND plan.status = 'active'
+LIMIT 1
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(node_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+SELECT candidate.plan_id, candidate.node_id
+FROM thread_goal_plan_nodes candidate
+JOIN thread_goal_plans plan
+  ON plan.plan_id = candidate.plan_id
+WHERE candidate.assigned_thread_id = ?
+  AND candidate.status = 'deferred'
+  AND plan.status = 'active'
+ORDER BY candidate.priority DESC, candidate.sequence ASC, candidate.node_id ASC
+LIMIT 1
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut **tx)
+        .await?
+    };
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let plan_id: String = row.try_get("plan_id")?;
+    let node_id: String = row.try_get("node_id")?;
+    Ok(Some((plan_id, node_id)))
 }
 
 async fn total_plan_tokens_in_tx(
@@ -4495,5 +4581,488 @@ mod tests {
                 .map(|node| node.status)
                 .collect::<Vec<_>>()
         );
+    }
+
+    async fn defer_current_goal_and_advance(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+        auto_execute: crate::ThreadGoalPlanAutoExecute,
+    ) -> ThreadGoalPlanAdvanceOutcome {
+        let current = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("current goal should read")
+            .expect("current goal should exist");
+        let deferred = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: None,
+                    status: Some(crate::ThreadGoalStatus::Deferred),
+                    token_budget: None,
+                    expected_goal_id: Some(current.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("goal should update")
+            .expect("goal should exist");
+        runtime
+            .thread_goals()
+            .defer_goal_plan_node_and_maybe_advance(thread_id, &deferred, auto_execute)
+            .await
+            .expect("defer should advance")
+            .expect("defer outcome should exist")
+    }
+
+    async fn complete_current_goal_and_advance(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+        auto_execute: crate::ThreadGoalPlanAutoExecute,
+    ) -> ThreadGoalPlanAdvanceOutcome {
+        let current = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("current goal should read")
+            .expect("current goal should exist");
+        let completed = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    title: None,
+                    status: Some(crate::ThreadGoalStatus::Complete),
+                    token_budget: None,
+                    expected_goal_id: Some(current.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("goal should update")
+            .expect("goal should exist");
+        runtime
+            .thread_goals()
+            .complete_goal_plan_node_and_maybe_advance(thread_id, &completed, auto_execute)
+            .await
+            .expect("complete should advance")
+            .expect("complete outcome should exist")
+    }
+
+    fn node_statuses(
+        outcome: &ThreadGoalPlanAdvanceOutcome,
+    ) -> Vec<crate::ThreadGoalPlanNodeStatus> {
+        outcome
+            .snapshot
+            .nodes
+            .iter()
+            .map(|node| node.status)
+            .collect::<Vec<_>>()
+    }
+
+    #[tokio::test]
+    async fn resume_deferred_goal_plan_node_reactivates_after_independent_node_completes() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                nodes: vec![
+                    goal_node("preservation", "Preserve prior work.", &[]),
+                    goal_node("consolidate", "Consolidate independent results.", &[]),
+                    goal_node("downstream", "Finish downstream work.", &["preservation"]),
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+
+        let preservation = created
+            .activated_goal
+            .expect("first ready node should activate");
+        assert_eq!("Preserve prior work.", preservation.objective);
+
+        // Defer preservation; only the independent consolidate node is ready.
+        let advanced = defer_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(
+            "Consolidate independent results.",
+            advanced
+                .activated_goal
+                .expect("independent node should activate")
+                .objective
+        );
+
+        // Complete consolidate; downstream still depends on the deferred node so
+        // nothing new activates and the plan stalls.
+        let stalled = complete_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(None, stalled.activated_goal);
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Deferred,
+                crate::ThreadGoalPlanNodeStatus::Complete,
+                crate::ThreadGoalPlanNodeStatus::Pending,
+            ],
+            node_statuses(&stalled)
+        );
+
+        // Resume the deferred node with no explicit id; it is auto-selected.
+        let resumed = runtime
+            .thread_goals()
+            .resume_deferred_goal_plan_node(thread_id, None)
+            .await
+            .expect("resume should succeed")
+            .expect("deferred node should resume");
+        assert_eq!(
+            "Preserve prior work.",
+            resumed
+                .activated_goal
+                .as_ref()
+                .expect("deferred node should reactivate")
+                .objective
+        );
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Active,
+                crate::ThreadGoalPlanNodeStatus::Complete,
+                crate::ThreadGoalPlanNodeStatus::Pending,
+            ],
+            node_statuses(&resumed)
+        );
+        let current = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("goal should read")
+            .expect("goal should exist");
+        assert_eq!(crate::ThreadGoalStatus::Active, current.status);
+        assert_eq!("Preserve prior work.", current.objective);
+
+        // Completing the resumed node satisfies the downstream dependency.
+        let after = complete_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(
+            "Finish downstream work.",
+            after
+                .activated_goal
+                .as_ref()
+                .expect("downstream node should activate")
+                .objective
+        );
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Complete,
+                crate::ThreadGoalPlanNodeStatus::Complete,
+                crate::ThreadGoalPlanNodeStatus::Active,
+            ],
+            node_statuses(&after)
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_deferred_goal_plan_node_selects_the_requested_node() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                nodes: vec![
+                    goal_node("first", "Work the first goal.", &[]),
+                    goal_node("second", "Work the second goal.", &[]),
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+        let second_node_id = created.snapshot.nodes[1].node_id.clone();
+        assert_eq!(
+            "Work the first goal.",
+            created
+                .activated_goal
+                .expect("first node should activate")
+                .objective
+        );
+
+        // Defer both nodes so the plan stalls with two resumable deferred nodes.
+        let advanced = defer_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(
+            "Work the second goal.",
+            advanced
+                .activated_goal
+                .expect("second node should activate")
+                .objective
+        );
+        let stalled = defer_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(None, stalled.activated_goal);
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Deferred,
+                crate::ThreadGoalPlanNodeStatus::Deferred,
+            ],
+            node_statuses(&stalled)
+        );
+
+        // Explicitly resume the second deferred node; the first stays deferred.
+        let resumed = runtime
+            .thread_goals()
+            .resume_deferred_goal_plan_node(thread_id, Some(second_node_id.as_str()))
+            .await
+            .expect("resume should succeed")
+            .expect("requested node should resume");
+        assert_eq!(
+            "Work the second goal.",
+            resumed
+                .activated_goal
+                .as_ref()
+                .expect("requested node should reactivate")
+                .objective
+        );
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Deferred,
+                crate::ThreadGoalPlanNodeStatus::Active,
+            ],
+            node_statuses(&resumed)
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_deferred_goal_plan_node_returns_none_without_deferred_node() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                nodes: vec![goal_node("only", "Do the only goal.", &[])],
+            })
+            .await
+            .expect("goal plan should be created");
+        let active_node_id = created.snapshot.nodes[0].node_id.clone();
+        assert!(created.activated_goal.is_some());
+
+        // No deferred node exists, so an auto-selected resume is a no-op.
+        assert!(
+            runtime
+                .thread_goals()
+                .resume_deferred_goal_plan_node(thread_id, None)
+                .await
+                .expect("resume call should succeed")
+                .is_none()
+        );
+        // An explicit request for a non-deferred node is also a no-op.
+        assert!(
+            runtime
+                .thread_goals()
+                .resume_deferred_goal_plan_node(thread_id, Some(active_node_id.as_str()))
+                .await
+                .expect("resume call should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_thread_goal_plan_node_can_reactivate_deferred_node() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                nodes: vec![
+                    goal_node("preservation", "Preserve prior work.", &[]),
+                    goal_node("consolidate", "Consolidate independent results.", &[]),
+                    goal_node("downstream", "Finish downstream work.", &["preservation"]),
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+        assert!(created.activated_goal.is_some());
+
+        defer_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        let stalled = complete_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        let deferred_node_id = stalled.snapshot.nodes[0].node_id.clone();
+
+        // Explicit node activation now revives the deferred node directly.
+        let outcome = runtime
+            .thread_goals()
+            .activate_thread_goal_plan_node(thread_id, deferred_node_id.as_str())
+            .await
+            .expect("activation should succeed")
+            .expect("deferred node should be activatable");
+        assert_eq!(
+            "Preserve prior work.",
+            outcome
+                .activated_goal
+                .expect("deferred node should activate")
+                .objective
+        );
+        assert_eq!(
+            crate::ThreadGoalPlanNodeStatus::Active,
+            outcome.snapshot.nodes[0].status
+        );
+    }
+
+    #[tokio::test]
+    async fn max_node_goal_plan_continues_after_deferred_resume() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        // A full 12-node plan: an independently deferrable root, one independent
+        // node, and a ten-node chain that all ultimately depends on the root.
+        let mut nodes = vec![
+            goal_node("root", "Root node work.", &[]),
+            goal_node("independent", "Independent node work.", &[]),
+        ];
+        let mut previous = String::from("root");
+        for index in 2..12 {
+            let key = format!("chain_{index}");
+            nodes.push(ThreadGoalPlanNodeCreateParams {
+                key: key.clone(),
+                objective: format!("Chain node {index} work."),
+                assigned_thread_id: None,
+                title: None,
+                priority: 0,
+                token_budget: None,
+                depends_on: vec![previous.clone()],
+            });
+            previous = key;
+        }
+        assert_eq!(12, nodes.len());
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::AiDirected,
+                max_tokens: None,
+                nodes,
+            })
+            .await
+            .expect("goal plan should be created");
+        assert_eq!(
+            "Root node work.",
+            created
+                .activated_goal
+                .expect("root node should activate")
+                .objective
+        );
+
+        // Defer the root, complete the independent node, then stall.
+        let advanced = defer_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(
+            "Independent node work.",
+            advanced
+                .activated_goal
+                .expect("independent node should activate")
+                .objective
+        );
+        let stalled = complete_current_goal_and_advance(
+            runtime.as_ref(),
+            thread_id,
+            crate::ThreadGoalPlanAutoExecute::AiDirected,
+        )
+        .await;
+        assert_eq!(None, stalled.activated_goal);
+
+        // Resume the deferred root without appending nodes to the maxed-out plan.
+        let resumed = runtime
+            .thread_goals()
+            .resume_deferred_goal_plan_node(thread_id, None)
+            .await
+            .expect("resume should succeed")
+            .expect("root node should resume");
+        assert_eq!(
+            "Root node work.",
+            resumed
+                .activated_goal
+                .expect("root node should reactivate")
+                .objective
+        );
+
+        // Drain the remaining chain; each completion activates the next node.
+        let mut guard = 0;
+        loop {
+            guard += 1;
+            assert!(guard < 32, "plan should drain without looping forever");
+            let outcome = complete_current_goal_and_advance(
+                runtime.as_ref(),
+                thread_id,
+                crate::ThreadGoalPlanAutoExecute::AiDirected,
+            )
+            .await;
+            if outcome.activated_goal.is_none() {
+                assert_eq!(
+                    crate::ThreadGoalPlanStatus::Complete,
+                    outcome.snapshot.plan.status
+                );
+                assert!(
+                    outcome
+                        .snapshot
+                        .nodes
+                        .iter()
+                        .all(|node| node.status == crate::ThreadGoalPlanNodeStatus::Complete),
+                    "every node should be complete once the plan drains"
+                );
+                break;
+            }
+        }
     }
 }
