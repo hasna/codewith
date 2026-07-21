@@ -3102,6 +3102,56 @@ async fn status_line_goal_title_updates_and_clears_with_goal_state() {
 }
 
 #[tokio::test]
+async fn active_agent_status_line_renders_label_and_omits_when_absent() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["active-agent".to_string()]);
+
+    // Multi-agent session: the cached active-agent label surfaces as the segment.
+    chat.set_active_agent_label(Some("Main [default]".to_string()));
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ActiveAgent),
+        Some("Main [default]".to_string())
+    );
+    assert_eq!(status_line_text(&chat), Some("Main [default]".to_string()));
+
+    // Single-agent session: no label, so the segment (and the whole line) is omitted.
+    chat.set_active_agent_label(None);
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ActiveAgent),
+        None
+    );
+    assert_eq!(status_line_text(&chat), None);
+}
+
+#[tokio::test]
+async fn active_agent_status_line_omission_leaves_no_stray_separator() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["current-dir".to_string(), "active-agent".to_string()]);
+    chat.refresh_status_line();
+
+    // active_agent_label defaults to None (single-agent), so only current-dir renders: the
+    // omitted active-agent segment must not leave a dangling " · " separator artifact.
+    let without_label =
+        status_line_text(&chat).expect("current-dir keeps the status line non-empty");
+    assert!(
+        !without_label.contains("Main [default]"),
+        "unexpected active-agent label: {without_label:?}"
+    );
+    assert!(
+        !without_label.contains(" · "),
+        "omitted active-agent segment left a separator artifact: {without_label:?}"
+    );
+
+    // With a label present, both segments render joined by the standard separator.
+    chat.set_active_agent_label(Some("Main [default]".to_string()));
+    let with_label = status_line_text(&chat).expect("status line present");
+    assert!(
+        with_label.contains(" · Main [default]"),
+        "expected joined active-agent segment: {with_label:?}"
+    );
+}
+
+#[tokio::test]
 async fn status_line_run_state_maps_deterministic_task_states() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["run-state".to_string()]);

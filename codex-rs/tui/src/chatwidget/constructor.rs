@@ -262,6 +262,7 @@ impl ChatWidget {
             current_goal_status_indicator: None,
             current_goal_status: None,
             current_goal_plan: None,
+            active_agent_label: None,
             external_editor_state: ExternalEditorState::Closed,
             realtime_conversation: RealtimeConversationUiState::default(),
             last_rendered_user_message_display: None,

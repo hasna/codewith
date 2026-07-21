@@ -110,12 +110,19 @@ impl ChatWidget {
         self.bottom_pane.set_status_line_hyperlink(url);
     }
 
-    /// Forwards the contextual active-agent label into the bottom-pane footer pipeline.
+    /// Caches the contextual active-agent label and refreshes the status surfaces.
     ///
-    /// `ChatWidget` stays a pass-through here so `App` remains the owner of "which thread is the
-    /// user actually looking at?" and the footer stack remains a pure renderer of that decision.
+    /// `App` remains the owner of "which thread is the user actually looking at?" and pushes the
+    /// derived label here. The value feeds the toggleable `active-agent` status-line segment via
+    /// [`Self::status_line_value_for_item`]; `None` (single-agent sessions) omits the segment. We
+    /// only recompute the status line when the label actually changes to avoid redundant redraws
+    /// during thread transitions where `App` may recompute the label several times.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
-        self.bottom_pane.set_active_agent_label(active_agent_label);
+        if self.active_agent_label == active_agent_label {
+            return;
+        }
+        self.active_agent_label = active_agent_label;
+        self.refresh_status_surfaces();
     }
 
     /// Recomputes footer status-line content from config and current runtime state.

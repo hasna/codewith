@@ -1697,16 +1697,6 @@ impl BottomPane {
         }
     }
 
-    /// Updates the contextual footer label and requests a redraw only when it changed.
-    ///
-    /// This keeps the footer plumbing cheap during thread transitions where `App` may recompute
-    /// the label several times while the visible thread settles.
-    pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
-        if self.composer.set_active_agent_label(active_agent_label) {
-            self.request_redraw();
-        }
-    }
-
     pub(crate) fn set_side_conversation_context_label(&mut self, label: Option<String>) {
         if self.composer.set_side_conversation_context_label(label) {
             self.request_redraw();

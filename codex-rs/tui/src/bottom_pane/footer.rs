@@ -81,17 +81,12 @@ pub(crate) struct FooterProps {
     pub(crate) status_line_value: Option<Line<'static>>,
     pub(crate) status_line_enabled: bool,
     pub(crate) key_hints: FooterKeyHints,
-    /// Active thread label shown when the footer is rendering contextual information instead of an
-    /// instructional hint.
-    ///
-    /// When both this label and the configured status line are available, they are rendered on the
-    /// same row separated by ` · `.
-    pub(crate) active_agent_label: Option<String>,
     /// Goal-pursuit status appended inline to the passive status-line flow.
     ///
     /// This is intentionally not a configurable `/statusline` item: whenever a goal status exists
-    /// it renders unconditionally, appended after the configured items and the active agent label
-    /// with a ` · ` separator, so it can never be toggled off from the `/statusline` picker.
+    /// it renders unconditionally, appended after the configured status-line items (including the
+    /// active-agent segment) with a ` · ` separator, so it can never be toggled off from the
+    /// `/statusline` picker.
     pub(crate) goal_status_indicator: Option<GoalStatusIndicator>,
 }
 
@@ -825,9 +820,10 @@ fn footer_from_props_lines(
 
 /// Returns the contextual footer row when the footer is not busy showing an instructional hint.
 ///
-/// The returned line may contain the configured status line, the currently viewed agent label, or
-/// both combined. Active instructional states such as quit reminders, shortcut overlays, and queue
-/// prompts deliberately return `None` so those call-to-action hints stay visible.
+/// The returned line contains the configured status line (which now includes the active-agent
+/// segment when the `active-agent` item is enabled). Active instructional states such as quit
+/// reminders, shortcut overlays, and queue prompts deliberately return `None` so those
+/// call-to-action hints stay visible.
 pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
     if !shows_passive_footer_line(props) {
         return None;
@@ -838,15 +834,6 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
     } else {
         None
     };
-
-    if let Some(active_agent_label) = props.active_agent_label.as_ref() {
-        if let Some(existing) = line.as_mut() {
-            existing.spans.push(" · ".dim());
-            existing.spans.push(active_agent_label.clone().dim());
-        } else {
-            line = Some(Line::from(active_agent_label.clone()).dim());
-        }
-    }
 
     // The goal-pursuit indicator is not a configurable `/statusline` item: append it last so it
     // renders one-after-another in the inline ` · ` flow whenever a goal status exists, preserving
@@ -1873,7 +1860,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1895,7 +1881,6 @@ mod tests {
                     insert_newline: Some(key_hint::shift(KeyCode::Enter)),
                     ..FooterKeyHints::default_bindings()
                 },
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1914,7 +1899,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1933,7 +1917,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1952,7 +1935,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1971,7 +1953,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -1990,7 +1971,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -2009,7 +1989,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -2028,7 +2007,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
             Some(72),
@@ -2049,7 +2027,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
             /*percent*/ None,
@@ -2070,7 +2047,6 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
                 goal_status_indicator: None,
             },
         );
@@ -2087,7 +2063,6 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2117,7 +2092,6 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2140,7 +2114,6 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2158,7 +2131,6 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2176,7 +2148,6 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2194,7 +2165,6 @@ mod tests {
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2226,7 +2196,6 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2250,7 +2219,6 @@ mod tests {
             status_line_value: None,
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2277,7 +2245,6 @@ mod tests {
             )),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2309,7 +2276,6 @@ mod tests {
             ])),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2343,7 +2309,6 @@ mod tests {
             ])),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
         let goal_status = GoalStatusIndicator::Complete {
@@ -2357,42 +2322,6 @@ mod tests {
             Some(&goal_status),
             context_window_line(Some(50), /*used_tokens*/ None),
         );
-
-        let props = FooterProps {
-            mode: FooterMode::ComposerEmpty,
-            esc_backtrack_hint: false,
-            use_shift_enter_hint: false,
-            is_task_running: false,
-            queue_submissions: false,
-            collaboration_modes_enabled: false,
-            is_wsl: false,
-            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
-            status_line_value: None,
-            status_line_enabled: false,
-            key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: Some("Robie [explorer]".to_string()),
-            goal_status_indicator: None,
-        };
-
-        snapshot_footer("footer_active_agent_label", props);
-
-        let props = FooterProps {
-            mode: FooterMode::ComposerEmpty,
-            esc_backtrack_hint: false,
-            use_shift_enter_hint: false,
-            is_task_running: false,
-            queue_submissions: false,
-            collaboration_modes_enabled: false,
-            is_wsl: false,
-            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
-            status_line_value: Some(Line::from("Status line content".to_string())),
-            status_line_enabled: true,
-            key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: Some("Robie [explorer]".to_string()),
-            goal_status_indicator: None,
-        };
-
-        snapshot_footer("footer_status_line_with_active_agent_label", props);
     }
 
     #[test]
@@ -2483,7 +2412,6 @@ mod tests {
             )),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: None,
         };
 
@@ -2508,11 +2436,11 @@ mod tests {
         );
     }
 
-    /// Always-on edge: even when the configurable status line is empty/disabled and there is no
-    /// active-agent label, a present goal status must still render inline via the standard footer
-    /// flow (the `passive_footer_status_line` short-circuit in `footer_from_props_lines`), mirroring
-    /// how `active_agent_label` renders. This guards the "renders whenever a goal status exists"
-    /// contract documented on `FooterProps::goal_status_indicator`.
+    /// Always-on edge: even when the configurable status line is empty/disabled, a present goal
+    /// status must still render inline via the standard footer flow (the
+    /// `passive_footer_status_line` short-circuit in `footer_from_props_lines`). This guards the
+    /// "renders whenever a goal status exists" contract documented on
+    /// `FooterProps::goal_status_indicator`.
     #[test]
     fn footer_renders_goal_inline_when_status_line_disabled() {
         let props = FooterProps {
@@ -2527,7 +2455,6 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
             goal_status_indicator: Some(GoalStatusIndicator::Complete {
                 usage: Some("10h 12m".to_string()),
             }),
