@@ -867,6 +867,7 @@ impl From<ChatCompletionUsage> for TokenUsage {
                 .prompt_tokens_details
                 .map(|details| details.cached_tokens)
                 .unwrap_or(0),
+            cache_write_input_tokens: 0,
             output_tokens: value.completion_tokens,
             reasoning_output_tokens: value
                 .completion_tokens_details

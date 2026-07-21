@@ -1,27 +1,5 @@
 {
   "$defs": {
-    "ThreadTokenUsage": {
-      "properties": {
-        "last": {
-          "$ref": "#/$defs/TokenUsageBreakdown"
-        },
-        "modelContextWindow": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "total": {
-          "$ref": "#/$defs/TokenUsageBreakdown"
-        }
-      },
-      "required": [
-        "total",
-        "last"
-      ],
-      "type": "object"
-    },
     "TokenUsageBreakdown": {
       "properties": {
         "cacheWriteInputTokens": {
@@ -61,22 +39,33 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
   "properties": {
+    "responseId": {
+      "type": "string"
+    },
     "threadId": {
       "type": "string"
     },
-    "tokenUsage": {
-      "$ref": "#/$defs/ThreadTokenUsage"
-    },
     "turnId": {
       "type": "string"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TokenUsageBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
     "threadId",
     "turnId",
-    "tokenUsage"
+    "responseId"
   ],
-  "title": "ThreadTokenUsageUpdatedNotification",
+  "title": "RawResponseCompletedNotification",
   "type": "object"
 }

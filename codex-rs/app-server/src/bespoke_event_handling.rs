@@ -46,6 +46,7 @@ use codex_app_server_protocol::NetworkPolicyAmendment as V2NetworkPolicyAmendmen
 use codex_app_server_protocol::NetworkPolicyRuleAction as V2NetworkPolicyRuleAction;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
+use codex_app_server_protocol::RawResponseCompletedNotification;
 use codex_app_server_protocol::RawResponseItemCompletedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
@@ -1418,6 +1419,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &outgoing,
             )
             .await;
+        }
+        EventMsg::RawResponseCompleted(raw_response_completed_event) => {
+            let notification = RawResponseCompletedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id,
+                response_id: raw_response_completed_event.response_id,
+                usage: raw_response_completed_event.token_usage.map(Into::into),
+            };
+            outgoing
+                .send_server_notification(ServerNotification::RawResponseCompleted(notification))
+                .await;
         }
         EventMsg::PatchApplyBegin(_) | EventMsg::PatchApplyEnd(_) => {
             // Core still fans out these deprecated events for legacy clients;
@@ -4239,6 +4251,7 @@ mod tests {
             total_token_usage: TokenUsage {
                 input_tokens: 100,
                 cached_input_tokens: 25,
+                cache_write_input_tokens: 0,
                 output_tokens: 50,
                 reasoning_output_tokens: 9,
                 total_tokens: 200,
@@ -4246,6 +4259,7 @@ mod tests {
             last_token_usage: TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 5,
+                cache_write_input_tokens: 0,
                 output_tokens: 7,
                 reasoning_output_tokens: 1,
                 total_tokens: 23,

@@ -279,6 +279,7 @@ pub struct GuardianReviewEventParams {
     pub completed_at: Option<u64>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
+    pub cache_write_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub reasoning_output_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
@@ -355,6 +356,10 @@ impl GuardianReviewTrackContext {
                 .token_usage
                 .as_ref()
                 .map(|usage| usage.cached_input_tokens),
+            cache_write_input_tokens: result
+                .token_usage
+                .as_ref()
+                .map(|usage| usage.cache_write_input_tokens),
             output_tokens: result.token_usage.as_ref().map(|usage| usage.output_tokens),
             reasoning_output_tokens: result
                 .token_usage
@@ -814,6 +819,7 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) image_generation_count: Option<usize>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
+    pub(crate) cache_write_input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) reasoning_output_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,

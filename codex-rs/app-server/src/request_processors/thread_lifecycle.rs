@@ -361,6 +361,11 @@ pub(super) async fn ensure_listener_task_running(
                         continue;
                     }
 
+                    if matches!(&event.msg, EventMsg::RawResponseCompleted(_)) && !raw_events_enabled
+                    {
+                        continue;
+                    }
+
                     apply_bespoke_event_handling(
                         event.clone(),
                         conversation_id,
