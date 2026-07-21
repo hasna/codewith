@@ -1,5 +1,6 @@
 //! User, assistant, reasoning, and streaming message history cells.
 
+use super::markdown_render_cache::MarkdownRenderCache;
 use super::*;
 use crate::style::accent_color;
 
@@ -370,10 +371,15 @@ impl HistoryCell for AgentMessageCell {
 /// The cell snapshots `cwd` at construction so local file-link display remains aligned with the
 /// session that produced the message. Reusing the current process cwd during reflow would make old
 /// transcript content change meaning after a later `/cd` or resumed session.
+///
+/// The latest rich render is cached and reused while the width, syntax theme, and terminal colors
+/// are unchanged, so repeated sizing/display passes over finalized transcript history do not
+/// re-render the same markdown at the same width.
 #[derive(Debug)]
 pub(crate) struct AgentMarkdownCell {
     markdown_source: String,
     cwd: PathBuf,
+    rendered_lines: MarkdownRenderCache,
 }
 
 impl AgentMarkdownCell {
@@ -386,6 +392,7 @@ impl AgentMarkdownCell {
         Self {
             markdown_source,
             cwd: cwd.to_path_buf(),
+            rendered_lines: MarkdownRenderCache::default(),
         }
     }
 }
@@ -396,24 +403,26 @@ impl HistoryCell for AgentMarkdownCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        let Some(wrap_width) =
-            crate::width::usable_content_width_u16(width, /*reserved_cols*/ 2)
-        else {
-            return prefix_hyperlink_lines(
-                vec![HyperlinkLine::new(Line::default())],
-                "• ".dim(),
-                "  ".into(),
-            );
-        };
+        self.rendered_lines.render(width, || {
+            let Some(wrap_width) =
+                crate::width::usable_content_width_u16(width, /*reserved_cols*/ 2)
+            else {
+                return prefix_hyperlink_lines(
+                    vec![HyperlinkLine::new(Line::default())],
+                    "• ".dim(),
+                    "  ".into(),
+                );
+            };
 
-        // Re-render markdown from source at the current width. Reserve 2 columns for the "• " /
-        // " " prefix prepended below.
-        let lines = crate::markdown::render_markdown_agent_with_links_and_cwd(
-            &self.markdown_source,
-            Some(wrap_width),
-            Some(self.cwd.as_path()),
-        );
-        prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
+            // Re-render markdown from source at the current width. Reserve 2 columns for the "• " /
+            // " " prefix prepended below.
+            let lines = crate::markdown::render_markdown_agent_with_links_and_cwd(
+                &self.markdown_source,
+                Some(wrap_width),
+                Some(self.cwd.as_path()),
+            );
+            prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
+        })
     }
 
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
@@ -424,6 +433,10 @@ impl HistoryCell for AgentMarkdownCell {
         raw_lines_from_source(&self.markdown_source)
     }
 }
+
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod tests;
 
 /// Transient active-cell representation of the mutable tail of an agent stream.
 ///
