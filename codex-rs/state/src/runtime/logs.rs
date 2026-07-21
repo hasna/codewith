@@ -74,25 +74,33 @@ impl StateRuntime {
             "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid, module_path, file, line, estimated_bytes) ",
         );
         builder.push_values(entries, |mut row, entry| {
-            let feedback_log_body = entry.feedback_log_body.as_ref().or(entry.message.as_ref());
+            let feedback_log_body = entry
+                .feedback_log_body
+                .as_ref()
+                .or(entry.message.as_ref())
+                .map(redact_state_string);
+            let level = redact_state_string(entry.level.as_str());
+            let target = redact_state_string(entry.target.as_str());
+            let module_path = entry.module_path.as_deref().map(redact_state_string);
+            let file = entry.file.as_deref().map(redact_state_string);
             // Keep about 10 MiB of reader-visible log content per partition.
             // Both `query_logs` and `/feedback` read the persisted
             // `feedback_log_body`, while `LogEntry.message` is only a write-time
             // fallback for callers that still populate the old field.
-            let estimated_bytes = feedback_log_body.map_or(0, String::len) as i64
-                + entry.level.len() as i64
-                + entry.target.len() as i64
-                + entry.module_path.as_ref().map_or(0, String::len) as i64
-                + entry.file.as_ref().map_or(0, String::len) as i64;
+            let estimated_bytes = feedback_log_body.as_ref().map_or(0, String::len) as i64
+                + level.len() as i64
+                + target.len() as i64
+                + module_path.as_ref().map_or(0, String::len) as i64
+                + file.as_ref().map_or(0, String::len) as i64;
             row.push_bind(entry.ts)
                 .push_bind(entry.ts_nanos)
-                .push_bind(&entry.level)
-                .push_bind(&entry.target)
+                .push_bind(level)
+                .push_bind(target)
                 .push_bind(feedback_log_body)
                 .push_bind(&entry.thread_id)
                 .push_bind(&entry.process_uuid)
-                .push_bind(&entry.module_path)
-                .push_bind(&entry.file)
+                .push_bind(module_path)
+                .push_bind(file)
                 .push_bind(entry.line)
                 .push_bind(estimated_bytes);
         });
