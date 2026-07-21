@@ -71,6 +71,7 @@ members = [
     "models-manager",
     "network-proxy",
     "ollama",
+    "privacy-filter",
     "process-hardening",
     "protocol",
     "realtime-webrtc",
@@ -207,6 +208,7 @@ codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
+codex-privacy-filter = { path = "privacy-filter" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-realtime-webrtc = { path = "realtime-webrtc" }
@@ -403,6 +405,10 @@ strum_macros = "0.28.0"
 supports-color = "3.0.2"
 syntect = "5"
 sys-locale = "0.3.2"
+sysinfo = { version = "0.33", default-features = false, features = [
+    "system",
+    "disk",
+] }
 tar = { version = "=0.4.46", default-features = false }
 tempfile = "3.23.0"
 test-log = "0.2.19"

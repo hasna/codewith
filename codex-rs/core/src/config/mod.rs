@@ -30,6 +30,7 @@ use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::GoalsAutoExecuteToml;
 use codex_config::config_toml::GoalsConfigToml;
 use codex_config::config_toml::PostGoalContextActionToml;
+use codex_config::config_toml::PrivacyFilterConfigToml;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -436,6 +437,15 @@ impl Default for WorktreesConfig {
     }
 }
 
+/// Resolved runtime settings for the optional local Privacy Filter layer.
+///
+/// The Privacy Filter is opt-in and disabled by default.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct PrivacyFilterConfig {
+    /// Whether the Privacy Filter is enabled for this session.
+    pub enabled: bool,
+}
+
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
@@ -736,6 +746,17 @@ fn resolve_worktrees_config(config: Option<WorktreesConfigToml>) -> WorktreesCon
             .and_then(|sessions| sessions.mode)
             .map(WorktreeSessionMode::from)
             .unwrap_or(defaults.sub_sessions),
+    }
+}
+
+fn resolve_privacy_filter_config(config: Option<PrivacyFilterConfigToml>) -> PrivacyFilterConfig {
+    let defaults = PrivacyFilterConfig::default();
+    let Some(config) = config else {
+        return defaults;
+    };
+
+    PrivacyFilterConfig {
+        enabled: config.enabled.unwrap_or(defaults.enabled),
     }
 }
 
@@ -1523,6 +1544,9 @@ pub struct Config {
 
     /// Settings for Codewith-managed git worktrees.
     pub worktrees: WorktreesConfig,
+
+    /// Settings for the optional local Privacy Filter secret-redaction layer.
+    pub privacy_filter: PrivacyFilterConfig,
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
@@ -3597,6 +3621,7 @@ impl Config {
         }
         let goals = resolve_goals_config(cfg.goals.clone());
         let worktrees = resolve_worktrees_config(cfg.worktrees.clone());
+        let privacy_filter = resolve_privacy_filter_config(cfg.privacy_filter.clone());
 
         if bypass_hook_trust {
             startup_warnings.push(
@@ -4647,6 +4672,7 @@ impl Config {
             multi_agent_v2,
             goals,
             worktrees,
+            privacy_filter,
             features,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning

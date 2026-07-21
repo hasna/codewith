@@ -285,6 +285,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         multi_agent_v2: MultiAgentV2Config::default(),
         goals: Default::default(),
         worktrees: Default::default(),
+        privacy_filter: Default::default(),
         features: Default::default(),
         suppress_unstable_features_warning: false,
         active_project: ProjectConfig { trust_level: None },

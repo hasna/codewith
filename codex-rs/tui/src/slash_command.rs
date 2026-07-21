@@ -29,6 +29,8 @@ pub enum SlashCommand {
     #[strum(to_string = "approve")]
     AutoReview,
     Memories,
+    #[strum(to_string = "privacy-filter", serialize = "redaction")]
+    PrivacyFilter,
     Skills,
     Hooks,
     Review,
@@ -196,6 +198,9 @@ impl SlashCommand {
             SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::AutoReview => "approve one retry of a recent auto-review denial",
             SlashCommand::Memories => "configure memory use and generation",
+            SlashCommand::PrivacyFilter => {
+                "check local readiness and toggle the optional secret Privacy Filter"
+            }
             SlashCommand::Mcp => "open the MCP control center",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Webhook => "show app webhook and event inbox",
@@ -223,6 +228,7 @@ impl SlashCommand {
                 | SlashCommand::Plan
                 | SlashCommand::Goal
                 | SlashCommand::Teach
+                | SlashCommand::PrivacyFilter
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
                 | SlashCommand::Queued
@@ -311,6 +317,7 @@ impl SlashCommand {
             | SlashCommand::App
             | SlashCommand::Goal
             | SlashCommand::Teach
+            | SlashCommand::PrivacyFilter
             | SlashCommand::Workflow
             | SlashCommand::MissionControl
             | SlashCommand::Loop
@@ -462,6 +469,28 @@ mod tests {
         assert_eq!(
             SlashCommand::Mcp.description(),
             "open the MCP control center"
+        );
+    }
+
+    #[test]
+    fn privacy_filter_command_parses_with_redaction_alias() {
+        assert_eq!(SlashCommand::PrivacyFilter.command(), "privacy-filter");
+        assert_eq!(
+            SlashCommand::from_str("privacy-filter"),
+            Ok(SlashCommand::PrivacyFilter)
+        );
+        assert_eq!(
+            SlashCommand::from_str("redaction"),
+            Ok(SlashCommand::PrivacyFilter)
+        );
+        assert!(!SlashCommand::PrivacyFilter.description().is_empty());
+        assert!(SlashCommand::PrivacyFilter.supports_inline_args());
+        // Visible in the popup (not a hidden alias) and canonical form is listed.
+        assert!(SlashCommand::PrivacyFilter.is_visible());
+        assert!(
+            super::built_in_slash_commands()
+                .iter()
+                .any(|(_, c)| *c == SlashCommand::PrivacyFilter)
         );
     }
 
