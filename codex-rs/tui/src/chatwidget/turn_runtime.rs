@@ -70,6 +70,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     pub(super) fn on_task_started(&mut self) {
+        self.collab_wait_status.clear_active_waits();
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.start(Instant::now());
         self.transcript.reset_turn_flags();
@@ -186,6 +187,7 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.status_state.pending_status_indicator_restore = false;
         self.status_state.agent_statusline = None;
+        self.collab_wait_status.clear_active_waits();
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
         self.update_task_running_state();
@@ -344,6 +346,7 @@ impl ChatWidget {
         self.plan_stream_controller = None;
         self.status_state.pending_status_indicator_restore = false;
         self.status_state.agent_statusline = None;
+        self.collab_wait_status.clear_active_waits();
         self.clear_cancel_edit();
         self.request_status_line_branch_refresh();
         self.request_status_line_git_summary_refresh();

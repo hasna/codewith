@@ -139,7 +139,7 @@ enum RawPluginManifestPath {
 enum RawPluginManifestHooks {
     Path(String),
     Paths(Vec<String>),
-    Inline(HooksFile),
+    Inline(Box<HooksFile>),
     InlineList(Vec<HooksFile>),
     Invalid(JsonValue),
 }
@@ -283,7 +283,7 @@ fn resolve_manifest_hooks(
                 .collect::<Vec<_>>();
             (!hooks.is_empty()).then_some(PluginManifestHooks::Paths(hooks))
         }
-        RawPluginManifestHooks::Inline(hooks) => Some(PluginManifestHooks::Inline(vec![hooks])),
+        RawPluginManifestHooks::Inline(hooks) => Some(PluginManifestHooks::Inline(vec![*hooks])),
         RawPluginManifestHooks::InlineList(hooks) => {
             (!hooks.is_empty()).then_some(PluginManifestHooks::Inline(hooks))
         }

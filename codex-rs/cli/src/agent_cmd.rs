@@ -12,6 +12,7 @@ use codex_background_agent::daemon::BackgroundAgentDaemonPaths;
 use codex_background_agent::daemon::background_agent_daemon_state_dir;
 use codex_background_agent::daemon::ensure_supported_platform as ensure_background_agent_supported_platform;
 use codex_core::config::find_codex_home;
+use codex_protocol::models::PermissionProfile;
 use codex_state::BackgroundAgentDesiredState;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
 use codex_state::BackgroundAgentPendingInteractionStatus;
@@ -21,6 +22,7 @@ use codex_state::BackgroundAgentRunStatus;
 use codex_state::BackgroundAgentStatusSnapshotParams;
 use codex_state::StateRuntime;
 use codex_state::busy_retry::retry_on_busy;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 const COMPACT_FIELD_PREVIEW_CHARS: usize = 160;
 const COMPACT_PAYLOAD_PREVIEW_CHARS: usize = 240;
@@ -35,7 +37,7 @@ pub(crate) struct AgentStartRuntimeContext {
     pub(crate) workspace_roots: Vec<PathBuf>,
     pub(crate) auth_profile_ref: Option<String>,
     pub(crate) approval_policy: Option<Value>,
-    pub(crate) permission_profile: Option<Value>,
+    pub(crate) permission_profile: PermissionProfile,
     pub(crate) model: Option<String>,
     pub(crate) provider: Option<String>,
     pub(crate) service_tier: Option<String>,
@@ -52,10 +54,7 @@ impl AgentStartRuntimeContext {
                 .collect(),
             auth_profile_ref: config.selected_auth_profile.clone(),
             approval_policy: serde_json::to_value(config.permissions.approval_policy.value()).ok(),
-            permission_profile: serde_json::to_value(
-                config.permissions.effective_permission_profile(),
-            )
-            .ok(),
+            permission_profile: config.permissions.permission_profile().clone(),
             model: config.model.clone(),
             provider: Some(config.model_provider_id.clone()),
             service_tier: config.service_tier.clone(),
@@ -99,7 +98,7 @@ pub(crate) enum AgentSubcommand {
 #[derive(Debug, Args)]
 pub(crate) struct AgentStartCommand {
     /// Prompt to run in the background.
-    #[arg(required = true, trailing_var_arg = true)]
+    #[arg(required = true, num_args = 1..)]
     prompt: Vec<String>,
 
     /// Idempotency key for retrying the same start request.
@@ -1004,10 +1003,14 @@ async fn start_agent(
     ensure_background_agent_supported_platform()?;
 
     let agent_id = new_agent_id();
+    let explicit_cwd = cmd.cwd.is_some();
     let cwd = resolve_agent_cwd(
         cmd.cwd,
         runtime_context.map(|context| context.cwd.as_path()),
     )?;
+    let workspace_roots = agent_start_snapshot_workspace_roots(runtime_context, &cwd, explicit_cwd);
+    let permission_profile =
+        agent_start_snapshot_permission_profile(runtime_context, &cwd, explicit_cwd)?;
     let auth_profile_ref = runtime_context
         .and_then(|context| context.auth_profile_ref.as_deref())
         .or(auth_profile)
@@ -1060,18 +1063,11 @@ async fn start_agent(
         payload_json: json!({
             "snapshotSource": "codewith agent start",
             "cwd": cwd.display().to_string(),
-            "workspaceRoots": runtime_context.map(|context| {
-                context
-                    .workspace_roots
-                    .iter()
-                    .map(|root| root.display().to_string())
-                    .collect::<Vec<_>>()
-            }),
+            "workspaceRoots": workspace_roots,
             "authProfileRef": auth_profile_ref,
             "approvalPolicy": runtime_context
                 .and_then(|context| context.approval_policy.as_ref()),
-            "permissionProfile": runtime_context
-                .and_then(|context| context.permission_profile.as_ref()),
+            "permissionProfile": permission_profile,
             "model": runtime_context.and_then(|context| context.model.as_deref()),
             "provider": runtime_context.and_then(|context| context.provider.as_deref()),
             "serviceTier": runtime_context
@@ -1104,6 +1100,44 @@ async fn start_agent(
     let daemon = background_agent_daemon()?;
     let daemon_output = daemon.start().await?;
     Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
+}
+
+fn agent_start_snapshot_workspace_roots(
+    runtime_context: Option<&AgentStartRuntimeContext>,
+    cwd: &Path,
+    explicit_cwd: bool,
+) -> Option<Vec<String>> {
+    if explicit_cwd {
+        return Some(vec![cwd.display().to_string()]);
+    }
+    runtime_context.map(|context| {
+        context
+            .workspace_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+    })
+}
+
+fn agent_start_snapshot_permission_profile(
+    runtime_context: Option<&AgentStartRuntimeContext>,
+    cwd: &Path,
+    explicit_cwd: bool,
+) -> anyhow::Result<Option<Value>> {
+    let Some(context) = runtime_context else {
+        return Ok(None);
+    };
+    let permission_profile = if explicit_cwd {
+        let cwd = AbsolutePathBuf::from_absolute_path_checked(cwd)
+            .with_context(|| format!("invalid background agent cwd: {}", cwd.display()))?;
+        context
+            .permission_profile
+            .clone()
+            .materialize_project_roots_with_workspace_roots(std::slice::from_ref(&cwd))
+    } else {
+        context.permission_profile.clone()
+    };
+    Ok(Some(serde_json::to_value(permission_profile)?))
 }
 
 async fn stop_agent(
@@ -1289,7 +1323,14 @@ fn new_agent_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use pretty_assertions::assert_eq;
+
+    #[derive(Debug, Parser)]
+    struct TestAgentCli {
+        #[command(subcommand)]
+        subcommand: AgentSubcommand,
+    }
 
     #[test]
     fn payload_summary_prefers_short_human_fields() {
@@ -1324,5 +1365,143 @@ mod tests {
 
         assert!(preview.ends_with("..."));
         assert!(preview.len() <= 83);
+    }
+
+    #[test]
+    fn start_parses_cwd_before_or_after_prompt() {
+        let before =
+            TestAgentCli::try_parse_from(["agent", "start", "--cwd", "/home/hasna", "print OK"])
+                .expect("parse --cwd before prompt");
+        let AgentSubcommand::Start(before) = before.subcommand else {
+            panic!("expected start command");
+        };
+        assert_eq!(before.cwd, Some(PathBuf::from("/home/hasna")));
+        assert_eq!(before.prompt, vec!["print OK".to_string()]);
+
+        let after =
+            TestAgentCli::try_parse_from(["agent", "start", "print OK", "--cwd", "/home/hasna"])
+                .expect("parse --cwd after prompt");
+        let AgentSubcommand::Start(after) = after.subcommand else {
+            panic!("expected start command");
+        };
+        assert_eq!(after.cwd, Some(PathBuf::from("/home/hasna")));
+        assert_eq!(after.prompt, vec!["print OK".to_string()]);
+    }
+
+    #[test]
+    fn start_accepts_literal_flag_like_prompt_after_separator() {
+        let parsed = TestAgentCli::try_parse_from(["agent", "start", "--", "--cwd", "/tmp"])
+            .expect("parse literal prompt after separator");
+        let AgentSubcommand::Start(parsed) = parsed.subcommand else {
+            panic!("expected start command");
+        };
+        assert_eq!(parsed.cwd, None);
+        assert_eq!(parsed.prompt, vec!["--cwd".to_string(), "/tmp".to_string()]);
+    }
+
+    #[test]
+    fn explicit_cwd_snapshot_uses_requested_cwd_as_only_workspace_root() {
+        let runtime_context = AgentStartRuntimeContext {
+            cwd: PathBuf::from("/launcher"),
+            workspace_roots: vec![PathBuf::from("/launcher"), PathBuf::from("/launcher/huge")],
+            auth_profile_ref: Some("profile-a".to_string()),
+            approval_policy: Some(json!("never")),
+            permission_profile: PermissionProfile::workspace_write(),
+            model: Some("model-a".to_string()),
+            provider: Some("provider-a".to_string()),
+            service_tier: None,
+        };
+        let requested_cwd = PathBuf::from("/target");
+        let expected_cwd =
+            AbsolutePathBuf::from_absolute_path_checked(&requested_cwd).expect("absolute test cwd");
+        let expected_permission_profile = PermissionProfile::workspace_write()
+            .materialize_project_roots_with_workspace_roots(std::slice::from_ref(&expected_cwd));
+
+        assert_eq!(
+            agent_start_snapshot_workspace_roots(
+                Some(&runtime_context),
+                requested_cwd.as_path(),
+                /*explicit_cwd*/ true,
+            ),
+            Some(vec!["/target".to_string()])
+        );
+        assert_eq!(
+            agent_start_snapshot_permission_profile(
+                Some(&runtime_context),
+                requested_cwd.as_path(),
+                /*explicit_cwd*/ true,
+            )
+            .expect("serialize permission profile"),
+            Some(serde_json::to_value(expected_permission_profile).expect("expected profile json"))
+        );
+    }
+
+    #[test]
+    fn explicit_cwd_snapshot_preserves_read_only_permission_profile() {
+        let runtime_context = AgentStartRuntimeContext {
+            cwd: PathBuf::from("/launcher"),
+            workspace_roots: vec![PathBuf::from("/launcher")],
+            auth_profile_ref: None,
+            approval_policy: None,
+            permission_profile: PermissionProfile::read_only(),
+            model: None,
+            provider: None,
+            service_tier: None,
+        };
+
+        assert_eq!(
+            agent_start_snapshot_permission_profile(
+                Some(&runtime_context),
+                Path::new("/target"),
+                /*explicit_cwd*/ true,
+            )
+            .expect("serialize permission profile"),
+            Some(
+                serde_json::to_value(PermissionProfile::read_only())
+                    .expect("expected profile json")
+            )
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_context_from_config_keeps_workspace_permissions_symbolic_for_cwd_snapshot()
+    -> anyhow::Result<()> {
+        let codex_home = tempfile::TempDir::new()?;
+        let launcher = tempfile::TempDir::new()?;
+        let launcher_extra = tempfile::TempDir::new()?;
+        let target = tempfile::TempDir::new()?;
+        let config = codex_core::config::ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .harness_overrides(codex_core::config::ConfigOverrides {
+                cwd: Some(launcher.path().to_path_buf()),
+                default_permissions: Some(":workspace".to_string()),
+                additional_writable_roots: vec![launcher_extra.path().to_path_buf()],
+                ..Default::default()
+            })
+            .build()
+            .await?;
+        let runtime_context = AgentStartRuntimeContext::from_config(&config);
+
+        let permission_profile = agent_start_snapshot_permission_profile(
+            Some(&runtime_context),
+            target.path(),
+            /*explicit_cwd*/ true,
+        )?
+        .expect("permission profile should be snapshotted");
+        let permission_profile_json = serde_json::to_string(&permission_profile)?;
+
+        assert!(
+            permission_profile_json.contains(target.path().to_string_lossy().as_ref()),
+            "expected target cwd in background agent permission profile: {permission_profile_json}",
+        );
+        assert!(
+            !permission_profile_json.contains(launcher.path().to_string_lossy().as_ref()),
+            "launcher cwd leaked into background agent permission profile: {permission_profile_json}",
+        );
+        assert!(
+            !permission_profile_json.contains(launcher_extra.path().to_string_lossy().as_ref()),
+            "launcher extra root leaked into background agent permission profile: {permission_profile_json}",
+        );
+        Ok(())
     }
 }
