@@ -81,12 +81,13 @@ pub(crate) struct FooterProps {
     pub(crate) status_line_value: Option<Line<'static>>,
     pub(crate) status_line_enabled: bool,
     pub(crate) key_hints: FooterKeyHints,
-    /// Active thread label shown when the footer is rendering contextual information instead of an
-    /// instructional hint.
+    /// Goal-pursuit status appended inline to the passive status-line flow.
     ///
-    /// When both this label and the configured status line are available, they are rendered on the
-    /// same row separated by ` · `.
-    pub(crate) active_agent_label: Option<String>,
+    /// This is intentionally not a configurable `/statusline` item: whenever a goal status exists
+    /// it renders unconditionally, appended after the configured status-line items (including the
+    /// active-agent segment) with a ` · ` separator, so it can never be toggled off from the
+    /// `/statusline` picker.
+    pub(crate) goal_status_indicator: Option<GoalStatusIndicator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -619,12 +620,10 @@ pub(crate) fn goal_status_indicator_line(
 
 pub(crate) fn status_line_right_indicator_line(
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-    goal_status_indicator: Option<&GoalStatusIndicator>,
     ide_context_active: bool,
     show_cycle_hint: bool,
 ) -> Option<Line<'static>> {
-    let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint)
-        .or_else(|| goal_status_indicator_line(goal_status_indicator));
+    let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint);
     let ide_context_indicator =
         ide_context_active.then(|| Line::from(vec!["IDE context".fg(accent_color())]));
     let mut line: Option<Line<'static>> = None;
@@ -821,9 +820,10 @@ fn footer_from_props_lines(
 
 /// Returns the contextual footer row when the footer is not busy showing an instructional hint.
 ///
-/// The returned line may contain the configured status line, the currently viewed agent label, or
-/// both combined. Active instructional states such as quit reminders, shortcut overlays, and queue
-/// prompts deliberately return `None` so those call-to-action hints stay visible.
+/// The returned line contains the configured status line (which now includes the active-agent
+/// segment when the `active-agent` item is enabled). Active instructional states such as quit
+/// reminders, shortcut overlays, and queue prompts deliberately return `None` so those
+/// call-to-action hints stay visible.
 pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
     if !shows_passive_footer_line(props) {
         return None;
@@ -835,12 +835,15 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
         None
     };
 
-    if let Some(active_agent_label) = props.active_agent_label.as_ref() {
+    // The goal-pursuit indicator is not a configurable `/statusline` item: append it last so it
+    // renders one-after-another in the inline ` · ` flow whenever a goal status exists, preserving
+    // the exact goal text/format and its magenta styling.
+    if let Some(goal_line) = goal_status_indicator_line(props.goal_status_indicator.as_ref()) {
         if let Some(existing) = line.as_mut() {
             existing.spans.push(" · ".dim());
-            existing.spans.push(active_agent_label.clone().dim());
+            existing.spans.extend(goal_line.spans);
         } else {
-            line = Some(Line::from(active_agent_label.clone()).dim());
+            line = Some(goal_line);
         }
     }
 
@@ -1514,7 +1517,6 @@ mod tests {
         height: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         context_line: Line<'static>,
     ) {
@@ -1577,13 +1579,11 @@ mod tests {
                 let right_line = if status_line_active {
                     let full = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        goal_status_indicator,
                         ide_context_active,
                         show_cycle_hint,
                     );
                     let compact = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        goal_status_indicator,
                         ide_context_active,
                         /*show_cycle_hint*/ false,
                     );
@@ -1722,11 +1722,16 @@ mod tests {
         goal_status_indicator: Option<&GoalStatusIndicator>,
         context_line: Line<'static>,
     ) {
+        // The goal indicator now renders inline via the passive status line, so thread it through
+        // `FooterProps` rather than the right-aligned indicator.
+        let props = FooterProps {
+            goal_status_indicator: goal_status_indicator.cloned(),
+            ..props.clone()
+        };
         let height = footer_test_height(
             width,
-            props,
+            &props,
             collaboration_mode_indicator,
-            goal_status_indicator,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1734,9 +1739,8 @@ mod tests {
         draw_footer_frame(
             &mut terminal,
             height,
-            props,
+            &props,
             collaboration_mode_indicator,
-            goal_status_indicator,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1753,7 +1757,6 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1763,7 +1766,6 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1782,7 +1784,6 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             ide_context_active,
             &context_line,
         );
@@ -1792,7 +1793,6 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             ide_context_active,
             context_line,
         );
@@ -1803,7 +1803,6 @@ mod tests {
         width: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         _context_line: &Line<'static>,
     ) -> u16 {
@@ -1815,7 +1814,6 @@ mod tests {
         let area = Rect::new(0, 0, width, 2);
         let right_line = status_line_right_indicator_line(
             collaboration_mode_indicator,
-            goal_status_indicator,
             ide_context_active,
             show_cycle_hint,
         );
@@ -1862,7 +1860,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1883,7 +1881,7 @@ mod tests {
                     insert_newline: Some(key_hint::shift(KeyCode::Enter)),
                     ..FooterKeyHints::default_bindings()
                 },
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1901,7 +1899,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1919,7 +1917,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1937,7 +1935,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1955,7 +1953,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1973,7 +1971,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1991,7 +1989,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -2009,7 +2007,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
             Some(72),
             /*used_tokens*/ None,
@@ -2029,7 +2027,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
             /*percent*/ None,
             Some(123_456),
@@ -2049,7 +2047,7 @@ mod tests {
                 status_line_value: None,
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
-                active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -2065,7 +2063,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -2094,7 +2092,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -2116,7 +2114,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_shortcuts", props);
@@ -2133,7 +2131,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_yields_to_queue_hint", props);
@@ -2150,7 +2148,7 @@ mod tests {
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_draft_idle", props);
@@ -2167,7 +2165,7 @@ mod tests {
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2198,7 +2196,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2221,7 +2219,7 @@ mod tests {
             status_line_value: None,
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         // has status line and no collaboration mode
@@ -2247,7 +2245,7 @@ mod tests {
             )),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2278,7 +2276,7 @@ mod tests {
             ])),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2311,7 +2309,7 @@ mod tests {
             ])),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
         let goal_status = GoalStatusIndicator::Complete {
             usage: Some("10h 12m".to_string()),
@@ -2324,40 +2322,6 @@ mod tests {
             Some(&goal_status),
             context_window_line(Some(50), /*used_tokens*/ None),
         );
-
-        let props = FooterProps {
-            mode: FooterMode::ComposerEmpty,
-            esc_backtrack_hint: false,
-            use_shift_enter_hint: false,
-            is_task_running: false,
-            queue_submissions: false,
-            collaboration_modes_enabled: false,
-            is_wsl: false,
-            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
-            status_line_value: None,
-            status_line_enabled: false,
-            key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: Some("Robie [explorer]".to_string()),
-        };
-
-        snapshot_footer("footer_active_agent_label", props);
-
-        let props = FooterProps {
-            mode: FooterMode::ComposerEmpty,
-            esc_backtrack_hint: false,
-            use_shift_enter_hint: false,
-            is_task_running: false,
-            queue_submissions: false,
-            collaboration_modes_enabled: false,
-            is_wsl: false,
-            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
-            status_line_value: Some(Line::from("Status line content".to_string())),
-            status_line_enabled: true,
-            key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: Some("Robie [explorer]".to_string()),
-        };
-
-        snapshot_footer("footer_status_line_with_active_agent_label", props);
     }
 
     #[test]
@@ -2448,7 +2412,7 @@ mod tests {
             )),
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
-            active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         let screen = render_footer_with_mode_indicator_and_context(
@@ -2469,6 +2433,53 @@ mod tests {
         assert!(
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
+        );
+    }
+
+    /// Always-on edge: even when the configurable status line is empty/disabled, a present goal
+    /// status must still render inline via the standard footer flow (the
+    /// `passive_footer_status_line` short-circuit in `footer_from_props_lines`). This guards the
+    /// "renders whenever a goal status exists" contract documented on
+    /// `FooterProps::goal_status_indicator`.
+    #[test]
+    fn footer_renders_goal_inline_when_status_line_disabled() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: None,
+            status_line_enabled: false,
+            key_hints: FooterKeyHints::default_bindings(),
+            goal_status_indicator: Some(GoalStatusIndicator::Complete {
+                usage: Some("10h 12m".to_string()),
+            }),
+        };
+
+        // Direct chokepoint: the goal alone forces a passive footer line with the exact goal text.
+        let line =
+            passive_footer_status_line(&props).expect("a present goal must force a passive line");
+        assert_eq!(line_text(&line), "Goal achieved (10h 12m)");
+
+        // End-to-end render: the goal appears inline (left) and replaces the shortcuts hint.
+        let screen = render_footer_with_mode_indicator_and_context(
+            /*width*/ 80,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+        let collapsed = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains("Goal achieved (10h 12m)"),
+            "goal should render inline even when the status line is disabled; got: {collapsed:?}"
+        );
+        assert!(
+            !collapsed.contains("for shortcuts"),
+            "the goal-bearing passive line should replace the shortcuts hint; got: {collapsed:?}"
         );
     }
 

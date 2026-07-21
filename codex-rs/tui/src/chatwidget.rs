@@ -529,7 +529,8 @@ const PERMISSIONS_SAVED_SUBTITLE: &str = "Saved to config.toml.";
 const AUTH_PROFILE_PERMISSIONS_SAVED_SUBTITLE: &str =
     "Saved to config.toml; this auth profile remembers the choice.";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_STATUS_LINE_ITEMS: [&str; 2] = ["model-with-reasoning", "current-dir"];
+const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] =
+    ["model-with-reasoning", "current-dir", "active-agent"];
 const MAX_AGENT_COPY_HISTORY: usize = 32;
 
 fn permissions_saved_subtitle(config: &Config) -> &'static str {
@@ -707,8 +708,10 @@ pub(crate) struct ChatWidget {
     interrupts: InterruptManager,
     // Accumulates the current reasoning block text to extract a header
     reasoning_buffer: String,
-    // Accumulates full reasoning content for transcript-only recording
-    full_reasoning_buffer: String,
+    // Caches the first completed bold header so later deltas do not rescan the whole block.
+    reasoning_header: Option<String>,
+    // Preserves reasoning-summary part boundaries for transcript-only recording.
+    reasoning_summary_parts: Vec<String>,
     status_state: StatusState,
     review: ReviewState,
     // Active hook runs render in a dedicated live cell so they can run alongside tools.
@@ -829,6 +832,11 @@ pub(crate) struct ChatWidget {
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
     current_goal_plan: Option<AppThreadGoalPlan>,
+    // Contextual active-agent label ("Main [default]" for the primary thread) surfaced as the
+    // toggleable `active-agent` status-line segment. `None` for single-agent sessions, which omits
+    // the segment entirely. `App` owns "which thread is displayed" and pushes the derived label
+    // here via `set_active_agent_label`.
+    active_agent_label: Option<String>,
     external_editor_state: ExternalEditorState,
     realtime_conversation: RealtimeConversationUiState,
     last_rendered_user_message_display: Option<UserMessageDisplay>,

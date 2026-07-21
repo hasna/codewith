@@ -7,6 +7,7 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::ReasoningSummaryCell;
 use crate::history_cell::UserHistoryCell;
+use crate::history_cell::split_reasoning_summary_parts;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -82,16 +83,17 @@ pub(crate) fn thread_to_transcript_cells(
             ThreadItem::Reasoning {
                 summary, content, ..
             } => {
-                let text = if matches!(raw_reasoning_visibility, RawReasoningVisibility::Visible)
-                    && !content.is_empty()
-                {
-                    content.join("\n\n")
-                } else {
-                    summary.join("\n\n")
-                };
+                let (header, text) =
+                    if matches!(raw_reasoning_visibility, RawReasoningVisibility::Visible)
+                        && !content.is_empty()
+                    {
+                        ("Reasoning".to_string(), content.join("\n\n"))
+                    } else {
+                        split_reasoning_summary_parts(&summary)
+                    };
                 if !text.trim().is_empty() {
                     cells.push(Arc::new(ReasoningSummaryCell::new(
-                        "Reasoning".to_string(),
+                        header,
                         text,
                         cwd.as_path(),
                         /*transcript_only*/ false,

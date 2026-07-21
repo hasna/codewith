@@ -85,13 +85,6 @@ pub struct ThreadItem {
     pub updated_at: Option<String>,
 }
 
-#[allow(dead_code)]
-#[deprecated(note = "use ThreadItem")]
-pub type ConversationItem = ThreadItem;
-#[allow(dead_code)]
-#[deprecated(note = "use ThreadsPage")]
-pub type ConversationsPage = ThreadsPage;
-
 #[derive(Default)]
 struct HeadTailSummary {
     saw_session_meta: bool,

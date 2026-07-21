@@ -441,6 +441,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "js_repl".to_string(),
+            namespace: None,
             input: "view_image".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -503,6 +504,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "js_repl".to_string(),
+            namespace: None,
             input: "view_image".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -521,7 +523,8 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
     ];
     assert_eq!(stripped, expected);
 
-    // With image support, images are preserved
+    // With image support, inline data-URL images are preserved but remote image
+    // URLs are replaced with a model-visible error message.
     let modalities = default_input_modalities();
     let with_images = create_history_with_items(vec![ResponseItem::Message {
         id: None,
@@ -529,6 +532,10 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
         content: vec![
             ContentItem::InputText {
                 text: "look".to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some(DEFAULT_IMAGE_DETAIL),
             },
             ContentItem::InputImage {
                 image_url: "https://example.com/img.png".to_string(),
@@ -540,11 +547,73 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
     let preserved = with_images.for_prompt(&modalities);
     assert_eq!(preserved.len(), 1);
     if let ResponseItem::Message { content, .. } = &preserved[0] {
-        assert_eq!(content.len(), 2);
+        assert_eq!(content.len(), 3);
         assert!(matches!(content[1], ContentItem::InputImage { .. }));
+        assert_eq!(
+            content[2],
+            ContentItem::InputText {
+                text: "image content omitted because remote image URLs are not supported"
+                    .to_string(),
+            }
+        );
     } else {
         panic!("expected Message");
     }
+}
+
+#[test]
+fn for_prompt_replaces_remote_image_urls_in_tool_outputs_with_error() {
+    let items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "view_image".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: "call-1".to_string(),
+        },
+        ResponseItem::FunctionCallOutput {
+            call_id: "call-1".to_string(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "tool result".to_string(),
+                },
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "https://example.com/result.png".to_string(),
+                    detail: Some(DEFAULT_IMAGE_DETAIL),
+                },
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAA".to_string(),
+                    detail: Some(DEFAULT_IMAGE_DETAIL),
+                },
+            ]),
+        },
+    ];
+    let history = create_history_with_items(items);
+    let modalities = default_input_modalities();
+    let prepared = history.for_prompt(&modalities);
+
+    let ResponseItem::FunctionCallOutput { output, .. } = &prepared[1] else {
+        panic!("expected FunctionCallOutput");
+    };
+    let content_items = output
+        .content_items()
+        .expect("expected structured content items");
+    assert_eq!(
+        content_items,
+        &[
+            FunctionCallOutputContentItem::InputText {
+                text: "tool result".to_string(),
+            },
+            FunctionCallOutputContentItem::InputText {
+                text: "image content omitted because remote image URLs are not supported"
+                    .to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AAA".to_string(),
+                detail: Some(DEFAULT_IMAGE_DETAIL),
+            },
+        ]
+    );
 }
 
 #[test]
@@ -1043,6 +1112,7 @@ fn remove_first_item_handles_custom_tool_pair() {
             status: None,
             call_id: "tool-1".to_string(),
             name: "my_tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         ResponseItem::CustomToolCallOutput {
@@ -1341,6 +1411,7 @@ fn normalize_adds_missing_output_for_custom_tool_call() {
         status: None,
         call_id: "tool-x".to_string(),
         name: "custom".to_string(),
+        namespace: None,
         input: "{}".to_string(),
     }];
     let mut h = create_history_with_items(items);
@@ -1355,6 +1426,7 @@ fn normalize_adds_missing_output_for_custom_tool_call() {
                 status: None,
                 call_id: "tool-x".to_string(),
                 name: "custom".to_string(),
+                namespace: None,
                 input: "{}".to_string(),
             },
             ResponseItem::CustomToolCallOutput {
@@ -1460,6 +1532,7 @@ fn normalize_mixed_inserts_and_removals() {
             status: None,
             call_id: "t1".to_string(),
             name: "tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         // Local shell call also gets an inserted function call output
@@ -1499,6 +1572,7 @@ fn normalize_mixed_inserts_and_removals() {
                 status: None,
                 call_id: "t1".to_string(),
                 name: "tool".to_string(),
+                namespace: None,
                 input: "{}".to_string(),
             },
             ResponseItem::CustomToolCallOutput {
@@ -1597,6 +1671,7 @@ fn normalize_adds_missing_output_for_custom_tool_call_panics_in_debug() {
         status: None,
         call_id: "tool-x".to_string(),
         name: "custom".to_string(),
+        namespace: None,
         input: "{}".to_string(),
     }];
     let mut h = create_history_with_items(items);
@@ -1722,6 +1797,7 @@ fn normalize_mixed_inserts_and_removals_panics_in_debug() {
             status: None,
             call_id: "t1".to_string(),
             name: "tool".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         },
         ResponseItem::LocalShellCall {

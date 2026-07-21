@@ -2541,12 +2541,13 @@ image("data:image/png;base64,AAA");
         ),
         text_item(&items, /*index*/ 0),
     );
+    // Remote image URLs are replaced with a model-visible error before reaching
+    // the model; inline data URLs are preserved.
     assert_eq!(
         items[1],
         serde_json::json!({
-            "type": "input_image",
-            "image_url": "https://example.com/image.jpg",
-            "detail": "high"
+            "type": "input_text",
+            "text": "image content omitted because remote image URLs are not supported"
         }),
     );
     assert_eq!(

@@ -123,6 +123,8 @@ fn step_json(step: &codex_state::WorkflowRunStep) -> Value {
         "status": step.status.as_str(),
         "statusReason": step.status_reason.as_deref().map(truncate_text),
         "reasonCode": step.reason_code,
+        "approvalGate": step.approval_gate,
+        "approvalState": step.approval_state,
         "dependsOn": step.depends_on,
         "backgroundAgentRunId": step.background_agent_run_id,
         "createdAt": step.created_at.timestamp(),

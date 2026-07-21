@@ -14,10 +14,16 @@ use sqlx::Row;
 use uuid::Uuid;
 
 const DEFAULT_WORKFLOW_LEASE_DURATION_MS: i64 = 60_000;
+const OPENROUTER_API_KEY_ENV_VAR: &str = "OPENROUTER_API_KEY";
+const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 const VERIFIER_EXECUTOR_PENDING_REASON: &str = "deterministic verifier executor is not enabled";
 const VERIFIER_EXECUTOR_PENDING_REASON_CODE: &str = "verifier_executor_pending";
 const WORKFLOW_BRANCH_ADMITTED_REASON: &str = "workflow branch admitted";
 const WORKFLOW_BRANCH_ADMITTED_REASON_CODE: &str = "workflow_branch_admitted";
+const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON: &str =
+    "OpenRouter workflow branch requires OPENROUTER_API_KEY before admission";
+const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE: &str =
+    "workflow_branch_provider_env_missing";
 const WORKFLOW_BRANCH_SOURCE: &str = "workflow";
 const WORKFLOW_BRANCH_THREAD_STORE_KIND: &str = "background-agent";
 
@@ -253,6 +259,15 @@ RETURNING generation
         &self,
         params: WorkflowRunBranchAdmissionParams,
     ) -> anyhow::Result<Option<WorkflowRunBranchAdmissionOutcome>> {
+        self.admit_workflow_run_branches_with_provider_env_check(params, provider_env_key_present)
+            .await
+    }
+
+    async fn admit_workflow_run_branches_with_provider_env_check(
+        &self,
+        params: WorkflowRunBranchAdmissionParams,
+        provider_env_key_present: impl Fn(&str) -> bool,
+    ) -> anyhow::Result<Option<WorkflowRunBranchAdmissionOutcome>> {
         validate_owner_id(&params.owner_id)?;
         if params
             .max_active_background_agent_runs
@@ -274,7 +289,10 @@ RETURNING generation
             tx.commit().await?;
             return Ok(None);
         };
-        if run.status.is_terminal() || run.status == crate::WorkflowRunStatus::CancelRequested {
+        if run.status.is_terminal()
+            || run.status == crate::WorkflowRunStatus::CancelRequested
+            || run.status == crate::WorkflowRunStatus::Blocked
+        {
             let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
             tx.commit().await?;
             return Ok(Some(WorkflowRunBranchAdmissionOutcome {
@@ -284,8 +302,16 @@ RETURNING generation
             }));
         }
 
-        let admitted = admit_ready_workflow_branches_in_tx(&mut tx, &run, &params, now_ms).await?;
-        let changed = !admitted.is_empty();
+        let admission = admit_ready_workflow_branches_in_tx(
+            &mut tx,
+            &run,
+            &params,
+            &provider_env_key_present,
+            now_ms,
+        )
+        .await?;
+        let changed = admission.changed;
+        let blocked_by_provider_preflight = admission.blocked_by_provider_preflight;
         if changed {
             recompute_workflow_run_status_in_tx(
                 &mut tx,
@@ -297,9 +323,14 @@ RETURNING generation
         }
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
         tx.commit().await?;
+        if blocked_by_provider_preflight {
+            self.thread_goals
+                .block_workflow_goal_plan_projection(params.run_id.as_str())
+                .await?;
+        }
         Ok(Some(WorkflowRunBranchAdmissionOutcome {
             snapshot,
-            admitted,
+            admitted: admission.admitted,
             changed,
         }))
     }
@@ -430,8 +461,9 @@ async fn admit_ready_workflow_branches_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run: &crate::WorkflowRun,
     params: &WorkflowRunBranchAdmissionParams,
+    provider_env_key_present: &impl Fn(&str) -> bool,
     now_ms: i64,
-) -> anyhow::Result<Vec<WorkflowRunBranchAdmission>> {
+) -> anyhow::Result<WorkflowRunBranchAdmissionTxOutcome> {
     let limits = WorkflowBranchLimits::from_run(run)?;
     let active_counts = active_workflow_branch_counts_in_tx(tx, run.run_id.as_str()).await?;
     let mut capacity = limits
@@ -444,10 +476,41 @@ async fn admit_ready_workflow_branches_in_tx(
             capacity.min(max_active_background_agent_runs.saturating_sub(active_background_runs));
     }
     if capacity <= 0 {
-        return Ok(Vec::new());
+        return Ok(WorkflowRunBranchAdmissionTxOutcome {
+            admitted: Vec::new(),
+            changed: false,
+            blocked_by_provider_preflight: false,
+        });
     }
 
     let candidates = ready_branch_candidates_in_tx(tx, run.run_id.as_str()).await?;
+    let mut changed = false;
+    for candidate in &candidates {
+        let model_route_json = branch_model_route_json(run, candidate.model_route_json.as_ref())?;
+        let Some(preflight_block) =
+            workflow_branch_provider_preflight_block(&model_route_json, provider_env_key_present)
+        else {
+            continue;
+        };
+        changed |= block_workflow_branch_provider_preflight_in_tx(
+            tx,
+            run,
+            params,
+            candidate,
+            &model_route_json,
+            &preflight_block,
+            now_ms,
+        )
+        .await?;
+    }
+    if changed {
+        return Ok(WorkflowRunBranchAdmissionTxOutcome {
+            admitted: Vec::new(),
+            changed: true,
+            blocked_by_provider_preflight: true,
+        });
+    }
+
     let mut admitted = Vec::new();
     let mut isolated_worktree_count = active_counts.isolated_worktree_count;
     for candidate in candidates {
@@ -566,7 +629,11 @@ WHERE step_run_id = ?
             workspace_json,
         });
     }
-    Ok(admitted)
+    Ok(WorkflowRunBranchAdmissionTxOutcome {
+        changed: !admitted.is_empty(),
+        admitted,
+        blocked_by_provider_preflight: false,
+    })
 }
 
 async fn reconcile_terminal_workflow_branches_in_tx(
@@ -772,6 +839,12 @@ struct TerminalWorkflowBranch {
     status: String,
 }
 
+struct WorkflowRunBranchAdmissionTxOutcome {
+    admitted: Vec<WorkflowRunBranchAdmission>,
+    changed: bool,
+    blocked_by_provider_preflight: bool,
+}
+
 struct ReadyBranchCandidate {
     step_run_id: String,
     step_id: String,
@@ -781,6 +854,12 @@ struct ReadyBranchCandidate {
     model_route_json: Option<Value>,
     workspace_json: Option<Value>,
     attempt: i64,
+}
+
+struct WorkflowBranchProviderPreflightBlock {
+    env_key: &'static str,
+    reason: &'static str,
+    reason_code: &'static str,
 }
 
 struct BackgroundBranchRunCreate<'a> {
@@ -873,7 +952,7 @@ FROM workflow_run_steps
 WHERE run_id = ?
   AND status = 'ready'
   AND background_agent_run_id IS NULL
-  AND approval_gate IS NULL
+  AND (approval_gate IS NULL OR approval_state = 'approved')
 ORDER BY sequence, step_id
         "#,
     )
@@ -900,6 +979,112 @@ ORDER BY sequence, step_id
             })
         })
         .collect()
+}
+
+async fn block_workflow_branch_provider_preflight_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run: &crate::WorkflowRun,
+    params: &WorkflowRunBranchAdmissionParams,
+    candidate: &ReadyBranchCandidate,
+    model_route_json: &Value,
+    preflight_block: &WorkflowBranchProviderPreflightBlock,
+    now_ms: i64,
+) -> anyhow::Result<bool> {
+    let updated = sqlx::query(
+        r#"
+UPDATE workflow_run_steps
+SET
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    updated_at_ms = ?
+WHERE step_run_id = ?
+  AND status = 'ready'
+  AND background_agent_run_id IS NULL
+        "#,
+    )
+    .bind(crate::WorkflowRunStepStatus::Blocked.as_str())
+    .bind(preflight_block.reason)
+    .bind(preflight_block.reason_code)
+    .bind(now_ms)
+    .bind(candidate.step_run_id.as_str())
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        r#"
+UPDATE workflow_run_step_verifiers
+SET
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    completed_at_ms = ?,
+    updated_at_ms = ?
+WHERE run_id = ?
+  AND step_id = ?
+  AND status NOT IN ('passed', 'failed', 'skipped')
+        "#,
+    )
+    .bind(crate::WorkflowRunStepVerifierStatus::Blocked.as_str())
+    .bind(preflight_block.reason)
+    .bind(preflight_block.reason_code)
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(run.run_id.as_str())
+    .bind(candidate.step_id.as_str())
+    .execute(&mut **tx)
+    .await?;
+    append_workflow_run_event_in_tx(
+        tx,
+        run.run_id.as_str(),
+        WorkflowRunEventAppend {
+            event_type: "branch_preflight_blocked",
+            actor_kind: "orchestrator",
+            actor_id: Some(params.owner_id.clone()),
+            step_run_id: Some(candidate.step_run_id.clone()),
+            verifier_run_id: None,
+            visibility: "internal",
+            payload: json!({
+                "stepId": candidate.step_id.as_str(),
+                "agentId": candidate.agent_id.as_str(),
+                "missingEnvKey": preflight_block.env_key,
+                "reasonCode": preflight_block.reason_code,
+                "route": workflow_branch_route_summary(model_route_json),
+            }),
+            now_ms,
+        },
+    )
+    .await?;
+    Ok(true)
+}
+
+fn workflow_branch_provider_preflight_block(
+    model_route_json: &Value,
+    provider_env_key_present: &impl Fn(&str) -> bool,
+) -> Option<WorkflowBranchProviderPreflightBlock> {
+    let uses_openrouter = ["model_gateway", "provider"].iter().any(|field| {
+        model_route_json
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(OPENROUTER_PROVIDER_ID))
+    });
+    if !uses_openrouter || provider_env_key_present(OPENROUTER_API_KEY_ENV_VAR) {
+        return None;
+    }
+
+    Some(WorkflowBranchProviderPreflightBlock {
+        env_key: OPENROUTER_API_KEY_ENV_VAR,
+        reason: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON,
+        reason_code: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE,
+    })
+}
+
+fn provider_env_key_present(env_key: &str) -> bool {
+    std::env::var(env_key).is_ok_and(|value| !value.trim().is_empty())
 }
 
 async fn existing_background_agent_run_id_by_idempotency_key_in_tx(
@@ -2376,6 +2561,15 @@ cleanup:
         (run, projection)
     }
 
+    async fn admit_test_workflow_run_branches(
+        runtime: &StateRuntime,
+        params: WorkflowRunBranchAdmissionParams,
+    ) -> anyhow::Result<Option<WorkflowRunBranchAdmissionOutcome>> {
+        runtime
+            .admit_workflow_run_branches_with_provider_env_check(params, |_| true)
+            .await
+    }
+
     async fn mark_projected_node_complete(
         runtime: &StateRuntime,
         projection: &WorkflowGoalPlanProjectionOutcome,
@@ -2583,8 +2777,9 @@ WHERE plan_id = ? AND key = ?
             .expect("advance should succeed")
             .expect("run should advance");
 
-        let admitted = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "branch-owner".to_string(),
                 generation: claim.generation,
@@ -2593,10 +2788,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: Some("version-workflow".to_string()),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("branch admission should succeed")
-            .expect("run should still be owned");
+            },
+        )
+        .await
+        .expect("branch admission should succeed")
+        .expect("run should still be owned");
 
         assert!(admitted.changed);
         assert_eq!(2, admitted.admitted.len());
@@ -2671,6 +2867,209 @@ WHERE plan_id = ? AND key = ?
     }
 
     #[tokio::test]
+    async fn workflow_branch_admission_blocks_openrouter_route_without_env_before_agent_run() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_branch_openrouter_missing_env",
+            parallel_branch_workflow_yaml(
+                "wf_branch_openrouter_missing_env",
+                /*step_count*/ 2,
+                /*max_parallel_steps*/ 2,
+                /*max_agents*/ 2,
+                /*max_worktrees*/ 2,
+                "missing-openrouter-env",
+            ),
+        )
+        .await;
+        let projection = runtime
+            .project_workflow_run_to_goal_plan(WorkflowGoalPlanProjectionParams {
+                workflow_run_id: run.run.run_id.clone(),
+                thread_id,
+                idempotency_key: Some("wf_branch_openrouter_missing_env-projection".to_string()),
+            })
+            .await
+            .expect("workflow projection should succeed")
+            .expect("workflow run should project");
+        let claim = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "missing-env-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("run should claim");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "missing-env-owner".to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("advance should succeed")
+            .expect("run should advance");
+
+        let admitted = runtime
+            .admit_workflow_run_branches_with_provider_env_check(
+                WorkflowRunBranchAdmissionParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "missing-env-owner".to_string(),
+                    generation: claim.generation,
+                    auth_profile_ref: None,
+                    config_fingerprint: None,
+                    version_fingerprint: None,
+                    parent_agent_run_id: None,
+                    max_active_background_agent_runs: Some(10),
+                },
+                |env_key| {
+                    assert_eq!(OPENROUTER_API_KEY_ENV_VAR, env_key);
+                    false
+                },
+            )
+            .await
+            .expect("branch admission should succeed")
+            .expect("run should still be owned");
+
+        assert!(admitted.changed);
+        assert!(admitted.admitted.is_empty());
+        assert_eq!(
+            crate::WorkflowRunStatus::Blocked,
+            admitted.snapshot.run.status
+        );
+        let step_states = admitted
+            .snapshot
+            .steps
+            .iter()
+            .map(|step| {
+                (
+                    step.step_id.clone(),
+                    step.status.clone(),
+                    step.reason_code.clone(),
+                    step.background_agent_run_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            vec![
+                (
+                    "branch_0".to_string(),
+                    crate::WorkflowRunStepStatus::Blocked,
+                    Some(WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE.to_string()),
+                    None,
+                ),
+                (
+                    "branch_1".to_string(),
+                    crate::WorkflowRunStepStatus::Ready,
+                    None,
+                    None,
+                ),
+            ],
+            step_states
+        );
+        let branch_verifier = admitted
+            .snapshot
+            .verifiers
+            .iter()
+            .find(|verifier| verifier.step_id == "branch_0")
+            .expect("blocked branch verifier should exist");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Blocked,
+            branch_verifier.status
+        );
+        assert_eq!(
+            Some(WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE),
+            branch_verifier.reason_code.as_deref()
+        );
+        let preflight_event = admitted
+            .snapshot
+            .events
+            .iter()
+            .find(|event| event.event_type == "branch_preflight_blocked")
+            .expect("preflight block event should be recorded");
+        let preflight_data = preflight_event
+            .event_payload_json
+            .get("data")
+            .expect("preflight event should store wrapped workflow data");
+        assert_eq!(
+            Some(OPENROUTER_API_KEY_ENV_VAR),
+            preflight_data.get("missingEnvKey").and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some(WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE),
+            preflight_data.get("reasonCode").and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("openrouter"),
+            preflight_data
+                .get("route")
+                .and_then(|route| route.get("modelGateway"))
+                .and_then(Value::as_str)
+        );
+        assert!(
+            !admitted
+                .snapshot
+                .events
+                .iter()
+                .any(|event| event.event_type == "branch_admitted")
+        );
+        let background_agent_runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM background_agent_runs")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background agent run count should load");
+        assert_eq!(0, background_agent_runs);
+        let execution_snapshots: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM background_agent_execution_snapshots")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("execution snapshot count should load");
+        assert_eq!(0, execution_snapshots);
+        let plan = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list")
+            .pop()
+            .expect("projection plan should exist");
+        assert_eq!(projection.plan_id, plan.plan.plan_id);
+        assert_eq!(crate::ThreadGoalPlanStatus::Blocked, plan.plan.status);
+        assert_eq!(
+            vec![
+                crate::ThreadGoalPlanNodeStatus::Blocked,
+                crate::ThreadGoalPlanNodeStatus::Blocked,
+            ],
+            plan.nodes
+                .iter()
+                .map(|node| node.status)
+                .collect::<Vec<_>>()
+        );
+
+        let retry = runtime
+            .admit_workflow_run_branches_with_provider_env_check(
+                WorkflowRunBranchAdmissionParams {
+                    run_id: run.run.run_id,
+                    owner_id: "missing-env-owner".to_string(),
+                    generation: claim.generation,
+                    auth_profile_ref: None,
+                    config_fingerprint: None,
+                    version_fingerprint: None,
+                    parent_agent_run_id: None,
+                    max_active_background_agent_runs: Some(10),
+                },
+                |_| true,
+            )
+            .await
+            .expect("retry admission should succeed")
+            .expect("blocked run should still be readable");
+        assert!(!retry.changed);
+        assert!(retry.admitted.is_empty());
+    }
+
+    #[tokio::test]
     async fn workflow_branch_admission_honors_max_worktrees_limit() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
@@ -2708,8 +3107,9 @@ WHERE plan_id = ? AND key = ?
             .expect("advance should succeed")
             .expect("run should advance");
 
-        let first_admission = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let first_admission = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "worktree-owner".to_string(),
                 generation: claim.generation,
@@ -2718,10 +3118,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("branch admission should succeed")
-            .expect("run should still be owned");
+            },
+        )
+        .await
+        .expect("branch admission should succeed")
+        .expect("run should still be owned");
 
         assert!(first_admission.changed);
         assert_eq!(
@@ -2751,8 +3152,9 @@ WHERE plan_id = ? AND key = ?
                 .count()
         );
 
-        let retry = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let retry = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "worktree-owner".to_string(),
                 generation: claim.generation,
@@ -2761,10 +3163,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("retry admission should succeed")
-            .expect("run should still be owned");
+            },
+        )
+        .await
+        .expect("retry admission should succeed")
+        .expect("run should still be owned");
         assert_eq!(0, retry.admitted.len());
 
         runtime
@@ -2785,8 +3188,9 @@ WHERE plan_id = ? AND key = ?
             .expect("reconcile should succeed")
             .expect("run should still be owned");
 
-        let second_admission = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let second_admission = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id,
                 owner_id: "worktree-owner".to_string(),
                 generation: claim.generation,
@@ -2795,10 +3199,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("second branch admission should succeed")
-            .expect("run should still be owned");
+            },
+        )
+        .await
+        .expect("second branch admission should succeed")
+        .expect("run should still be owned");
 
         assert!(second_admission.changed);
         assert_eq!(
@@ -2881,8 +3286,9 @@ WHERE plan_id = ? AND key = ?
             .expect("reclaim should succeed")
             .expect("run should reclaim");
 
-        let stale = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let stale = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "owner-a".to_string(),
                 generation: first_claim.generation,
@@ -2891,13 +3297,15 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("stale admission should not error");
+            },
+        )
+        .await
+        .expect("stale admission should not error");
         assert_eq!(None, stale);
 
-        let admitted = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "owner-b".to_string(),
                 generation: second_claim.generation,
@@ -2906,14 +3314,16 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("admission should succeed")
-            .expect("run should be owned");
+            },
+        )
+        .await
+        .expect("admission should succeed")
+        .expect("run should be owned");
         assert_eq!(1, admitted.admitted.len());
 
-        let retry = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let retry = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id,
                 owner_id: "owner-b".to_string(),
                 generation: second_claim.generation,
@@ -2922,10 +3332,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("retry should succeed")
-            .expect("run should be owned");
+            },
+        )
+        .await
+        .expect("retry should succeed")
+        .expect("run should be owned");
         assert_eq!(0, retry.admitted.len());
         let counts = runtime
             .count_background_agent_runs_by_status()
@@ -2978,8 +3389,9 @@ WHERE plan_id = ? AND key = ?
             .await
             .expect("advance should succeed")
             .expect("run should advance");
-        let admitted = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "owner".to_string(),
                 generation: claim.generation,
@@ -2988,10 +3400,11 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("admission should succeed")
-            .expect("run should be owned");
+            },
+        )
+        .await
+        .expect("admission should succeed")
+        .expect("run should be owned");
         let branch_run_id = admitted.admitted[0].background_agent_run_id.clone();
         let repo = unique_temp_dir().join("repo");
         let worktree = repo.join(".git").join("worktrees").join("branch-lease");
@@ -3137,8 +3550,9 @@ WHERE run_id = ?
             .await
             .expect("advance should succeed")
             .expect("run should advance");
-        let admitted = runtime
-            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "owner".to_string(),
                 generation: claim.generation,
@@ -3147,10 +3561,11 @@ WHERE run_id = ?
                 version_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
-            })
-            .await
-            .expect("admission should succeed")
-            .expect("run should be owned");
+            },
+        )
+        .await
+        .expect("admission should succeed")
+        .expect("run should be owned");
         runtime
             .update_background_agent_run_status(
                 admitted.admitted[0].background_agent_run_id.as_str(),
@@ -3502,6 +3917,358 @@ WHERE run_id = ?
                 .verifiers
                 .iter()
                 .all(|verifier| verifier.status == crate::WorkflowRunStepVerifierStatus::Skipped)
+        );
+    }
+
+    fn gated_approval_workflow_yaml() -> String {
+        r#"schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_gated_approval"
+display_name: "Gated Approval Test"
+source_prompt: "gated source prompt should not enter workflow events"
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "openai"
+  model: "gpt-5.4"
+  reasoning: "high"
+limits:
+  max_parallel_steps: 2
+  max_agents: 2
+  max_worktrees: 2
+  max_runtime_seconds: 3600
+  max_step_runtime_seconds: 120
+  max_tokens: 6000
+  max_tool_calls: 50
+approvals:
+  required_before:
+    - "human-review"
+agents:
+  - id: "agent_open"
+    display_name: "Adversary-Hypatia"
+    role: "Attack the open branch."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "agent_gated"
+    display_name: "Adversary-Cicero"
+    role: "Attack the gated branch."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+steps:
+  - id: "open_step"
+    title: "Open branch adversarial step"
+    agent: "agent_open"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "parallel"
+    depends_on: []
+    outputs:
+      - "open.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "open_artifact"
+          type: "artifact_contains"
+          artifact: "open.md"
+          must_contain:
+            - "done"
+  - id: "gated_step"
+    title: "Gated branch adversarial step"
+    agent: "agent_gated"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "parallel"
+    approval_gate: "human-review"
+    depends_on: []
+    outputs:
+      - "gated.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "gated_artifact"
+          type: "artifact_contains"
+          artifact: "gated.md"
+          must_contain:
+            - "done"
+artifacts:
+  retention: "until_workflow_complete"
+  required: []
+cleanup:
+  on_cancel: []
+  on_complete: []
+"#
+        .to_string()
+    }
+
+    fn find_step<'a>(
+        snapshot: &'a crate::WorkflowRunSnapshot,
+        step_id: &str,
+    ) -> &'a crate::WorkflowRunStep {
+        snapshot
+            .steps
+            .iter()
+            .find(|step| step.step_id == step_id)
+            .unwrap_or_else(|| panic!("snapshot should contain step `{step_id}`"))
+    }
+
+    async fn claim_and_advance(runtime: &StateRuntime, run_id: &str, owner_id: &str) -> i64 {
+        let claim = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("run should claim");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("advance should succeed")
+            .expect("run should advance");
+        claim.generation
+    }
+
+    async fn admit_branches(
+        runtime: &StateRuntime,
+        run_id: &str,
+        owner_id: &str,
+        generation: i64,
+    ) -> WorkflowRunBranchAdmissionOutcome {
+        runtime
+            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(10),
+            })
+            .await
+            .expect("branch admission should succeed")
+            .expect("run should still be owned")
+    }
+
+    #[tokio::test]
+    async fn gated_step_requires_explicit_approval_before_branch_admission() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_gated_approval",
+            gated_approval_workflow_yaml(),
+        )
+        .await;
+        let run_id = run.run.run_id.clone();
+
+        // The gated step is persisted awaiting a decision; the open step has no gate.
+        assert_eq!(
+            Some("pending"),
+            find_step(&run, "gated_step").approval_state.as_deref()
+        );
+        assert_eq!(
+            Some("human-review"),
+            find_step(&run, "gated_step").approval_gate.as_deref()
+        );
+        assert_eq!(None, find_step(&run, "open_step").approval_state);
+
+        let owner = "approval-owner";
+        let generation = claim_and_advance(&runtime, run_id.as_str(), owner).await;
+
+        // Only the ungated step is admitted while the gate is unresolved.
+        let first = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert_eq!(
+            vec!["open_step".to_string()],
+            first
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            crate::WorkflowRunStepStatus::Ready,
+            find_step(&first.snapshot, "gated_step").status,
+            "gated step must stay ready until approved"
+        );
+
+        // A repeat admission changes nothing while the gate is still pending.
+        let stalled = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert!(stalled.admitted.is_empty());
+
+        // Explicit user approval clears the gate and records provenance.
+        let approval = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: Some("reviewed and safe".to_string()),
+                actor_id: Some("user-1".to_string()),
+            })
+            .await
+            .expect("approval should succeed")
+            .expect("run should exist");
+        assert!(approval.changed);
+        assert!(approval.gate_present);
+        assert_eq!(
+            Some("approved"),
+            find_step(&approval.snapshot, "gated_step")
+                .approval_state
+                .as_deref()
+        );
+        let approval_event = approval
+            .snapshot
+            .events
+            .iter()
+            .find(|event| event.event_type == "step_approval_granted")
+            .expect("approval event should be recorded");
+        assert_eq!("user", approval_event.actor_kind);
+        assert_eq!(Some("user-1".to_string()), approval_event.actor_id);
+        assert_eq!(
+            "gated_step",
+            approval_event.event_payload_json["data"]["stepId"]
+                .as_str()
+                .expect("stepId")
+        );
+        assert_eq!(
+            true,
+            approval_event.event_payload_json["data"]["reasonProvided"]
+        );
+
+        // Re-approving is idempotent.
+        let repeat = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("repeat approval should succeed")
+            .expect("run should exist");
+        assert!(!repeat.changed);
+
+        // The approved step is now admitted on the next tick.
+        let second = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert_eq!(
+            vec!["gated_step".to_string()],
+            second
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_gated_step_skips_it_and_ignores_ungated_steps() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_gated_approval",
+            gated_approval_workflow_yaml(),
+        )
+        .await;
+        let run_id = run.run.run_id.clone();
+
+        // Rejecting a gated step skips it and records a sanitized reason only.
+        let rejection = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Reject,
+                reason: Some("commands:\n  - should-not-leak".to_string()),
+                actor_id: Some("user-1".to_string()),
+            })
+            .await
+            .expect("rejection should succeed")
+            .expect("run should exist");
+        assert!(rejection.changed);
+        let rejected = find_step(&rejection.snapshot, "gated_step");
+        assert_eq!(crate::WorkflowRunStepStatus::Skipped, rejected.status);
+        assert_eq!(Some("rejected"), rejected.approval_state.as_deref());
+        assert_eq!(
+            Some("user_rejected_approval"),
+            rejected.reason_code.as_deref()
+        );
+        assert!(!rejection.snapshot.events.iter().any(|event| {
+            serde_json::to_string(&event.event_payload_json)
+                .expect("payload should serialize")
+                .contains("should-not-leak")
+        }));
+
+        // Ungated steps are treated as no-ops and never fabricate a gate.
+        let ungated = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "open_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("ungated approval should succeed")
+            .expect("run should exist");
+        assert!(!ungated.changed);
+        assert!(!ungated.gate_present);
+        assert_eq!(
+            None,
+            find_step(&ungated.snapshot, "open_step").approval_state
+        );
+
+        // Unknown steps and runs resolve to None instead of erroring.
+        let unknown_step = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "missing_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("unknown step should not error");
+        assert!(unknown_step.is_none());
+
+        // The rejected gated step is never admitted for execution.
+        let owner = "reject-owner";
+        let generation = claim_and_advance(&runtime, run_id.as_str(), owner).await;
+        let admission = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert!(
+            !admission
+                .admitted
+                .iter()
+                .any(|branch| branch.step_id == "gated_step")
         );
     }
 }

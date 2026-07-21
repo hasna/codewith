@@ -16,6 +16,7 @@ use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::UsageLimitAutoResetCheckOutcome;
 use crate::chatwidget::create_initial_user_message;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use crate::chatwidget::tests::set_active_cell;
 use crate::chatwidget::tests::set_chatgpt_auth;
 use crate::chatwidget::tests::set_fast_mode_test_catalog;
 use crate::file_search::FileSearchManager;
@@ -120,11 +121,14 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyModifiers;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+use ratatui::buffer::Buffer;
 use ratatui::prelude::Line;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 use tokio::time;
 
@@ -149,6 +153,49 @@ fn large_stack_test_runtime() -> Result<tokio::runtime::Runtime> {
         .thread_stack_size(TEST_STACK_SIZE_BYTES)
         .enable_all()
         .build()?)
+}
+
+#[tokio::test]
+async fn chat_widget_frame_reuses_active_cell_height_across_frame_passes() {
+    #[derive(Debug)]
+    struct CountingHistoryCell {
+        desired_height_calls: Arc<AtomicUsize>,
+    }
+
+    impl HistoryCell for CountingHistoryCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("active cell")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("active cell")]
+        }
+
+        fn desired_height(&self, _width: u16) -> u16 {
+            self.desired_height_calls.fetch_add(1, Ordering::Relaxed);
+            1
+        }
+    }
+
+    let mut app = make_test_app().await;
+    let desired_height_calls = Arc::new(AtomicUsize::new(0));
+    set_active_cell(
+        &mut app.chat_widget,
+        Box::new(CountingHistoryCell {
+            desired_height_calls: Arc::clone(&desired_height_calls),
+        }),
+    );
+    let width = 80;
+    app.with_chat_widget_frame(width, |desired_height, chat_widget| {
+        let area = Rect::new(/*x*/ 0, /*y*/ 0, width, desired_height);
+        let mut buffer = Buffer::empty(area);
+
+        chat_widget.render(area, &mut buffer);
+        assert!(chat_widget.cursor_pos(area).is_some());
+        let _ = chat_widget.cursor_style(area);
+    });
+
+    assert_eq!(desired_height_calls.load(Ordering::Relaxed), 1);
 }
 
 async fn next_thread_settings_updated(

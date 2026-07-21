@@ -51,6 +51,15 @@ impl App {
                 .thread_workflow_get(thread_id, workflow_record_id)
                 .await
                 .map(|response| ThreadWorkflowDisplayResponse::Show(Box::new(response))),
+            ThreadWorkflowAction::Delete { workflow_record_id } => {
+                let record_id = workflow_record_id.clone();
+                app_server
+                    .thread_workflow_delete(thread_id, workflow_record_id)
+                    .await
+                    .map(|response| {
+                        ThreadWorkflowDisplayResponse::Delete(Box::new(response), record_id)
+                    })
+            }
             ThreadWorkflowAction::RunList => app_server
                 .thread_workflow_run_list(thread_id)
                 .await
@@ -87,6 +96,10 @@ impl App {
             Ok(ThreadWorkflowDisplayResponse::Show(response)) => {
                 self.chat_widget.show_thread_workflow_detail(*response);
             }
+            Ok(ThreadWorkflowDisplayResponse::Delete(response, workflow_record_id)) => {
+                self.chat_widget
+                    .show_thread_workflow_deleted(*response, workflow_record_id);
+            }
             Ok(ThreadWorkflowDisplayResponse::RunList(response)) => {
                 self.chat_widget.show_thread_workflow_run_summary(*response);
             }
@@ -120,6 +133,10 @@ impl App {
 enum ThreadWorkflowDisplayResponse {
     List(Box<codex_app_server_protocol::ThreadWorkflowListResponse>),
     Show(Box<codex_app_server_protocol::ThreadWorkflowGetResponse>),
+    Delete(
+        Box<codex_app_server_protocol::ThreadWorkflowDeleteResponse>,
+        String,
+    ),
     RunList(Box<codex_app_server_protocol::ThreadWorkflowRunListResponse>),
     RunShow(Box<codex_app_server_protocol::ThreadWorkflowRunGetResponse>),
     RunStart(Box<codex_app_server_protocol::ThreadWorkflowRunStartResponse>),
@@ -132,6 +149,7 @@ fn thread_workflow_action_name(action: &ThreadWorkflowAction) -> &'static str {
     match action {
         ThreadWorkflowAction::List => "read",
         ThreadWorkflowAction::Show { .. } => "read",
+        ThreadWorkflowAction::Delete { .. } => "delete",
         ThreadWorkflowAction::RunList => "list workflow runs",
         ThreadWorkflowAction::RunShow { .. } => "read workflow run",
         ThreadWorkflowAction::RunStart { .. } => "start workflow run",

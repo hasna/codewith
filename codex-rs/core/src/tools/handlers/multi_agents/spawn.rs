@@ -93,6 +93,8 @@ async fn handle_spawn_agent(
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
+    reject_forked_spawn_auth_profile(args.auth_profile.as_deref(), args.fork_context)?;
+    apply_spawn_agent_auth_profile(&mut config, args.auth_profile.as_deref())?;
     let source_role_name = if args.fork_context {
         if let Some(notice) = full_fork_ignored_overrides_notice(
             role_name,
@@ -231,6 +233,7 @@ struct SpawnAgentArgs {
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
+    auth_profile: Option<String>,
     #[serde(default)]
     fork_context: bool,
 }

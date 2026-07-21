@@ -3048,6 +3048,10 @@ async fn run_background_agent_worker(
     }
 
     let mut heartbeat = tokio::time::interval(BACKGROUND_AGENT_HEARTBEAT_INTERVAL);
+    // Tracks the most recent turn-scoped error so a `TurnComplete` that ends with
+    // no assistant message can be reclassified as a failure instead of a silent
+    // success. Reset at every `TurnStarted`.
+    let mut turn_error: Option<String> = None;
     loop {
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -3068,6 +3072,7 @@ async fn run_background_agent_worker(
                     thread.clone(),
                     event.msg,
                     &cancel_token,
+                    &mut turn_error,
                 ).await? {
                     return Ok(());
                 }
@@ -3439,9 +3444,11 @@ async fn handle_background_agent_event(
     thread: Arc<codex_core::CodexThread>,
     msg: EventMsg,
     cancel_token: &CancellationToken,
+    turn_error: &mut Option<String>,
 ) -> anyhow::Result<bool> {
     match msg {
         EventMsg::TurnStarted(event) => {
+            *turn_error = None;
             tolerate_transient_busy(
                 append_status(
                     context,
@@ -3714,7 +3721,66 @@ async fn handle_background_agent_event(
                 })
                 .await?;
         }
+        EventMsg::Error(event) => {
+            // Codex-core emits `EventMsg::Error` immediately before ending a turn
+            // (e.g. pre-sampling/auto compaction failed with
+            // `context_length_exceeded`). Record it so the trailing `TurnComplete`
+            // can be reclassified as a failure instead of a silent success.
+            *turn_error = Some(event.message.clone());
+            tolerate_transient_busy(
+                append_background_agent_event_with_retry(
+                    context,
+                    run_id,
+                    generation,
+                    "agent.error",
+                    &json!({ "message": event.message }),
+                    /*allow_terminal_current*/ false,
+                )
+                .await,
+                run_id,
+                "error event",
+            )?;
+        }
         EventMsg::TurnComplete(event) => {
+            // A turn that ends without a final assistant message *and* surfaced an
+            // error is a silent no-op, not a success. Report it as a failure with
+            // the observed error so background delegation cannot claim success
+            // while doing nothing, and so the supervisor stops resuming (and
+            // re-growing) the run. A no-message turn without an observed error is
+            // still classified as a failure by `background_agent_turn_complete_status`
+            // below, but with the generic reason.
+            if let Some(reason) =
+                turn_completion_failure_reason(event.last_agent_message.as_deref(), turn_error)
+            {
+                let status_reason = format!("turn failed: {reason}");
+                append_status(
+                    context,
+                    run_id,
+                    generation,
+                    BackgroundAgentRunStatus::Failed,
+                    &status_reason,
+                    "agent.failed",
+                    json!({
+                        "turnId": event.turn_id,
+                        "error": reason,
+                        "completedAt": event.completed_at,
+                        "durationMs": event.duration_ms,
+                    }),
+                )
+                .await?;
+                retry_transient_sqlite_busy("finish failed background agent process lease", || {
+                    context.state_db.finish_background_agent_process_lease(
+                        run_id,
+                        context.supervisor_id.as_str(),
+                        generation,
+                        Some(1),
+                        /*exit_signal*/ None,
+                        Some("turn failed"),
+                    )
+                })
+                .await?;
+                return Ok(true);
+            }
             let (status, status_reason, event_type, exit_code, lease_status_reason) =
                 background_agent_turn_complete_status(event.last_agent_message.as_deref());
             append_status(
@@ -4571,6 +4637,32 @@ fn elicitation_response_from_response(
     (decision, content, meta)
 }
 
+/// Decide whether a completed turn should be recorded as a failure.
+///
+/// Codex-core emits `EventMsg::Error` immediately before ending a failed turn
+/// (for example when pre-sampling or auto compaction fails with
+/// `context_length_exceeded`), then always emits a `TurnComplete` with
+/// `last_agent_message: None`. Without the recorded error this is
+/// indistinguishable from a legitimate tool-only turn that produced no final
+/// message, so the run would be reported as `Completed` while it actually did
+/// nothing — a dangerous silent success for background delegation.
+///
+/// Returns `Some(reason)` when the turn ended with no assistant message *and* an
+/// error was observed during the turn; the error is consumed so it does not leak
+/// into a later turn. Otherwise returns `None` (treat the turn as a success) and
+/// clears any stale recorded error.
+fn turn_completion_failure_reason(
+    last_agent_message: Option<&str>,
+    turn_error: &mut Option<String>,
+) -> Option<String> {
+    if last_agent_message.is_none() {
+        turn_error.take()
+    } else {
+        *turn_error = None;
+        None
+    }
+}
+
 fn core_event_type(msg: &EventMsg) -> &'static str {
     match msg {
         EventMsg::TurnStarted(_) => "core.turnStarted",
@@ -4651,6 +4743,39 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    #[test]
+    fn turn_completion_failure_reason_flags_silent_error_turn_as_failure() {
+        // A turn that surfaced an error and produced no assistant message is the
+        // dangerous silent no-op (e.g. compaction failed with
+        // context_length_exceeded): it must be reported as a failure, and the
+        // recorded error must be consumed.
+        let mut turn_error = Some("context_length_exceeded".to_string());
+        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        assert_eq!(reason.as_deref(), Some("context_length_exceeded"));
+        assert_eq!(turn_error, None);
+    }
+
+    #[test]
+    fn turn_completion_failure_reason_treats_tool_only_turn_as_success() {
+        // No error observed and no final message (e.g. a tool-only turn) is a
+        // legitimate completion, not a failure.
+        let mut turn_error = None;
+        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        assert_eq!(reason, None);
+        assert_eq!(turn_error, None);
+    }
+
+    #[test]
+    fn turn_completion_failure_reason_treats_message_turn_as_success_and_clears_error() {
+        // A turn that produced a final message is a success even if a transient
+        // error event was observed earlier; the stale error must be cleared so it
+        // cannot leak into a later turn.
+        let mut turn_error = Some("transient".to_string());
+        let reason = turn_completion_failure_reason(Some("done"), &mut turn_error);
+        assert_eq!(reason, None);
+        assert_eq!(turn_error, None);
+    }
 
     struct TestWorkerFixture {
         temp_dir: TempDir,

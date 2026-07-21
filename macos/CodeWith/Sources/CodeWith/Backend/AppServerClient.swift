@@ -126,6 +126,17 @@ final class AppServerClient: @unchecked Sendable {
         let inPipe = Pipe()
         let outPipe = Pipe()
         proc.executableURL = URL(fileURLWithPath: bin)
+        // Deliberately NOT passing `--remote-control` here. The app-server always
+        // stands up its remote-control handle for the stdio transport, so remote
+        // control is turned on at runtime via the `remoteControl/enable` RPC (the
+        // Machines screen's Enable action) and reported by `remoteControl/status/read`.
+        // Two reasons to avoid the spawn-time flag:
+        //   1. Older bundled/installed builds predate the hidden flag and clap
+        //      rejects unknown arguments hard, so the process would exit at launch
+        //      — killing the entire JSON-RPC connection, not just remote control.
+        //   2. The flag would force remote control on by every launch with no user
+        //      opt-in (enable/disable is in-memory only server-side), so an explicit
+        //      Enable is both safer and durable-by-intent.
         proc.arguments = ["app-server"]
         proc.standardInput = inPipe
         proc.standardOutput = outPipe

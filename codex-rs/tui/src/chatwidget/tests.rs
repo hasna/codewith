@@ -249,6 +249,7 @@ mod workflow_manager;
 mod worktree_display;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;
+pub(crate) use helpers::set_active_cell;
 pub(crate) use helpers::set_chatgpt_auth;
 pub(crate) use helpers::set_fast_mode_test_catalog;
 pub(super) use helpers::*;

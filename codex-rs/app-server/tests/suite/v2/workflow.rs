@@ -14,6 +14,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadWorkflowCreateResponse;
+use codex_app_server_protocol::ThreadWorkflowDeleteResponse;
 use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
 use codex_app_server_protocol::ThreadWorkflowRunCancelResponse;
@@ -243,6 +244,86 @@ async fn workflow_create_get_and_list_return_sanitized_metadata_without_side_eff
 
     assert_no_execution_side_effects(codex_home.path(), parse_thread_id(thread_id.as_str())?)
         .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn workflow_delete_removes_spec_and_reports_missing() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow delete")?;
+    let marker = codex_home.path().join("workflow-delete-command-ran");
+    let yaml = valid_workflow_yaml(&marker, "wf_app_server_delete_smoke");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+
+    // Deleting an unknown record is not an error; it simply reports deleted=false.
+    let missing_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": "workflow_does_not_exist",
+            })),
+        )
+        .await?;
+    let missing_resp = read_response(&mut mcp, missing_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&missing_resp.result)?)?;
+    let missing = to_response::<ThreadWorkflowDeleteResponse>(missing_resp)?;
+    assert!(!missing.deleted);
+
+    // Deleting the saved spec succeeds and does not leak raw YAML/prompt content.
+    let delete_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let delete_resp = read_response(&mut mcp, delete_id).await?;
+    assert_does_not_leak(&serde_json::to_string(&delete_resp.result)?)?;
+    let deleted = to_response::<ThreadWorkflowDeleteResponse>(delete_resp)?;
+    assert!(deleted.deleted);
+
+    // A follow-up get returns None now that the spec is gone.
+    let get_id = mcp
+        .send_raw_request(
+            "thread/workflow/get",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let get_resp = read_response(&mut mcp, get_id).await?;
+    let ThreadWorkflowGetResponse { workflow: loaded } =
+        to_response::<ThreadWorkflowGetResponse>(get_resp)?;
+    assert_eq!(None, loaded);
+
+    // Deleting again reports deleted=false rather than erroring.
+    let repeat_id = mcp
+        .send_raw_request(
+            "thread/workflow/delete",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+            })),
+        )
+        .await?;
+    let repeat_resp = read_response(&mut mcp, repeat_id).await?;
+    let repeat = to_response::<ThreadWorkflowDeleteResponse>(repeat_resp)?;
+    assert!(!repeat.deleted);
+    assert!(!marker.exists());
 
     Ok(())
 }

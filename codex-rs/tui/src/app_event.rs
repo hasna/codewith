@@ -1889,6 +1889,7 @@ impl AppEvent {
 pub(crate) enum ThreadWorkflowAction {
     List,
     Show { workflow_record_id: String },
+    Delete { workflow_record_id: String },
     RunList,
     RunShow { run_id: String },
     RunStart { workflow_record_id: String },

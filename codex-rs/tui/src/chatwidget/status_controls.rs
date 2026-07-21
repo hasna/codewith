@@ -10,14 +10,15 @@ use super::*;
 impl ChatWidget {
     /// Update the status indicator header and details.
     ///
-    /// Passing `None` clears any existing details.
+    /// Passing `None` clears any existing details. Returns whether the visible status indicator
+    /// requested a redraw.
     pub(super) fn set_status(
         &mut self,
         header: String,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
-    ) {
+    ) -> bool {
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {
@@ -35,19 +36,20 @@ impl ChatWidget {
             details_max_lines,
         };
         self.collab_wait_status.record_base_status(status.clone());
-        self.apply_status(status);
+        let status_indicator_updated = self.apply_status(status);
         if self.collab_wait_status.has_active_waits() {
             self.refresh_collab_wait_status_at(Instant::now());
         }
+        status_indicator_updated
     }
 
     pub(super) fn set_collab_wait_status(&mut self, status: StatusIndicatorState) {
         self.apply_status(status);
     }
 
-    fn apply_status(&mut self, status: StatusIndicatorState) {
+    fn apply_status(&mut self, status: StatusIndicatorState) -> bool {
         self.status_state.set_status(status.clone());
-        self.bottom_pane.update_status(
+        let status_indicator_updated = self.bottom_pane.update_status(
             status.header,
             status.details,
             StatusDetailsCapitalization::Preserve,
@@ -65,17 +67,19 @@ impl ChatWidget {
         {
             self.refresh_status_surfaces();
         }
+        status_indicator_updated
     }
 
     /// Convenience wrapper around [`Self::set_status`];
-    /// updates the status indicator header and clears any existing details.
-    pub(super) fn set_status_header(&mut self, header: String) {
+    /// updates the status indicator header and clears any existing details, returning whether the
+    /// visible status indicator requested a redraw.
+    pub(super) fn set_status_header(&mut self, header: String) -> bool {
         self.set_status(
             header,
             /*details*/ None,
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
-        );
+        )
     }
 
     /// Sets or clears model-authored statusline display text.
@@ -106,12 +110,19 @@ impl ChatWidget {
         self.bottom_pane.set_status_line_hyperlink(url);
     }
 
-    /// Forwards the contextual active-agent label into the bottom-pane footer pipeline.
+    /// Caches the contextual active-agent label and refreshes the status surfaces.
     ///
-    /// `ChatWidget` stays a pass-through here so `App` remains the owner of "which thread is the
-    /// user actually looking at?" and the footer stack remains a pure renderer of that decision.
+    /// `App` remains the owner of "which thread is the user actually looking at?" and pushes the
+    /// derived label here. The value feeds the toggleable `active-agent` status-line segment via
+    /// [`Self::status_line_value_for_item`]; `None` (single-agent sessions) omits the segment. We
+    /// only recompute the status line when the label actually changes to avoid redundant redraws
+    /// during thread transitions where `App` may recompute the label several times.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
-        self.bottom_pane.set_active_agent_label(active_agent_label);
+        if self.active_agent_label == active_agent_label {
+            return;
+        }
+        self.active_agent_label = active_agent_label;
+        self.refresh_status_surfaces();
     }
 
     /// Recomputes footer status-line content from config and current runtime state.

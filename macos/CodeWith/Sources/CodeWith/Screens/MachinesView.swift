@@ -5,8 +5,13 @@ struct MachinesView: View {
     var machines: [MachineInfo] = []
     var error: String? = nil
     var pairing: MachinePairingInfo? = nil
+    var remoteControl: RemoteControlStatusInfo? = nil
     var onStartPairing: () -> Void = {}
     var onCheckPairing: () -> Void = {}
+    var onSetRemoteControlEnabled: (Bool) -> Void = { _ in }
+    var onUpdateTrust: (MachineInfo, MachineTrustState) -> Void = { _, _ in }
+    var onDisableMachine: (MachineInfo) -> Void = { _ in }
+    var onForgetMachine: (MachineInfo) -> Void = { _ in }
     @State private var showingAddMachine = false
 
     private let columns = [
@@ -27,6 +32,11 @@ struct MachinesView: View {
             Rectangle().fill(Theme.separator).frame(height: 1)
 
             ScrollColumn(spacing: 0) {
+                if let remoteControl {
+                    remoteControlBanner(remoteControl)
+                        .padding(.horizontal, 28)
+                        .padding(.top, 20)
+                }
                 if let error {
                     Text("Machines unavailable: \(error)")
                         .font(.system(size: 12))
@@ -156,6 +166,58 @@ struct MachinesView: View {
         .background(Theme.canvas)
     }
 
+    // Remote-control availability banner + toggle.
+    private func remoteControlBanner(_ rc: RemoteControlStatusInfo) -> some View {
+        let presentation = remoteControlPresentation(rc.status)
+        return HStack(spacing: 10) {
+            Circle().fill(presentation.color).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Remote control · \(presentation.label)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
+                if !rc.serverName.isEmpty {
+                    Text(rc.serverName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Button {
+                onSetRemoteControlEnabled(!rc.isAvailable)
+            } label: {
+                Text(rc.isAvailable ? "Disable" : "Enable")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(rc.isAvailable ? Theme.textSecondary : Theme.accentForeground)
+                    .padding(.horizontal, 12).frame(height: 26)
+                    .background(
+                        Capsule().fill(rc.isAvailable ? Theme.fieldFill : Theme.accent)
+                            .overlay(Capsule().strokeBorder(Theme.cardStroke, lineWidth: rc.isAvailable ? 1 : 0))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                .fill(Theme.fieldFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+                        .strokeBorder(Theme.cardStroke, lineWidth: 1)
+                )
+        )
+    }
+
+    private func remoteControlPresentation(_ status: String) -> (label: String, color: Color) {
+        switch status.lowercased() {
+        case "connected": return ("connected", Theme.success)
+        case "connecting": return ("connecting", Theme.warning)
+        case "errored": return ("error", Theme.danger)
+        default: return ("disabled", Theme.textTertiary)
+        }
+    }
+
     private func osLabel(_ os: String) -> String {
         let l = os.lowercased()
         if l.contains("mac") || l.contains("darwin") { return "macOS" }
@@ -214,6 +276,31 @@ struct MachinesView: View {
                         .strokeBorder(Theme.cardStroke, lineWidth: 1)
                 )
         )
+        .contextMenu { machineMenu(m) }
+    }
+
+    /// Trust / disable / forget controls. The local machine can't have its trust
+    /// reassigned, disabled, or forgotten, so those actions are omitted for it.
+    @ViewBuilder
+    private func machineMenu(_ m: MachineInfo) -> some View {
+        if !m.isLocal {
+            Menu("Set trust") {
+                ForEach(MachineTrustState.allCases.filter { $0 != .local }, id: \.rawValue) { state in
+                    Button {
+                        onUpdateTrust(m, state)
+                    } label: {
+                        if m.trustState == state.rawValue {
+                            Label(state.rawValue.capitalized, systemImage: "checkmark")
+                        } else {
+                            Text(state.rawValue.capitalized)
+                        }
+                    }
+                }
+            }
+            Button("Disable") { onDisableMachine(m) }
+            Divider()
+            Button("Forget", role: .destructive) { onForgetMachine(m) }
+        }
     }
 
     private func statusPresentation(_ status: String) -> (icon: String, label: String, color: Color) {

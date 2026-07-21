@@ -83,9 +83,7 @@ impl ChatWidget {
         self.quit_shortcut_key = None;
         self.update_task_running_state();
         self.status_state.retry_status_header = None;
-        if self.active_hook_cell.take().is_some() {
-            self.bump_active_cell_revision();
-        }
+        self.clear_active_hook_cell();
         self.status_state.pending_status_indicator_restore = false;
         self.bottom_pane
             .set_interrupt_hint_visible(/*visible*/ true);
@@ -93,8 +91,9 @@ impl ChatWidget {
         if self.mcp_startup_status.is_none() || !self.status_header_is_mcp_startup_owned() {
             self.set_status_header(String::from("Working"));
         }
-        self.full_reasoning_buffer.clear();
+        self.reasoning_summary_parts.clear();
         self.reasoning_buffer.clear();
+        self.reasoning_header = None;
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Running,
             /*body*/ None,
@@ -189,6 +188,7 @@ impl ChatWidget {
         self.status_state.agent_statusline = None;
         self.collab_wait_status.clear_active_waits();
         self.input_queue.user_turn_pending_start = false;
+        self.clear_active_hook_cell();
         self.turn_lifecycle.finish();
         self.update_task_running_state();
         self.clear_usage_self_heal_turn();
@@ -330,9 +330,7 @@ impl ChatWidget {
         // Turn-scoped hook rows are transient live state; once the turn is over,
         // do not leave an orphaned running row behind if no matching completion
         // event arrived before cancellation.
-        if self.active_hook_cell.take().is_some() {
-            self.bump_active_cell_revision();
-        }
+        self.clear_active_hook_cell();
         // Reset running state and clear streaming buffers.
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();

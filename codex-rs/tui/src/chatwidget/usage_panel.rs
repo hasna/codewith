@@ -16,6 +16,7 @@ use crate::bottom_pane::SelectionTab;
 use crate::minimax_usage::MiniMaxUsageSnapshot;
 use crate::minimax_usage::MiniMaxUsageWindow;
 use crate::slash_command::SlashCommand;
+use crate::status::credits_display_value;
 use crate::status::format_status_limit_summary;
 use codex_model_provider_info::MINIMAX_PROVIDER_ID;
 use ratatui::widgets::Paragraph;
@@ -48,11 +49,27 @@ pub(super) enum UsagePanelMiniMaxUsageState {
     },
 }
 
+/// One workspace spend-control ("individual") monthly credit limit, shaped for
+/// the `/usage` panel rows.
+#[derive(Debug, Clone, PartialEq)]
+struct UsageIndividualLimitRow {
+    percent_left: f64,
+    used: String,
+    limit: String,
+    resets_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct UsagePanelData {
     status: StatusPanelData,
     account_limits_supported: bool,
     rate_limit_state: UsagePanelRateLimitState,
+    /// Rendered account credit-balance values (for example `"25 credits"` or
+    /// `"Unlimited"`), one per rate-limit snapshot that reports credits.
+    credits: Vec<String>,
+    /// Workspace spend-control monthly credit limits, one per snapshot that
+    /// reports an individual limit.
+    individual_limits: Vec<UsageIndividualLimitRow>,
     reset_credits_available: Option<i64>,
     usage_limit_auto_reset_enabled: bool,
     minimax_usage_state: Option<UsagePanelMiniMaxUsageState>,
@@ -170,6 +187,8 @@ impl ChatWidget {
             status: self.status_panel_data(),
             account_limits_supported: self.should_prefetch_rate_limits(),
             rate_limit_state: self.usage_panel_rate_limit_state.clone(),
+            credits: self.usage_panel_credit_values(),
+            individual_limits: self.usage_panel_individual_limits(),
             reset_credits_available: self
                 .rate_limit_reset_credits
                 .as_ref()
@@ -179,6 +198,32 @@ impl ChatWidget {
                 .is_minimax_provider_active_for_usage_panel()
                 .then(|| self.usage_panel_minimax_usage_state.clone()),
         }
+    }
+
+    /// Rendered credit-balance values plumbed from the cached rate-limit
+    /// snapshots. Snapshots without credit tracking are skipped so the panel
+    /// only surfaces balances the backend actually reports.
+    fn usage_panel_credit_values(&self) -> Vec<String> {
+        self.rate_limit_snapshots_by_limit_id
+            .values()
+            .filter_map(|snapshot| snapshot.credits.as_ref())
+            .filter_map(credits_display_value)
+            .collect()
+    }
+
+    /// Workspace spend-control ("individual") monthly credit limits plumbed from
+    /// the cached rate-limit snapshots.
+    fn usage_panel_individual_limits(&self) -> Vec<UsageIndividualLimitRow> {
+        self.rate_limit_snapshots_by_limit_id
+            .values()
+            .filter_map(|snapshot| snapshot.individual_limit.as_ref())
+            .map(|limit| UsageIndividualLimitRow {
+                percent_left: limit.percent_remaining.clamp(0.0, 100.0),
+                used: limit.used.clone(),
+                limit: limit.limit.clone(),
+                resets_at: limit.resets_at.clone(),
+            })
+            .collect()
     }
 
     fn is_minimax_provider_active_for_usage_panel(&self) -> bool {
@@ -254,6 +299,8 @@ fn usage_items(data: &UsagePanelData) -> Vec<SelectionItem> {
         ),
     ));
     items.extend(rate_limit_items(data));
+    items.extend(credit_items(data));
+    items.extend(individual_limit_items(data));
     items.extend(rate_limit_reset_items(data));
     if let Some(minimax_state) = data.minimax_usage_state.as_ref() {
         items.extend(minimax_usage_items(minimax_state));
@@ -322,6 +369,39 @@ fn rate_limit_items(data: &UsagePanelData) -> Vec<SelectionItem> {
         UsagePanelRateLimitState::Idle => {}
     }
     items
+}
+
+fn credit_items(data: &UsagePanelData) -> Vec<SelectionItem> {
+    if !data.account_limits_supported {
+        return Vec::new();
+    }
+    data.credits
+        .iter()
+        .map(|value| info_row("Credits", value.clone()))
+        .collect()
+}
+
+fn individual_limit_items(data: &UsagePanelData) -> Vec<SelectionItem> {
+    if !data.account_limits_supported {
+        return Vec::new();
+    }
+    data.individual_limits
+        .iter()
+        .map(|limit| {
+            let resets = limit
+                .resets_at
+                .as_ref()
+                .map(|resets| format!(" · resets {resets}"))
+                .unwrap_or_default();
+            info_row(
+                "Monthly credit limit",
+                format!(
+                    "{:.0}% left · {} / {} credits{resets}",
+                    limit.percent_left, limit.used, limit.limit
+                ),
+            )
+        })
+        .collect()
 }
 
 fn rate_limit_reset_items(data: &UsagePanelData) -> Vec<SelectionItem> {
@@ -491,6 +571,8 @@ mod tests {
             status: sample_status(),
             account_limits_supported: true,
             rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: Vec::new(),
+            individual_limits: Vec::new(),
             reset_credits_available: None,
             usage_limit_auto_reset_enabled: false,
             minimax_usage_state: None,
@@ -520,6 +602,8 @@ mod tests {
             status,
             account_limits_supported: false,
             rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: Vec::new(),
+            individual_limits: Vec::new(),
             reset_credits_available: Some(2),
             usage_limit_auto_reset_enabled: true,
             minimax_usage_state: None,
@@ -556,6 +640,8 @@ mod tests {
             status: sample_status(),
             account_limits_supported: true,
             rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: Vec::new(),
+            individual_limits: Vec::new(),
             reset_credits_available: Some(4),
             usage_limit_auto_reset_enabled: true,
             minimax_usage_state: None,
@@ -571,5 +657,95 @@ mod tests {
             Some("4 usage limit resets available · auto on")
         );
         assert!(!reset.actions.is_empty());
+    }
+
+    #[test]
+    fn usage_panel_shows_credit_balance_and_monthly_limit() {
+        let params = build_usage_panel_params(UsagePanelData {
+            status: sample_status(),
+            account_limits_supported: true,
+            rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: vec!["25 credits".to_string()],
+            individual_limits: vec![UsageIndividualLimitRow {
+                percent_left: 68.0,
+                used: "8,000".to_string(),
+                limit: "25,000".to_string(),
+                resets_at: Some("Aug 1".to_string()),
+            }],
+            reset_credits_available: None,
+            usage_limit_auto_reset_enabled: false,
+            minimax_usage_state: None,
+        });
+        let items = &params.tabs[0].items;
+
+        let credits = items
+            .iter()
+            .find(|item| item.name == "Credits")
+            .and_then(|item| item.description.as_deref());
+        assert_eq!(credits, Some("25 credits"));
+
+        let monthly = items
+            .iter()
+            .find(|item| item.name == "Monthly credit limit")
+            .and_then(|item| item.description.as_deref());
+        assert_eq!(
+            monthly,
+            Some("68% left · 8,000 / 25,000 credits · resets Aug 1")
+        );
+    }
+
+    #[test]
+    fn usage_panel_monthly_limit_without_reset_omits_reset_suffix() {
+        let params = build_usage_panel_params(UsagePanelData {
+            status: sample_status(),
+            account_limits_supported: true,
+            rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: Vec::new(),
+            individual_limits: vec![UsageIndividualLimitRow {
+                percent_left: 100.0,
+                used: "0".to_string(),
+                limit: "25,000".to_string(),
+                resets_at: None,
+            }],
+            reset_credits_available: None,
+            usage_limit_auto_reset_enabled: false,
+            minimax_usage_state: None,
+        });
+
+        let monthly = params.tabs[0]
+            .items
+            .iter()
+            .find(|item| item.name == "Monthly credit limit")
+            .and_then(|item| item.description.as_deref());
+        assert_eq!(monthly, Some("100% left · 0 / 25,000 credits"));
+    }
+
+    #[test]
+    fn usage_panel_hides_credits_and_monthly_limit_when_account_limits_unsupported() {
+        let params = build_usage_panel_params(UsagePanelData {
+            status: sample_status(),
+            account_limits_supported: false,
+            rate_limit_state: UsagePanelRateLimitState::Idle,
+            credits: vec!["25 credits".to_string()],
+            individual_limits: vec![UsageIndividualLimitRow {
+                percent_left: 68.0,
+                used: "8,000".to_string(),
+                limit: "25,000".to_string(),
+                resets_at: Some("Aug 1".to_string()),
+            }],
+            reset_credits_available: None,
+            usage_limit_auto_reset_enabled: false,
+            minimax_usage_state: None,
+        });
+        let items = &params.tabs[0].items;
+
+        assert!(
+            !items.iter().any(|item| item.name == "Credits"),
+            "/usage must hide credit balance when account limits are unsupported"
+        );
+        assert!(
+            !items.iter().any(|item| item.name == "Monthly credit limit"),
+            "/usage must hide the spend-control limit when account limits are unsupported"
+        );
     }
 }

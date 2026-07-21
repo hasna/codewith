@@ -931,6 +931,158 @@ final class AppServerRequestShapeTests: XCTestCase {
             obj(["pairingCode": .string("pair-code")]))
     }
 
+    func testMachineRegistryMachineIdParams() {
+        XCTAssertEqual(
+            AppServerClient.machineRegistryMachineIdParams(machineId: "machine-1"),
+            obj(["machineId": .string("machine-1")]))
+    }
+
+    func testMachineRegistryUpdateTrustParams() {
+        XCTAssertEqual(
+            AppServerClient.machineRegistryUpdateTrustParams(machineId: "machine-1", trustState: .trusted),
+            obj([
+                "machineId": .string("machine-1"),
+                "trustState": .string("trusted"),
+            ]))
+        // The wire values must match the Rust `MachineRegistryTrustState` camelCase serde.
+        XCTAssertEqual(MachineTrustState.local.rawValue, "local")
+        XCTAssertEqual(MachineTrustState.trusted.rawValue, "trusted")
+        XCTAssertEqual(MachineTrustState.untrusted.rawValue, "untrusted")
+        XCTAssertEqual(MachineTrustState.disabled.rawValue, "disabled")
+        XCTAssertEqual(MachineTrustState.revoked.rawValue, "revoked")
+    }
+
+    func testRemoteDispatchNegotiateParamsOmitsNilFields() {
+        XCTAssertEqual(
+            AppServerClient.remoteDispatchNegotiateParams(),
+            obj([:]))
+        XCTAssertEqual(
+            AppServerClient.remoteDispatchNegotiateParams(
+                sourceMachineId: "src",
+                targetMachineId: "dst",
+                protocolVersion: 2,
+                requestedCapabilities: ["durableMailboxEnqueue", "auditReceipts"]),
+            obj([
+                "sourceMachineId": .string("src"),
+                "targetMachineId": .string("dst"),
+                "protocolVersion": .number(2),
+                "requestedCapabilities": .array([
+                    .string("durableMailboxEnqueue"),
+                    .string("auditReceipts"),
+                ]),
+            ]))
+    }
+
+    func testRemoteDispatchSubmitParams() {
+        let operation = obj([
+            "type": .string("enqueueInstruction"),
+            "params": obj([
+                "targetThreadId": .string("thread-9"),
+                "message": .string("go"),
+            ]),
+        ])
+        XCTAssertEqual(
+            AppServerClient.remoteDispatchSubmitParams(
+                requestId: "req-1",
+                sourceMachineId: "src",
+                targetMachineId: "dst",
+                idempotencyKey: "idem-1",
+                operation: operation,
+                requestedAt: 100,
+                expiresAt: 200,
+                capabilityVersion: "1",
+                dryRun: true),
+            obj([
+                "requestId": .string("req-1"),
+                "sourceMachineId": .string("src"),
+                "targetMachineId": .string("dst"),
+                "idempotencyKey": .string("idem-1"),
+                "operation": operation,
+                "requestedAt": .number(100),
+                "expiresAt": .number(200),
+                "capabilityVersion": .string("1"),
+                "dryRun": .bool(true),
+            ]))
+    }
+
+    func testRemoteDispatchSubmitParamsOmitsDryRunAndOptionalFieldsWhenDefault() {
+        let operation = obj(["type": .string("mailboxReceipts"), "params": obj([:])])
+        XCTAssertEqual(
+            AppServerClient.remoteDispatchSubmitParams(
+                requestId: "req-2",
+                sourceMachineId: "src",
+                targetMachineId: "dst",
+                idempotencyKey: "idem-2",
+                operation: operation),
+            obj([
+                "requestId": .string("req-2"),
+                "sourceMachineId": .string("src"),
+                "targetMachineId": .string("dst"),
+                "idempotencyKey": .string("idem-2"),
+                "operation": operation,
+            ]))
+    }
+
+    func testRemoteControlStatusInfoDecodesCamelCaseFields() {
+        let info = RemoteControlStatusInfo(from: obj([
+            "status": .string("connected"),
+            "serverName": .string("spark01"),
+            "installationId": .string("install-123"),
+            "environmentId": .string("env-9"),
+        ]))
+        XCTAssertEqual(info.status, "connected")
+        XCTAssertEqual(info.serverName, "spark01")
+        XCTAssertEqual(info.installationId, "install-123")
+        XCTAssertEqual(info.environmentId, "env-9")
+        XCTAssertTrue(info.isConnected)
+        XCTAssertTrue(info.isAvailable)
+
+        let disabled = RemoteControlStatusInfo(from: obj(["status": .string("disabled")]))
+        XCTAssertFalse(disabled.isConnected)
+        XCTAssertFalse(disabled.isAvailable)
+        XCTAssertNil(disabled.environmentId)
+    }
+
+    func testRemoteDispatchNegotiationInfoDecodesArrays() {
+        let info = RemoteDispatchNegotiationInfo(from: obj([
+            "protocolVersion": .number(1),
+            "requiredTrustState": .string("trusted"),
+            "supportedCapabilities": .array([.string("idempotency"), .string("auditReceipts")]),
+            "supportedOperations": .array([.string("enqueueInstruction")]),
+            "deniedOperationClasses": .array([.string("shell"), .string("config")]),
+            "localMachineId": .string("local-1"),
+        ]))
+        XCTAssertEqual(info.protocolVersion, 1)
+        XCTAssertEqual(info.requiredTrustState, "trusted")
+        XCTAssertEqual(info.supportedCapabilities, ["idempotency", "auditReceipts"])
+        XCTAssertEqual(info.supportedOperations, ["enqueueInstruction"])
+        XCTAssertEqual(info.deniedOperationClasses, ["shell", "config"])
+        XCTAssertEqual(info.localMachineId, "local-1")
+    }
+
+    func testRemoteDispatchSubmitInfoPreservesCamelCaseStatus() {
+        // `dryRun` is the only multi-word status; it must survive verbatim so
+        // callers can detect a dry-run receipt.
+        let info = RemoteDispatchSubmitInfo(from: obj([
+            "status": .string("dryRun"),
+            "requestId": .string("req-1"),
+            "receipt": obj(["receiptId": .string("rcpt-1")]),
+        ]))
+        XCTAssertEqual(info.status, "dryRun")
+        XCTAssertEqual(info.requestId, "req-1")
+        XCTAssertEqual(info.receipt, obj(["receiptId": .string("rcpt-1")]))
+        XCTAssertNil(info.result)
+
+        let accepted = RemoteDispatchSubmitInfo(from: obj([
+            "status": .string("accepted"),
+            "requestId": .string("req-2"),
+            "receipt": .null,
+            "result": obj(["type": .string("mailboxReceipts")]),
+        ]))
+        XCTAssertEqual(accepted.status, "accepted")
+        XCTAssertEqual(accepted.result, obj(["type": .string("mailboxReceipts")]))
+    }
+
     func testConfigWriteParamsForDesktopSettings() {
         XCTAssertEqual(
             AppServerClient.configWriteParams(keyPath: "desktop.showMenuBar", value: .bool(false)),

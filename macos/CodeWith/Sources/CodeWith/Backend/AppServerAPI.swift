@@ -1137,6 +1137,174 @@ extension AppServerClient {
         return .object(["pairingCode": .string(pairing.pairingCode)])
     }
 
+    // MARK: Remote control status
+
+    /// Read the current remote-control connection status + remote identity.
+    /// (`remoteControl/status/read`, no params.)
+    func readRemoteControlStatus() async throws -> RemoteControlStatusInfo {
+        let r = try await request("remoteControl/status/read", .null, timeout: 20)
+        return RemoteControlStatusInfo(from: r)
+    }
+
+    /// Enable remote control for the app-owned app-server. Returns the resulting
+    /// status; on builds/configs without a state DB the server reports it
+    /// unavailable rather than crashing.
+    func enableRemoteControl() async throws -> RemoteControlStatusInfo {
+        let r = try await request("remoteControl/enable", .null, timeout: 30)
+        return RemoteControlStatusInfo(from: r)
+    }
+
+    func disableRemoteControl() async throws -> RemoteControlStatusInfo {
+        let r = try await request("remoteControl/disable", .null, timeout: 20)
+        return RemoteControlStatusInfo(from: r)
+    }
+
+    // MARK: Machine registry management
+
+    /// Read a single machine's registry entry (`machineRegistry/read`).
+    func readMachine(machineId: String) async throws -> MachineInfo? {
+        let r = try await request(
+            "machineRegistry/read",
+            Self.machineRegistryMachineIdParams(machineId: machineId),
+            timeout: 20)
+        guard let machine = r["machine"], !machine.isNull else { return nil }
+        return MachineInfo(registryValue: machine)
+    }
+
+    /// Change a machine's trust state (`machineRegistry/updateTrust`).
+    @discardableResult
+    func updateMachineTrust(machineId: String, trustState: MachineTrustState) async throws -> MachineInfo? {
+        let r = try await request(
+            "machineRegistry/updateTrust",
+            Self.machineRegistryUpdateTrustParams(machineId: machineId, trustState: trustState),
+            timeout: 20)
+        guard let machine = r["machine"], !machine.isNull else { return nil }
+        return MachineInfo(registryValue: machine)
+    }
+
+    /// Disable a machine (`machineRegistry/disable`).
+    @discardableResult
+    func disableMachine(machineId: String) async throws -> MachineInfo? {
+        let r = try await request(
+            "machineRegistry/disable",
+            Self.machineRegistryMachineIdParams(machineId: machineId),
+            timeout: 20)
+        guard let machine = r["machine"], !machine.isNull else { return nil }
+        return MachineInfo(registryValue: machine)
+    }
+
+    /// Forget a machine (`machineRegistry/forget`). Returns whether it existed.
+    @discardableResult
+    func forgetMachine(machineId: String) async throws -> Bool {
+        let r = try await request(
+            "machineRegistry/forget",
+            Self.machineRegistryMachineIdParams(machineId: machineId),
+            timeout: 20)
+        return r["found"]?.bool ?? false
+    }
+
+    static func machineRegistryMachineIdParams(machineId: String) -> JSONValue {
+        .object(["machineId": .string(machineId)])
+    }
+
+    static func machineRegistryUpdateTrustParams(machineId: String, trustState: MachineTrustState) -> JSONValue {
+        .object([
+            "machineId": .string(machineId),
+            "trustState": .string(trustState.rawValue),
+        ])
+    }
+
+    // MARK: Remote dispatch
+
+    /// Negotiate the remote-dispatch protocol/capabilities with a peer machine
+    /// (`remoteDispatch/negotiate`).
+    func negotiateRemoteDispatch(
+        sourceMachineId: String? = nil,
+        targetMachineId: String? = nil,
+        protocolVersion: Int? = nil,
+        requestedCapabilities: [String]? = nil
+    ) async throws -> RemoteDispatchNegotiationInfo {
+        let r = try await request(
+            "remoteDispatch/negotiate",
+            Self.remoteDispatchNegotiateParams(
+                sourceMachineId: sourceMachineId,
+                targetMachineId: targetMachineId,
+                protocolVersion: protocolVersion,
+                requestedCapabilities: requestedCapabilities),
+            timeout: 20)
+        return RemoteDispatchNegotiationInfo(from: r)
+    }
+
+    /// Submit a remote-dispatch operation to a target machine
+    /// (`remoteDispatch/submit`). `operation` is a tagged `{type, params}` value.
+    func submitRemoteDispatch(
+        requestId: String,
+        sourceMachineId: String,
+        targetMachineId: String,
+        idempotencyKey: String,
+        operation: JSONValue,
+        requestedAt: Int? = nil,
+        expiresAt: Int? = nil,
+        capabilityVersion: String? = nil,
+        dryRun: Bool = false
+    ) async throws -> RemoteDispatchSubmitInfo {
+        let r = try await request(
+            "remoteDispatch/submit",
+            Self.remoteDispatchSubmitParams(
+                requestId: requestId,
+                sourceMachineId: sourceMachineId,
+                targetMachineId: targetMachineId,
+                idempotencyKey: idempotencyKey,
+                operation: operation,
+                requestedAt: requestedAt,
+                expiresAt: expiresAt,
+                capabilityVersion: capabilityVersion,
+                dryRun: dryRun),
+            timeout: 30)
+        return RemoteDispatchSubmitInfo(from: r)
+    }
+
+    static func remoteDispatchNegotiateParams(
+        sourceMachineId: String? = nil,
+        targetMachineId: String? = nil,
+        protocolVersion: Int? = nil,
+        requestedCapabilities: [String]? = nil
+    ) -> JSONValue {
+        var params: [String: JSONValue] = [:]
+        if let sourceMachineId { params["sourceMachineId"] = .string(sourceMachineId) }
+        if let targetMachineId { params["targetMachineId"] = .string(targetMachineId) }
+        if let protocolVersion { params["protocolVersion"] = .number(Double(protocolVersion)) }
+        if let requestedCapabilities {
+            params["requestedCapabilities"] = .array(requestedCapabilities.map(JSONValue.string))
+        }
+        return .object(params)
+    }
+
+    static func remoteDispatchSubmitParams(
+        requestId: String,
+        sourceMachineId: String,
+        targetMachineId: String,
+        idempotencyKey: String,
+        operation: JSONValue,
+        requestedAt: Int? = nil,
+        expiresAt: Int? = nil,
+        capabilityVersion: String? = nil,
+        dryRun: Bool = false
+    ) -> JSONValue {
+        var params: [String: JSONValue] = [
+            "requestId": .string(requestId),
+            "sourceMachineId": .string(sourceMachineId),
+            "targetMachineId": .string(targetMachineId),
+            "idempotencyKey": .string(idempotencyKey),
+            "operation": operation,
+        ]
+        if let requestedAt { params["requestedAt"] = .number(Double(requestedAt)) }
+        if let expiresAt { params["expiresAt"] = .number(Double(expiresAt)) }
+        if let capabilityVersion { params["capabilityVersion"] = .string(capabilityVersion) }
+        if dryRun { params["dryRun"] = .bool(true) }
+        return .object(params)
+    }
+
     func listApps() async throws -> [AppItemInfo] {
         var out: [AppItemInfo] = []
         var cursor: String?

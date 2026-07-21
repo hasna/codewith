@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use codex_config::ToolPolicy;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -43,6 +44,7 @@ use serde_json::json;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::policy::test_dynamic_policy;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 
@@ -276,6 +278,16 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
     let mut config = (*turn.config).clone();
     update(&mut config);
     turn.config = Arc::new(config);
+}
+
+fn set_infinity_agent_policy(
+    turn: &mut TurnContext,
+    policy: Arc<crate::tools::policy::VerifiedToolPolicy>,
+) {
+    update_config(turn, |config| {
+        config.tools_policy = Some(ToolPolicy::InfinityAgent);
+        config.infinity_agent_policy = Some(policy);
+    });
 }
 
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
@@ -1235,22 +1247,40 @@ async fn tool_mode_selector_overrides_feature_flags() {
 }
 
 #[tokio::test]
-async fn v1_multi_agent_tools_defer_when_tool_search_available() {
+async fn v1_multi_agent_tools_stay_model_visible_with_tool_search() {
+    // Regression guard for the Codewith fork override of upstream #23144
+    // (b3ae3de40). Upstream deferred the V1 multi-agent tools behind tool-search
+    // whenever the model supports search AND the provider supports namespaced
+    // tools. That is the *default* combination (V1 + modern model + Responses
+    // provider), so `spawn_agent` and friends silently dropped out of the
+    // initial model-visible tool list and subagent spawning broke for skills
+    // that never probe the tool registry. Our fork advertises them directly;
+    // this test would FAIL against the old `ToolExposure::Deferred` behavior.
     let plan = probe(|turn| {
+        // The exact combination that previously produced Deferred exposure.
         turn.model_info.supports_search_tool = true;
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
     })
     .await;
 
-    plan.assert_visible_contains(&["tool_search"]);
-    plan.assert_visible_lacks(&[
-        "spawn_agent",
-        "send_input",
-        "resume_agent",
-        "wait_agent",
-        "close_agent",
-    ]);
+    // Even with tool-search available, the V1 multi-agent tools must remain in
+    // the model-visible tool list (surfaced as functions inside the namespace),
+    // not hidden behind tool-search.
+    plan.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
+    // `namespace_function_names` reads only from the model-visible specs, so a
+    // non-empty result here proves each tool is exposed to the model, not merely
+    // registered for later discovery.
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
     for tool_name in [
         "spawn_agent",
         "send_input",
@@ -1264,18 +1294,12 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
             plan.registered_names.contains(&namespaced_tool_name),
             "expected namespaced runtime for {tool_name}"
         );
-        assert!(
-            !plan
-                .registered_names
-                .contains(&ToolName::plain(tool_name).to_string()),
-            "expected no plain runtime for deferred {tool_name}"
+        assert_eq!(
+            plan.exposure(&namespaced_tool_name),
+            ToolExposure::Direct,
+            "expected {tool_name} to be model-visible (Direct), not deferred behind tool-search"
         );
-        assert_eq!(plan.exposure(&namespaced_tool_name), ToolExposure::Deferred);
     }
-    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
-        panic!("expected visible tool_search spec");
-    };
-    assert!(description.contains("- Multi-agent tools: Spawn and manage sub-agents."));
 }
 
 #[tokio::test]
@@ -2099,6 +2123,85 @@ async fn code_mode_excluded_imagegen_follows_hosted_negative_gates() {
     }
 }
 
+#[tokio::test]
+async fn infinity_agent_policy_builds_only_the_exact_signed_dynamic_manifest() {
+    let tools = vec![
+        dynamic_tool(Some("infinity_cli"), "infinity_run_get", false),
+        dynamic_tool(Some("infinity_cli"), "infinity_result_get", false),
+    ];
+    let policy = test_dynamic_policy(&tools);
+    let plan = probe_with(
+        move |turn| set_infinity_agent_policy(turn, policy),
+        ToolPlanInputs {
+            dynamic_tools: tools,
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    assert_eq!(plan.visible_names, vec!["infinity_cli"]);
+    assert_eq!(
+        plan.namespace_function_names("infinity_cli"),
+        &[
+            "infinity_result_get".to_string(),
+            "infinity_run_get".to_string()
+        ]
+    );
+    // NOTE: current main's registry reports registered names sorted (att
+    // reported insertion order); the security-relevant assertion is that the set
+    // is EXACTLY the two signed tools with nothing else.
+    assert_eq!(
+        plan.registered_names,
+        vec![
+            ToolName::namespaced("infinity_cli", "infinity_result_get").to_string(),
+            ToolName::namespaced("infinity_cli", "infinity_run_get").to_string(),
+        ]
+    );
+    plan.assert_registered_lacks(&[
+        "exec_command",
+        "shell_command",
+        "apply_patch",
+        "view_image",
+        "manage_auth_profiles",
+        "get_usage",
+        "tool_search",
+    ]);
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
+    let tools = vec![dynamic_tool(
+        Some("infinity_cli"),
+        "infinity_run_get",
+        false,
+    )];
+    let policy = test_dynamic_policy(&tools);
+    let (_session, mut turn) = make_session_and_context().await;
+    set_infinity_agent_policy(&mut turn, policy);
+    use_provider_with_id(
+        &mut turn,
+        XAI_PROVIDER_ID,
+        ModelProviderInfo::create_xai_provider(),
+    );
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            mcp_tools: None,
+            deferred_mcp_tools: None,
+            discoverable_tools: None,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: &tools,
+        },
+    );
+
+    let error = router
+        .ensure_policy_ready()
+        .expect_err("provider without namespace support must fail before model request");
+    assert!(error.contains("namespace-tool support"));
+    assert!(router.model_visible_specs().is_empty());
+    assert!(router.registered_tool_names_for_test().is_empty());
+}
+
 /// Honesty guard for the AuthCapsule capability document: the infinity-agent
 /// allowlist must exclude every host-filesystem, host-shell, auth-profile, and
 /// host-process tool, and permit only the policy-safe control tools. This ties
@@ -2170,7 +2273,7 @@ async fn infinity_agent_policy_removes_host_tools_from_plan() {
     let infinity = probe(|turn| {
         configure_host_tools(turn);
         update_config(turn, |config| {
-            config.tools_policy = Some(codex_config::config_toml::ToolsPolicy::InfinityAgent);
+            config.tools_policy = Some(codex_config::config_toml::ToolPolicy::InfinityAgent);
         });
     })
     .await;
@@ -2192,5 +2295,10 @@ async fn infinity_agent_policy_removes_host_tools_from_plan() {
         "manage_auth_profiles",
         "get_usage",
     ]);
-    infinity.assert_registered_contains(&["update_plan", "rename_session"]);
+    // Fail-closed collapse: `tools.policy = "infinity-agent"` is now enforced
+    // exclusively through the signed `VerifiedToolPolicy`. Selecting the policy
+    // without a verified process manifest (as here) plans NO tools at all — not
+    // even the former `update_plan`/`rename_session` control tools — so there is
+    // no in-binary tool surface whatsoever.
+    infinity.assert_registered_lacks(&["update_plan", "rename_session"]);
 }
