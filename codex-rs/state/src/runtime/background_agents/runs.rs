@@ -5,7 +5,8 @@ impl StateRuntime {
         &self,
         params: &BackgroundAgentRunCreateParams,
     ) -> anyhow::Result<BackgroundAgentRun> {
-        if let Some(idempotency_key) = params.idempotency_key.as_deref()
+        let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
+        if let Some(idempotency_key) = idempotency_key.as_deref()
             && let Some(existing) = self
                 .get_background_agent_run_by_idempotency_key(idempotency_key)
                 .await?
@@ -17,7 +18,7 @@ impl StateRuntime {
         let spawn_linkage_json = params
             .spawn_linkage_json
             .as_ref()
-            .map(serde_json::to_string)
+            .map(redact_state_json_string)
             .transpose()?;
         let insert_result = sqlx::query(
             r#"
@@ -48,11 +49,16 @@ INSERT INTO background_agent_runs (
             "#,
         )
         .bind(params.id.as_str())
-        .bind(params.idempotency_key.as_deref())
-        .bind(params.request_id.as_deref())
+        .bind(idempotency_key.as_deref())
+        .bind(params.request_id.as_deref().map(redact_state_string))
         .bind(params.source.as_str())
-        .bind(params.prompt_snapshot_ref.as_str())
-        .bind(params.input_snapshot_ref.as_deref())
+        .bind(redact_state_string(params.prompt_snapshot_ref.as_str()))
+        .bind(
+            params
+                .input_snapshot_ref
+                .as_deref()
+                .map(redact_state_string),
+        )
         .bind(params.thread_id.as_deref())
         .bind(params.thread_store_kind.as_str())
         .bind(params.thread_store_id.as_deref())
@@ -60,10 +66,10 @@ INSERT INTO background_agent_runs (
         .bind(params.parent_thread_id.as_deref())
         .bind(params.parent_agent_run_id.as_deref())
         .bind(spawn_linkage_json.as_deref())
-        .bind(params.auth_profile_ref.as_deref())
+        .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
         .bind(BackgroundAgentDesiredState::Running.as_str())
         .bind(BackgroundAgentRunStatus::Queued.as_str())
-        .bind(params.status_reason.as_deref())
+        .bind(params.status_reason.as_deref().map(redact_state_string))
         .bind(params.config_fingerprint.as_deref())
         .bind(params.version_fingerprint.as_deref())
         .bind(crate::BackgroundAgentRetentionState::Active.as_str())
@@ -72,9 +78,9 @@ INSERT INTO background_agent_runs (
         .execute(self.pool.as_ref())
         .await;
         if let Err(err) = insert_result {
-            if params.idempotency_key.is_some()
+            if idempotency_key.is_some()
                 && is_background_agent_unique_constraint_violation(&err)
-                && let Some(idempotency_key) = params.idempotency_key.as_deref()
+                && let Some(idempotency_key) = idempotency_key.as_deref()
                 && let Some(existing) = self
                     .get_background_agent_run_by_idempotency_key(idempotency_key)
                     .await?
@@ -258,7 +264,7 @@ WHERE id = ?
             "#,
         )
         .bind(status.as_str())
-        .bind(status_reason)
+        .bind(status_reason.map(redact_state_string))
         .bind(now)
         .bind(started_at)
         .bind(completed_at)
@@ -299,7 +305,7 @@ WHERE
             "#,
         )
         .bind(status.as_str())
-        .bind(status_reason)
+        .bind(status_reason.map(redact_state_string))
         .bind(now)
         .bind(started_at)
         .bind(completed_at)
@@ -343,7 +349,7 @@ WHERE
             "#,
         )
         .bind(params.status.as_str())
-        .bind(params.status_reason)
+        .bind(params.status_reason.map(redact_state_string))
         .bind(now)
         .bind(started_at)
         .bind(completed_at)
@@ -733,7 +739,7 @@ WHERE
             "#,
         )
         .bind(BackgroundAgentRunStatus::Cancelled.as_str())
-        .bind(status_reason)
+        .bind(redact_state_string(status_reason))
         .bind(now)
         .bind(now)
         .bind(run_id)
@@ -760,7 +766,7 @@ SET
 WHERE run_id = ? AND supervisor_id = ? AND generation = ?
             "#,
         )
-        .bind(status_reason)
+        .bind(redact_state_string(status_reason))
         .bind(now)
         .bind(now)
         .bind(run_id)
@@ -817,8 +823,8 @@ WHERE
             "#,
         )
         .bind(BackgroundAgentRunStatus::Failed.as_str())
-        .bind(status_reason)
-        .bind(status_reason)
+        .bind(redact_state_string(status_reason))
+        .bind(redact_state_string(status_reason))
         .bind(now)
         .bind(now)
         .bind(run_id)

@@ -52,12 +52,22 @@ pub async fn append_session_index_entry(
     entry: &SessionIndexEntry,
 ) -> std::io::Result<()> {
     let path = session_index_path(codex_home);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+        codex_state::set_owner_only_dir(parent).map_err(std::io::Error::other)?;
+    }
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .await?;
-    let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
+    codex_state::set_owner_only_file(path.as_path()).map_err(std::io::Error::other)?;
+    let redacted_entry = SessionIndexEntry {
+        id: entry.id,
+        thread_name: codex_state::redact_local_state_string(entry.thread_name.as_str()),
+        updated_at: entry.updated_at.clone(),
+    };
+    let mut line = serde_json::to_string(&redacted_entry).map_err(std::io::Error::other)?;
     line.push('\n');
     file.write_all(line.as_bytes()).await?;
     file.flush().await?;

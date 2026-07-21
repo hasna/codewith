@@ -42,6 +42,7 @@ mod plugin_read;
 mod plugin_share;
 mod plugin_uninstall;
 mod process_exec;
+mod pull_request;
 mod rate_limit_resets;
 mod rate_limits;
 mod realtime_conversation;
