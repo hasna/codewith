@@ -2286,7 +2286,6 @@ mod tests {
             Some(&goal_status),
             context_window_line(Some(50), /*used_tokens*/ None),
         );
-
     }
 
     #[test]

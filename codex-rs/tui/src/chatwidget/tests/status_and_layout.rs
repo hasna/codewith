@@ -3126,8 +3126,7 @@ async fn active_agent_status_line_renders_label_and_omits_when_absent() {
 #[tokio::test]
 async fn active_agent_status_line_omission_leaves_no_stray_separator() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.config.tui_status_line =
-        Some(vec!["current-dir".to_string(), "active-agent".to_string()]);
+    chat.config.tui_status_line = Some(vec!["current-dir".to_string(), "active-agent".to_string()]);
     chat.refresh_status_line();
 
     // active_agent_label defaults to None (single-agent), so only current-dir renders: the
