@@ -11,7 +11,7 @@ impl StateRuntime {
         waiting_status: BackgroundAgentRunStatus,
     ) -> anyhow::Result<Option<BackgroundAgentPendingInteraction>> {
         let now = Utc::now().timestamp();
-        let request_payload_json = serde_json::to_string(&params.request_payload_json)?;
+        let request_payload_json = redact_state_json_string(&params.request_payload_json)?;
         let timeout_at = params.timeout_at.map(|timestamp| timestamp.timestamp());
         let mut tx = self.pool.begin().await?;
         let status_update = sqlx::query(
@@ -109,7 +109,7 @@ INSERT INTO background_agent_pending_interactions (
         params: &BackgroundAgentPendingInteractionCreateParams,
     ) -> anyhow::Result<BackgroundAgentPendingInteraction> {
         let now = Utc::now().timestamp();
-        let request_payload_json = serde_json::to_string(&params.request_payload_json)?;
+        let request_payload_json = redact_state_json_string(&params.request_payload_json)?;
         let timeout_at = params.timeout_at.map(|timestamp| timestamp.timestamp());
         let mut tx = self.pool.begin().await?;
         sqlx::query(
@@ -337,7 +337,7 @@ WHERE id = ? AND status = ?
         }
 
         let now = Utc::now().timestamp();
-        let response_payload_json = serde_json::to_string(response_payload_json)?;
+        let response_payload_json = redact_state_json_string(response_payload_json)?;
         let mut tx = self.pool.begin().await?;
         let row: Option<(String, String)> = sqlx::query_as(
             r#"
@@ -413,7 +413,7 @@ ORDER BY timeout_at ASC, created_at ASC, id ASC
         .await?;
         let mut expired = 0;
         for (interaction_id, run_id, kind, no_client_policy) in rows.iter() {
-            let response_payload_json = serde_json::to_string(&serde_json::json!({
+            let response_payload_json = redact_state_json_string(&serde_json::json!({
                 "reason": "timeout",
                 "noClientPolicy": no_client_policy,
             }))?;
@@ -491,7 +491,7 @@ ORDER BY created_at ASC, id ASC
     .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
     .fetch_all(&mut **tx)
     .await?;
-    let response_payload_json = serde_json::to_string(response_payload_json)?;
+    let response_payload_json = redact_state_json_string(response_payload_json)?;
     let mut terminalized = 0;
     for (interaction_id, kind) in rows {
         let result = sqlx::query(

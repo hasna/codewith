@@ -82,6 +82,7 @@ croner = { workspace = true }
 csv = { workspace = true }
 dirs = { workspace = true }
 dunce = { workspace = true }
+ed25519-dalek = { workspace = true }
 eventsource-stream = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -101,7 +102,9 @@ rmcp = { workspace = true, default-features = false, features = [
 ] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
 sha1 = { workspace = true }
+sha2 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
 tempfile = { workspace = true }
