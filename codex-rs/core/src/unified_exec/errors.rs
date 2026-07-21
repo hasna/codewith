@@ -1,4 +1,5 @@
 use codex_protocol::exec_output::ExecToolCallOutput;
+use std::num::NonZeroUsize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,6 +23,8 @@ pub(crate) enum UnifiedExecError {
     SandboxDenied {
         message: String,
         output: ExecToolCallOutput,
+        original_token_count: Option<usize>,
+        output_omitted_bytes: Option<NonZeroUsize>,
     },
 }
 
@@ -35,6 +38,29 @@ impl UnifiedExecError {
     }
 
     pub(crate) fn sandbox_denied(message: String, output: ExecToolCallOutput) -> Self {
-        Self::SandboxDenied { message, output }
+        Self::SandboxDenied {
+            message,
+            output,
+            original_token_count: None,
+            output_omitted_bytes: None,
+        }
+    }
+
+    pub(crate) fn with_output_collection_metadata(
+        self,
+        original_token_count: usize,
+        output_omitted_bytes: Option<NonZeroUsize>,
+    ) -> Self {
+        match self {
+            Self::SandboxDenied {
+                message, output, ..
+            } => Self::SandboxDenied {
+                message,
+                output,
+                original_token_count: Some(original_token_count),
+                output_omitted_bytes,
+            },
+            other => other,
+        }
     }
 }

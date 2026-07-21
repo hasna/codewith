@@ -153,6 +153,10 @@ pub(crate) enum StatusLineItem {
 
     /// Latest checklist task progress from `update_plan` (if available).
     TaskProgress,
+
+    /// Active-agent label for multi-agent sessions (for example `Main [default]`).
+    #[strum(to_string = "active-agent", serialize = "active-agent-label")]
+    ActiveAgent,
 }
 
 impl StatusLineItem {
@@ -209,6 +213,7 @@ impl StatusLineItem {
             StatusLineItem::TaskProgress => {
                 "Latest task progress from update_plan (omitted until available)"
             }
+            StatusLineItem::ActiveAgent => "Active agent label (omitted for single-agent sessions)",
         }
     }
 
@@ -242,6 +247,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
             StatusLineItem::GoalTitle => StatusSurfacePreviewItem::GoalTitle,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
+            StatusLineItem::ActiveAgent => StatusSurfacePreviewItem::ActiveAgent,
         }
     }
 }
@@ -518,6 +524,19 @@ mod tests {
         assert_eq!(
             "next-schedule".parse::<StatusLineItem>(),
             Ok(StatusLineItem::ScheduleCountdown)
+        );
+    }
+
+    #[test]
+    fn active_agent_is_canonical_and_accepts_alias() {
+        assert_eq!(StatusLineItem::ActiveAgent.to_string(), "active-agent");
+        assert_eq!(
+            "active-agent".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ActiveAgent)
+        );
+        assert_eq!(
+            "active-agent-label".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ActiveAgent)
         );
     }
 

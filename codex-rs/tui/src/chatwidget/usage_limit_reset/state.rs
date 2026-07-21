@@ -82,6 +82,25 @@ impl ChatWidget {
         &mut self,
         reset_credits: Option<RateLimitResetCreditsSummary>,
     ) {
+        // Anti-clobber guard: a coarse fallback summary (detail rows absent,
+        // `credits == None`) that reports zero available resets must never
+        // overwrite a previously-known positive count. The app-server always
+        // reconciles against the authoritative reset-credit ledger, but when
+        // that ledger fetch fails it falls back to the inline usage count, which
+        // can lag and report 0 while banked resets still exist. Trusting that
+        // shallow 0 is what let a background refresh (e.g. the periodic
+        // heartbeat) flip `/usage` back to "no usage limit resets available"
+        // while banked resets were still redeemable — and disagree with the
+        // "You have N resets available" banner. Authoritative, detail-backed
+        // results (`credits == Some(..)`), including an authoritative 0 after a
+        // reset is consumed, are always applied.
+        if Self::reset_credits_update_is_shallow_downgrade(
+            self.rate_limit_reset_credits.as_ref(),
+            reset_credits.as_ref(),
+        ) {
+            return;
+        }
+
         let available_count = reset_credits
             .as_ref()
             .map(|credits| credits.available_count.max(0));
@@ -105,6 +124,34 @@ impl ChatWidget {
         }
 
         self.refresh_usage_panel_if_active();
+    }
+
+    /// Returns `true` when applying `incoming` would replace a previously-known
+    /// positive reset count with a lower-confidence, count-only summary that
+    /// reports no available resets. A coarse `0` (detail rows absent) is the
+    /// app-server's fallback when the authoritative reset-credit ledger cannot
+    /// be reached, so it must not be trusted over a count we already surfaced as
+    /// available.
+    fn reset_credits_update_is_shallow_downgrade(
+        current: Option<&RateLimitResetCreditsSummary>,
+        incoming: Option<&RateLimitResetCreditsSummary>,
+    ) -> bool {
+        let Some(current) = current else {
+            return false;
+        };
+        if current.available_count <= 0 {
+            return false;
+        }
+        // `None` means availability is unknown / not applicable (e.g. the
+        // account no longer supports resets); defer to the existing semantics
+        // and let it clear the count rather than pinning a stale value.
+        let Some(incoming) = incoming else {
+            return false;
+        };
+        // Detail-backed summaries are authoritative and always win, even when
+        // they report zero (a reset that was just consumed).
+        let incoming_is_authoritative = incoming.credits.is_some();
+        !incoming_is_authoritative && incoming.available_count <= 0
     }
 
     pub(super) fn invalidate_pending_automatic_reset(&mut self) {

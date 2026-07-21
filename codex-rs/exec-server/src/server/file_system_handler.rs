@@ -10,6 +10,7 @@ use crate::ExecServerRuntimePaths;
 use crate::ExecutorFileSystem;
 use crate::RemoveOptions;
 use crate::local_file_system::LocalFileSystem;
+use crate::protocol::FS_READ_DIRECTORY_METHOD;
 use crate::protocol::FS_WRITE_FILE_METHOD;
 use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCanonicalizeResponse;
@@ -35,6 +36,10 @@ use crate::protocol::FsWriteFileResponse;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_request;
 use crate::rpc::not_found;
+
+// Each read-directory entry needs four JSON values. Keep same-version producers
+// comfortably below the shared 256K-value JSON-RPC decoder budget.
+const MAX_READ_DIRECTORY_ENTRIES: usize = 50_000;
 
 #[derive(Clone)]
 pub(crate) struct FileSystemHandler {
@@ -156,7 +161,14 @@ impl FileSystemHandler {
             .file_system
             .read_directory(&params.path, params.sandbox.as_ref())
             .await
-            .map_err(map_fs_error)?
+            .map_err(map_fs_error)?;
+        let entry_count = entries.len();
+        if entry_count > MAX_READ_DIRECTORY_ENTRIES {
+            return Err(internal_error(format!(
+                "{FS_READ_DIRECTORY_METHOD} returned {entry_count} entries; limit is {MAX_READ_DIRECTORY_ENTRIES}"
+            )));
+        }
+        let entries = entries
             .into_iter()
             .map(|entry| FsReadDirectoryEntry {
                 file_name: entry.file_name,

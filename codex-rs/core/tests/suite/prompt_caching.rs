@@ -197,7 +197,12 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "request_user_input",
         "apply_patch",
         "view_image",
-        "tool_search",
+        // Codewith fork keeps the V1 multi-agent tools model-visible (revert of
+        // upstream #23144 / b3ae3de40): they surface as the `multi_agent_v1`
+        // namespace here instead of being deferred behind `tool_search`. With no
+        // other deferred tools in this config, `tool_search` is no longer
+        // emitted, so it is replaced by `multi_agent_v1` in this list.
+        "multi_agent_v1",
         "web_search",
     ]);
     let body0 = req1.single_request().body_json();

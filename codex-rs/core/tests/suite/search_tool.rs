@@ -757,53 +757,48 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
+async fn v1_multi_agent_tools_stay_directly_visible_with_search_capable_model() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    // Codewith fork override of upstream #23144 (b3ae3de40): even with a
+    // search-capable model AND a namespace-capable provider -- the exact
+    // combination upstream defers behind tool-search -- the V1 multi-agent tools
+    // must stay directly visible in the initial tool list. Otherwise subagent
+    // spawning silently breaks for skills/agents that never probe tool-search.
+    // This test would FAIL against the old Deferred behavior, where
+    // `spawn_agent` was only reachable via a tool_search follow-up.
     let server = start_mock_server().await;
-    let call_id = "tool-search-spawn-agent";
-    let mock = mount_sse_sequence(
+    let mock = mount_sse_once(
         &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                ev_tool_search_call(
-                    call_id,
-                    &json!({
-                        "query": "spawn agent",
-                        "limit": 1,
-                    }),
-                ),
-                ev_completed("resp-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-2"),
-                ev_assistant_message("msg-1", "done"),
-                ev_completed("resp-2"),
-            ]),
-        ],
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
     )
     .await;
 
     let mut builder = test_codex().with_config(configure_search_capable_model);
     let test = builder.build(&server).await?;
     test.submit_turn_with_approval_and_permission_profile(
-        "Find the spawn agent tool",
+        "list tools",
         AskForApproval::Never,
         PermissionProfile::Disabled,
     )
     .await?;
 
-    let requests = mock.requests();
-    assert_eq!(requests.len(), 2);
-
-    let first_request_body = requests[0].body_json();
-    let first_request_tools = tool_names(&first_request_body);
+    let body = mock.single_request().body_json();
+    let first_request_tools = tool_names(&body);
+    // The multi-agent tools ship directly in the initial tool list even for a
+    // search-capable, namespace-capable model -- the exact combination upstream
+    // #23144 deferred behind tool-search. (With no other deferred tools present,
+    // tool_search itself is not emitted here, which is expected: the point is
+    // that the multi-agent tools are no longer hidden behind it.)
     assert!(
         first_request_tools
             .iter()
-            .any(|name| name == TOOL_SEARCH_TOOL_NAME),
-        "first request should advertise tool_search: {first_request_tools:?}"
+            .any(|name| name == "multi_agent_v1"),
+        "v1 multi-agent namespace should be directly visible in the initial tool list: {first_request_tools:?}"
     );
     for tool_name in [
         "spawn_agent",
@@ -812,48 +807,23 @@ async fn tool_search_returns_deferred_v1_multi_agent_tools() -> Result<()> {
         "wait_agent",
         "close_agent",
     ] {
+        let child = namespace_child_tool(&body, "multi_agent_v1", tool_name).unwrap_or_else(|| {
+            panic!("expected {tool_name} as a direct multi_agent_v1 namespace child: {body:?}")
+        });
         assert!(
-            !first_request_tools.iter().any(|name| name == tool_name),
-            "v1 multi-agent tools should be hidden before search: {first_request_tools:?}"
+            child.get("defer_loading").and_then(Value::as_bool) != Some(true),
+            "{tool_name} must not be deferred when directly visible: {child:?}"
         );
     }
-    assert!(
-        !first_request_body
-            .to_string()
-            .contains("Only use `spawn_agent` if and only if"),
-        "deferred v1 multi-agent guidance should stay out of initial developer context"
-    );
-
-    let tools = tool_search_output_tools(&requests[1], call_id);
-    assert!(
-        !tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) == Some("function")
-                && tool.get("name").and_then(Value::as_str) == Some("spawn_agent")
-        }),
-        "spawn_agent should be returned as a namespace child, not a flat function: {tools:?}"
-    );
-    assert!(
-        tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) == Some("namespace")
-                && tool.get("name").and_then(Value::as_str) == Some("multi_agent_v1")
-        }),
-        "expected tool_search to return multi_agent_v1 namespace: {tools:?}"
-    );
-    let output = tool_search_output_item(&requests[1], call_id);
-    let spawn_agent = namespace_child_tool(&output, "multi_agent_v1", "spawn_agent")
-        .unwrap_or_else(|| {
-            panic!("expected tool_search to return multi_agent_v1.spawn_agent: {output:?}")
-        });
-    assert_eq!(
-        spawn_agent.get("defer_loading").and_then(Value::as_bool),
-        Some(true)
-    );
+    // The spawn guidance now ships in the initial developer context because the
+    // tool is model-visible rather than deferred behind tool-search.
+    let spawn_agent = namespace_child_tool(&body, "multi_agent_v1", "spawn_agent")
+        .expect("spawn_agent should be a direct namespace child");
     let description = spawn_agent
         .get("description")
         .and_then(Value::as_str)
         .expect("spawn_agent description should be present");
     assert!(description.contains("Only use `spawn_agent` if and only if"));
-    assert!(description.contains("### Designing delegated subtasks"));
 
     Ok(())
 }

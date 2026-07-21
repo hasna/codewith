@@ -165,6 +165,43 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
     );
+    assert_eq!(
+        properties
+            .get("auth_profile")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION)
+    );
+}
+
+#[test]
+fn spawn_agent_tool_v2_exposes_auth_profile_field() {
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+        available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
+        agent_type_description: "role help".to_string(),
+        hide_agent_type_model_reasoning: false,
+        include_usage_hint: true,
+        usage_hint_text: None,
+        max_concurrent_threads_per_session: Some(4),
+    });
+
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = tool else {
+        panic!("spawn_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("spawn_agent should use object params");
+    assert_eq!(
+        properties
+            .get("auth_profile")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION)
+    );
+    // auth_profile stays optional so existing spawns remain backward compatible.
+    assert_eq!(
+        parameters.required.clone(),
+        Some(vec!["task_name".to_string(), "message".to_string()])
+    );
 }
 
 #[test]
@@ -247,6 +284,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("reasoning_effort"));
     assert!(!properties.contains_key("service_tier"));
+    assert!(!properties.contains_key("auth_profile"));
     assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(!description.contains("Available model overrides"));
 }

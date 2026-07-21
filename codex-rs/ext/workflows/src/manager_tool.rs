@@ -70,6 +70,7 @@ struct ManageWorkflowArgs {
     action: ManageWorkflowAction,
     workflow_record_id: Option<String>,
     run_id: Option<String>,
+    step_id: Option<String>,
     yaml: Option<String>,
     idempotency_key: Option<String>,
     cursor: Option<String>,
@@ -89,6 +90,8 @@ enum ManageWorkflowAction {
     Pause,
     Resume,
     Cancel,
+    ApproveStep,
+    RejectStep,
 }
 
 #[async_trait::async_trait]
@@ -130,6 +133,8 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
                         json!("pause"),
                         json!("resume"),
                         json!("cancel"),
+                        json!("approve_step"),
+                        json!("reject_step"),
                     ],
                     Some(
                         "Workflow management action to perform for the current thread.".to_string(),
@@ -142,7 +147,15 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
             ),
             (
                 "run_id".to_string(),
-                nullable_string("Workflow run id for read_run/pause/resume/cancel actions."),
+                nullable_string(
+                    "Workflow run id for read_run/pause/resume/cancel/approve_step/reject_step actions.",
+                ),
+            ),
+            (
+                "step_id".to_string(),
+                nullable_string(
+                    "Workflow step id for approve_step/reject_step actions. Only gated steps can be approved.",
+                ),
             ),
             (
                 "yaml".to_string(),
@@ -168,7 +181,7 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
 
         ToolSpec::Function(ResponsesApiTool {
             name: MANAGE_WORKFLOW_TOOL_NAME.to_string(),
-            description: "Manage Codewith workflows for the current thread: list/create/read workflow specs, start runs into durable task plans, list/read runs, and pause/resume/cancel runs. This direct model tool is thread-bound and returns sanitized metadata without raw YAML, verifier command definitions, or event payloads."
+            description: "Manage Codewith workflows for the current thread: list/create/read workflow specs, start runs into durable task plans, list/read runs, pause/resume/cancel runs, and approve or reject gated steps that require explicit user consent before running. This direct model tool is thread-bound and returns sanitized metadata without raw YAML, verifier command definitions, or event payloads."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -210,6 +223,14 @@ impl ToolExecutor<ToolCall> for ManageWorkflowTool {
             ManageWorkflowAction::Pause => self.pause_run(args).await?,
             ManageWorkflowAction::Resume => self.resume_run(args).await?,
             ManageWorkflowAction::Cancel => self.cancel_run(args).await?,
+            ManageWorkflowAction::ApproveStep => {
+                self.decide_step(args, codex_state::WorkflowRunStepApprovalDecision::Approve)
+                    .await?
+            }
+            ManageWorkflowAction::RejectStep => {
+                self.decide_step(args, codex_state::WorkflowRunStepApprovalDecision::Reject)
+                    .await?
+            }
         };
         Ok(Box::new(JsonToolOutput::new(value)))
     }
@@ -403,6 +424,62 @@ impl ManageWorkflowTool {
         Ok(json!({
             "action": "cancel",
             "run": snapshot.as_ref().map(run_snapshot_json),
+        }))
+    }
+
+    async fn decide_step(
+        &self,
+        args: ManageWorkflowArgs,
+        decision: codex_state::WorkflowRunStepApprovalDecision,
+    ) -> Result<Value, FunctionCallError> {
+        let (state_db, _) = self.runtime()?;
+        let action = match decision {
+            codex_state::WorkflowRunStepApprovalDecision::Approve => "approve_step",
+            codex_state::WorkflowRunStepApprovalDecision::Reject => "reject_step",
+        };
+        let run_id = required_field(args.run_id, "run_id", action)?;
+        let step_id = required_field(args.step_id, "step_id", action)?;
+        if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
+            return Ok(json!({
+                "action": action,
+                "run": null,
+                "error": "workflow run not found for current thread",
+            }));
+        }
+        let outcome = state_db
+            .workflows()
+            .set_workflow_run_step_approval(codex_state::WorkflowRunStepApprovalParams {
+                run_id,
+                step_id,
+                decision,
+                reason: normalize_optional_string(args.reason),
+                actor_id: None,
+            })
+            .await
+            .map_err(|_| respond("failed to record workflow step approval"))?;
+        let Some(outcome) = outcome else {
+            return Ok(json!({
+                "action": action,
+                "run": null,
+                "error": "workflow run step not found for current thread",
+            }));
+        };
+        let decision_state = match decision {
+            codex_state::WorkflowRunStepApprovalDecision::Approve => {
+                codex_state::WORKFLOW_STEP_APPROVAL_APPROVED
+            }
+            codex_state::WorkflowRunStepApprovalDecision::Reject => {
+                codex_state::WORKFLOW_STEP_APPROVAL_REJECTED
+            }
+        };
+        let error = (!outcome.gate_present).then_some("workflow step does not require approval");
+        Ok(json!({
+            "action": action,
+            "run": run_snapshot_json(&outcome.snapshot),
+            "gatePresent": outcome.gate_present,
+            "changed": outcome.changed,
+            "decision": decision_state,
+            "error": error,
         }))
     }
 
@@ -602,6 +679,104 @@ mod tests {
             "user requested workflow cancellation"
         );
         assert!(!cancel.to_string().contains("should-not-leak"));
+    }
+
+    #[tokio::test]
+    async fn manage_workflow_step_approval_records_gate_decision() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let state_db = codex_state::StateRuntime::init(
+            tempdir.path().to_path_buf(),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("state runtime should initialize");
+        let thread_id = codex_protocol::ThreadId::new();
+        state_db
+            .upsert_thread(
+                &codex_state::ThreadMetadataBuilder::new(
+                    thread_id,
+                    state_db.codex_home().join("rollout.jsonl"),
+                    chrono::Utc::now(),
+                    codex_protocol::protocol::SessionSource::Cli,
+                )
+                .build("test-provider"),
+            )
+            .await
+            .expect("thread metadata should insert");
+        let tool =
+            ManageWorkflowTool::new(Arc::new(AtomicBool::new(true)), state_db.clone(), thread_id);
+
+        let create = call_tool(
+            &tool,
+            json!({
+                "action": "create",
+                "yaml": DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML,
+            }),
+        )
+        .await;
+        let workflow_record_id = create["workflow"]["workflowRecordId"]
+            .as_str()
+            .expect("workflow id")
+            .to_string();
+        let start = call_tool(
+            &tool,
+            json!({
+                "action": "start",
+                "workflow_record_id": workflow_record_id,
+            }),
+        )
+        .await;
+        let run_id = start["run"]["run"]["runId"]
+            .as_str()
+            .expect("run id")
+            .to_string();
+
+        // Approving the dental example's gated launch step records an approved
+        // decision without leaking the raw reason.
+        let approve = call_tool(
+            &tool,
+            json!({
+                "action": "approve_step",
+                "run_id": run_id,
+                "step_id": "launch_gate",
+                "reason": "commands:\\n  - should-not-leak",
+            }),
+        )
+        .await;
+        assert_eq!(approve["action"], "approve_step");
+        assert_eq!(approve["gatePresent"], true);
+        assert_eq!(approve["changed"], true);
+        assert_eq!(approve["decision"], "approved");
+        assert_eq!(approve["error"], Value::Null);
+        assert!(!approve.to_string().contains("should-not-leak"));
+
+        // Re-approving the same gate is idempotent.
+        let repeat = call_tool(
+            &tool,
+            json!({
+                "action": "approve_step",
+                "run_id": run_id,
+                "step_id": "launch_gate",
+            }),
+        )
+        .await;
+        assert_eq!(repeat["changed"], false);
+
+        // Unknown steps are reported without leaking other threads' state.
+        let missing = call_tool(
+            &tool,
+            json!({
+                "action": "reject_step",
+                "run_id": run_id,
+                "step_id": "does_not_exist",
+            }),
+        )
+        .await;
+        assert_eq!(missing["run"], Value::Null);
+        assert_eq!(
+            missing["error"],
+            "workflow run step not found for current thread"
+        );
     }
 
     #[tokio::test]

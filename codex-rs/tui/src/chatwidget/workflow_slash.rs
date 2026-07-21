@@ -1,9 +1,10 @@
 pub(super) const WORKFLOW_USAGE: &str = concat!(
-    "Usage: /workflow [list|show <workflow_record_id>|draft <request>|",
+    "Usage: /workflow [list|show <workflow_record_id>|delete <workflow_record_id>|draft <request>|",
     "run [list|show <run_id>|start <workflow_record_id>|pause <run_id>|resume <run_id>|cancel <run_id>]]"
 );
 pub(super) const WORKFLOW_USAGE_HINT: &str = concat!(
     "Examples: /workflow list, /workflow show <workflow_record_id>, ",
+    "/workflow delete <workflow_record_id>, ",
     "/workflow run, /workflow run start <workflow_record_id>, /workflow run pause <run_id>"
 );
 
@@ -11,6 +12,7 @@ pub(super) const WORKFLOW_USAGE_HINT: &str = concat!(
 pub(super) enum WorkflowSlashCommand<'a> {
     List,
     Show { workflow_record_id: &'a str },
+    Delete { workflow_record_id: &'a str },
     Draft { request: &'a str },
     RunList,
     RunShow { run_id: &'a str },
@@ -36,6 +38,8 @@ pub(super) fn parse_workflow_slash_args(trimmed: &str) -> Result<WorkflowSlashCo
                 "draft" => Ok(WorkflowSlashCommand::Draft { request: rest }),
                 "show" => required_id(rest, "workflow_record_id")
                     .map(|workflow_record_id| WorkflowSlashCommand::Show { workflow_record_id }),
+                "delete" => required_id(rest, "workflow_record_id")
+                    .map(|workflow_record_id| WorkflowSlashCommand::Delete { workflow_record_id }),
                 "run" => parse_workflow_run_slash_args(rest),
                 _ => Err(format!("Unknown /workflow command `{command}`.")),
             }
@@ -158,6 +162,24 @@ mod tests {
         assert_eq!(
             parse_workflow_slash_args("run cancel run-1"),
             Ok(WorkflowSlashCommand::RunCancel { run_id: "run-1" })
+        );
+    }
+
+    #[test]
+    fn parses_delete_command() {
+        assert_eq!(
+            parse_workflow_slash_args("delete workflow-1"),
+            Ok(WorkflowSlashCommand::Delete {
+                workflow_record_id: "workflow-1"
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_delete_without_record_id() {
+        assert_eq!(
+            parse_workflow_slash_args("delete"),
+            Err("Unknown /workflow command `delete`.".to_string())
         );
     }
 

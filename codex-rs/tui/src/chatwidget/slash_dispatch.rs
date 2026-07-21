@@ -1713,7 +1713,8 @@ impl ChatWidget {
                 );
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();
-                    self.full_reasoning_buffer.clear();
+                    self.reasoning_header = None;
+                    self.reasoning_summary_parts.clear();
                     self.set_status_header(String::from("Working"));
                     self.submit_user_message(user_message);
                 } else {
@@ -2092,7 +2093,8 @@ impl ChatWidget {
                         );
                         if self.is_session_configured() {
                             self.reasoning_buffer.clear();
-                            self.full_reasoning_buffer.clear();
+                            self.reasoning_header = None;
+                            self.reasoning_summary_parts.clear();
                             self.set_status_header(String::from("Working"));
                             self.submit_user_message(user_message);
                         } else {
@@ -2886,6 +2888,9 @@ fn workflow_slash_command_to_action(command: WorkflowSlashCommand<'_>) -> Thread
     match command {
         WorkflowSlashCommand::List => ThreadWorkflowAction::List,
         WorkflowSlashCommand::Show { workflow_record_id } => ThreadWorkflowAction::Show {
+            workflow_record_id: workflow_record_id.to_string(),
+        },
+        WorkflowSlashCommand::Delete { workflow_record_id } => ThreadWorkflowAction::Delete {
             workflow_record_id: workflow_record_id.to_string(),
         },
         WorkflowSlashCommand::Draft { .. } => ThreadWorkflowAction::List,

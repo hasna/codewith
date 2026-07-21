@@ -10,6 +10,8 @@ use tracing::info;
 
 const IMAGE_CONTENT_OMITTED_PLACEHOLDER: &str =
     "image content omitted because you do not support image input";
+const REMOTE_IMAGE_URL_PLACEHOLDER: &str =
+    "image content omitted because remote image URLs are not supported";
 
 pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
     // Collect synthetic outputs to insert immediately after their calls.
@@ -306,6 +308,55 @@ where
 {
     if let Some(pos) = items.iter().position(predicate) {
         items.remove(pos);
+    }
+}
+
+fn is_remote_image_url(image_url: &str) -> bool {
+    image_url.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+/// Replace remote HTTP(S) image URLs with a model-visible error message before
+/// the history is sent to the model.
+///
+/// Codex does not fetch remote image URLs itself; forwarding them to the model
+/// provider is slow, unsupported, and an SSRF risk. Inline data URLs and other
+/// image schemes (for example `localImage`-derived paths) are left unchanged.
+/// App-server ingress rejects remote URLs on new input; this pass covers legacy
+/// history paths (such as `thread/resume.history`) that are not validated at
+/// ingress.
+pub(crate) fn replace_remote_images_with_error(items: &mut [ResponseItem]) {
+    for item in items.iter_mut() {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                for content_item in content.iter_mut() {
+                    if let ContentItem::InputImage { image_url, .. } = content_item
+                        && is_remote_image_url(image_url)
+                    {
+                        *content_item = ContentItem::InputText {
+                            text: REMOTE_IMAGE_URL_PLACEHOLDER.to_string(),
+                        };
+                    }
+                }
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content_items) = output.content_items_mut() {
+                    for content_item in content_items.iter_mut() {
+                        if let FunctionCallOutputContentItem::InputImage { image_url, .. } =
+                            content_item
+                            && is_remote_image_url(image_url)
+                        {
+                            *content_item = FunctionCallOutputContentItem::InputText {
+                                text: REMOTE_IMAGE_URL_PLACEHOLDER.to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

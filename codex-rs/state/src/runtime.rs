@@ -276,13 +276,20 @@ pub use workflows::DEFAULT_THREAD_WORKFLOW_LIST_LIMIT;
 pub use workflows::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT;
 pub use workflows::MAX_THREAD_WORKFLOW_LIST_LIMIT;
 pub use workflows::MAX_THREAD_WORKFLOW_RUN_LIST_LIMIT;
+pub use workflows::WORKFLOW_STEP_APPROVAL_APPROVED;
+pub use workflows::WORKFLOW_STEP_APPROVAL_PENDING;
+pub use workflows::WORKFLOW_STEP_APPROVAL_REJECTED;
 pub use workflows::WorkflowRunCancelParams;
 pub use workflows::WorkflowRunCreateParams;
 pub use workflows::WorkflowRunListPage;
 pub use workflows::WorkflowRunPauseParams;
 pub use workflows::WorkflowRunResumeParams;
 pub use workflows::WorkflowRunStatusMutationOutcome;
+pub use workflows::WorkflowRunStepApprovalDecision;
+pub use workflows::WorkflowRunStepApprovalOutcome;
+pub use workflows::WorkflowRunStepApprovalParams;
 pub use workflows::WorkflowSpecCreateParams;
+pub use workflows::WorkflowSpecDeleteOutcome;
 pub use workflows::WorkflowSpecListPage;
 pub use workflows::WorkflowStore;
 
@@ -875,7 +882,10 @@ async fn open_sqlite(
         if matches!(spec.kind, DbKind::Goals) {
             repair_legacy_goals_deferred_migration_stamp(&pool, migrator).await?;
         }
-        migrator.run(&pool).await.map_err(anyhow::Error::from)
+        migrator
+            .run(&pool)
+            .await
+            .map_err(|err| explain_migration_error(spec.label, err))
     }
     .await;
     crate::telemetry::record_init_result(
@@ -949,6 +959,32 @@ async fn open_reader_sqlite(
         &pool_result,
     );
     pool_result
+}
+
+/// Convert a migration failure into an actionable error.
+///
+/// A `VersionMismatch` means a migration that was already applied has a
+/// different checksum than the one embedded in this binary. In a fleet where
+/// several codewith versions run against the same `~/.codewith` databases (for
+/// example a background-agent daemon worker started by an older managed install),
+/// this is almost always version skew — a differently-versioned binary opening a
+/// database migrated by another version — not corruption. sqlx's default message
+/// ("migration N was previously applied but has been modified") is opaque and has
+/// caused daemon-startup failures to be misdiagnosed, so surface the real cause
+/// and the safe remediation (align binary versions) instead of resetting state.
+///
+/// Non-mismatch errors are passed through unchanged.
+fn explain_migration_error(db_label: &str, err: sqlx::migrate::MigrateError) -> anyhow::Error {
+    if let sqlx::migrate::MigrateError::VersionMismatch(version) = err {
+        return anyhow::anyhow!(
+            "{db_label} migration {version} was previously applied with a different checksum. \
+             This usually means the database was migrated by a different codewith version than \
+             the one now opening it (fleet/worker version skew), not corruption. Upgrade every \
+             codewith process using this home directory to the same version so their embedded \
+             migrations match; the database does not need to be reset."
+        );
+    }
+    anyhow::Error::from(err)
 }
 
 /// SHA-384 checksum of the goals migration file
@@ -1120,6 +1156,7 @@ mod tests {
     use super::LEGACY_0148_GOALS_DEFERRED_V5_CHECKSUM_HEX;
     use super::StateRuntime;
     use super::decode_hex_checksum;
+    use super::explain_migration_error;
     use super::goals_db_path;
     use super::logs_db_path;
     use super::memories_db_path;
@@ -1148,6 +1185,38 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
     use std::sync::Mutex;
+
+    #[test]
+    fn explain_migration_error_makes_version_mismatch_actionable() {
+        let err = explain_migration_error("state DB", MigrateError::VersionMismatch(5));
+        let message = err.to_string();
+        assert!(
+            message.contains("state DB migration 5"),
+            "message should name the mismatched migration: {message}"
+        );
+        assert!(
+            message.contains("version skew"),
+            "message should attribute the failure to version skew: {message}"
+        );
+        assert!(
+            message.contains("does not need to be reset"),
+            "message should reassure that the database is not corrupt: {message}"
+        );
+    }
+
+    #[test]
+    fn explain_migration_error_passes_through_non_mismatch_errors() {
+        let err = explain_migration_error("state DB", MigrateError::VersionMissing(9_999));
+        let message = err.to_string();
+        assert!(
+            !message.contains("version skew"),
+            "non-mismatch errors must not be rewritten with the skew guidance: {message}"
+        );
+        assert!(
+            message.contains("9999"),
+            "non-mismatch errors should retain their original detail: {message}"
+        );
+    }
 
     #[derive(Default)]
     struct TestTelemetry {

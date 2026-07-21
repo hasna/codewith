@@ -102,6 +102,13 @@ struct PendingMcpElicitationOption: Identifiable {
     var id: String { label }
 }
 
+/// A user decision on a durable agent pending interaction.
+enum AgentInteractionDecision {
+    case approve
+    case deny
+    case dismiss
+}
+
 // MARK: - App state, backed by the live app-server
 
 @MainActor
@@ -144,6 +151,7 @@ final class AppModel {
     var machinesError: String? = nil
     var selectedMachineId: String? = nil
     var machinePairing: MachinePairingInfo? = nil
+    var remoteControlStatus: RemoteControlStatusInfo? = nil
     var authProfiles: [AuthProfileInfo] = []
     var profileError: String? = nil
     var accountUsage: AccountUsageInfo? = nil
@@ -383,6 +391,7 @@ final class AppModel {
         async let profiles: () = loadProfiles()
         async let apps: () = loadApps()
         async let machines: () = loadMachines()
+        async let remoteControl: () = loadRemoteControlStatus()
         async let peers: () = loadActivePeers()
         async let agents: () = loadAgentRuns()
         async let requirements: () = loadConfigRequirements()
@@ -390,7 +399,7 @@ final class AppModel {
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, apps, machines, peers, agents, profiles, requirements, catalog)
+        _ = await (acct, apps, machines, remoteControl, peers, agents, profiles, requirements, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -468,6 +477,83 @@ final class AppModel {
             return code == -32600 || message.localizedCaseInsensitiveContains("unknown variant")
         }
         return false
+    }
+
+    /// Read remote-control availability/status from the app-server. Older builds
+    /// that don't expose `remoteControl/status/read` simply leave the status nil
+    /// (the Machines screen then hides the remote-control banner).
+    func loadRemoteControlStatus() async {
+        guard connection == .connected else { return }
+        do {
+            remoteControlStatus = try await client.readRemoteControlStatus()
+        } catch {
+            // Unsupported on this server build, or remote control unavailable
+            // (no state DB). Treat as "no remote control" rather than surfacing
+            // a raw JSON-RPC error on the fleet screen.
+            remoteControlStatus = nil
+        }
+    }
+
+    /// Toggle remote control on the app-owned app-server, then refresh status.
+    func setRemoteControlEnabled(_ enabled: Bool) async {
+        guard connection == .connected else { return }
+        do {
+            let status = enabled
+                ? try await client.enableRemoteControl()
+                : try await client.disableRemoteControl()
+            remoteControlStatus = status
+            machinesError = nil
+        } catch {
+            // enable() may report remote control is unavailable (e.g. no state
+            // DB); reflect a short note instead of crashing.
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support remote control."
+                : error.localizedDescription
+            await loadRemoteControlStatus()
+        }
+    }
+
+    /// Change a machine's trust state, then reload the fleet.
+    func updateMachineTrust(_ machine: MachineInfo, trustState: MachineTrustState) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.updateMachineTrust(machineId: machine.machineId, trustState: trustState)
+            machinesError = nil
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support trust management."
+                : error.localizedDescription
+        }
+    }
+
+    /// Disable a machine, then reload the fleet.
+    func disableMachine(_ machine: MachineInfo) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.disableMachine(machineId: machine.machineId)
+            machinesError = nil
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support disabling machines."
+                : error.localizedDescription
+        }
+    }
+
+    /// Forget a machine, then reload the fleet.
+    func forgetMachine(_ machine: MachineInfo) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.forgetMachine(machineId: machine.machineId)
+            machinesError = nil
+            if selectedMachineId == machine.machineId { selectedMachineId = nil }
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support forgetting machines."
+                : error.localizedDescription
+        }
     }
 
     func startMachinePairing() async {
@@ -1246,6 +1332,7 @@ final class AppModel {
             await loadArchivedThreads()
         case "Machines":
             await loadMachines()
+            await loadRemoteControlStatus()
         default:
             break
         }
@@ -1658,6 +1745,12 @@ final class AppModel {
         case "app/list/updated":
             let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
             if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
+        case "remoteControl/status/changed":
+            // The payload carries the same 4-field shape as status/read; apply it
+            // directly and refresh the fleet, since trust/registry state can shift
+            // when the remote-control connection changes.
+            remoteControlStatus = RemoteControlStatusInfo(from: params)
+            Task { await loadMachines() }
         case "serverRequest/resolved":
             let resolvedId = params["requestId"] ?? params["id"]
             let resolvedThreadId = params["threadId"]?.string
@@ -2973,6 +3066,168 @@ final class AppModel {
             agentRuns[index] = agent
         } else {
             agentRuns.append(agent)
+        }
+    }
+
+    /// The durable agent currently surfaced in the chat, if any.
+    var activeAgentId: String? { activeAgentAttachment?.agent?.agentId }
+
+    /// Drop the client's subscription to the durable agent without stopping it.
+    func detachActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                if let updated = try await client.detachAgentRun(agentId: agentId) {
+                    upsertAgentRun(updated)
+                }
+                if activeAgentAttachment?.agent?.agentId == agentId {
+                    activeAgentAttachment = nil
+                }
+                appendAgentToolMessage("Detached from agent.", icon: "rectangle.portrait.and.arrow.right")
+            } catch {
+                appendAgentError("Agent detach failed", error)
+            }
+        }
+    }
+
+    /// Request the durable agent stop running, keeping the attachment for status.
+    func stopActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                if let updated = try await client.stopAgentRun(agentId: agentId) {
+                    upsertAgentRun(updated)
+                }
+                await refreshAgentAttachment(agentId: agentId)
+                appendAgentToolMessage("Requested agent stop.", icon: "stop.circle")
+            } catch {
+                appendAgentError("Agent stop failed", error)
+            }
+        }
+    }
+
+    /// Delete the durable agent and remove it from local state.
+    func deleteActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                let deleted = try await client.deleteAgentRun(agentId: agentId)
+                if deleted {
+                    agentRuns.removeAll { $0.agentId == agentId }
+                    if activeAgentAttachment?.agent?.agentId == agentId {
+                        activeAgentAttachment = nil
+                    }
+                    appendAgentToolMessage("Deleted agent.", icon: "trash")
+                } else {
+                    appendAgentToolMessage("Agent could not be deleted.", icon: "exclamationmark.triangle")
+                }
+            } catch {
+                appendAgentError("Agent delete failed", error)
+            }
+        }
+    }
+
+    /// Report the durable agent's recorded event count via `agent/events/list`.
+    func refreshActiveAgentEvents() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                let (data, _) = try await client.listAgentEvents(agentId: agentId)
+                appendAgentToolMessage(
+                    "Agent has \(data.count) recorded event\(data.count == 1 ? "" : "s").",
+                    icon: "list.bullet.rectangle")
+            } catch {
+                appendAgentError("Agent events failed", error)
+            }
+        }
+    }
+
+    /// Respond to a durable agent pending interaction and refresh the attachment.
+    func respondToAgentPendingInteraction(
+        _ interaction: AgentPendingInteractionInfo,
+        decision: AgentInteractionDecision
+    ) {
+        guard let payload = Self.agentPendingInteractionResponse(kind: interaction.kind, decision: decision) else {
+            return
+        }
+        let agentId = interaction.agentId.isEmpty
+            ? (activeAgentAttachment?.agent?.agentId ?? "")
+            : interaction.agentId
+        guard !agentId.isEmpty else { return }
+        Task {
+            do {
+                let updated = try await client.respondToAgentPendingInteraction(
+                    agentId: agentId,
+                    interactionId: interaction.interactionId,
+                    response: payload.response,
+                    terminalStatus: payload.terminalStatus)
+                await refreshAgentAttachment(agentId: agentId)
+                if updated {
+                    appendAgentToolMessage("Responded to agent interaction.", icon: "checkmark.circle")
+                } else {
+                    appendAgentToolMessage("Agent interaction was no longer pending.", icon: "info.circle")
+                }
+            } catch {
+                appendAgentError("Agent interaction response failed", error)
+            }
+        }
+    }
+
+    /// Re-read the durable agent so status/pending rows reflect the latest state.
+    private func refreshAgentAttachment(agentId: String) async {
+        guard let refreshed = try? await client.readAgentRun(agentId: agentId) else { return }
+        if let agent = refreshed.agent {
+            upsertAgentRun(agent)
+        }
+        if activeAgentAttachment?.agent?.agentId == agentId {
+            activeAgentAttachment = refreshed
+        }
+    }
+
+    private func appendAgentToolMessage(_ text: String, icon: String) {
+        activeMessages.append(ChatMessage(role: .tool, text: text, toolIcon: icon))
+    }
+
+    private func appendAgentError(_ prefix: String, _ error: Error) {
+        activeMessages.append(ChatMessage(
+            role: .tool,
+            text: "\(prefix): \(error.localizedDescription)",
+            toolIcon: "exclamationmark.triangle"))
+    }
+
+    /// Build the `agent/pendingInteraction/respond` payload for a UI decision.
+    ///
+    /// Returns `nil` when the decision cannot be expressed for the interaction
+    /// kind (e.g. approving a `userInput`/`permissionGrant` that needs answers
+    /// the compact banner cannot collect); the caller should offer a dismiss
+    /// action instead. `responded` payloads mirror the server's per-kind
+    /// validation (`ReviewDecision`/`ElicitationAction`); non-responded terminal
+    /// statuses carry a human-readable reason and skip validation.
+    static func agentPendingInteractionResponse(
+        kind: String,
+        decision: AgentInteractionDecision
+    ) -> (response: JSONValue, terminalStatus: String)? {
+        switch decision {
+        case .approve:
+            switch kind {
+            case "approval":
+                return (.object(["decision": .string("approved")]), "responded")
+            case "mcpElicitation":
+                return (.object(["decision": .string("accept")]), "responded")
+            default:
+                return nil
+            }
+        case .deny:
+            switch kind {
+            case "approval":
+                return (.object(["decision": .string("denied")]), "denied")
+            case "mcpElicitation":
+                return (.object(["decision": .string("decline")]), "denied")
+            default:
+                return nil
+            }
+        case .dismiss:
+            return (.object(["reason": .string("Dismissed from CodeWith.app")]), "cancelled")
         }
     }
 
