@@ -98,6 +98,18 @@ pub fn tui_pet_edit(name: &str) -> ConfigEdit {
     }
 }
 
+/// Produces a config edit that sets `[keep_going].enabled = <enabled>`.
+///
+/// Persists the keep-going / auto-resume default so `/config` can toggle it. The
+/// interactive `/keep-going` runtime flag still overrides this for the active
+/// session (same pattern as teaching mode).
+pub fn keep_going_enabled_edit(enabled: bool) -> ConfigEdit {
+    ConfigEdit::SetPath {
+        segments: vec!["keep_going".to_string(), "enabled".to_string()],
+        value: value(enabled),
+    }
+}
+
 /// Produces a config edit that sets `[tui].session_picker_view = "<mode>"`.
 pub fn session_picker_view_edit(mode: SessionPickerViewMode) -> ConfigEdit {
     ConfigEdit::SetPath {

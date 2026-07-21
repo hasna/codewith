@@ -49,6 +49,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthProfileAutoSwitchStrategyToml;
 use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::History;
+use codex_config::types::KeepGoingToml;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
 use codex_config::types::McpServerTransportConfig;
@@ -293,6 +294,38 @@ impl Default for UsageSelfHealConfig {
             max_backoff_secs: DEFAULT_USAGE_SELF_HEAL_MAX_BACKOFF_SECS,
             reset_retry_buffer_secs: DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS,
             max_reset_retry_delay_secs: DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS,
+        }
+    }
+}
+
+/// Hard per-user-turn cap on automatic keep-going continuations. This ceiling
+/// guarantees keep-going can never loop forever, even when enabled.
+pub const DEFAULT_KEEP_GOING_MAX_CONTINUATIONS: u32 = 25;
+
+/// Built-in neutral continuation prompt used when `[keep_going].prompt` is unset.
+pub const DEFAULT_KEEP_GOING_PROMPT: &str = include_str!("keep_going_continuation.md");
+
+/// Resolved opt-in keep-going / auto-resume behavior.
+///
+/// Keep-going lives in core config so headless runtimes can adopt it later, even
+/// though the interactive toggle and turn-end hook currently live in the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeepGoingConfig {
+    /// Whether keep-going is enabled by default. The interactive `/keep-going`
+    /// runtime flag overrides this for the active session.
+    pub enabled: bool,
+    /// Hard cap on automatic continuations per user turn.
+    pub max_continuations: u32,
+    /// Continuation prompt injected on each automatic resume.
+    pub prompt: String,
+}
+
+impl Default for KeepGoingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_continuations: DEFAULT_KEEP_GOING_MAX_CONTINUATIONS,
+            prompt: DEFAULT_KEEP_GOING_PROMPT.to_string(),
         }
     }
 }
@@ -648,6 +681,25 @@ fn resolve_usage_self_heal_config(config: Option<UsageSelfHealToml>) -> UsageSel
         max_reset_retry_delay_secs: config
             .max_reset_retry_delay_secs
             .unwrap_or(defaults.max_reset_retry_delay_secs),
+    }
+}
+
+fn resolve_keep_going_config(config: Option<KeepGoingToml>) -> KeepGoingConfig {
+    let Some(config) = config else {
+        return KeepGoingConfig::default();
+    };
+    let defaults = KeepGoingConfig::default();
+    let prompt = config
+        .prompt
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty())
+        .unwrap_or(defaults.prompt);
+    KeepGoingConfig {
+        enabled: config.enabled.unwrap_or(defaults.enabled),
+        max_continuations: config
+            .max_continuations
+            .unwrap_or(defaults.max_continuations),
+        prompt,
     }
 }
 
@@ -1318,6 +1370,9 @@ pub struct Config {
 
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     pub usage_self_heal: UsageSelfHealConfig,
+
+    /// Opt-in keep-going / auto-resume behavior for clean turn-ends.
+    pub keep_going: KeepGoingConfig,
 
     /// Usage-limit reset behavior.
     pub usage_limit: UsageLimitConfig,
@@ -3613,10 +3668,12 @@ impl Config {
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
         let mut usage_self_heal = resolve_usage_self_heal_config(cfg.usage_self_heal.clone());
         let usage_limit = resolve_usage_limit_config(cfg.usage_limit.clone());
+        let mut keep_going = resolve_keep_going_config(cfg.keep_going.clone());
         let mut session_recap = resolve_session_recap_config(cfg.session_recap.clone());
         if tool_policy == ToolPolicy::InfinityAgent {
             auth_profile_auto_switch.enabled = false;
             usage_self_heal.enabled = false;
+            keep_going.enabled = false;
             session_recap.enabled = false;
         }
         let goals = resolve_goals_config(cfg.goals.clone());
@@ -4552,6 +4609,7 @@ impl Config {
             selected_auth_profile,
             auth_profile_auto_switch,
             usage_self_heal,
+            keep_going,
             usage_limit,
             session_recap,
             mcp_servers,

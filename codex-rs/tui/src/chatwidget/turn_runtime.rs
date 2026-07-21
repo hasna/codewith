@@ -224,9 +224,18 @@ impl ChatWidget {
         // next turn immediately, so notifying at that boundary would feel like
         // a false "needs attention".
         if !follow_up_started && !active_goal_continuing {
-            self.notify(Notification::AgentTurnComplete {
-                response: notification_response,
-            });
+            // Opt-in keep-going / auto-resume: after a clean turn-end, inject a
+            // continuation prompt and start the next turn instead of stopping.
+            // This is bounded (max_continuations per user turn), never fires on
+            // replay, on errors, in Plan mode, while a modal/approval is pending,
+            // while a goal is active, or while a usage-limit reset / self-heal /
+            // auth-switch owns the turn (see `maybe_run_keep_going_continuation`).
+            let kept_going = !from_replay && self.maybe_run_keep_going_continuation();
+            if !kept_going {
+                self.notify(Notification::AgentTurnComplete {
+                    response: notification_response,
+                });
+            }
         }
 
         self.maybe_show_pending_rate_limit_prompt();

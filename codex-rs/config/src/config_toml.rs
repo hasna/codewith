@@ -14,6 +14,7 @@ use crate::types::AuthCredentialsStoreMode;
 use crate::types::AuthProfileAutoSwitchToml;
 use crate::types::FeedbackConfigToml;
 use crate::types::History;
+use crate::types::KeepGoingToml;
 use crate::types::MarketplaceConfig;
 use crate::types::McpServerConfig;
 use crate::types::MemoriesToml;
@@ -371,6 +372,10 @@ pub struct ConfigToml {
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     #[serde(default)]
     pub usage_self_heal: Option<UsageSelfHealToml>,
+
+    /// Opt-in keep-going / auto-resume behavior for clean turn-ends.
+    #[serde(default)]
+    pub keep_going: Option<KeepGoingToml>,
 
     /// Usage-limit reset behavior.
     #[serde(default)]
