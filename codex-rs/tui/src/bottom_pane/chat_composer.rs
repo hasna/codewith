@@ -1110,7 +1110,6 @@ impl ChatComposer {
         }
         if let Some(indicators) = status_line_right_indicator_line(
             self.footer.collaboration_mode_indicator,
-            self.footer.goal_status_indicator.as_ref(),
             self.footer.ide_context_active,
             show_cycle_hint,
         ) {
@@ -3460,6 +3459,7 @@ impl ChatComposer {
                 reasoning_down: self.footer.reasoning_down_key,
                 reasoning_up: self.footer.reasoning_up_key,
             },
+            goal_status_indicator: self.footer.goal_status_indicator.clone(),
         }
     }
 

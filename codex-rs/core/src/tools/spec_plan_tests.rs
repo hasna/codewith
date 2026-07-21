@@ -1247,22 +1247,40 @@ async fn tool_mode_selector_overrides_feature_flags() {
 }
 
 #[tokio::test]
-async fn v1_multi_agent_tools_defer_when_tool_search_available() {
+async fn v1_multi_agent_tools_stay_model_visible_with_tool_search() {
+    // Regression guard for the Codewith fork override of upstream #23144
+    // (b3ae3de40). Upstream deferred the V1 multi-agent tools behind tool-search
+    // whenever the model supports search AND the provider supports namespaced
+    // tools. That is the *default* combination (V1 + modern model + Responses
+    // provider), so `spawn_agent` and friends silently dropped out of the
+    // initial model-visible tool list and subagent spawning broke for skills
+    // that never probe the tool registry. Our fork advertises them directly;
+    // this test would FAIL against the old `ToolExposure::Deferred` behavior.
     let plan = probe(|turn| {
+        // The exact combination that previously produced Deferred exposure.
         turn.model_info.supports_search_tool = true;
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
     })
     .await;
 
-    plan.assert_visible_contains(&["tool_search"]);
-    plan.assert_visible_lacks(&[
-        "spawn_agent",
-        "send_input",
-        "resume_agent",
-        "wait_agent",
-        "close_agent",
-    ]);
+    // Even with tool-search available, the V1 multi-agent tools must remain in
+    // the model-visible tool list (surfaced as functions inside the namespace),
+    // not hidden behind tool-search.
+    plan.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
+    // `namespace_function_names` reads only from the model-visible specs, so a
+    // non-empty result here proves each tool is exposed to the model, not merely
+    // registered for later discovery.
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
     for tool_name in [
         "spawn_agent",
         "send_input",
@@ -1276,18 +1294,12 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
             plan.registered_names.contains(&namespaced_tool_name),
             "expected namespaced runtime for {tool_name}"
         );
-        assert!(
-            !plan
-                .registered_names
-                .contains(&ToolName::plain(tool_name).to_string()),
-            "expected no plain runtime for deferred {tool_name}"
+        assert_eq!(
+            plan.exposure(&namespaced_tool_name),
+            ToolExposure::Direct,
+            "expected {tool_name} to be model-visible (Direct), not deferred behind tool-search"
         );
-        assert_eq!(plan.exposure(&namespaced_tool_name), ToolExposure::Deferred);
     }
-    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
-        panic!("expected visible tool_search spec");
-    };
-    assert!(description.contains("- Multi-agent tools: Spawn and manage sub-agents."));
 }
 
 #[tokio::test]

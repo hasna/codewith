@@ -10,14 +10,15 @@ use super::*;
 impl ChatWidget {
     /// Update the status indicator header and details.
     ///
-    /// Passing `None` clears any existing details.
+    /// Passing `None` clears any existing details. Returns whether the visible status indicator
+    /// requested a redraw.
     pub(super) fn set_status(
         &mut self,
         header: String,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
-    ) {
+    ) -> bool {
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {
@@ -35,19 +36,20 @@ impl ChatWidget {
             details_max_lines,
         };
         self.collab_wait_status.record_base_status(status.clone());
-        self.apply_status(status);
+        let status_indicator_updated = self.apply_status(status);
         if self.collab_wait_status.has_active_waits() {
             self.refresh_collab_wait_status_at(Instant::now());
         }
+        status_indicator_updated
     }
 
     pub(super) fn set_collab_wait_status(&mut self, status: StatusIndicatorState) {
         self.apply_status(status);
     }
 
-    fn apply_status(&mut self, status: StatusIndicatorState) {
+    fn apply_status(&mut self, status: StatusIndicatorState) -> bool {
         self.status_state.set_status(status.clone());
-        self.bottom_pane.update_status(
+        let status_indicator_updated = self.bottom_pane.update_status(
             status.header,
             status.details,
             StatusDetailsCapitalization::Preserve,
@@ -65,17 +67,19 @@ impl ChatWidget {
         {
             self.refresh_status_surfaces();
         }
+        status_indicator_updated
     }
 
     /// Convenience wrapper around [`Self::set_status`];
-    /// updates the status indicator header and clears any existing details.
-    pub(super) fn set_status_header(&mut self, header: String) {
+    /// updates the status indicator header and clears any existing details, returning whether the
+    /// visible status indicator requested a redraw.
+    pub(super) fn set_status_header(&mut self, header: String) -> bool {
         self.set_status(
             header,
             /*details*/ None,
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
-        );
+        )
     }
 
     /// Sets or clears model-authored statusline display text.

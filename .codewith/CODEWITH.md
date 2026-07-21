@@ -99,6 +99,37 @@ In the codex-rs folder where the rust code lives:
 - If compile/link time dominates test execution, gather evidence with `just build-timings -p <crate>` or `just test-binaries -p <crate>` before adding timeouts or larger runners.
 - Treat machine-level accelerators such as `RUSTC_WRAPPER=sccache` or custom linkers as local setup unless the repo installs and validates them for every developer and CI path.
 
+### Tiered validation (PR-drain lanes)
+
+`just validate <tier>` runs the cheapest sufficient validation for a change on a
+persistent per-lane target directory, so warm rebuilds only recompile changed
+crates. Pick the lowest tier that covers the change; escalate for shared crates.
+
+| Tier | Recipe | What it runs | Use for |
+| --- | --- | --- | --- |
+| T0 | `just validate fmt` | `format.py --check` (rust/python/justfile) | format/comment/docs-only lanes |
+| T1 | `just validate check` | `cargo check --tests` on changed crates | compile-boundary lanes (config, small API, provider metadata) |
+| T2 | `just validate test` | `cargo nextest run` on changed crates | behavior changes scoped to a crate |
+| T3 | `just validate full` | `cargo nextest run` whole workspace | shared/common/core/protocol changes and final gates |
+
+- `check`/`test` auto-scope to the crates that own files changed vs `--base`
+  (default `origin/main`), so unrelated crates and their aggregate test binaries
+  are never compiled. This is the primary wall-time win: a one-crate change no
+  longer pays for the whole-workspace test build.
+- Scoping automatically escalates to the whole workspace when a workspace-root
+  manifest/config changes (`Cargo.toml`, `Cargo.lock`, `.config/nextest.toml`,
+  `.cargo/config.toml`, `rust-toolchain.toml`, `deny/clippy/rustfmt.toml`) or a
+  `codex-rs` file cannot be attributed to a crate, so nothing is silently
+  under-validated.
+- `--rdeps` also validates every workspace crate that depends on a changed
+  crate (offline, from `cargo metadata`). Prefer it for `test` lanes that touch
+  a widely used crate; `full` already covers the whole graph.
+- Each lane gets its own persistent `CARGO_TARGET_DIR` derived from the branch
+  (override with `--target-dir <dir>` or `CARGO_TARGET_DIR`), so parallel lanes
+  do not fight over one target lock and each stays warm across reruns.
+- `just changed-crates [--rdeps]` prints the resolved `-p <crate>` selection
+  without running anything.
+
 ### Goal, schedule, and status surface changes
 
 - Treat durable goals, workflow/loop/schedule launches, and app-server thread start context as cross-cutting behavior. When changing scheduled goal runs or agent-thread launch controls, keep app-server protocol/schema, app-server runtime, state runtime/migrations, goal extension, workflow extension, and TUI launch/status surfaces aligned.
