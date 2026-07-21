@@ -181,15 +181,18 @@ struct MachineInfo: Identifiable, Hashable {
     var status: String   // online / offline / unknown
     var role: String
     var isLocal: Bool
+    /// Raw machineRegistry trust state: local / trusted / untrusted / disabled / revoked.
+    var trustState: String
     var online: Bool { status == "online" }
 
-    init(id: String, os: String, status: String, role: String, isLocal: Bool) {
+    init(id: String, os: String, status: String, role: String, isLocal: Bool, trustState: String = "") {
         self.machineId = id
         self.displayName = id
         self.os = os
         self.status = status
         self.role = role
         self.isLocal = isLocal
+        self.trustState = trustState
     }
 
     init(registryValue v: JSONValue) {
@@ -202,9 +205,84 @@ struct MachineInfo: Identifiable, Hashable {
         status = (v["healthState"]?.string ?? "unknown").lowercased()
         let source = v["sourceKind"]?.string ?? ""
         let trust = v["trustState"]?.string ?? ""
+        trustState = trust.lowercased()
         role = [source, trust].filter { !$0.isEmpty }.joined(separator: " · ")
-        isLocal = (v["trustState"]?.string ?? "").lowercased() == "local"
+        isLocal = trustState == "local"
             || (v["sourceKind"]?.string ?? "").lowercased() == "local"
+    }
+}
+
+/// Trust state accepted by `machineRegistry/updateTrust` (camelCase on the wire).
+/// `.local` is reserved for the local machine and rejected by the server.
+enum MachineTrustState: String, CaseIterable {
+    case local
+    case trusted
+    case untrusted
+    case disabled
+    case revoked
+}
+
+/// Remote-control connection status + remote identity from the app-server.
+/// Mirrors `RemoteControlStatusReadResponse` (all fields camelCase on the wire).
+struct RemoteControlStatusInfo: Hashable {
+    /// disabled / connecting / connected / errored.
+    var status: String
+    var serverName: String
+    var installationId: String
+    var environmentId: String?
+
+    init(status: String = "disabled", serverName: String = "", installationId: String = "", environmentId: String? = nil) {
+        self.status = status
+        self.serverName = serverName
+        self.installationId = installationId
+        self.environmentId = environmentId
+    }
+
+    init(from v: JSONValue) {
+        status = (v["status"]?.string ?? "disabled").lowercased()
+        serverName = v["serverName"]?.string ?? ""
+        installationId = v["installationId"]?.string ?? ""
+        environmentId = v["environmentId"]?.string
+    }
+
+    var isConnected: Bool { status == "connected" }
+    var isAvailable: Bool { status != "disabled" }
+}
+
+/// Result of a `remoteDispatch/negotiate` call (capabilities the peer exposes).
+struct RemoteDispatchNegotiationInfo: Hashable {
+    var protocolVersion: Int
+    var requiredTrustState: String
+    var supportedCapabilities: [String]
+    var supportedOperations: [String]
+    var deniedOperationClasses: [String]
+    var localMachineId: String?
+
+    init(from v: JSONValue) {
+        protocolVersion = v["protocolVersion"]?.int ?? 0
+        requiredTrustState = v["requiredTrustState"]?.string ?? ""
+        supportedCapabilities = (v["supportedCapabilities"]?.array ?? []).compactMap { $0.string }
+        supportedOperations = (v["supportedOperations"]?.array ?? []).compactMap { $0.string }
+        deniedOperationClasses = (v["deniedOperationClasses"]?.array ?? []).compactMap { $0.string }
+        localMachineId = v["localMachineId"]?.string
+    }
+}
+
+/// Result of a `remoteDispatch/submit` call.
+struct RemoteDispatchSubmitInfo: Equatable {
+    /// accepted / duplicate / denied / unsupported / failed / dryRun.
+    /// Kept verbatim from the wire — `dryRun` is camelCase, so do not lowercase.
+    var status: String
+    var requestId: String
+    /// The full receipt object, retained as raw JSON for callers that inspect it.
+    var receipt: JSONValue
+    var result: JSONValue?
+
+    init(from v: JSONValue) {
+        status = v["status"]?.string ?? ""
+        requestId = v["requestId"]?.string ?? ""
+        receipt = v["receipt"] ?? .null
+        result = v["result"].flatMap { $0.isNull ? nil : $0 }
     }
 }
 

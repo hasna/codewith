@@ -151,6 +151,7 @@ final class AppModel {
     var machinesError: String? = nil
     var selectedMachineId: String? = nil
     var machinePairing: MachinePairingInfo? = nil
+    var remoteControlStatus: RemoteControlStatusInfo? = nil
     var authProfiles: [AuthProfileInfo] = []
     var profileError: String? = nil
     var accountUsage: AccountUsageInfo? = nil
@@ -390,6 +391,7 @@ final class AppModel {
         async let profiles: () = loadProfiles()
         async let apps: () = loadApps()
         async let machines: () = loadMachines()
+        async let remoteControl: () = loadRemoteControlStatus()
         async let peers: () = loadActivePeers()
         async let agents: () = loadAgentRuns()
         async let requirements: () = loadConfigRequirements()
@@ -397,7 +399,7 @@ final class AppModel {
         async let catalog: () = loadModelCatalog()
         await loadThreads(reset: true)          // fast first-page paint
         await loadLoops()
-        _ = await (acct, apps, machines, peers, agents, profiles, requirements, catalog)
+        _ = await (acct, apps, machines, remoteControl, peers, agents, profiles, requirements, catalog)
         // Drain remaining pages in the background so Projects becomes complete.
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -475,6 +477,83 @@ final class AppModel {
             return code == -32600 || message.localizedCaseInsensitiveContains("unknown variant")
         }
         return false
+    }
+
+    /// Read remote-control availability/status from the app-server. Older builds
+    /// that don't expose `remoteControl/status/read` simply leave the status nil
+    /// (the Machines screen then hides the remote-control banner).
+    func loadRemoteControlStatus() async {
+        guard connection == .connected else { return }
+        do {
+            remoteControlStatus = try await client.readRemoteControlStatus()
+        } catch {
+            // Unsupported on this server build, or remote control unavailable
+            // (no state DB). Treat as "no remote control" rather than surfacing
+            // a raw JSON-RPC error on the fleet screen.
+            remoteControlStatus = nil
+        }
+    }
+
+    /// Toggle remote control on the app-owned app-server, then refresh status.
+    func setRemoteControlEnabled(_ enabled: Bool) async {
+        guard connection == .connected else { return }
+        do {
+            let status = enabled
+                ? try await client.enableRemoteControl()
+                : try await client.disableRemoteControl()
+            remoteControlStatus = status
+            machinesError = nil
+        } catch {
+            // enable() may report remote control is unavailable (e.g. no state
+            // DB); reflect a short note instead of crashing.
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support remote control."
+                : error.localizedDescription
+            await loadRemoteControlStatus()
+        }
+    }
+
+    /// Change a machine's trust state, then reload the fleet.
+    func updateMachineTrust(_ machine: MachineInfo, trustState: MachineTrustState) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.updateMachineTrust(machineId: machine.machineId, trustState: trustState)
+            machinesError = nil
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support trust management."
+                : error.localizedDescription
+        }
+    }
+
+    /// Disable a machine, then reload the fleet.
+    func disableMachine(_ machine: MachineInfo) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.disableMachine(machineId: machine.machineId)
+            machinesError = nil
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support disabling machines."
+                : error.localizedDescription
+        }
+    }
+
+    /// Forget a machine, then reload the fleet.
+    func forgetMachine(_ machine: MachineInfo) async {
+        guard connection == .connected else { return }
+        do {
+            _ = try await client.forgetMachine(machineId: machine.machineId)
+            machinesError = nil
+            if selectedMachineId == machine.machineId { selectedMachineId = nil }
+            await loadMachines()
+        } catch {
+            machinesError = Self.isUnsupportedMethodError(error)
+                ? "this app-server version doesn't support forgetting machines."
+                : error.localizedDescription
+        }
     }
 
     func startMachinePairing() async {
@@ -1253,6 +1332,7 @@ final class AppModel {
             await loadArchivedThreads()
         case "Machines":
             await loadMachines()
+            await loadRemoteControlStatus()
         default:
             break
         }
@@ -1665,6 +1745,12 @@ final class AppModel {
         case "app/list/updated":
             let updated = AppServerClient.parseApps(params["data"]?.array ?? [])
             if updated.isEmpty { Task { await loadApps() } } else { apps = updated }
+        case "remoteControl/status/changed":
+            // The payload carries the same 4-field shape as status/read; apply it
+            // directly and refresh the fleet, since trust/registry state can shift
+            // when the remote-control connection changes.
+            remoteControlStatus = RemoteControlStatusInfo(from: params)
+            Task { await loadMachines() }
         case "serverRequest/resolved":
             let resolvedId = params["requestId"] ?? params["id"]
             let resolvedThreadId = params["threadId"]?.string
