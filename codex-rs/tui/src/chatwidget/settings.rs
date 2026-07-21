@@ -344,6 +344,19 @@ impl ChatWidget {
         self.refreshing_minimax_usage_status_outputs.clear();
         self.usage_panel_rate_limit_state = UsagePanelRateLimitState::default();
         self.usage_panel_minimax_usage_state = UsagePanelMiniMaxUsageState::default();
+        self.rate_limit_reset_credits = None;
+        self.rate_limit_reset_account_identity_fingerprint = None;
+        self.announced_rate_limit_reset_available_count = None;
+        self.advance_rate_limit_reset_generation();
+        self.pending_rate_limit_reset_consumption = None;
+        self.manual_rate_limit_reset_authority = None;
+        self.rate_limit_reset_in_flight = None;
+        self.rate_limit_reset_retry = None;
+        self.pending_rate_limit_reset_picker = None;
+        self.pending_usage_limit_auto_reset_check = None;
+        self.pending_post_reset_refresh = None;
+        self.automatic_reset_opted_out_generation = None;
+        self.usage_limit_auto_reset_key = None;
         self.codex_rate_limit_reached_type = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
@@ -815,7 +828,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
+            ModeKind::Default => None,
         }
     }
 

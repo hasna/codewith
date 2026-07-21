@@ -6,14 +6,13 @@ use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::InstanceType;
-use schemars::schema::Metadata;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::Value as JsonValue;
+use std::borrow::Cow;
 use ts_rs::TS;
 
 // Macro to declare a camelCased API v2 enum mirroring a core enum which
@@ -251,8 +250,8 @@ pub enum ApprovalsReviewer {
 }
 
 impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> String {
-        "ApprovalsReviewer".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "ApprovalsReviewer".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -264,21 +263,22 @@ impl JsonSchema for ApprovalsReviewer {
 }
 
 fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        metadata: Some(Box::new(Metadata {
-            description: Some(description.to_string()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| JsonValue::String((*value).to_string()))
-            .collect(),
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), JsonValue::String("string".to_string()));
+    schema.insert(
+        "enum".to_string(),
+        JsonValue::Array(
+            values
+                .iter()
+                .map(|value| JsonValue::String((*value).to_string()))
+                .collect(),
+        ),
     );
-    Schema::Object(schema)
+    schema.insert(
+        "description".to_string(),
+        JsonValue::String(description.to_string()),
+    );
+    schema.into()
 }
 
 impl ApprovalsReviewer {

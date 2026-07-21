@@ -9,10 +9,14 @@ use super::*;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event::McpInventoryTarget;
 use crate::app_event::MiniMaxUsageRefreshOrigin;
+use crate::app_event::RateLimitRefreshData;
 use crate::app_event::RateLimitRefreshTarget;
+use crate::app_event::RateLimitResetAttempt;
 use crate::config_update::format_config_error;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
@@ -111,7 +115,10 @@ impl App {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         let auth_profile = target.auth_profile_key(self.config.selected_auth_profile.as_deref());
-        let params = rate_limit_params_for_target(&target);
+        let include_reset_credit_details = self
+            .chat_widget
+            .post_reset_refresh_requires_credit_details(&origin);
+        let params = rate_limit_params_for_target(&target, include_reset_credit_details);
         tokio::spawn(async move {
             let result = fetch_account_rate_limits(request_handle, params)
                 .await
@@ -122,6 +129,27 @@ impl App {
                 auth_profile,
                 result,
             });
+        });
+    }
+
+    pub(super) fn consume_rate_limit_reset_credit(
+        &self,
+        app_server: &AppServerSession,
+        attempt: RateLimitResetAttempt,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = consume_rate_limit_reset_credit_request(
+                request_handle,
+                attempt.idempotency_key.clone(),
+                Some(attempt.credit_id.clone()),
+                Some(attempt.auth_profile.clone()),
+                attempt.account_identity_fingerprint.clone(),
+            )
+            .await
+            .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::RateLimitResetCreditConsumed { attempt, result });
         });
     }
 
@@ -799,24 +827,37 @@ async fn reload_mcp_servers(
 pub(super) async fn fetch_account_rate_limits(
     request_handle: AppServerRequestHandle,
     params: GetAccountRateLimitsParams,
-) -> Result<Vec<RateLimitSnapshot>> {
+) -> Result<RateLimitRefreshData> {
     let request_id = RequestId::String(format!("account-rate-limits-{}", Uuid::new_v4()));
     let response: GetAccountRateLimitsResponse = request_handle
         .request_typed(ClientRequest::GetAccountRateLimits { request_id, params })
         .await
         .wrap_err("account/rateLimits/read failed in TUI")?;
+    let reset_credits = response.rate_limit_reset_credits.clone();
 
-    Ok(app_server_rate_limit_snapshots(response))
+    Ok(RateLimitRefreshData {
+        account_identity_fingerprint: response.account_identity_fingerprint.clone(),
+        snapshots: app_server_rate_limit_snapshots(response),
+        reset_credits,
+    })
 }
 
-fn rate_limit_params_for_target(target: &RateLimitRefreshTarget) -> GetAccountRateLimitsParams {
+fn rate_limit_params_for_target(
+    target: &RateLimitRefreshTarget,
+    include_reset_credit_details: bool,
+) -> GetAccountRateLimitsParams {
     match target {
-        RateLimitRefreshTarget::Selected => GetAccountRateLimitsParams::default(),
+        RateLimitRefreshTarget::Selected => GetAccountRateLimitsParams {
+            include_reset_credit_details,
+            ..GetAccountRateLimitsParams::default()
+        },
         RateLimitRefreshTarget::Root => GetAccountRateLimitsParams {
             auth_profile: Some(None),
+            include_reset_credit_details,
         },
         RateLimitRefreshTarget::Named(profile) => GetAccountRateLimitsParams {
             auth_profile: Some(Some(profile.clone())),
+            include_reset_credit_details,
         },
     }
 }
@@ -854,6 +895,28 @@ pub(super) async fn send_add_credits_nudge_email(
         .wrap_err("account/sendAddCreditsNudgeEmail failed in TUI")?;
 
     Ok(response.status)
+}
+
+async fn consume_rate_limit_reset_credit_request(
+    request_handle: AppServerRequestHandle,
+    idempotency_key: String,
+    credit_id: Option<String>,
+    auth_profile: Option<Option<String>>,
+    expected_account_identity_fingerprint: String,
+) -> Result<ConsumeAccountRateLimitResetCreditResponse> {
+    let request_id = RequestId::String(format!("rate-limit-reset-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::ConsumeAccountRateLimitResetCredit {
+            request_id,
+            params: ConsumeAccountRateLimitResetCreditParams {
+                idempotency_key,
+                credit_id,
+                auth_profile,
+                expected_account_identity_fingerprint,
+            },
+        })
+        .await
+        .wrap_err("account/rateLimitResetCredit/consume failed in TUI")
 }
 
 pub(super) async fn fetch_skills_list(
@@ -1423,19 +1486,30 @@ mod tests {
     #[test]
     fn rate_limit_params_for_target_maps_selected_root_and_named_profiles() {
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Selected),
-            GetAccountRateLimitsParams { auth_profile: None }
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Selected,
+                /*include_reset_credit_details*/ false,
+            ),
+            GetAccountRateLimitsParams::default()
         );
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Root),
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Root,
+                /*include_reset_credit_details*/ false,
+            ),
             GetAccountRateLimitsParams {
-                auth_profile: Some(None)
+                auth_profile: Some(None),
+                include_reset_credit_details: false,
             }
         );
         assert_eq!(
-            rate_limit_params_for_target(&RateLimitRefreshTarget::Named("work".to_string())),
+            rate_limit_params_for_target(
+                &RateLimitRefreshTarget::Named("work".to_string()),
+                /*include_reset_credit_details*/ false,
+            ),
             GetAccountRateLimitsParams {
-                auth_profile: Some(Some("work".to_string()))
+                auth_profile: Some(Some("work".to_string())),
+                include_reset_credit_details: false,
             }
         );
     }

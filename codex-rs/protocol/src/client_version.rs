@@ -14,7 +14,7 @@
 
 /// Upstream Codex version this fork is API-compatible with. Bump when syncing
 /// upstream or when the backend raises the model-gating floor.
-pub const CODEX_API_COMPAT_VERSION: &str = "0.137.0";
+pub const CODEX_API_COMPAT_VERSION: &str = "0.144.4";
 
 /// Environment variable that overrides [`codex_api_version`] without rebuilding.
 pub const CODEX_API_VERSION_ENV_VAR: &str = "CODEX_API_VERSION";
@@ -46,6 +46,6 @@ mod tests {
     fn compat_version_is_high_enough_for_model_gating() {
         // The product version is 0.1.x; the advertised version must be well above
         // it so the backend does not reject newer models as "too old".
-        assert!(CODEX_API_COMPAT_VERSION.starts_with("0.13"));
+        assert_eq!(CODEX_API_COMPAT_VERSION, "0.144.4");
     }
 }

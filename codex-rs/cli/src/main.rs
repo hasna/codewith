@@ -50,6 +50,7 @@ mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+mod infinity_agent_cmd;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
@@ -69,6 +70,7 @@ use self::plugin_cmd::PluginSubcommand;
 use self::remote_control_cmd::RemoteControlCommand;
 use self::usage_cmd::UsageCommand;
 use doctor::DoctorCommand;
+use infinity_agent_cmd::InfinityAgentCommand;
 use state_db_recovery as local_state_db;
 
 use codex_config::LoaderOverrides;
@@ -196,6 +198,9 @@ enum Subcommand {
     /// Diagnose local Codewith installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
 
+    /// Verify the fail-closed Infinity Agent subscription-capsule boundary.
+    InfinityAgent(InfinityAgentCommand),
+
     /// Run commands within a Codewith-provided sandbox.
     Sandbox(HostSandboxArgs),
 
@@ -316,6 +321,12 @@ enum DebugSubcommand {
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
 
+    /// Print the native AuthCapsule policy capability document as JSON.
+    ///
+    /// Consumed by the Infinity subscription lane's native-policy probe to prove
+    /// this binary enforces the `infinity-agent` AuthCapsule policy.
+    AuthCapsulePolicy(DebugAuthCapsulePolicyCommand),
+
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
     TraceReduce(DebugTraceReduceCommand),
@@ -323,6 +334,20 @@ enum DebugSubcommand {
     /// Internal: reset local memory state for a fresh start.
     #[clap(hide = true)]
     ClearMemories,
+}
+
+#[derive(Debug, Parser)]
+struct DebugAuthCapsulePolicyCommand {
+    /// Output format for the capability document.
+    #[arg(long = "format", value_enum, default_value_t = DebugOutputFormat::Json)]
+    format: DebugOutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+enum DebugOutputFormat {
+    #[default]
+    Json,
 }
 
 #[derive(Debug, Parser)]
@@ -1742,6 +1767,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
             )
             .await?;
         }
+        Some(Subcommand::InfinityAgent(command)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "infinity-agent",
+            )?;
+            command.run(root_config_overrides.clone()).await?;
+        }
         Some(Subcommand::Cloud(mut cloud_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1853,6 +1886,14 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                     "debug clear-memories",
                 )?;
                 run_debug_clear_memories_command(&root_config_overrides).await?;
+            }
+            DebugSubcommand::AuthCapsulePolicy(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug auth-capsule-policy",
+                )?;
+                run_debug_auth_capsule_policy_command(cmd)?;
             }
         },
         Some(Subcommand::Execpolicy(ExecpolicyCommand { sub })) => match sub {
@@ -2372,6 +2413,29 @@ async fn run_debug_models_command(
     Ok(())
 }
 
+/// Emit the native AuthCapsule policy capability document for the Infinity
+/// subscription lane's native-policy probe. The document reports capabilities the
+/// binary actually enforces (host filesystem tools, host shell tools, and
+/// auth-profile control are removed under `tools.policy = "infinity-agent"`).
+///
+/// The document is written as a single JSON object to stdout with nothing else on
+/// stdout, so the probe's `parseStrictJson(stdout.trim())` succeeds.
+fn run_debug_auth_capsule_policy_command(cmd: DebugAuthCapsulePolicyCommand) -> anyhow::Result<()> {
+    // SECURITY: the probe emits the capability document DERIVED from the
+    // fail-closed enforcement layer (`VerifiedToolPolicy`), not a hand-maintained
+    // constant, so `codewith debug auth-capsule-policy` cannot diverge from what
+    // the binary actually enforces. See
+    // `codex_core::tools::policy::infinity_agent_auth_capsule_capabilities`.
+    let capabilities = codex_core::infinity_agent_auth_capsule_capabilities();
+    match cmd.format {
+        DebugOutputFormat::Json => {
+            serde_json::to_writer(std::io::stdout(), &capabilities)?;
+            println!();
+        }
+    }
+    Ok(())
+}
+
 async fn run_debug_clear_memories_command(
     root_config_overrides: &CliConfigOverrides,
 ) -> anyhow::Result<()> {
@@ -2494,6 +2558,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Usage(_)) => Some("usage"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
+        Some(Subcommand::InfinityAgent(_)) => Some("infinity-agent"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
@@ -3084,6 +3149,14 @@ mod tests {
     }
 
     #[test]
+    fn infinity_agent_attestation_command_parses() {
+        let cli = MultitoolCli::try_parse_from(["codewith", "infinity-agent", "attest"])
+            .expect("parse Infinity Agent attestation command");
+
+        assert!(matches!(cli.subcommand, Some(Subcommand::InfinityAgent(_))));
+    }
+
+    #[test]
     fn auth_profile_inherits_from_root_into_exec() {
         let cli = MultitoolCli::try_parse_from(["codex", "--auth-profile", "work", "exec"])
             .expect("parse");
@@ -3645,8 +3718,14 @@ mod tests {
     }
 
     #[test]
-    fn tmux_handoff_uses_exact_target_from_tui() {
-        let handoff = TmuxHandoffExit {
+    fn tmux_handoff_uses_exact_attach_target_from_tui() {
+        let attach_handoff = TmuxHandoffExit {
+            session_name: "dev".to_string(),
+            window_name: "dev".to_string(),
+            target: "=dev".to_string(),
+            attach_mode: TmuxHandoffAttachMode::Attach,
+        };
+        let switch_handoff = TmuxHandoffExit {
             session_name: "dev".to_string(),
             window_name: "codewith".to_string(),
             target: "=dev:@42".to_string(),
@@ -3654,7 +3733,11 @@ mod tests {
         };
 
         assert_eq!(
-            tmux_handoff_command_parts(&handoff),
+            tmux_handoff_command_parts(&attach_handoff),
+            ("attach-session", "=dev")
+        );
+        assert_eq!(
+            tmux_handoff_command_parts(&switch_handoff),
             ("switch-client", "=dev:@42")
         );
     }

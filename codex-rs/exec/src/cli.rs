@@ -3,6 +3,7 @@ use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
 use codex_protocol::user_input::UserInput;
+use codex_utils_cli::ApprovalModeCliArg;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::SharedCliOptions;
 use std::path::PathBuf;
@@ -20,6 +21,12 @@ pub struct Cli {
     /// Error out when config.toml contains fields that are not recognized by this version of Codewith.
     #[arg(long = "strict-config", global = true, default_value_t = false)]
     pub strict_config: bool,
+
+    /// When the model must ask for approval before running commands. Headless
+    /// exec defaults to `never`; the flag is accepted so composed launches (e.g.
+    /// the Infinity AuthCapsule lane's `-a never`) do not fail on an unknown arg.
+    #[arg(long = "ask-for-approval", short = 'a', global = true, value_enum)]
+    pub approval_policy: Option<ApprovalModeCliArg>,
 
     #[clap(flatten)]
     pub shared: ExecSharedCliOptions,

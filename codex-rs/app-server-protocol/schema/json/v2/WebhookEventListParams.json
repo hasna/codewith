@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WebhookEventStatus": {
       "enum": [
         "unread",
@@ -12,6 +11,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cursor": {
       "type": [
@@ -21,7 +21,7 @@
     },
     "limit": {
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -35,7 +35,7 @@
     },
     "statuses": {
       "items": {
-        "$ref": "#/definitions/WebhookEventStatus"
+        "$ref": "#/$defs/WebhookEventStatus"
       },
       "type": [
         "array",

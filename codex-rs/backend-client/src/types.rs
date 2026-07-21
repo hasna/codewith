@@ -35,6 +35,60 @@ pub struct AccountEntry {
     pub structure: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RateLimitStatusWithResetCredits {
+    #[serde(flatten)]
+    pub rate_limits: RateLimitStatusPayload,
+    #[serde(default)]
+    pub rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitsWithResetCredits {
+    pub rate_limits: Vec<codex_protocol::protocol::RateLimitSnapshot>,
+    pub rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RateLimitResetCreditsSummary {
+    pub available_count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RateLimitResetCreditsDetails {
+    pub credits: Vec<RateLimitResetCreditDetails>,
+    pub available_count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RateLimitResetCreditDetails {
+    pub id: String,
+    pub reset_type: String,
+    pub status: String,
+    pub granted_at: String,
+    pub expires_at: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct ConsumeRateLimitResetCreditResponse {
+    pub code: ConsumeRateLimitResetCreditCode,
+    #[serde(default)]
+    pub windows_reset: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsumeRateLimitResetCreditCode {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Deserialize)]
 struct RawAccountsCheckResponse {
     #[serde(default)]

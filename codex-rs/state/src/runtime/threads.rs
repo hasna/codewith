@@ -533,8 +533,8 @@ ON CONFLICT(id) DO NOTHING
                 .thread_source
                 .map(codex_protocol::protocol::ThreadSource::as_str),
         )
-        .bind(metadata.agent_nickname.as_deref())
-        .bind(metadata.agent_role.as_deref())
+        .bind(metadata.agent_nickname.as_deref().map(redact_state_string))
+        .bind(metadata.agent_role.as_deref().map(redact_state_string))
         .bind(metadata.agent_path.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.model.as_deref())
@@ -546,17 +546,19 @@ ON CONFLICT(id) DO NOTHING
         )
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
-        .bind(metadata.title.as_str())
-        .bind(preview)
+        .bind(redact_state_string(metadata.title.as_str()))
+        .bind(redact_state_string(preview))
         .bind(metadata.sandbox_policy.as_str())
         .bind(metadata.approval_mode.as_str())
         .bind(metadata.tokens_used)
-        .bind(metadata.first_user_message.as_deref().unwrap_or_default())
+        .bind(redact_state_string(
+            metadata.first_user_message.as_deref().unwrap_or_default(),
+        ))
         .bind(metadata.archived_at.is_some())
         .bind(metadata.archived_at.map(datetime_to_epoch_seconds))
         .bind(metadata.git_sha.as_deref())
-        .bind(metadata.git_branch.as_deref())
-        .bind(metadata.git_origin_url.as_deref())
+        .bind(metadata.git_branch.as_deref().map(redact_state_string))
+        .bind(metadata.git_origin_url.as_deref().map(redact_state_string))
         .bind("enabled")
         .execute(self.pool.as_ref())
         .await?;
@@ -584,7 +586,7 @@ ON CONFLICT(id) DO NOTHING
         title: &str,
     ) -> anyhow::Result<bool> {
         let result = sqlx::query("UPDATE threads SET title = ? WHERE id = ?")
-            .bind(title)
+            .bind(redact_state_string(title))
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
             .await?;
@@ -674,6 +676,8 @@ ON CONFLICT(id) DO NOTHING
         git_branch: Option<Option<&str>>,
         git_origin_url: Option<Option<&str>>,
     ) -> anyhow::Result<bool> {
+        let git_branch = git_branch.map(|value| value.map(redact_state_string));
+        let git_origin_url = git_origin_url.map(|value| value.map(redact_state_string));
         let result = sqlx::query(
             r#"
 UPDATE threads
@@ -687,9 +691,9 @@ WHERE id = ?
         .bind(git_sha.is_some())
         .bind(git_sha.flatten())
         .bind(git_branch.is_some())
-        .bind(git_branch.flatten())
+        .bind(git_branch.as_ref().and_then(|value| value.as_deref()))
         .bind(git_origin_url.is_some())
-        .bind(git_origin_url.flatten())
+        .bind(git_origin_url.as_ref().and_then(|value| value.as_deref()))
         .bind(thread_id.to_string())
         .execute(self.pool.as_ref())
         .await?;
@@ -794,8 +798,8 @@ ON CONFLICT(id) DO UPDATE SET
                 .thread_source
                 .map(codex_protocol::protocol::ThreadSource::as_str),
         )
-        .bind(metadata.agent_nickname.as_deref())
-        .bind(metadata.agent_role.as_deref())
+        .bind(metadata.agent_nickname.as_deref().map(redact_state_string))
+        .bind(metadata.agent_role.as_deref().map(redact_state_string))
         .bind(metadata.agent_path.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.model.as_deref())
@@ -807,17 +811,19 @@ ON CONFLICT(id) DO UPDATE SET
         )
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
-        .bind(metadata.title.as_str())
-        .bind(preview)
+        .bind(redact_state_string(metadata.title.as_str()))
+        .bind(redact_state_string(preview))
         .bind(metadata.sandbox_policy.as_str())
         .bind(metadata.approval_mode.as_str())
         .bind(metadata.tokens_used)
-        .bind(metadata.first_user_message.as_deref().unwrap_or_default())
+        .bind(redact_state_string(
+            metadata.first_user_message.as_deref().unwrap_or_default(),
+        ))
         .bind(metadata.archived_at.is_some())
         .bind(metadata.archived_at.map(datetime_to_epoch_seconds))
         .bind(metadata.git_sha.as_deref())
-        .bind(metadata.git_branch.as_deref())
-        .bind(metadata.git_origin_url.as_deref())
+        .bind(metadata.git_branch.as_deref().map(redact_state_string))
+        .bind(metadata.git_origin_url.as_deref().map(redact_state_string))
         .bind(creation_memory_mode.unwrap_or("enabled"))
         .execute(self.pool.as_ref())
         .await?;

@@ -141,6 +141,23 @@ impl WorkerProcessController {
         )
     }
 
+    /// Returns whether the worker leader and its owned process group have both exited.
+    #[cfg(unix)]
+    pub async fn is_reaped(&self, handle: &WorkerProcessHandle) -> Result<bool> {
+        if matches!(self.status(handle).await?, WorkerProcessStatus::Running) {
+            return Ok(false);
+        }
+        Ok(handle.pgid.is_none_or(|pgid| !process_group_exists(pgid)))
+    }
+
+    /// Returns whether the worker leader and its owned process group have both exited.
+    #[cfg(not(unix))]
+    pub async fn is_reaped(&self, _handle: &WorkerProcessHandle) -> Result<bool> {
+        bail!(
+            "background-agent worker process lifecycle is unsupported on this platform until Job Object cleanup is implemented"
+        )
+    }
+
     #[cfg(unix)]
     pub async fn spawn(&self, request: WorkerProcessCommand) -> Result<WorkerProcessHandle> {
         if let Some(parent) = request.stderr_log_path.parent() {
@@ -428,6 +445,15 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(unix)]
+fn process_group_exists(pgid: u32) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return false;
+    };
+    let result = unsafe { libc::kill(-pgid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
 fn terminate_process(pid: u32) -> Result<bool> {
     let raw_pid = libc::pid_t::try_from(pid)
         .with_context(|| format!("background agent worker pid {pid} is out of range"))?;
@@ -529,6 +555,7 @@ wait
         );
         wait_for_process_exit(handle.pid).await?;
         wait_for_process_exit(child_pid).await?;
+        assert!(controller.is_reaped(&handle).await?);
         Ok(())
     }
 

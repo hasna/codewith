@@ -113,9 +113,6 @@ impl ChatWidget {
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
             }
-            ServerNotification::FileChangeOutputDelta(notification) => {
-                self.on_patch_apply_output_delta(notification.item_id, notification.delta);
-            }
             ServerNotification::TurnDiffUpdated(notification) => {
                 self.on_turn_diff(notification.diff)
             }
@@ -303,6 +300,16 @@ impl ChatWidget {
                 "External agent requested permission.".to_string(),
                 Some(format!("Run: {run_id}. Request: {}", request.id)),
             ),
+            ThreadExternalAgentEvent::PermissionResolved {
+                request_id,
+                decision,
+                resolution,
+            } => self.add_info_message(
+                "External agent permission resolved.".to_string(),
+                Some(format!(
+                    "Run: {run_id}. Request: {request_id}. Decision: {decision:?} ({resolution:?})"
+                )),
+            ),
             ThreadExternalAgentEvent::ProposedAction { proposal } => self.add_info_message(
                 "External agent proposed an action.".to_string(),
                 Some(format!("Run: {run_id}. Proposal: {proposal}")),
@@ -380,7 +387,12 @@ impl ChatWidget {
         notification: ItemStartedNotification,
         from_replay: bool,
     ) {
-        match notification.item {
+        let ItemStartedNotification {
+            item,
+            started_at_ms,
+            ..
+        } = notification;
+        match item {
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_started(item),
             ThreadItem::FileChange { id: _, changes, .. } => {
                 self.on_patch_apply_begin(file_update_changes_to_display(changes));
@@ -402,17 +414,20 @@ impl ChatWidget {
                 model,
                 reasoning_effort,
                 agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            } => self.on_collab_agent_tool_call(
+                ThreadItem::CollabAgentToolCall {
+                    id,
+                    tool,
+                    status,
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                },
+                Some(started_at_ms),
+            ),
             ThreadItem::EnteredReviewMode { review, .. } if !from_replay => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
             }

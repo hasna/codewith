@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadMonitor": {
       "properties": {
         "command": {
@@ -56,10 +55,10 @@
           "type": "string"
         },
         "routing": {
-          "$ref": "#/definitions/ThreadMonitorRouting"
+          "$ref": "#/$defs/ThreadMonitorRouting"
         },
         "status": {
-          "$ref": "#/definitions/ThreadMonitorStatus"
+          "$ref": "#/$defs/ThreadMonitorStatus"
         },
         "threadId": {
           "type": "string"
@@ -70,15 +69,15 @@
         }
       },
       "required": [
-        "command",
-        "createdAt",
-        "generation",
+        "threadId",
         "monitorId",
         "name",
         "prompt",
+        "command",
         "routing",
         "status",
-        "threadId",
+        "generation",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -100,17 +99,18 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "monitor": {
-      "$ref": "#/definitions/ThreadMonitor"
+      "$ref": "#/$defs/ThreadMonitor"
     },
     "threadId": {
       "type": "string"
     }
   },
   "required": [
-    "monitor",
-    "threadId"
+    "threadId",
+    "monitor"
   ],
   "title": "ThreadMonitorUpdatedNotification",
   "type": "object"

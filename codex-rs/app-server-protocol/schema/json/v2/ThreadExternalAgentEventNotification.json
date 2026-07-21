@@ -1,12 +1,11 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadExternalAgentEvent": {
       "oneOf": [
         {
           "properties": {
             "mode": {
-              "$ref": "#/definitions/ThreadExternalAgentMode"
+              "$ref": "#/$defs/ThreadExternalAgentMode"
             },
             "runtime_id": {
               "type": "string"
@@ -15,18 +14,16 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "runStarted"
-              ],
+              "const": "runStarted",
               "title": "RunStartedThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "mode",
+            "type",
             "runtime_id",
-            "task",
-            "type"
+            "mode",
+            "task"
           ],
           "title": "RunStartedThreadExternalAgentEvent",
           "type": "object"
@@ -40,9 +37,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "sessionResolved"
-              ],
+              "const": "sessionResolved",
               "title": "SessionResolvedThreadExternalAgentEventType",
               "type": "string"
             }
@@ -59,16 +54,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "outputTextDelta"
-              ],
+              "const": "outputTextDelta",
               "title": "OutputTextDeltaThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "OutputTextDeltaThreadExternalAgentEvent",
           "type": "object"
@@ -79,16 +72,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "reasoningDelta"
-              ],
+              "const": "reasoningDelta",
               "title": "ReasoningDeltaThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "ReasoningDeltaThreadExternalAgentEvent",
           "type": "object"
@@ -99,16 +90,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "planUpdated"
-              ],
+              "const": "planUpdated",
               "title": "PlanUpdatedThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "plan",
-            "type"
+            "type",
+            "plan"
           ],
           "title": "PlanUpdatedThreadExternalAgentEvent",
           "type": "object"
@@ -116,37 +105,60 @@
         {
           "properties": {
             "request": {
-              "$ref": "#/definitions/ThreadExternalAgentPermissionRequest"
+              "$ref": "#/$defs/ThreadExternalAgentPermissionRequest"
             },
             "type": {
-              "enum": [
-                "permissionRequested"
-              ],
+              "const": "permissionRequested",
               "title": "PermissionRequestedThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "request",
-            "type"
+            "type",
+            "request"
           ],
           "title": "PermissionRequestedThreadExternalAgentEvent",
+          "type": "object"
+        },
+        {
+          "description": "Audit notification emitted once a previously-surfaced permission request\nreaches a terminal decision, whether answered by the client, denied by\ndefault on timeout, or otherwise resolved by the server.",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/ThreadExternalAgentPermissionOption"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "resolution": {
+              "$ref": "#/$defs/ThreadExternalAgentPermissionResolution"
+            },
+            "type": {
+              "const": "permissionResolved",
+              "title": "PermissionResolvedThreadExternalAgentEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "requestId",
+            "decision",
+            "resolution"
+          ],
+          "title": "PermissionResolvedThreadExternalAgentEvent",
           "type": "object"
         },
         {
           "properties": {
             "proposal": true,
             "type": {
-              "enum": [
-                "proposedAction"
-              ],
+              "const": "proposedAction",
               "title": "ProposedActionThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "proposal",
-            "type"
+            "type",
+            "proposal"
           ],
           "title": "ProposedActionThreadExternalAgentEvent",
           "type": "object"
@@ -157,16 +169,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "status"
-              ],
+              "const": "status",
               "title": "StatusThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "message",
-            "type"
+            "type",
+            "message"
           ],
           "title": "StatusThreadExternalAgentEvent",
           "type": "object"
@@ -180,9 +190,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "completed"
-              ],
+              "const": "completed",
               "title": "CompletedThreadExternalAgentEventType",
               "type": "string"
             }
@@ -199,16 +207,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "failed"
-              ],
+              "const": "failed",
               "title": "FailedThreadExternalAgentEventType",
               "type": "string"
             }
           },
           "required": [
-            "message",
-            "type"
+            "type",
+            "message"
           ],
           "title": "FailedThreadExternalAgentEvent",
           "type": "object"
@@ -222,9 +228,7 @@
               ]
             },
             "type": {
-              "enum": [
-                "cancelled"
-              ],
+              "const": "cancelled",
               "title": "CancelledThreadExternalAgentEventType",
               "type": "string"
             }
@@ -259,22 +263,48 @@
         },
         "options": {
           "items": {
-            "$ref": "#/definitions/ThreadExternalAgentPermissionOption"
+            "$ref": "#/$defs/ThreadExternalAgentPermissionOption"
           },
           "type": "array"
         }
       },
       "required": [
-        "action",
         "id",
+        "action",
         "options"
       ],
       "type": "object"
+    },
+    "ThreadExternalAgentPermissionResolution": {
+      "description": "How a surfaced external-agent permission request was ultimately resolved.\n\nIncluded in [`ThreadExternalAgentEvent::PermissionResolved`] so clients can\nkeep an audit trail that distinguishes an explicit client decision from a\nserver-applied default-deny.",
+      "oneOf": [
+        {
+          "const": "client",
+          "description": "The client answered the request via `thread/externalAgent/permission/respond`.",
+          "type": "string"
+        },
+        {
+          "const": "timedOut",
+          "description": "No response arrived before the server-side timeout elapsed; denied by default.",
+          "type": "string"
+        },
+        {
+          "const": "defaultDenied",
+          "description": "The request could not be parked for a response (e.g. the run is gone) and\nwas denied by default.",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "description": "The run was cancelled, or a newer request replaced this one, before a\ndecision was made; denied by default.",
+          "type": "string"
+        }
+      ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "event": {
-      "$ref": "#/definitions/ThreadExternalAgentEvent"
+      "$ref": "#/$defs/ThreadExternalAgentEvent"
     },
     "runId": {
       "type": "string"
@@ -284,9 +314,9 @@
     }
   },
   "required": [
-    "event",
+    "threadId",
     "runId",
-    "threadId"
+    "event"
   ],
   "title": "ThreadExternalAgentEventNotification",
   "type": "object"

@@ -19,6 +19,7 @@ mod codex_thread;
 mod compact_remote;
 mod compact_remote_v2;
 mod config_lock;
+mod remote_compaction_budget;
 pub use codex_thread::CodexThread;
 pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
@@ -125,12 +126,6 @@ pub use thread_manager::thread_store_from_config;
 pub use web_search::web_search_action_detail;
 pub use web_search::web_search_detail;
 pub use windows_sandbox_read_grants::grant_read_root_non_elevated;
-#[deprecated(note = "use ThreadManager")]
-pub type ConversationManager = ThreadManager;
-#[deprecated(note = "use NewThread")]
-pub type NewConversation = NewThread;
-#[deprecated(note = "use CodexThread")]
-pub type CodexConversation = CodexThread;
 pub(crate) mod agents_md;
 pub use agents_md::AgentsMdManager;
 pub use agents_md::DEFAULT_AGENTS_MD_FILENAME;
@@ -148,6 +143,10 @@ pub use state_db_bridge::StateDbHandle;
 pub use state_db_bridge::init_state_db;
 mod thread_rollout_truncation;
 mod tools;
+/// SECURITY: single source of truth for the `codewith debug auth-capsule-policy`
+/// capability document, derived from the fail-closed `VerifiedToolPolicy`
+/// enforcement layer so the probe cannot diverge from what is enforced.
+pub use tools::policy::infinity_agent_auth_capsule_capabilities;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;
 mod turn_timing;
@@ -164,8 +163,6 @@ pub use rollout::ThreadSortKey;
 pub use rollout::ThreadsPage;
 pub use rollout::append_thread_name;
 pub use rollout::find_archived_thread_path_by_id_str;
-#[deprecated(note = "use find_thread_path_by_id_str")]
-pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::find_thread_meta_by_name_str;
 pub use rollout::find_thread_name_by_id;
 pub use rollout::find_thread_names_by_ids;

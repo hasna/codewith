@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadSchedule": {
       "properties": {
         "createdAt": {
@@ -53,16 +52,16 @@
           "type": "string"
         },
         "promptSource": {
-          "$ref": "#/definitions/ThreadSchedulePromptSource"
+          "$ref": "#/$defs/ThreadSchedulePromptSource"
         },
         "schedule": {
-          "$ref": "#/definitions/ThreadScheduleSpec"
+          "$ref": "#/$defs/ThreadScheduleSpec"
         },
         "scheduleId": {
           "type": "string"
         },
         "status": {
-          "$ref": "#/definitions/ThreadScheduleStatus"
+          "$ref": "#/$defs/ThreadScheduleStatus"
         },
         "threadId": {
           "type": "string"
@@ -76,16 +75,16 @@
         }
       },
       "required": [
-        "createdAt",
-        "failureCount",
+        "threadId",
+        "scheduleId",
         "nestingDepth",
         "prompt",
         "promptSource",
         "schedule",
-        "scheduleId",
-        "status",
-        "threadId",
         "timezone",
+        "status",
+        "failureCount",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -110,9 +109,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "once"
-              ],
+              "const": "once",
               "title": "OnceThreadScheduleSpecType",
               "type": "string"
             }
@@ -126,9 +123,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "dynamic"
-              ],
+              "const": "dynamic",
               "title": "DynamicThreadScheduleSpecType",
               "type": "string"
             }
@@ -146,19 +141,17 @@
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "interval"
-              ],
+              "const": "interval",
               "title": "IntervalThreadScheduleSpecType",
               "type": "string"
             },
             "unit": {
-              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+              "$ref": "#/$defs/ThreadScheduleIntervalUnit"
             }
           },
           "required": [
-            "amount",
             "type",
+            "amount",
             "unit"
           ],
           "title": "IntervalThreadScheduleSpec",
@@ -170,16 +163,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "cron"
-              ],
+              "const": "cron",
               "title": "CronThreadScheduleSpecType",
               "type": "string"
             }
           },
           "required": [
-            "expression",
-            "type"
+            "type",
+            "expression"
           ],
           "title": "CronThreadScheduleSpec",
           "type": "object"
@@ -195,10 +186,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ThreadSchedule"
+        "$ref": "#/$defs/ThreadSchedule"
       },
       "type": "array"
     },

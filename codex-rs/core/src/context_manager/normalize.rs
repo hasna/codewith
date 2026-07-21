@@ -158,40 +158,59 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
         })
         .collect();
 
-    items.retain(|item| match item {
-        ResponseItem::FunctionCallOutput { call_id, .. } => {
-            let has_match =
-                function_call_ids.contains(call_id) || local_shell_call_ids.contains(call_id);
-            if !has_match {
-                error_or_panic(format!(
+    items.retain(|item| {
+        let Some(required_call) = required_call_for_output(item) else {
+            return true;
+        };
+        let has_match = match required_call {
+            RequiredCall::Function(call_id) => {
+                function_call_ids.contains(call_id) || local_shell_call_ids.contains(call_id)
+            }
+            RequiredCall::ToolSearch(call_id) => tool_search_call_ids.contains(call_id),
+            RequiredCall::CustomTool(call_id) => custom_tool_call_ids.contains(call_id),
+        };
+        if !has_match {
+            match required_call {
+                RequiredCall::Function(call_id) => error_or_panic(format!(
                     "Orphan function call output for call id: {call_id}"
-                ));
-            }
-            has_match
-        }
-        ResponseItem::CustomToolCallOutput { call_id, .. } => {
-            let has_match = custom_tool_call_ids.contains(call_id);
-            if !has_match {
-                error_or_panic(format!(
+                )),
+                RequiredCall::ToolSearch(call_id) => {
+                    error_or_panic(format!("Orphan tool search output for call id: {call_id}"));
+                }
+                RequiredCall::CustomTool(call_id) => error_or_panic(format!(
                     "Orphan custom tool call output for call id: {call_id}"
-                ));
+                )),
             }
-            has_match
         }
-        ResponseItem::ToolSearchOutput { execution, .. } if execution == "server" => true,
+        has_match
+    });
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RequiredCall<'a> {
+    Function(&'a str),
+    ToolSearch(&'a str),
+    CustomTool(&'a str),
+}
+
+/// Returns the call required for an output to survive prompt normalization.
+///
+/// Server-executed and id-less tool-search outputs are self-contained and therefore return
+/// `None`, as do items that are not call outputs.
+pub(crate) fn required_call_for_output(item: &ResponseItem) -> Option<RequiredCall<'_>> {
+    match item {
+        ResponseItem::FunctionCallOutput { call_id, .. } => Some(RequiredCall::Function(call_id)),
+        ResponseItem::CustomToolCallOutput { call_id, .. } => {
+            Some(RequiredCall::CustomTool(call_id))
+        }
+        ResponseItem::ToolSearchOutput { execution, .. } if execution == "server" => None,
         ResponseItem::ToolSearchOutput {
             call_id: Some(call_id),
             ..
-        } => {
-            let has_match = tool_search_call_ids.contains(call_id);
-            if !has_match {
-                error_or_panic(format!("Orphan tool search output for call id: {call_id}"));
-            }
-            has_match
-        }
-        ResponseItem::ToolSearchOutput { call_id: None, .. } => true,
-        _ => true,
-    });
+        } => Some(RequiredCall::ToolSearch(call_id)),
+        ResponseItem::ToolSearchOutput { call_id: None, .. } => None,
+        _ => None,
+    }
 }
 
 pub(crate) fn remove_corresponding_for(items: &mut Vec<ResponseItem>, item: &ResponseItem) {

@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadQueuedMessage": {
       "properties": {
         "author": {
@@ -12,7 +11,7 @@
         "position": {
           "description": "1-based position in the pending agent-message mailbox.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "recipient": {
@@ -29,22 +28,23 @@
         }
       },
       "required": [
-        "author",
         "messageId",
+        "threadId",
         "position",
+        "author",
         "recipient",
         "text",
-        "threadId",
         "triggerTurn"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "message": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadQueuedMessage"
+          "$ref": "#/$defs/ThreadQueuedMessage"
         },
         {
           "type": "null"

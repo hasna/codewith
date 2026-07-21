@@ -332,6 +332,9 @@ pub struct GetAccountRateLimitsParams {
     )]
     #[ts(optional = nullable, type = "string | null")]
     pub auth_profile: Option<Option<String>>,
+    /// Include detailed reset-credit rows even when no credits remain available.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_reset_credit_details: bool,
 }
 
 impl Serialize for GetAccountRateLimitsParams {
@@ -339,9 +342,16 @@ impl Serialize for GetAccountRateLimitsParams {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(usize::from(self.auth_profile.is_some())))?;
+        let mut len = usize::from(self.auth_profile.is_some());
+        if self.include_reset_credit_details {
+            len += 1;
+        }
+        let mut map = serializer.serialize_map(Some(len))?;
         if let Some(auth_profile) = &self.auth_profile {
             map.serialize_entry("authProfile", auth_profile)?;
+        }
+        if self.include_reset_credit_details {
+            map.serialize_entry("includeResetCreditDetails", &true)?;
         }
         map.end()
     }
@@ -351,10 +361,141 @@ impl Serialize for GetAccountRateLimitsParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct GetAccountRateLimitsResponse {
+    /// Process-scoped opaque fingerprint of the authenticated account.
+    ///
+    /// `null` means the current ChatGPT credentials do not expose an account identifier. Clients
+    /// must not display or log this value and must treat its representation as opaque.
+    pub account_identity_fingerprint: Option<String>,
     /// Backward-compatible single-bucket view; mirrors the historical payload.
     pub rate_limits: RateLimitSnapshot,
     /// Multi-bucket view keyed by metered `limit_id` (for example, `codex`).
     pub rate_limits_by_limit_id: Option<HashMap<String, RateLimitSnapshot>>,
+    pub rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RateLimitResetCreditsSummary {
+    pub available_count: i64,
+    /// Detail rows for available reset credits, when the backend provides them.
+    ///
+    /// `null` means only `availableCount` is known.
+    pub credits: Option<Vec<RateLimitResetCredit>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RateLimitResetCredit {
+    pub id: String,
+    pub reset_type: RateLimitResetType,
+    pub status: RateLimitResetCreditStatus,
+    #[ts(type = "number")]
+    pub granted_at: i64,
+    #[ts(type = "number | null")]
+    pub expires_at: Option<i64>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum RateLimitResetType {
+    CodexRateLimits,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum RateLimitResetCreditStatus {
+    Available,
+    Redeeming,
+    Redeemed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ConsumeAccountRateLimitResetCreditParams {
+    /// Identifies one logical reset attempt. A UUID is recommended; reuse the same value when
+    /// retrying that attempt.
+    pub idempotency_key: String,
+    /// Opaque reset-credit identifier to redeem. When omitted, the backend selects the next
+    /// available credit.
+    #[ts(optional = nullable)]
+    pub credit_id: Option<String>,
+    /// Auth profile used for this reset. `null` selects the default root auth;
+    /// omission leaves the app-server's selected auth profile unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub auth_profile: Option<Option<String>>,
+    /// Required opaque account fingerprint from the read that selected this reset credit.
+    pub expected_account_identity_fingerprint: String,
+}
+
+impl Serialize for ConsumeAccountRateLimitResetCreditParams {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = 1;
+        if self.credit_id.is_some() {
+            len += 1;
+        }
+        if self.auth_profile.is_some() {
+            len += 1;
+        }
+        len += 1;
+        let mut map = serializer.serialize_map(Some(len))?;
+        map.serialize_entry("idempotencyKey", &self.idempotency_key)?;
+        if let Some(credit_id) = &self.credit_id {
+            map.serialize_entry("creditId", credit_id)?;
+        }
+        if let Some(auth_profile) = &self.auth_profile {
+            map.serialize_entry("authProfile", auth_profile)?;
+        }
+        map.serialize_entry(
+            "expectedAccountIdentityFingerprint",
+            &self.expected_account_identity_fingerprint,
+        )?;
+        map.end()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ConsumeAccountRateLimitResetCreditResponse {
+    pub outcome: ConsumeAccountRateLimitResetCreditOutcome,
+    /// Opaque equality-only fingerprint of the account resolved for this request.
+    pub account_identity_fingerprint: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum ConsumeAccountRateLimitResetCreditOutcome {
+    /// A reset credit was consumed and the eligible rate-limit windows were reset.
+    Reset,
+    /// No current rate-limit window is eligible for a reset.
+    NothingToReset,
+    /// The account has no earned reset credits available.
+    NoCredit,
+    /// The same idempotency key already completed a reset successfully.
+    AlreadyRedeemed,
+    /// The authenticated account no longer matches the account that selected the credit.
+    AccountChanged,
+    /// The backend returned an unrecognized reset outcome.
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
