@@ -870,6 +870,7 @@ impl ChatWidget {
                 .as_ref()
                 .map(super::goal_status::GoalStatusState::display_title),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
+            StatusLineItem::ActiveAgent => self.active_agent_label.clone(),
         }
     }
 
@@ -919,6 +920,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
             StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
+            StatusSurfacePreviewItem::ActiveAgent => StatusLineItem::ActiveAgent,
         };
         self.status_line_value_for_item(status_line_item)
     }

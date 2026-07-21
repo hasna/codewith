@@ -513,7 +513,6 @@ impl ChatComposer {
                 status_line_hyperlink_url: None,
                 status_line_enabled: false,
                 side_conversation_context_label: None,
-                active_agent_label: None,
                 external_editor_key: Some(key_hint::ctrl(KeyCode::Char('g'))),
                 show_transcript_key: Some(key_hint::ctrl(KeyCode::Char('t'))),
                 insert_newline_key: footer_insert_newline_key(
@@ -3461,7 +3460,6 @@ impl ChatComposer {
                 reasoning_down: self.footer.reasoning_down_key,
                 reasoning_up: self.footer.reasoning_up_key,
             },
-            active_agent_label: self.footer.active_agent_label.clone(),
         }
     }
 
@@ -3998,19 +3996,6 @@ impl ChatComposer {
             return false;
         }
         self.footer.side_conversation_context_label = label;
-        true
-    }
-
-    /// Replaces the contextual footer label for the currently viewed agent.
-    ///
-    /// Returning `false` means the value was unchanged, so callers can skip redraw work. This
-    /// field is intentionally just cached presentation state; `ChatComposer` does not infer which
-    /// thread is active on its own.
-    pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) -> bool {
-        if self.footer.active_agent_label == active_agent_label {
-            return false;
-        }
-        self.footer.active_agent_label = active_agent_label;
         true
     }
 }
