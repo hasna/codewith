@@ -74,10 +74,15 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadSchedule;
 use codex_app_server_protocol::ThreadScheduleIntervalUnit;
 use codex_app_server_protocol::ThreadSchedulePromptSource;
+use codex_app_server_protocol::ThreadScheduleRun;
+use codex_app_server_protocol::ThreadScheduleRunStatus;
+use codex_app_server_protocol::ThreadScheduleRunUpdatedNotification;
 use codex_app_server_protocol::ThreadScheduleSpec;
 use codex_app_server_protocol::ThreadScheduleStatus;
+use codex_app_server_protocol::ThreadScheduleUpdatedNotification;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -109,6 +114,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::user_input::TextElement;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -136,6 +142,17 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+fn large_stack_test_runtime() -> Result<tokio::runtime::Runtime> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?)
 }
 
 #[tokio::test]
@@ -366,6 +383,190 @@ async fn resolved_buffered_approval_does_not_become_actionable_after_drain() -> 
             "resolved buffered approval should not become actionable"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_drops_unrelated_pre_primary_notifications() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let unrelated_thread_id = ThreadId::new();
+
+    // Pre-primary startup window: no primary thread is set yet, so events are
+    // buffered as pending primary events.
+    assert!(app.primary_thread_id.is_none());
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        unrelated_thread_id,
+        "turn-x",
+        "item-x",
+        "unrelated",
+    ))
+    .await?;
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        primary_thread_id,
+        "turn-1",
+        "item-1",
+        "primary",
+    ))
+    .await?;
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    // The unrelated thread must not leak a channel out of the primary buffer flush.
+    assert!(
+        !app.thread_event_channels.contains_key(&unrelated_thread_id),
+        "unrelated thread should not receive a channel from the primary flush"
+    );
+
+    let rx = app
+        .active_thread_rx
+        .as_mut()
+        .expect("primary thread receiver should be active");
+
+    let event = time::timeout(Duration::from_millis(50), rx.recv())
+        .await
+        .expect("timed out waiting for buffered primary notification")
+        .expect("channel closed unexpectedly");
+    assert!(
+        matches!(
+            &event,
+            ThreadBufferedEvent::Notification(ServerNotification::AgentMessageDelta(delta))
+                if delta.thread_id == primary_thread_id.to_string() && delta.delta == "primary"
+        ),
+        "expected the primary thread's buffered notification to replay first, got {event:?}"
+    );
+
+    // The unrelated-thread notification must have been dropped, not replayed onto
+    // the primary thread's stream.
+    let extra = time::timeout(Duration::from_millis(50), rx.recv()).await;
+    assert!(
+        extra.is_err(),
+        "unrelated pre-primary notification should be dropped, not replayed onto the primary"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_routes_known_thread_pre_primary_notifications() -> Result<()>
+{
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let known_thread_id = ThreadId::new();
+
+    // A previously loaded/scheduled thread is already tracked before the primary
+    // thread finishes starting.
+    app.thread_event_channels.insert(
+        known_thread_id,
+        ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY),
+    );
+    // Mark the known thread active so routed events are delivered on its channel
+    // receiver rather than parked in its store buffer.
+    app.set_thread_active(known_thread_id, /*active*/ true)
+        .await;
+
+    assert!(app.primary_thread_id.is_none());
+    app.enqueue_primary_thread_notification(agent_message_delta_notification(
+        known_thread_id,
+        "turn-k",
+        "item-k",
+        "known",
+    ))
+    .await?;
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+
+    // The buffered event for the already-tracked thread is delivered on that
+    // thread's own channel, not on the primary thread's stream.
+    let mut known_rx = app
+        .thread_event_channels
+        .get_mut(&known_thread_id)
+        .expect("known thread channel should still exist")
+        .receiver
+        .take()
+        .expect("known thread receiver should be available");
+    let known_event = time::timeout(Duration::from_millis(50), known_rx.recv())
+        .await
+        .expect("timed out waiting for known-thread notification")
+        .expect("known thread channel closed unexpectedly");
+    assert!(
+        matches!(
+            &known_event,
+            ThreadBufferedEvent::Notification(ServerNotification::AgentMessageDelta(delta))
+                if delta.thread_id == known_thread_id.to_string() && delta.delta == "known"
+        ),
+        "expected known-thread notification to route to its own channel, got {known_event:?}"
+    );
+
+    // Nothing from the known thread should have leaked onto the primary stream.
+    let rx = app
+        .active_thread_rx
+        .as_mut()
+        .expect("primary thread receiver should be active");
+    let leaked = time::timeout(Duration::from_millis(50), rx.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "known-thread notification must not be replayed onto the primary stream"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_primary_untracked_request_stays_resolvable_on_addressed_thread() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let request_thread_id = ThreadId::new();
+    let request = exec_approval_request(
+        request_thread_id,
+        "turn-request",
+        "call-request",
+        /*approval_id*/ None,
+    );
+
+    assert!(app.primary_thread_id.is_none());
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_server_request(&request),
+        None
+    );
+    app.enqueue_thread_request(request_thread_id, request)
+        .await?;
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+
+    assert!(
+        app.thread_event_channels.contains_key(&request_thread_id),
+        "request thread should keep its own channel instead of being dropped from primary startup"
+    );
+    let resolution = app
+        .pending_app_server_requests
+        .take_resolution(&Op::ExecApproval {
+            id: "call-request".to_string(),
+            turn_id: None,
+            decision: codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
+        })
+        .map_err(|err| color_eyre::eyre::eyre!(err))?
+        .expect("approval request should remain resolvable");
+    assert_eq!(
+        resolution.result,
+        serde_json::json!({ "decision": "accept" })
+    );
 
     Ok(())
 }
@@ -1205,7 +1406,7 @@ async fn token_usage_update_refreshes_status_line_with_runtime_context_window() 
 }
 
 #[tokio::test]
-async fn collab_receiver_notification_caches_thread_without_app_server_read() {
+async fn collab_receiver_notification_does_not_create_picker_row_without_verified_lineage() {
     let mut app = make_test_app().await;
     let receiver_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
@@ -1229,15 +1430,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
         }),
     ));
 
-    assert_eq!(
-        app.agent_navigation.get(&receiver_thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
-            thread_name: None,
-            is_closed: false,
-        })
-    );
+    assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
+    assert!(!app.thread_event_channels.contains_key(&receiver_thread_id));
 }
 
 #[tokio::test]
@@ -1274,124 +1468,124 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
 }
 
-#[tokio::test]
-async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+#[test]
+fn open_agent_picker_does_not_promote_unverified_replay_channels() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let mut app = Box::pin(make_test_app()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
 
-    assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
-    assert_eq!(
-        app.agent_navigation.get(&thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: None,
-            agent_role: None,
-            thread_name: None,
-            is_closed: true,
-        })
-    );
-    assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    app.agent_navigation.upsert(
-        thread_id,
-        Some("Robie".to_string()),
-        Some("explorer".to_string()),
-        /*is_closed*/ true,
-    );
-
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-
-    assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
-    assert_eq!(
-        app.agent_navigation.get(&thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: Some("Robie".to_string()),
-            agent_role: Some("explorer".to_string()),
-            thread_name: None,
-            is_closed: true,
-        })
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn open_agent_picker_prunes_terminal_metadata_only_threads() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
-        thread_id,
-        Some("Ghost".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ false,
-    );
-
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-
-    assert_eq!(app.agent_navigation.get(&thread_id), None);
-    assert!(app.agent_navigation.is_empty());
-    Ok(())
-}
-
-#[tokio::test]
-async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    app.agent_navigation.upsert(
-        thread_id,
-        Some("Robie".to_string()),
-        Some("explorer".to_string()),
-        /*is_closed*/ false,
-    );
-
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-
-    assert_eq!(
-        app.agent_navigation.get(&thread_id),
-        Some(&AgentPickerThreadEntry {
-            agent_nickname: Some("Robie".to_string()),
-            agent_role: Some("explorer".to_string()),
-            thread_name: None,
-            is_closed: true,
-        })
-    );
-    Ok(())
+        assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
+        assert_eq!(app.agent_navigation.get(&thread_id), None);
+        assert!(app.agent_navigation.ordered_thread_ids().is_empty());
+        Ok(())
+    })
 }
 
 #[test]
-fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
+fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let mut app = Box::pin(make_test_app()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ true,
+        );
+
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+        assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                thread_name: None,
+                is_closed: true,
+            })
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn open_agent_picker_prunes_terminal_metadata_only_threads() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let mut app = Box::pin(make_test_app()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Ghost".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+        assert_eq!(app.agent_navigation.get(&thread_id), None);
+        assert!(app.agent_navigation.is_empty());
+        Ok(())
+    })
+}
+
+#[test]
+fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let mut app = Box::pin(make_test_app()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
+
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                thread_name: None,
+                is_closed: true,
+            })
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn open_agent_picker_marks_primary_loaded_thread_open() -> Result<()> {
     const WORKER_THREADS: usize = 1;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1412,6 +1606,8 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
             .start_thread(app.chat_widget.config_ref())
             .await?;
         let thread_id = started.session.thread_id;
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
         app.thread_event_channels
             .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
@@ -1564,36 +1760,38 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     Ok(())
 }
 
-#[tokio::test]
-async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let _ = app.config.features.disable(Feature::Collab);
+#[test]
+fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let _ = app.config.features.disable(Feature::Collab);
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
-    );
-    let cell = match app_event_rx.try_recv() {
-        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
-        other => panic!("expected InsertHistoryCell event, got {other:?}"),
-    };
-    let rendered = cell
-        .display_lines(/*width*/ 120)
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Subagents will be enabled in the next session."));
-    Ok(())
+        assert_matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
+        );
+        let cell = match app_event_rx.try_recv() {
+            Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+            other => panic!("expected InsertHistoryCell event, got {other:?}"),
+        };
+        let rendered = cell
+            .display_lines(/*width*/ 120)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Subagents will be enabled in the next session."));
+        Ok(())
+    })
 }
 
 #[test]
@@ -1848,6 +2046,8 @@ default_permissions = "locked-down"
 "#,
     )?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.selected_auth_profile = None;
+    app.chat_widget.set_auth_profile(None);
     app.loader_overrides.user_config_path = Some(selected_config.abs());
     app.harness_overrides.sandbox_mode = Some(SandboxMode::WorkspaceWrite);
     app.harness_overrides.permission_profile = Some(PermissionProfile::workspace_write());
@@ -2263,27 +2463,35 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
     Ok(())
 }
 
-#[tokio::test]
-async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disabled() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+#[test]
+fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disabled() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
-    );
-    Ok(())
+        assert_matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
+        );
+        Ok(())
+    })
 }
 
 #[tokio::test]
@@ -2928,7 +3136,8 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
+async fn inactive_thread_started_notification_with_unknown_source_initializes_replay_session_without_picker_row()
+-> Result<()> {
     let mut app = make_test_app().await;
     let temp_dir = tempdir()?;
     let main_thread_id =
@@ -3021,6 +3230,43 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         vec![test_path_buf("/tmp/agent").abs(), shared_root]
     );
     assert_eq!(session.rollout_path, Some(rollout_path));
+    assert_eq!(app.agent_navigation.get(&agent_thread_id), None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_registers_direct_thread_spawn_child() -> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000222").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        agent_thread_id,
+        thread_started_notification(
+            agent_thread_id,
+            thread_spawn_source(main_thread_id, /*depth*/ 1, "Robie", "explorer"),
+            Some("Robie"),
+            Some("explorer"),
+            Some("agent thread"),
+        ),
+    )
+    .await?;
+
     assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
         Some(&AgentPickerThreadEntry {
@@ -3030,6 +3276,101 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             is_closed: false,
         })
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_registers_verified_thread_spawn_grandchild()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000311").expect("valid thread");
+    let child_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000322").expect("valid thread");
+    let grandchild_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000333").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        grandchild_thread_id,
+        thread_started_notification(
+            grandchild_thread_id,
+            thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "researcher"),
+            Some("Atlas"),
+            Some("researcher"),
+            Some("nested agent"),
+        ),
+    )
+    .await?;
+
+    assert_eq!(
+        app.agent_navigation.get(&grandchild_thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Atlas".to_string()),
+            agent_role: Some("researcher".to_string()),
+            thread_name: Some("nested agent".to_string()),
+            is_closed: false,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_started_notification_excludes_unrelated_thread_spawn_child() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000411").expect("valid thread");
+    let unrelated_parent_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000422").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000433").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let primary_session = test_thread_session(main_thread_id, primary_cwd.to_path_buf());
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(primary_session);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+
+    app.enqueue_thread_notification(
+        agent_thread_id,
+        thread_started_notification(
+            agent_thread_id,
+            thread_spawn_source(unrelated_parent_id, /*depth*/ 1, "Other", "explorer"),
+            Some("Other"),
+            Some("explorer"),
+            Some("unrelated agent"),
+        ),
+    )
+    .await?;
+
+    assert_eq!(app.agent_navigation.get(&agent_thread_id), None);
+    assert!(app.thread_event_channels.contains_key(&agent_thread_id));
 
     Ok(())
 }
@@ -3272,46 +3613,177 @@ async fn agent_picker_selection_items_include_new_agent_snapshot() {
     );
 }
 
-#[tokio::test]
-async fn open_agent_picker_new_agent_row_emits_create_event() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
+#[test]
+fn scheduled_top_level_thread_does_not_leak_into_agent_navigation() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
 
-    assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::CreateAgentThread));
-    Ok(())
+    runtime.block_on(async {
+        let mut app = Box::pin(make_test_app()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await?;
+        let primary = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let scheduled = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let primary_thread_id = primary.session.thread_id;
+        let scheduled_thread_id = scheduled.session.thread_id;
+        let scheduled_thread_id_text = scheduled_thread_id.to_string();
+
+        app.primary_thread_id = Some(primary_thread_id);
+        app.active_thread_id = Some(primary_thread_id);
+        app.primary_session_configured = Some(primary.session.clone());
+        app.thread_event_channels.insert(
+            primary_thread_id,
+            ThreadEventChannel::new_with_session(
+                THREAD_EVENT_CHANNEL_CAPACITY,
+                primary.session,
+                primary.turns,
+            ),
+        );
+        app.agent_navigation.upsert(
+            primary_thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+
+        app.enqueue_thread_notification(
+            scheduled_thread_id,
+            schedule_updated_notification(scheduled_thread_id, "schedule-1"),
+        )
+        .await?;
+        app.enqueue_thread_notification(
+            scheduled_thread_id,
+            schedule_run_updated_notification(scheduled_thread_id, "schedule-1", "run-1"),
+        )
+        .await?;
+
+        assert!(app.thread_event_channels.contains_key(&scheduled_thread_id));
+
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+        let (items, _) = app.agent_picker_selection_items(/*can_create_agent*/ true);
+
+        assert_eq!(
+            app.agent_navigation.ordered_thread_ids(),
+            vec![primary_thread_id]
+        );
+        assert_eq!(app.agent_navigation.get(&scheduled_thread_id), None);
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.description.as_deref() == Some(scheduled_thread_id_text.as_str())),
+            "unrelated scheduled thread must not be visible in /agent"
+        );
+        assert_eq!(
+            Box::pin(
+                app.adjacent_thread_id_with_backfill(
+                    &mut app_server,
+                    AgentNavigationDirection::Next,
+                )
+            )
+            .await,
+            None
+        );
+        assert_eq!(
+            Box::pin(app.adjacent_thread_id_with_backfill(
+                &mut app_server,
+                AgentNavigationDirection::Previous,
+            ))
+            .await,
+            None
+        );
+
+        let mut snapshot = {
+            let channel = app
+                .thread_event_channels
+                .get(&scheduled_thread_id)
+                .expect("scheduled thread event channel");
+            let store = channel.store.lock().await;
+            store.snapshot()
+        };
+        assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+
+        app.refresh_snapshot_turns_from_thread_read(
+            &mut app_server,
+            scheduled_thread_id,
+            &mut snapshot,
+        )
+        .await;
+        assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+
+        app.apply_refreshed_snapshot_thread(scheduled_thread_id, scheduled, &mut snapshot)
+            .await;
+
+        assert_buffered_schedule_notifications(&snapshot.events, scheduled_thread_id);
+        let refreshed_events = {
+            let channel = app
+                .thread_event_channels
+                .get(&scheduled_thread_id)
+                .expect("scheduled thread event channel");
+            let store = channel.store.lock().await;
+            store.snapshot().events
+        };
+        assert_buffered_schedule_notifications(&refreshed_events, scheduled_thread_id);
+
+        Ok(())
+    })
 }
 
-#[tokio::test]
-async fn open_agent_picker_enter_still_switches_active_existing_thread() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-        app.chat_widget.config_ref(),
-    ))
-    .await
-    .expect("embedded app server");
-    let thread_id = ThreadId::new();
-    app.primary_thread_id = Some(thread_id);
-    app.active_thread_id = Some(thread_id);
-    app.thread_event_channels
-        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+#[test]
+fn open_agent_picker_new_agent_row_emits_create_event() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
-    );
-    Ok(())
+        assert_matches!(app_event_rx.try_recv(), Ok(AppEvent::CreateAgentThread));
+        Ok(())
+    })
+}
+
+#[test]
+fn open_agent_picker_enter_still_switches_active_existing_thread() -> Result<()> {
+    large_stack_test_runtime()?.block_on(async {
+        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await
+        .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+
+        Box::pin(app.open_agent_picker(&mut app_server)).await;
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
+        );
+        Ok(())
+    })
 }
 
 #[tokio::test]
@@ -4071,6 +4543,16 @@ async fn active_non_primary_shutdown_target_still_switches_for_other_pending_exi
     Ok(())
 }
 
+#[tokio::test]
+async fn mark_agent_picker_thread_closed_ignores_untracked_threads() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+
+    app.mark_agent_picker_thread_closed(thread_id);
+
+    assert_eq!(app.agent_navigation.get(&thread_id), None);
+}
+
 async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
     let mut app = make_test_app().await;
     app.config.cwd = test_path_buf("/tmp/project").abs();
@@ -4552,6 +5034,8 @@ async fn auth_profile_switch_includes_saved_profile_permissions() -> Result<()> 
 #[tokio::test]
 async fn failed_auth_profile_login_does_not_switch_profile() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let initial_config_profile = app.config.selected_auth_profile.clone();
+    let initial_widget_profile = app.chat_widget.config_ref().selected_auth_profile.clone();
     while op_rx.try_recv().is_ok() {}
 
     app.complete_auth_profile_login(
@@ -4560,8 +5044,11 @@ async fn failed_auth_profile_login_does_not_switch_profile() {
         Some("cancelled".to_string()),
     );
 
-    assert_eq!(app.config.selected_auth_profile, None);
-    assert_eq!(app.chat_widget.config_ref().selected_auth_profile, None);
+    assert_eq!(app.config.selected_auth_profile, initial_config_profile);
+    assert_eq!(
+        app.chat_widget.config_ref().selected_auth_profile,
+        initial_widget_profile
+    );
     assert!(op_rx.try_recv().is_err());
 }
 
@@ -5296,6 +5783,56 @@ fn rate_limit_snapshot_for_window(
     }
 }
 
+fn thread_spawn_source(
+    parent_thread_id: ThreadId,
+    depth: i32,
+    agent_nickname: &str,
+    agent_role: &str,
+) -> SessionSource {
+    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth,
+        agent_path: None,
+        agent_nickname: Some(agent_nickname.to_string()),
+        agent_role: Some(agent_role.to_string()),
+    })
+}
+
+fn thread_started_notification(
+    thread_id: ThreadId,
+    source: SessionSource,
+    agent_nickname: Option<&str>,
+    agent_role: Option<&str>,
+    name: Option<&str>,
+) -> ServerNotification {
+    ServerNotification::ThreadStarted(ThreadStartedNotification {
+        thread: Thread {
+            id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "agent thread".to_string(),
+            ephemeral: false,
+            model_provider: "agent-provider".to_string(),
+            created_at: 1,
+            updated_at: 2,
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/agent").abs(),
+            cli_version: "0.0.0".to_string(),
+            source,
+            thread_source: None,
+            agent_nickname: agent_nickname.map(str::to_string),
+            agent_role: agent_role.map(str::to_string),
+            git_info: None,
+            auth_profile: None,
+            auth_profile_kind: AuthProfileKind::Unknown,
+            name: name.map(str::to_string),
+            turns: Vec::new(),
+        },
+    })
+}
+
 fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {
     ThreadSessionState {
         thread_id,
@@ -5553,6 +6090,80 @@ fn turn_completed_notification(
             ..test_turn(turn_id, status, Vec::new())
         },
     })
+}
+
+fn schedule_updated_notification(thread_id: ThreadId, schedule_id: &str) -> ServerNotification {
+    ServerNotification::ThreadScheduleUpdated(ThreadScheduleUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        schedule: ThreadSchedule {
+            thread_id: thread_id.to_string(),
+            schedule_id: schedule_id.to_string(),
+            parent_schedule_id: None,
+            nesting_depth: 1,
+            prompt: "check CI".to_string(),
+            prompt_source: ThreadSchedulePromptSource::Inline,
+            schedule: ThreadScheduleSpec::Interval {
+                amount: 3,
+                unit: ThreadScheduleIntervalUnit::Minutes,
+            },
+            timezone: "UTC".to_string(),
+            status: ThreadScheduleStatus::Active,
+            next_run_at: Some(1),
+            last_run_at: None,
+            expires_at: None,
+            failure_count: 0,
+            lease_expires_at: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    })
+}
+
+fn schedule_run_updated_notification(
+    thread_id: ThreadId,
+    schedule_id: &str,
+    run_id: &str,
+) -> ServerNotification {
+    ServerNotification::ThreadScheduleRunUpdated(ThreadScheduleRunUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        run: ThreadScheduleRun {
+            thread_id: thread_id.to_string(),
+            schedule_id: schedule_id.to_string(),
+            run_id: run_id.to_string(),
+            status: ThreadScheduleRunStatus::Running,
+            lease_id: "lease-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            error: None,
+            scheduled_for_at: Some(1),
+            started_at: 1,
+            completed_at: None,
+        },
+    })
+}
+
+fn assert_buffered_schedule_notifications(events: &[ThreadBufferedEvent], thread_id: ThreadId) {
+    let thread_id_text = thread_id.to_string();
+    let kinds = events
+        .iter()
+        .map(|event| match event {
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleUpdated(
+                notification,
+            )) => {
+                assert_eq!(notification.thread_id, thread_id_text);
+                assert_eq!(notification.schedule.thread_id, thread_id_text);
+                "schedule"
+            }
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadScheduleRunUpdated(
+                notification,
+            )) => {
+                assert_eq!(notification.thread_id, thread_id_text);
+                assert_eq!(notification.run.thread_id, thread_id_text);
+                "run"
+            }
+            other => panic!("expected schedule notification, saw {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, vec!["schedule", "run"]);
 }
 
 fn thread_closed_notification(thread_id: ThreadId) -> ServerNotification {

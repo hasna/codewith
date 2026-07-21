@@ -2348,6 +2348,27 @@ async fn workflow_list_slash_command_emits_metadata_event() {
 }
 
 #[tokio::test]
+async fn workflows_alias_opens_interactive_manager() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Workflows, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    submit_composer_text(&mut chat, "/workflows");
+
+    let event = rx.try_recv().expect("expected workflow manager event");
+    let AppEvent::OpenThreadWorkflowManager {
+        thread_id: actual_thread_id,
+    } = event
+    else {
+        panic!("expected OpenThreadWorkflowManager, got {event:?}");
+    };
+    assert_eq!(actual_thread_id, thread_id);
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/workflows");
+}
+
+#[tokio::test]
 async fn workflow_run_slash_commands_emit_management_events() {
     let cases = [
         (
@@ -3475,33 +3496,55 @@ async fn slash_exit_requests_exit() {
 }
 
 #[tokio::test]
-async fn slash_changelog_prints_release_notes() {
+async fn slash_changelog_opens_browser_without_submitting_prompt() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
 
+    chat.bottom_pane
+        .set_composer_text("/changelog".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("changelog-browser"));
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(chat.bottom_pane.is_task_running());
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    assert_eq!(chat.bottom_pane.active_view_id(), None);
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
+async fn slash_changelog_drills_back_and_closes_without_core_ops() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane.set_task_running(/*running*/ true);
     chat.dispatch_command(SlashCommand::Changelog);
 
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected one changelog history cell");
-    let rendered = lines_to_single_string(&cells[0]);
-    let preview = lines_to_single_string(&cells[0][..cells[0].len().min(12)])
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!("slash_changelog_release_notes_preview", preview);
-    assert!(
-        rendered.contains("Codewith Changelog"),
-        "expected changelog title, got {rendered:?}"
-    );
-    assert!(
-        rendered.contains("Unreleased"),
-        "expected unreleased section, got {rendered:?}"
-    );
-    assert!(
-        !rendered.contains("Known evidence gaps"),
-        "expected repository notes to be omitted, got {rendered:?}"
-    );
-    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let version = match rx.try_recv() {
+        Ok(AppEvent::OpenChangelogRelease { version }) => version,
+        other => panic!("expected changelog release event, got {other:?}"),
+    };
+    chat.open_changelog_release(version);
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("changelog-browser"));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenChangelogBrowser));
+    chat.open_changelog_browser();
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("changelog-browser"));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.open_changelog_release("0.1.55".to_string());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(chat.bottom_pane.active_view_id(), None);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(chat.bottom_pane.is_task_running());
 }
 
 #[tokio::test]

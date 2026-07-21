@@ -4,7 +4,10 @@
 //! channels, submits thread-scoped operations through the app server, and replays buffered events
 //! when the visible thread changes.
 
+use super::loaded_threads::thread_spawn_parent_thread_id;
 use super::*;
+use crate::app::app_server_event_targets::server_notification_thread_target;
+use crate::app::app_server_event_targets::server_request_thread_id;
 use crate::app::app_server_requests::AppServerRequestResolution;
 use crate::session_resume::read_session_model;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
@@ -1005,12 +1008,12 @@ impl App {
         Ok(())
     }
 
-    /// Locally remembers receiver threads referenced by a collab notification.
+    /// Validates receiver thread ids referenced by a collab notification.
     ///
     /// This intentionally avoids app-server reads on the active-thread rendering path. During large
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
-    /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
-    /// names and roles later; until then, rendering falls back to the thread id.
+    /// TUI event loop. Receiver-only notifications are not proof that a thread is a spawned
+    /// descendant of the current primary thread, so they must not create `/agent` picker rows.
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
@@ -1024,22 +1027,13 @@ impl App {
                 continue;
             }
 
-            let Ok(thread_id) = ThreadId::from_string(receiver_thread_id) else {
+            if ThreadId::from_string(receiver_thread_id).is_err() {
                 tracing::warn!(
                     thread_id = receiver_thread_id,
-                    "ignoring collab receiver with invalid thread id during local caching"
+                    "ignoring collab receiver with invalid thread id during picker lineage validation"
                 );
                 continue;
-            };
-
-            if self.agent_navigation.get(&thread_id).is_some() {
-                continue;
             }
-
-            self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                /*is_closed*/ false,
-            );
         }
     }
 
@@ -1067,15 +1061,28 @@ impl App {
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
-        self.upsert_agent_picker_thread(
-            thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
-            /*is_closed*/ false,
-        );
-        self.agent_navigation
-            .set_thread_name(thread_id, notification.thread.name.clone());
-        self.sync_active_agent_label();
+        let should_register_picker_thread = if self.primary_thread_id == Some(thread_id) {
+            true
+        } else if let (Some(primary_thread_id), Some(parent_thread_id)) = (
+            self.primary_thread_id,
+            thread_spawn_parent_thread_id(&notification.thread.source),
+        ) {
+            parent_thread_id == primary_thread_id
+                || self.agent_navigation.get(&parent_thread_id).is_some()
+        } else {
+            false
+        };
+        if should_register_picker_thread {
+            self.upsert_agent_picker_thread(
+                thread_id,
+                notification.thread.agent_nickname.clone(),
+                notification.thread.agent_role.clone(),
+                /*is_closed*/ false,
+            );
+            self.agent_navigation
+                .set_thread_name(thread_id, notification.thread.name.clone());
+            self.sync_active_agent_label();
+        }
         Some(session)
     }
 
@@ -1209,11 +1216,37 @@ impl App {
         for pending_event in pending {
             match pending_event {
                 ThreadBufferedEvent::Notification(notification) => {
-                    self.enqueue_thread_notification(thread_id, notification)
-                        .await?;
+                    let event_thread_id =
+                        server_notification_thread_target(&notification).thread_id();
+                    match self.resolve_pending_primary_flush_target(event_thread_id, thread_id) {
+                        Some(target_thread_id) => {
+                            self.enqueue_thread_notification(target_thread_id, notification)
+                                .await?;
+                        }
+                        None => {
+                            tracing::debug!(
+                                ?event_thread_id,
+                                %thread_id,
+                                "dropping buffered notification for unrelated untracked thread while starting primary thread"
+                            );
+                        }
+                    }
                 }
                 ThreadBufferedEvent::Request(request) => {
-                    self.enqueue_thread_request(thread_id, request).await?;
+                    let event_thread_id = server_request_thread_id(&request);
+                    match self.resolve_pending_primary_flush_target(event_thread_id, thread_id) {
+                        Some(target_thread_id) => {
+                            self.enqueue_thread_request(target_thread_id, request)
+                                .await?;
+                        }
+                        None => {
+                            tracing::debug!(
+                                ?event_thread_id,
+                                %thread_id,
+                                "dropping buffered request for unrelated untracked thread while starting primary thread"
+                            );
+                        }
+                    }
                 }
                 ThreadBufferedEvent::HistoryEntryResponse(event) => {
                     self.enqueue_thread_history_entry_response(thread_id, event)
@@ -1230,6 +1263,42 @@ impl App {
         Ok(())
     }
 
+    /// Whether `thread_id` is already tracked by the TUI (has an event channel
+    /// or is a registered side thread). Used during the startup pre-primary
+    /// window to distinguish known loaded/scheduled threads from the primary
+    /// thread that is still starting.
+    pub(super) fn is_tracked_thread(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels.contains_key(&thread_id)
+            || self.side_threads.contains_key(&thread_id)
+    }
+
+    /// Resolve which thread a buffered pre-primary event should flush onto once
+    /// the primary thread (`primary_thread_id`) has started.
+    ///
+    /// - Events that target the started primary thread flush onto the primary.
+    /// - Events for another already-tracked thread flush onto that thread's own
+    ///   channel so they are not misrouted onto the primary's stream.
+    /// - Events for an unrelated, untracked thread return `None` and are dropped
+    ///   by the caller; they never belonged to the primary being started.
+    /// - Events with no resolvable thread target flush onto the primary, matching
+    ///   the historical behavior (such events are not buffered here in practice).
+    fn resolve_pending_primary_flush_target(
+        &self,
+        event_thread_id: Option<ThreadId>,
+        primary_thread_id: ThreadId,
+    ) -> Option<ThreadId> {
+        match event_thread_id {
+            None => Some(primary_thread_id),
+            Some(event_thread_id) if event_thread_id == primary_thread_id => {
+                Some(primary_thread_id)
+            }
+            Some(event_thread_id) if self.is_tracked_thread(event_thread_id) => {
+                Some(event_thread_id)
+            }
+            Some(_) => None,
+        }
+    }
+
     pub(super) async fn enqueue_primary_thread_notification(
         &mut self,
         notification: ServerNotification,
@@ -1244,6 +1313,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) async fn enqueue_primary_thread_request(
         &mut self,
         request: ServerRequest,

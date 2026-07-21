@@ -22,7 +22,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 const AUTH_PROFILE_LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
+pub(super) const AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF: Duration =
+    Duration::from_secs(5 * 60);
 const AUTH_PROFILE_POPUP_VIEW_ID: &str = "auth-profile-selection";
 
 impl ChatWidget {
@@ -455,6 +456,19 @@ impl ChatWidget {
         }
 
         let profile = profile.map(str::to_string);
+        // Reset-aware suppression: if the profile's cached codex usage is exhausted and its
+        // reported reset is still in the future, do not re-poll the usage endpoint. Nothing
+        // will change until the reset, so polling every interval just hammers a limit we
+        // already know about. Once the reset elapses (or if it was never reported) this
+        // check falls through to the normal interval/backoff below, so heartbeats resume.
+        if self
+            .auth_profile_usage_exhausted_reset_at_by_profile
+            .get(&profile)
+            .is_some_and(|reset_at| *reset_at > chrono::Utc::now().timestamp())
+        {
+            return false;
+        }
+
         if self
             .auth_profile_usage_heartbeat_failed_at_by_profile
             .get(&profile)

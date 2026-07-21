@@ -3317,6 +3317,43 @@ async fn usage_heartbeat_failure_backs_off_profile_refresh() {
     );
 }
 
+#[tokio::test]
+async fn usage_heartbeat_suppressed_for_exhausted_profile_until_reset() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    // A cached-but-stale exhausted snapshot whose reset is still in the future suppresses the
+    // heartbeat: nothing will change until the reset, so we must not re-poll the usage endpoint.
+    let stale_exhausted = rate_limit_snapshot_display_for_limit(
+        &profile_usage_snapshot(
+            /*secondary_used_percent*/ 100, /*primary_used_percent*/ 100,
+        ),
+        "codex".to_string(),
+        Local::now() - chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES + 1),
+    );
+    chat.auth_profile_rate_limit_snapshots_by_profile.insert(
+        Some("work".to_string()),
+        BTreeMap::from([("codex".to_string(), stale_exhausted)]),
+    );
+    chat.auth_profile_usage_exhausted_reset_at_by_profile
+        .insert(
+            Some("work".to_string()),
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+    assert!(chat.auth_profile_usage_refresh_targets().is_empty());
+
+    // Once the reset has elapsed the suppression lapses and heartbeats resume (graceful
+    // fallback so a missing/stale reset can never permanently block the profile).
+    chat.auth_profile_usage_exhausted_reset_at_by_profile
+        .insert(Some("work".to_string()), chrono::Utc::now().timestamp() - 1);
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+}
+
 fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
     while let Ok(event) = rx.try_recv() {
         assert!(

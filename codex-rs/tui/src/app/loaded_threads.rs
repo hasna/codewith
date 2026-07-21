@@ -16,6 +16,7 @@
 
 use codex_app_server_protocol::Thread;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -93,16 +94,17 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
     loaded_threads
 }
 
-fn thread_spawn_parent_thread_id(
+pub(crate) fn thread_spawn_parent_thread_id(
     source: &codex_app_server_protocol::SessionSource,
 ) -> Option<ThreadId> {
-    let value = serde_json::to_value(source).ok()?;
-    let parent_thread_id = value
-        .get("subAgent")?
-        .get("thread_spawn")?
-        .get("parent_thread_id")?
-        .as_str()?;
-    ThreadId::from_string(parent_thread_id).ok()
+    let codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        ..
+    }) = source
+    else {
+        return None;
+    };
+    Some(*parent_thread_id)
 }
 
 #[cfg(test)]

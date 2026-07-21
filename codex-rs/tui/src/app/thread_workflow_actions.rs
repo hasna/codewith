@@ -4,6 +4,37 @@ use crate::app_server_session::AppServerSession;
 use codex_protocol::ThreadId;
 
 impl App {
+    pub(super) async fn open_thread_workflow_manager(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        self.chat_widget
+            .show_thread_workflow_manager_loading(thread_id);
+
+        let workflow_response = app_server.thread_workflow_list(thread_id).await;
+        let run_response = app_server.thread_workflow_run_list(thread_id).await;
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
+
+        match (workflow_response, run_response) {
+            (Ok(workflows), Ok(runs)) => self
+                .chat_widget
+                .show_thread_workflow_manager(thread_id, workflows, runs),
+            (Err(err), _) => self.chat_widget.show_thread_workflow_manager_error(
+                thread_id,
+                "read workflow specs",
+                &err,
+            ),
+            (_, Err(err)) => self.chat_widget.show_thread_workflow_manager_error(
+                thread_id,
+                "list workflow runs",
+                &err,
+            ),
+        }
+    }
+
     pub(super) async fn manage_thread_workflow(
         &mut self,
         app_server: &mut AppServerSession,

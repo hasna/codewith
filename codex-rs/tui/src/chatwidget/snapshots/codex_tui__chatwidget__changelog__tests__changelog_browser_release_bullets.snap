@@ -1,0 +1,27 @@
+---
+source: tui/src/chatwidget/changelog.rs
+assertion_line: 289
+expression: "render_lines(&view, 88)"
+---
+
+  Codewith [0.1.55] - 2026-07-02
+  Bullets copied from CHANGELOG.md.
+
+› 1. Back                Return to all changelog versions.
+  2. Close               Close the changelog browser.
+     - Release pipeline: libcap-2.75 musl download now falls back across verified
+     mirrors (kernel.org -> OSUOSL -> Debian) with mandatory checksum; macOS builds
+     use CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 and the aarch64 primary runs on macos-
+     15-xlarge, ending the 3-hour timeouts that killed 0.1.52-0.1.54.
+     - Goals state: databases stamped by published 0.1.48 are repaired before
+     migration, preventing a permanent VersionMismatch(5) that disabled the sqlite
+     state layer (threads, schedules, mailbox, goals) after upgrade.
+     - OpenRouter GLM-5.2 metadata restored (parallel tool calls, High/XHigh reasoning
+     presets, gpt-oss-120b as default fallback).
+     - Usage-profile broker: scheduled dispatches now defer while all sibling profiles
+     are cooling down instead of feeding the failure circuit breaker.
+     - Remote and sandboxed filesystems support symlink-safe reads, so project
+     instructions (CODEWITH.md/AGENTS.md) load in remote sessions.
+     - Mailbox: queued-input API restored; delivery defer rolls back on enqueue
+     rejection; delivery-policy parsing matches the SQL claim filter; queued context
+     delivery is bounded.

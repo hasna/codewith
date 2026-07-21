@@ -151,6 +151,32 @@ pub fn exhausted_auto_switch_window_for_snapshot(
         .find_map(exhausted_auto_switch_window_for_limit)
 }
 
+/// Earliest future reset timestamp (unix seconds) among exhausted (`used_percent >= 100`)
+/// codex windows in `snapshot`.
+///
+/// Returns `None` when the limit is not codex, nothing is exhausted, or every exhausted
+/// window's reset is missing or already in the past. Callers use this to suppress usage
+/// heartbeats for a profile that is already capped until it resets, instead of re-polling
+/// the usage endpoint every heartbeat interval (which just hammers a limit we already know
+/// about). When the reset is unknown, `None` lets the caller fall back to the normal
+/// interval/backoff so heartbeats are never permanently blocked.
+pub fn earliest_exhausted_reset_at(
+    snapshot: &UsageProfileRateLimitSnapshot<'_>,
+    now_unix_secs: i64,
+) -> Option<i64> {
+    if !is_codex_limit(snapshot) {
+        return None;
+    }
+
+    [snapshot.secondary, snapshot.primary]
+        .into_iter()
+        .flatten()
+        .filter(|window| window.used_percent >= 100.0)
+        .filter_map(|window| window.resets_at)
+        .filter(|reset_at| *reset_at > now_unix_secs)
+        .min()
+}
+
 pub fn usage_health_for_snapshots(
     snapshots: &[UsageProfileRateLimitSnapshot<'_>],
     config: &AuthProfileAutoSwitchConfig,
@@ -224,6 +250,12 @@ pub fn choose_profile_for_auto_switch(
     let mut retry_at = None;
     match config.strategy {
         AuthProfileAutoSwitchStrategy::Ordered => {
+            // Respect the configured order, but never optimistically switch to an
+            // Unknown profile when a later candidate is known to be healthy: a
+            // known-healthy profile is always a safer switch target than one whose
+            // usage we have not confirmed.
+            let mut first_healthy = None;
+            let mut first_unknown = None;
             for candidate in candidates {
                 match health_by_profile
                     .get(candidate)
@@ -231,21 +263,31 @@ pub fn choose_profile_for_auto_switch(
                     .unwrap_or(UsageProfileHealth::Unknown)
                 {
                     UsageProfileHealth::Healthy(_) => {
-                        return UsageProfileSelection::selected(
-                            candidate.clone(),
-                            UsageProfileSelectionReason::SelectedHealthyProfile,
-                        );
+                        if first_healthy.is_none() {
+                            first_healthy = Some(candidate.as_str());
+                        }
                     }
                     UsageProfileHealth::Unknown => {
-                        return UsageProfileSelection::selected(
-                            candidate.clone(),
-                            UsageProfileSelectionReason::SelectedUnknownProfile,
-                        );
+                        if first_unknown.is_none() {
+                            first_unknown = Some(candidate.as_str());
+                        }
                     }
                     UsageProfileHealth::Exhausted {
                         retry_at: profile_retry_at,
                     } => merge_retry_at(&mut retry_at, profile_retry_at),
                 }
+            }
+            if let Some(profile) = first_healthy {
+                return UsageProfileSelection::selected(
+                    profile.to_string(),
+                    UsageProfileSelectionReason::SelectedHealthyProfile,
+                );
+            }
+            if let Some(profile) = first_unknown {
+                return UsageProfileSelection::selected(
+                    profile.to_string(),
+                    UsageProfileSelectionReason::SelectedUnknownProfile,
+                );
             }
         }
         AuthProfileAutoSwitchStrategy::HighestAvailable => {
@@ -642,6 +684,151 @@ mod tests {
                 &health_by_profile,
             )
         );
+    }
+
+    fn ordered_config() -> AuthProfileAutoSwitchConfig {
+        AuthProfileAutoSwitchConfig {
+            enabled: true,
+            strategy: AuthProfileAutoSwitchStrategy::Ordered,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ordered_prefers_healthy_over_earlier_unknown() {
+        let health_by_profile = BTreeMap::from([
+            ("first".to_string(), UsageProfileHealth::Unknown),
+            (
+                "second".to_string(),
+                UsageProfileHealth::Healthy(UsageProfileScore {
+                    trigger_remaining_percent: 40.0,
+                    limiting_remaining_percent: 40.0,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            UsageProfileSelection {
+                selected_profile: Some("second".to_string()),
+                retry_at: None,
+                reason: UsageProfileSelectionReason::SelectedHealthyProfile,
+            },
+            choose_profile_for_auto_switch(
+                &ordered_config(),
+                &["first".to_string(), "second".to_string()],
+                &health_by_profile,
+            )
+        );
+    }
+
+    #[test]
+    fn ordered_keeps_first_healthy_in_configured_order() {
+        let health_by_profile = BTreeMap::from([
+            (
+                "first".to_string(),
+                UsageProfileHealth::Healthy(UsageProfileScore {
+                    trigger_remaining_percent: 20.0,
+                    limiting_remaining_percent: 20.0,
+                }),
+            ),
+            (
+                "second".to_string(),
+                UsageProfileHealth::Healthy(UsageProfileScore {
+                    trigger_remaining_percent: 90.0,
+                    limiting_remaining_percent: 90.0,
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            UsageProfileSelection {
+                selected_profile: Some("first".to_string()),
+                retry_at: None,
+                reason: UsageProfileSelectionReason::SelectedHealthyProfile,
+            },
+            choose_profile_for_auto_switch(
+                &ordered_config(),
+                &["first".to_string(), "second".to_string()],
+                &health_by_profile,
+            )
+        );
+    }
+
+    #[test]
+    fn ordered_falls_back_to_first_unknown_when_no_healthy() {
+        let health_by_profile = BTreeMap::from([(
+            "first".to_string(),
+            UsageProfileHealth::Exhausted {
+                retry_at: Some(500),
+            },
+        )]);
+
+        assert_eq!(
+            UsageProfileSelection {
+                selected_profile: Some("second".to_string()),
+                retry_at: None,
+                reason: UsageProfileSelectionReason::SelectedUnknownProfile,
+            },
+            choose_profile_for_auto_switch(
+                &ordered_config(),
+                &["first".to_string(), "second".to_string()],
+                &health_by_profile,
+            )
+        );
+    }
+
+    #[test]
+    fn earliest_exhausted_reset_at_returns_future_reset() {
+        assert_eq!(
+            Some(1_000),
+            earliest_exhausted_reset_at(
+                &snapshot(
+                    Some(window(100.0, MINUTES_PER_5_HOURS, Some(1_000))),
+                    Some(window(100.0, MINUTES_PER_WEEK, Some(2_000))),
+                ),
+                500,
+            )
+        );
+    }
+
+    #[test]
+    fn earliest_exhausted_reset_at_ignores_unexhausted_and_past_resets() {
+        // Not exhausted -> None.
+        assert_eq!(
+            None,
+            earliest_exhausted_reset_at(
+                &snapshot(Some(window(80.0, MINUTES_PER_5_HOURS, Some(1_000))), None),
+                500,
+            )
+        );
+        // Exhausted but reset already elapsed -> None (fall back to normal interval).
+        assert_eq!(
+            None,
+            earliest_exhausted_reset_at(
+                &snapshot(Some(window(100.0, MINUTES_PER_5_HOURS, Some(400))), None),
+                500,
+            )
+        );
+        // Exhausted but reset unknown -> None.
+        assert_eq!(
+            None,
+            earliest_exhausted_reset_at(
+                &snapshot(Some(window(100.0, MINUTES_PER_5_HOURS, None)), None),
+                500,
+            )
+        );
+    }
+
+    #[test]
+    fn earliest_exhausted_reset_at_ignores_non_codex_limits() {
+        let snapshot = UsageProfileRateLimitSnapshot {
+            limit_id: Some("not-codex"),
+            limit_name: None,
+            primary: Some(window(100.0, MINUTES_PER_5_HOURS, Some(1_000))),
+            secondary: None,
+        };
+
+        assert_eq!(None, earliest_exhausted_reset_at(&snapshot, 500));
     }
 
     #[test]

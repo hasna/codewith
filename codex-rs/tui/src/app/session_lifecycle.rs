@@ -113,12 +113,19 @@ impl App {
     }
 
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
-        let mut thread_ids = self.agent_navigation.tracked_thread_ids();
-        for thread_id in self.thread_event_channels.keys().copied() {
-            if !thread_ids.contains(&thread_id) {
-                thread_ids.push(thread_id);
-            }
+        if let Some(primary_thread_id) = self.primary_thread_id
+            && self.agent_navigation.get(&primary_thread_id).is_none()
+        {
+            self.upsert_agent_picker_thread(
+                primary_thread_id,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
+                /*is_closed*/ false,
+            );
         }
+        // Only refresh known picker entries. Schedule, monitor, and other top-level thread
+        // notifications can create replay channels, but a buffered channel is not picker lineage.
+        let thread_ids = self.agent_navigation.tracked_thread_ids();
         for thread_id in thread_ids {
             if self.side_threads.contains_key(&thread_id) {
                 continue;
@@ -204,6 +211,9 @@ impl App {
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
     /// transcripts, and the stable next/previous traversal order should not collapse around them.
     pub(super) fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
+        if self.agent_navigation.get(&thread_id).is_none() {
+            return;
+        }
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
     }
