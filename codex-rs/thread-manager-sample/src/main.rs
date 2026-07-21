@@ -224,6 +224,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         selected_auth_profile: None,
         auth_profile_auto_switch: Default::default(),
         usage_self_heal: Default::default(),
+        keep_going: Default::default(),
         usage_limit: Default::default(),
         session_recap: SessionRecapConfig::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),

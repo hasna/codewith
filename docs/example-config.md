@@ -34,6 +34,12 @@ max_backoff_secs = 300
 reset_retry_buffer_secs = 60
 max_reset_retry_delay_secs = 86400
 
+# Opt-in keep-going / auto-resume: after a clean turn-end, inject a neutral
+# continuation prompt and start the next turn (bounded, never bypasses approvals).
+[keep_going]
+enabled = false
+max_continuations = 25
+
 # Switch to another saved auth profile when rate-limit windows are exhausted.
 [auth_profile_auto_switch]
 enabled = false

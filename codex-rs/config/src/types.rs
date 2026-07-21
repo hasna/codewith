@@ -263,6 +263,22 @@ pub struct UsageSelfHealToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+pub struct KeepGoingToml {
+    /// Enables opt-in keep-going / auto-resume: after a clean turn-end the session
+    /// automatically injects a continuation prompt and starts the next turn.
+    pub enabled: Option<bool>,
+
+    /// Hard cap on automatic continuations per user turn so keep-going can never
+    /// loop forever. Resets whenever a real user message is submitted.
+    pub max_continuations: Option<u32>,
+
+    /// Optional continuation prompt. When unset, a built-in neutral continuation
+    /// template is used.
+    pub prompt: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct UsageLimitToml {
     /// When true, Codewith may consume one available reset credit after it confirms the weekly
     /// usage limit is exhausted.

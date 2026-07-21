@@ -1344,6 +1344,26 @@
       },
       "type": "object"
     },
+    "KeepGoingToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enables opt-in keep-going / auto-resume: after a clean turn-end the session\nautomatically injects a continuation prompt and starts the next turn.",
+          "type": "boolean"
+        },
+        "max_continuations": {
+          "description": "Hard cap on automatic continuations per user turn so keep-going can never\nloop forever. Resets whenever a real user message is submitted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt": {
+          "description": "Optional continuation prompt. When unset, a built-in neutral continuation\ntemplate is used.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "KeybindingSpec": {
       "description": "Normalized string representation of a single key event (for example `ctrl-a`).\n\nThe parser accepts a small alias set (for example `escape` -> `esc`,\n`pageup` -> `page-up`) and stores the canonical form.\n\nThis deliberately represents one terminal key event, not a sequence of\nevents. A value like `ctrl-x ctrl-s` is not a chord in this schema; adding\nmulti-step chords would require a separate runtime state machine.",
       "type": "string"
@@ -5384,6 +5404,15 @@
     "instructions": {
       "description": "System instructions.",
       "type": "string"
+    },
+    "keep_going": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/KeepGoingToml"
+        }
+      ],
+      "default": null,
+      "description": "Opt-in keep-going / auto-resume behavior for clean turn-ends."
     },
     "log_dir": {
       "anyOf": [

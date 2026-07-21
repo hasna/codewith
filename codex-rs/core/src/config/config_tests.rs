@@ -39,6 +39,7 @@ use codex_config::types::AuthProfileAutoSwitchToml;
 use codex_config::types::BundledSkillsConfig;
 use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
+use codex_config::types::KeepGoingToml;
 use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerOAuthConfig;
 use codex_config::types::McpServerToolConfig;
@@ -5586,6 +5587,71 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
     .await?;
 
     assert!(enabled_config.usage_self_heal.enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_resolves_keep_going() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    // Default OFF, with a hard continuation cap and a non-empty built-in prompt.
+    assert!(!default_config.keep_going.enabled);
+    assert_eq!(
+        default_config.keep_going.max_continuations,
+        crate::config::DEFAULT_KEEP_GOING_MAX_CONTINUATIONS
+    );
+    assert_eq!(default_config.keep_going.max_continuations, 25);
+    assert!(!default_config.keep_going.prompt.trim().is_empty());
+
+    // Explicit values are honored; a blank prompt falls back to the built-in template.
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            keep_going: Some(KeepGoingToml {
+                enabled: Some(true),
+                max_continuations: Some(3),
+                prompt: Some("   ".to_string()),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.keep_going.enabled);
+    assert_eq!(config.keep_going.max_continuations, 3);
+    assert_eq!(config.keep_going.prompt, default_config.keep_going.prompt);
+
+    // A custom prompt overrides the built-in template.
+    let custom_config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            keep_going: Some(KeepGoingToml {
+                enabled: Some(true),
+                max_continuations: None,
+                prompt: Some("carry on".to_string()),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(custom_config.keep_going.enabled);
+    // Unset max_continuations falls back to the hard default cap.
+    assert_eq!(custom_config.keep_going.max_continuations, 25);
+    assert_eq!(custom_config.keep_going.prompt, "carry on");
 
     Ok(())
 }
@@ -11950,8 +12016,13 @@ fn docs_document_usage_recovery_defaults() {
     let usage_limit = UsageLimitConfig::default();
     let self_heal = UsageSelfHealConfig::default();
     let auto_switch = AuthProfileAutoSwitchConfig::default();
+    let keep_going = KeepGoingConfig::default();
 
     let documented_defaults = [
+        (
+            "max_continuations",
+            keep_going.max_continuations.to_string(),
+        ),
         (
             "auto_reset_enabled",
             usage_limit.auto_reset_enabled.to_string(),
@@ -11996,6 +12067,7 @@ fn docs_document_usage_recovery_defaults() {
     for block in [
         "[usage_limit]",
         "[usage_self_heal]",
+        "[keep_going]",
         "[auth_profile_auto_switch]",
     ] {
         assert!(

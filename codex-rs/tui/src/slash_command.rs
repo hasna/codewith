@@ -55,6 +55,8 @@ pub enum SlashCommand {
     Plan,
     Goal,
     Teach,
+    #[strum(to_string = "keep-going", serialize = "keepgoing", serialize = "kg")]
+    KeepGoing,
     #[strum(
         to_string = "mission-control",
         serialize = "mission",
@@ -173,6 +175,7 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Teach => "toggle teaching callouts for future replies",
+            SlashCommand::KeepGoing => "toggle auto-continue / keep-going mode",
             SlashCommand::MissionControl => "show orchestration sessions and projects",
             SlashCommand::Workflow => "manage workflow specs and runs for this thread",
             SlashCommand::Loop => "schedule recurring prompts for the current thread",
@@ -229,6 +232,7 @@ impl SlashCommand {
                 | SlashCommand::Plan
                 | SlashCommand::Goal
                 | SlashCommand::Teach
+                | SlashCommand::KeepGoing
                 | SlashCommand::PrivacyFilter
                 | SlashCommand::Workflow
                 | SlashCommand::Loop
@@ -318,6 +322,7 @@ impl SlashCommand {
             | SlashCommand::App
             | SlashCommand::Goal
             | SlashCommand::Teach
+            | SlashCommand::KeepGoing
             | SlashCommand::PrivacyFilter
             | SlashCommand::Workflow
             | SlashCommand::MissionControl

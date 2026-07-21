@@ -340,6 +340,187 @@ async fn slash_teach_on_off_and_invalid_args_are_local() {
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
 }
 
+fn complete_failed_turn(chat: &mut ChatWidget, turn_id: &str, message: &str) {
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            turn: AppServerTurn {
+                id: turn_id.to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: AppServerTurnStatus::Failed,
+                error: Some(AppServerTurnError {
+                    message: message.to_string(),
+                    codex_error_info: None,
+                    additional_details: None,
+                }),
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+}
+
+fn active_thread_goal() -> codex_app_server_protocol::ThreadGoal {
+    codex_app_server_protocol::ThreadGoal {
+        thread_id: "thread".to_string(),
+        goal_id: "goal".to_string(),
+        objective: "do the thing".to_string(),
+        title: None,
+        status: codex_app_server_protocol::ThreadGoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
+fn keep_going_continuation_text(op: &Op) -> String {
+    match op {
+        Op::UserTurn { items, .. } => match items.first() {
+            Some(UserInput::Text { text, .. }) => text.clone(),
+            other => panic!("expected a UserInput::Text continuation item, got {other:?}"),
+        },
+        other => panic!("expected Op::UserTurn continuation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_keep_going_toggles_status_and_does_not_submit_core_op() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::KeepGoing);
+    assert!(chat.keep_going_enabled_runtime());
+    assert!(chat.keep_going_active());
+    assert!(drain_history_text(&mut rx).contains("Keep-going enabled."));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "status".to_string(), Vec::new());
+    assert!(chat.keep_going_enabled_runtime());
+    assert!(drain_history_text(&mut rx).contains("Keep-going is enabled."));
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "off".to_string(), Vec::new());
+    assert!(!chat.keep_going_enabled_runtime());
+    assert!(drain_history_text(&mut rx).contains("Keep-going disabled."));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "nope".to_string(), Vec::new());
+    assert!(drain_history_text(&mut rx).contains("Usage: /keep-going [on|off|status]"));
+}
+
+#[tokio::test]
+async fn keep_going_disabled_does_not_continue_after_clean_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    // Default OFF: a clean turn-end must not auto-continue.
+    handle_turn_started(&mut chat, "turn-1");
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 0);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn keep_going_enabled_continues_once_after_clean_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "on".to_string(), Vec::new());
+    assert!(chat.keep_going_active());
+
+    handle_turn_started(&mut chat, "turn-1");
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    // Exactly one continuation turn is injected and the counter increments.
+    let op = next_submit_op(&mut op_rx);
+    let text = keep_going_continuation_text(&op);
+    assert!(
+        text.contains("Keep going"),
+        "unexpected continuation prompt: {text}"
+    );
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 1);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn keep_going_stops_at_max_continuations() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    // Hard-cap at a single continuation for this session.
+    chat.config.keep_going.max_continuations = 1;
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "on".to_string(), Vec::new());
+
+    handle_turn_started(&mut chat, "turn-1");
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+    // First clean turn-end continues once.
+    let _ = next_submit_op(&mut op_rx);
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 1);
+
+    handle_turn_started(&mut chat, "turn-2");
+    complete_turn_with_message(&mut chat, "turn-2", Some("done again"));
+    // Cap reached: no further continuation, counter unchanged.
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 1);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn keep_going_does_not_continue_on_failed_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "on".to_string(), Vec::new());
+
+    handle_turn_started(&mut chat, "turn-1");
+    complete_failed_turn(&mut chat, "turn-1", "boom");
+
+    // Error-end never routes through the clean-completion hook.
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 0);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn keep_going_does_not_continue_while_goal_active() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "on".to_string(), Vec::new());
+    chat.current_goal_status = Some(super::super::goal_status::GoalStatusState::new(
+        active_thread_goal(),
+        std::time::Instant::now(),
+    ));
+
+    handle_turn_started(&mut chat, "turn-1");
+    complete_turn_with_message(&mut chat, "turn-1", Some("done"));
+
+    // The goal loop already owns continuation; keep-going must not double-drive.
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 0);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn keep_going_counter_resets_on_user_submission() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    // A configured session (thread id present) is required for a real user turn
+    // to submit rather than queue.
+    chat.thread_id = Some(ThreadId::new());
+
+    chat.dispatch_command_with_args(SlashCommand::KeepGoing, "on".to_string(), Vec::new());
+
+    // Pretend several automatic continuations already fired for the current user turn.
+    chat.continuations_this_user_turn = 5;
+
+    // A real user message starts a fresh user turn and must reset the budget to 0.
+    chat.submit_user_message(UserMessage {
+        text: "next task please".to_string(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        text_elements: Vec::new(),
+        mention_bindings: Vec::new(),
+    });
+    let _ = next_submit_op(&mut op_rx);
+    assert_eq!(chat.keep_going_continuations_this_user_turn(), 0);
+}
+
 #[tokio::test]
 async fn queued_slash_teach_toggles_and_preserves_follow_up_queue() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

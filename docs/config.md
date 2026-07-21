@@ -103,6 +103,27 @@ reset_retry_buffer_secs = 60
 max_reset_retry_delay_secs = 86400
 ```
 
+### `[keep_going]`
+
+Opt-in keep-going / auto-resume. When enabled, after a clean turn-end (the model
+returned a final message and the session would otherwise stop) Codewith injects a
+neutral continuation prompt and automatically starts the next turn. It is bounded
+per user turn and never bypasses approvals, the sandbox, or any refusal: the
+continued turn is a normal turn where every tool call still passes all enforcement.
+The interactive `/keep-going` toggle overrides this default for the active session.
+
+| Key                 | Default | Behavior                                                                                                             |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `enabled`           | `false` | Enables keep-going / auto-resume by default (overridden per session by `/keep-going`).                               |
+| `max_continuations` | `25`    | Hard cap on automatic continuations per user turn so keep-going can never loop forever. Resets on each user message. |
+| `prompt`            | (unset) | Optional continuation prompt. When unset, a built-in neutral continuation template is used.                          |
+
+```toml
+[keep_going]
+enabled = false
+max_continuations = 25
+```
+
 ### `[auth_profile_auto_switch]`
 
 Switches to another saved auth profile when the selected Codewith rate-limit windows are

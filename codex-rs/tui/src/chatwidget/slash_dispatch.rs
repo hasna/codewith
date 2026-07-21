@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::goal_validation::GoalObjectiveValidationSource;
+use super::keep_going::KeepGoingCommand;
 use super::loop_slash::LoopCreateRequest;
 use super::loop_slash::LoopIntervalUnit;
 use super::loop_slash::LoopManageCommand;
@@ -1164,6 +1165,9 @@ impl ChatWidget {
             SlashCommand::Teach => {
                 self.apply_teaching_mode_command(TeachingModeCommand::Toggle);
             }
+            SlashCommand::KeepGoing => {
+                self.apply_keep_going_command(KeepGoingCommand::Toggle);
+            }
             SlashCommand::PrivacyFilter => {
                 self.render_privacy_filter_report();
             }
@@ -1681,6 +1685,10 @@ impl ChatWidget {
             },
             SlashCommand::Teach => match TeachingModeCommand::parse(trimmed) {
                 Ok(command) => self.apply_teaching_mode_command(command),
+                Err(usage) => self.add_error_message(usage.to_string()),
+            },
+            SlashCommand::KeepGoing => match KeepGoingCommand::parse(trimmed) {
+                Ok(command) => self.apply_keep_going_command(command),
                 Err(usage) => self.add_error_message(usage.to_string()),
             },
             SlashCommand::PrivacyFilter => match PrivacyFilterCommand::parse(trimmed) {
@@ -2759,6 +2767,7 @@ impl ChatWidget {
             | SlashCommand::Copy
             | SlashCommand::Raw
             | SlashCommand::Teach
+            | SlashCommand::KeepGoing
             | SlashCommand::PrivacyFilter
             | SlashCommand::Vim
             | SlashCommand::Diff

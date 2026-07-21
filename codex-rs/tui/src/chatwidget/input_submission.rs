@@ -438,6 +438,9 @@ impl ChatWidget {
             &history_record,
             shell_escape_policy,
         );
+        // A real user message starts a fresh user turn: reset the keep-going
+        // continuation budget so the new turn gets the full cap.
+        self.reset_keep_going_continuations();
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
         }

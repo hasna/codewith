@@ -450,6 +450,7 @@ mod windows_sandbox_prompts;
 use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
+mod keep_going;
 mod privacy_filter;
 mod status_controls;
 mod status_panel;
@@ -609,6 +610,12 @@ pub(crate) struct ChatWidget {
     session_prompt: Option<String>,
     teaching_mode_enabled: bool,
     teaching_mode_by_thread: HashMap<ThreadId, bool>,
+    /// Runtime keep-going / auto-resume flag for the active session. Overrides
+    /// `config.keep_going.enabled` while set (same pattern as teaching mode).
+    keep_going_enabled: bool,
+    /// Automatic keep-going continuations already fired for the current user
+    /// turn. Reset to 0 on every real user submission and on `/keep-going off`.
+    continuations_this_user_turn: u32,
     has_chatgpt_account: bool,
     model_catalog: Arc<ModelCatalog>,
     session_telemetry: SessionTelemetry,

@@ -119,6 +119,8 @@ impl ChatWidget {
             session_prompt: None,
             teaching_mode_enabled: false,
             teaching_mode_by_thread: HashMap::new(),
+            keep_going_enabled: false,
+            continuations_this_user_turn: 0,
             has_chatgpt_account,
             model_catalog,
             session_telemetry,
