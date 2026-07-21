@@ -42,6 +42,47 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.71] - 2026-07-21
+
+Tag: `rust-v0.1.71`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.71>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.70...rust-v0.1.71>
+
+Release headlined by a fix for banked usage-limit resets not surfacing in
+`/usage`, plus usage credit and spend-control visibility, several upstream
+adopts, and macOS durable agent attach.
+
+### Added
+
+- Usage: `/usage` now surfaces the account credit balance and the spend-control
+  limit, and the usage auto-recovery configuration is documented. (#333)
+- MCP: MCP client quality-of-life improvements and an `rmcp` 1.8.0 bump. (#314)
+- Prompts: adopted upstream system-prompt improvements, merged with the fork's
+  customizations. (#332)
+- Core: ported upstream "core small" adopts (shell-snapshot PATH handling,
+  retry logging, and dead-code cleanup). (#320)
+- macOS: wired durable agent attach/control and pending interactions. (#132)
+
+### Fixed
+
+- Usage: banked usage-limit resets now surface as available in `/usage`. (#336)
+- Usage: banked usage-limit resets stay visible when the reset-credit ledger
+  refresh degrades, instead of disappearing. (#337)
+- Background agent: runs now fail on silent turn errors, and migration-skew
+  guidance is clarified. (#283)
+
+### Security
+
+- App server: reject remote images at ingress (SSRF hardening). (#317)
+
+### Performance
+
+- TUI: cache flex heights per frame and finalized markdown renders. (#326)
+
+### Docs
+
+- App server: aligned the v2 guidance with the split protocol modules. (#150)
+
 ## [0.1.70] - 2026-07-20
 
 Tag: `rust-v0.1.70`
