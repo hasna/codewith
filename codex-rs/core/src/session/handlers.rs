@@ -108,15 +108,28 @@ pub async fn update_thread_settings(
     sub_id: String,
     thread_settings: ThreadSettingsOverrides,
 ) {
+    let refresh_token_context_window = thread_settings.auth_profile.is_some();
     let updates = thread_settings_update(sess, thread_settings).await;
-    let msg = match sess.update_settings(updates).await {
-        Ok(()) => thread_settings_applied_event(sess).await,
-        Err(err) => EventMsg::Error(ErrorEvent {
-            message: format!("invalid thread settings override: {err}"),
-            codex_error_info: Some(CodexErrorInfo::BadRequest),
-        }),
-    };
-    sess.send_event_raw(Event { id: sub_id, msg }).await;
+    match sess.update_settings(updates).await {
+        Ok(()) => {
+            let msg = thread_settings_applied_event(sess).await;
+            sess.send_event_raw(Event {
+                id: sub_id.clone(),
+                msg,
+            })
+            .await;
+            if refresh_token_context_window {
+                refresh_token_context_window_after_profile_switch(sess, sub_id).await;
+            }
+        }
+        Err(err) => {
+            let msg = EventMsg::Error(ErrorEvent {
+                message: format!("invalid thread settings override: {err}"),
+                codex_error_info: Some(CodexErrorInfo::BadRequest),
+            });
+            sess.send_event_raw(Event { id: sub_id, msg }).await;
+        }
+    }
 }
 
 pub async fn update_auth_profile(
@@ -128,14 +141,30 @@ pub async fn update_auth_profile(
         auth_profile: Some(auth_profile),
         ..Default::default()
     };
-    let msg = match sess.update_settings(updates).await {
-        Ok(()) => thread_settings_applied_event(sess).await,
-        Err(err) => EventMsg::Error(ErrorEvent {
-            message: format!("invalid auth profile override: {err}"),
-            codex_error_info: Some(CodexErrorInfo::BadRequest),
-        }),
-    };
-    sess.send_event_raw(Event { id: sub_id, msg }).await;
+    match sess.update_settings(updates).await {
+        Ok(()) => {
+            let msg = thread_settings_applied_event(sess).await;
+            sess.send_event_raw(Event {
+                id: sub_id.clone(),
+                msg,
+            })
+            .await;
+            refresh_token_context_window_after_profile_switch(sess, sub_id).await;
+        }
+        Err(err) => {
+            let msg = EventMsg::Error(ErrorEvent {
+                message: format!("invalid auth profile override: {err}"),
+                codex_error_info: Some(CodexErrorInfo::BadRequest),
+            });
+            sess.send_event_raw(Event { id: sub_id, msg }).await;
+        }
+    }
+}
+
+async fn refresh_token_context_window_after_profile_switch(sess: &Arc<Session>, sub_id: String) {
+    let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
+    sess.refresh_token_context_window_for_profile_switch(&turn_context)
+        .await;
 }
 
 async fn thread_settings_update(

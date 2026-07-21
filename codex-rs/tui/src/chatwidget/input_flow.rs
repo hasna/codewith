@@ -113,9 +113,11 @@ impl ChatWidget {
             };
             match queued_message.action {
                 QueuedInputAction::Plain => {
+                    let shell_escape_policy = queued_message.shell_escape_policy;
                     submitted_follow_up = self.resubmit_queued_user_message_with_history_record(
                         queued_message.into_user_message(),
                         history_record,
+                        shell_escape_policy,
                     );
                     break;
                 }
@@ -141,7 +143,9 @@ impl ChatWidget {
     }
 
     pub(super) fn is_user_turn_pending_or_running(&self) -> bool {
-        self.input_queue.user_turn_pending_start || self.bottom_pane.is_task_running()
+        self.input_queue.user_turn_pending_start
+            || self.bottom_pane.is_task_running()
+            || self.automatic_usage_limit_reset_owns_failed_turn()
     }
 
     pub(super) fn only_user_shell_commands_running(&self) -> bool {

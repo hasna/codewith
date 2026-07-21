@@ -84,6 +84,9 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadExternalAgentMode;
+use codex_app_server_protocol::ThreadExternalAgentPermissionOption;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondResponse;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadExternalAgentStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -2281,6 +2284,30 @@ impl AppServerSession {
         Ok(response)
     }
 
+    pub(crate) async fn thread_external_agent_permission_respond(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        request_id: String,
+        decision: ThreadExternalAgentPermissionOption,
+    ) -> Result<ThreadExternalAgentPermissionRespondResponse> {
+        let request_message_id = self.next_request_id();
+        let response: ThreadExternalAgentPermissionRespondResponse = self
+            .client
+            .request_typed(ClientRequest::ThreadExternalAgentPermissionRespond {
+                request_id: request_message_id,
+                params: ThreadExternalAgentPermissionRespondParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    request_id,
+                    decision,
+                },
+            })
+            .await
+            .wrap_err("external-agent permission respond request failed")?;
+        Ok(response)
+    }
+
     pub(crate) async fn thread_approve_guardian_denied_action(
         &mut self,
         thread_id: ThreadId,
@@ -3178,11 +3205,13 @@ mod tests {
     #[test]
     fn app_server_rate_limit_snapshots_deduplicates_top_level_limit_from_map() {
         let response = GetAccountRateLimitsResponse {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
             rate_limits: rate_limit_snapshot("codex"),
             rate_limits_by_limit_id: Some(HashMap::from([
                 ("codex".to_string(), rate_limit_snapshot("codex")),
                 ("other".to_string(), rate_limit_snapshot("other")),
             ])),
+            rate_limit_reset_credits: None,
         };
 
         let snapshots = app_server_rate_limit_snapshots(response);

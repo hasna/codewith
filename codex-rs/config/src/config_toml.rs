@@ -29,6 +29,7 @@ use crate::types::SmartSuggestConfigToml;
 use crate::types::ToolSuggestConfig;
 use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
+use crate::types::UsageLimitToml;
 use crate::types::UsageSelfHealToml;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
@@ -354,6 +355,10 @@ pub struct ConfigToml {
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     #[serde(default)]
     pub usage_self_heal: Option<UsageSelfHealToml>,
+
+    /// Usage-limit reset behavior.
+    #[serde(default)]
+    pub usage_limit: Option<UsageLimitToml>,
 
     /// Lightweight recap generation for returning to interactive sessions.
     #[serde(default)]
@@ -734,9 +739,34 @@ pub struct RealtimeAudioToml {
     pub speaker: Option<String>,
 }
 
+/// Hardened tool-exposure policy for the model toolset.
+///
+/// Selecting a policy switches Codewith into a native AuthCapsule enforcement
+/// mode. This is a first-class configuration key so that a `--strict-config`
+/// launch accepts `-c tools.policy="infinity-agent"` (or `[tools] policy =
+/// "infinity-agent"`) instead of rejecting it as an unknown field.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolPolicy {
+    /// Default policy. Preserves the complete ordinary Codewith tool surface.
+    #[default]
+    Full,
+    /// Infinity subscription AuthCapsule policy. Removes host filesystem tools,
+    /// host shell tools, and auth-profile control from the model toolset and
+    /// mediates every surviving tool call through the protected remote-tool
+    /// bridge. See `Config::infinity_agent_policy` and the tool planner for
+    /// enforcement.
+    InfinityAgent,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ToolsToml {
+    /// Selects the tool-construction policy. The default preserves the complete
+    /// ordinary Codewith tool surface. `None`/`Some(ToolPolicy::Full)` preserve
+    /// default tool exposure; `Some(ToolPolicy::InfinityAgent)` selects the
+    /// Infinity AuthCapsule `infinity-agent` policy.
+    pub policy: Option<ToolPolicy>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_web_search_tool_config"

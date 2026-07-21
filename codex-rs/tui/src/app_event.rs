@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
@@ -23,6 +24,7 @@ use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::SkillsListResponse;
@@ -160,6 +162,12 @@ pub(crate) enum RateLimitRefreshOrigin {
     /// User-initiated via `/status`; the `request_id` correlates with the
     /// status card that should be updated when the fetch completes.
     StatusCommand { request_id: u64 },
+    /// A manual reset picker requested a fresh, exact credit list.
+    ResetPicker { generation: u64 },
+    /// A failed weekly-limited turn requested a fresh reset decision.
+    AutoResetCheck { generation: u64 },
+    /// A successful reset is being verified before a failed turn resumes.
+    PostReset { generation: u64 },
 }
 
 /// Selects which auth profile a rate-limit refresh should read.
@@ -171,6 +179,39 @@ pub(crate) enum RateLimitRefreshTarget {
     Root,
     /// Read limits for a saved named auth profile.
     Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RateLimitRefreshData {
+    pub(crate) account_identity_fingerprint: Option<String>,
+    pub(crate) snapshots: Vec<RateLimitSnapshot>,
+    pub(crate) reset_credits: Option<RateLimitResetCreditsSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RateLimitResetVerification {
+    LimitsOnly,
+    ExactCreditRedemption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RateLimitResetAttempt {
+    pub(crate) idempotency_key: String,
+    pub(crate) credit_id: String,
+    pub(crate) auth_profile: Option<String>,
+    pub(crate) account_identity_fingerprint: String,
+    pub(crate) generation: u64,
+    pub(crate) automatic: bool,
+    pub(crate) trigger_key: Option<String>,
+    pub(crate) retry_count: u8,
+    pub(crate) verification: RateLimitResetVerification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManualRateLimitResetAuthority {
+    pub(crate) generation: u64,
+    pub(crate) auth_profile: Option<String>,
+    pub(crate) account_identity_fingerprint: String,
 }
 
 impl RateLimitRefreshTarget {
@@ -370,6 +411,25 @@ pub(crate) enum AppEvent {
 
     /// Refresh cached usage for every auth profile that needs a heartbeat.
     RefreshAuthProfileUsageHeartbeats,
+
+    /// Open a confirmation prompt before consuming a usage-limit reset.
+    OpenRateLimitResetConfirm,
+
+    /// Consume one available usage-limit reset.
+    ConsumeRateLimitResetCredit {
+        attempt: RateLimitResetAttempt,
+    },
+
+    /// Revoke a manual reset picker after cancellation or dismissal.
+    CancelRateLimitResetCreditSelection {
+        generation: u64,
+    },
+
+    /// Result of consuming one available usage-limit reset.
+    RateLimitResetCreditConsumed {
+        attempt: RateLimitResetAttempt,
+        result: Result<ConsumeAccountRateLimitResetCreditResponse, String>,
+    },
 
     /// Refresh MiniMax Token Plan usage in the background.
     RefreshMiniMaxUsage {
@@ -869,7 +929,7 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         target: RateLimitRefreshTarget,
         auth_profile: Option<String>,
-        result: Result<Vec<RateLimitSnapshot>, String>,
+        result: Result<RateLimitRefreshData, String>,
     },
 
     /// Timer fired for a scheduled usage self-heal retry.
@@ -1249,46 +1309,56 @@ pub(crate) enum AppEvent {
         profile: Option<String>,
         reason: AuthProfileSwitchReason,
         resume_queued_input: bool,
+        reset_generation: u64,
     },
 
     /// Prompt for renaming a saved auth profile.
     OpenAuthProfileRenamePrompt {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Open settings for a saved auth profile.
     OpenAuthProfileSettings {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Prompt for confirming saved auth profile deletion.
     OpenAuthProfileDeleteConfirm {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Start ChatGPT relogin for a saved auth profile.
     ReloginAuthProfile {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Result of ChatGPT relogin for a saved auth profile.
     AuthProfileReloginFinished {
         profile: String,
         result: Result<(), String>,
+        reset_generation: u64,
     },
 
     /// Prompt for creating and logging in a new saved auth profile.
-    OpenAuthProfileLoginPrompt,
+    OpenAuthProfileLoginPrompt {
+        reset_generation: u64,
+    },
 
     /// Prompt for naming a new saved auth profile after a provider is selected.
     OpenAuthProfileNamePrompt {
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     },
 
     /// Start creating and logging in a new saved auth profile.
     LoginNewAuthProfile {
         profile: String,
         subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
     },
 
     /// A background new-profile login attempt completed.
@@ -1296,23 +1366,27 @@ pub(crate) enum AppEvent {
         profile: String,
         success: bool,
         error: Option<String>,
+        reset_generation: u64,
     },
 
     /// Rename a saved auth profile.
     RenameAuthProfile {
         old_name: String,
         new_name: String,
+        reset_generation: u64,
     },
 
     /// Delete a saved auth profile.
     DeleteAuthProfile {
         profile: String,
+        reset_generation: u64,
     },
 
     /// Move a saved auth profile within the manually ordered profile list.
     MoveAuthProfile {
         profile: String,
         direction: AuthProfileMoveDirection,
+        reset_generation: u64,
     },
 
     /// Update the current personality in the running app and widget.
@@ -1332,6 +1406,9 @@ pub(crate) enum AppEvent {
     OpenConfigSection {
         section: crate::common_config_options::CommonConfigSection,
     },
+
+    /// Open the agent subagent-thread-limit picker from the root config menu.
+    OpenAgentMaxThreadsMenu,
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
@@ -1728,6 +1805,54 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
     },
+}
+
+impl AppEvent {
+    /// Returns the usage-limit recovery generation that owns a profile workflow event.
+    ///
+    /// Every manual profile popup mutation, including popup continuations and background login
+    /// completions, must retain its originating generation so the app can reject it after reset
+    /// recovery starts or advances. `SwitchAuthProfile` keeps its separate reason-aware guard so
+    /// automatic fallback switches remain possible during recovery.
+    pub(crate) fn auth_profile_action_reset_generation(&self) -> Option<u64> {
+        match self {
+            Self::OpenAuthProfileRenamePrompt {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileSettings {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileDeleteConfirm {
+                reset_generation, ..
+            }
+            | Self::ReloginAuthProfile {
+                reset_generation, ..
+            }
+            | Self::AuthProfileReloginFinished {
+                reset_generation, ..
+            }
+            | Self::OpenAuthProfileLoginPrompt { reset_generation }
+            | Self::OpenAuthProfileNamePrompt {
+                reset_generation, ..
+            }
+            | Self::LoginNewAuthProfile {
+                reset_generation, ..
+            }
+            | Self::AuthProfileLoginCompleted {
+                reset_generation, ..
+            }
+            | Self::RenameAuthProfile {
+                reset_generation, ..
+            }
+            | Self::DeleteAuthProfile {
+                reset_generation, ..
+            }
+            | Self::MoveAuthProfile {
+                reset_generation, ..
+            } => Some(*reset_generation),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

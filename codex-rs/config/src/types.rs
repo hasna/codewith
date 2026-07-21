@@ -263,6 +263,14 @@ pub struct UsageSelfHealToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+pub struct UsageLimitToml {
+    /// When true, Codewith may consume one available reset credit after it confirms the weekly
+    /// usage limit is exhausted.
+    pub auto_reset_enabled: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct SessionRecapToml {
     /// Enables background session recaps in interactive TUI sessions.
     pub enabled: Option<bool>,

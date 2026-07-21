@@ -47,6 +47,10 @@ on:
         required: false
         default: false
         type: boolean
+      hosted_linux_preinstalled_tool_cleanup:
+        required: false
+        default: false
+        type: boolean
       archive_timeout_minutes:
         required: false
         default: 60
@@ -77,24 +81,28 @@ jobs:
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
       ARCHIVE_WORKSPACE_ROOT_ARTIFACT: nextest-archive-workspace-root-${{ inputs.artifact_id }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Free hosted runner disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
         shell: bash
         run: |
           set -euo pipefail
           df -h
-          sudo rm -rf \
-            /opt/ghc \
-            /opt/hostedtoolcache \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/share/dotnet
-          docker system prune -af --volumes || true
-          sudo apt-get clean || true
+          for path in /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet; do
+            case "${path}" in
+              /opt/ghc|/usr/local/lib/android|/usr/local/share/boost|/usr/share/dotnet) ;;
+              *)
+                echo "refusing to remove unexpected path: ${path}" >&2
+                exit 1
+                ;;
+            esac
+            if [[ -e "${path}" ]]; then
+              sudo rm -rf --one-file-system -- "${path}"
+            fi
+          done
           df -h
 
       - name: Configure Dev Drive (Windows)
@@ -164,7 +172,7 @@ jobs:
 
       - name: Restore cargo home cache
         id: cache_cargo_home_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -177,7 +185,7 @@ jobs:
 
       - name: Install sccache
         if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+        uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
         with:
           tool: sccache@0.7.5
 
@@ -214,7 +222,7 @@ jobs:
       - name: Restore sccache cache (fallback)
         if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
         id: cache_sccache_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
@@ -222,7 +230,7 @@ jobs:
             sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-
             sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-
 
-      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+      - uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
         with:
           tool: nextest@0.9.103
 
@@ -320,7 +328,7 @@ jobs:
       - name: Save cargo home cache
         if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -332,7 +340,7 @@ jobs:
       - name: Save sccache cache (fallback)
         if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
         continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
@@ -371,9 +379,29 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
+      - name: Free hosted runner disk space (Linux)
+        if: ${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && runner.environment == 'github-hosted' && runner.arch == 'X64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          for path in /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/share/dotnet; do
+            case "${path}" in
+              /opt/ghc|/usr/local/lib/android|/usr/local/share/boost|/usr/share/dotnet) ;;
+              *)
+                echo "refusing to remove unexpected path: ${path}" >&2
+                exit 1
+                ;;
+            esac
+            if [[ -e "${path}" ]]; then
+              sudo rm -rf --one-file-system -- "${path}"
+            fi
+          done
+          df -h
 
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
@@ -392,7 +420,7 @@ jobs:
         with:
           targets: ${{ inputs.target }}
 
-      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+      - uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
         with:
           tool: nextest@0.9.103
 

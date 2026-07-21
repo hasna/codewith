@@ -699,6 +699,8 @@ mod tests {
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            allowed_tool_policies: None,
+            infinity_agent_trust_key: None,
             allowed_approval_policies: Some(vec![AskForApproval::OnRequest.to_core()]),
             allowed_approvals_reviewers: Some(vec![ApprovalsReviewer::AutoReview]),
             allowed_sandbox_modes: Some(vec![SandboxModeRequirement::ReadOnly]),
@@ -971,6 +973,8 @@ approval_policy = "never"
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            allowed_tool_policies: None,
+            infinity_agent_trust_key: None,
             allowed_approval_policies: None,
             allowed_approvals_reviewers: None,
             allowed_sandbox_modes: None,

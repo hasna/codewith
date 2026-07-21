@@ -53,6 +53,7 @@ use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_image_generation_tool;
 use crate::tools::hosted_spec::create_web_search_tool;
+use crate::tools::policy::PolicyMode;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -95,7 +96,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
-const IMAGE_GEN_NAMESPACE: &str = "image_gen";
+const IMAGE_GEN_NAMESPACE: &str = "images";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;
@@ -158,8 +159,123 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     params: ToolRouterParams<'_>,
 ) -> ToolRouter {
+    if turn_context.config.is_infinity_agent() {
+        return build_infinity_agent_tool_router(turn_context, params)
+            .unwrap_or_else(ToolRouter::from_policy_error);
+    }
     let (model_visible_specs, registry) = build_tool_specs_and_registry(turn_context, params);
     ToolRouter::from_parts(registry, model_visible_specs)
+}
+
+fn build_infinity_agent_tool_router(
+    turn_context: &TurnContext,
+    params: ToolRouterParams<'_>,
+) -> Result<ToolRouter, String> {
+    let policy = turn_context
+        .config
+        .infinity_agent_policy
+        .as_ref()
+        .ok_or_else(|| "Infinity Agent tool planning has no verified process policy".to_string())?;
+    policy
+        .ensure_active(chrono::Utc::now())
+        .map_err(|error| error.to_string())?;
+    if !namespace_tools_enabled(turn_context) {
+        return Err("Infinity Agent requires a provider with namespace-tool support".to_string());
+    }
+    let ToolRouterParams {
+        mcp_tools,
+        deferred_mcp_tools,
+        discoverable_tools,
+        extension_tool_executors,
+        dynamic_tools,
+    } = params;
+    if discoverable_tools
+        .as_ref()
+        .is_some_and(|tools| !tools.is_empty())
+        || !extension_tool_executors.is_empty()
+    {
+        return Err(
+            "Infinity Agent tool planning received a forbidden extension or discoverable source"
+                .to_string(),
+        );
+    }
+
+    let direct_mcp = mcp_tools.unwrap_or_default();
+    let deferred_mcp = deferred_mcp_tools.unwrap_or_default();
+    let mut planned_tools = PlannedTools::default();
+    match policy.mode() {
+        PolicyMode::DynamicCliOnly => {
+            if !direct_mcp.is_empty() || !deferred_mcp.is_empty() {
+                return Err(
+                    "dynamic-cli-only Infinity Agent policy received an MCP runtime".to_string(),
+                );
+            }
+            policy
+                .validate_dynamic_manifest(dynamic_tools)
+                .map_err(|error| error.to_string())?;
+            for tool in dynamic_tools {
+                let handler = DynamicToolHandler::new(tool).ok_or_else(|| {
+                    format!("failed to construct signed dynamic tool `{}`", tool.name)
+                })?;
+                planned_tools.add(handler);
+            }
+        }
+        PolicyMode::McpOnly => {
+            if !dynamic_tools.is_empty() {
+                return Err("mcp-only Infinity Agent policy received a dynamic runtime".to_string());
+            }
+            let all_mcp = direct_mcp
+                .iter()
+                .chain(deferred_mcp.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            policy
+                .validate_mcp_manifest(&all_mcp)
+                .map_err(|error| error.to_string())?;
+            for tool in all_mcp {
+                let handler = McpHandler::new_infinity_agent_serial(tool).map_err(|error| {
+                    format!("failed to construct signed MCP tool runtime: {error}")
+                })?;
+                // The restricted route has no tool search. A tool that arrived
+                // through an ordinary deferred bucket is deliberately made
+                // direct only after the exact signed manifest check above.
+                planned_tools.add(handler);
+            }
+        }
+    }
+
+    let mut registered_names = planned_tools
+        .runtimes()
+        .iter()
+        .map(|runtime| runtime.tool_name())
+        .collect::<Vec<_>>();
+    registered_names.sort();
+    if registered_names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("Infinity Agent registered duplicate tool names".to_string());
+    }
+    let allowed_names = policy.allowed_tool_names();
+    if registered_names != allowed_names {
+        return Err(
+            "Infinity Agent registered tool names do not equal the signed allowlist".to_string(),
+        );
+    }
+    let (model_visible_specs, registry) =
+        build_model_visible_specs_and_registry(turn_context, planned_tools);
+    let visible_names = policy
+        .validate_model_visible_manifest(&model_visible_specs)
+        .map_err(|error| error.to_string())?;
+    tracing::info!(
+        target: "codex_core::tools::policy",
+        policy_digest = policy.digest(),
+        visible_tools = ?visible_names,
+        registered_tools = ?registered_names,
+        "planned exact Infinity Agent tool allowlist"
+    );
+    Ok(ToolRouter::from_infinity_policy(
+        registry,
+        model_visible_specs,
+        Arc::clone(policy),
+    ))
 }
 
 fn build_tool_specs_and_registry(
@@ -196,6 +312,13 @@ fn build_model_visible_specs_and_registry(
     turn_context: &TurnContext,
     planned_tools: PlannedTools,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
+    // NOTE: the Infinity Agent (`tools.policy = "infinity-agent"`) toolset is now
+    // built exclusively by `build_infinity_agent_tool_router`, which reduces the
+    // model toolset to the exact signed `VerifiedToolPolicy` allowlist and routes
+    // every surviving call through the protected remote-tool bridge. This helper
+    // therefore must NOT re-filter its inputs: for the Infinity path it receives
+    // the already-exact planned tools, and for the ordinary path there is nothing
+    // to reduce.
     let PlannedTools {
         runtimes,
         hosted_specs,
@@ -208,8 +331,7 @@ fn build_model_visible_specs_and_registry(
             continue;
         }
         let exposure = runtime.exposure();
-        if exposure.is_direct() && !is_hidden_by_code_mode_only(turn_context, &tool_name, exposure)
-        {
+        if exposure.is_direct() && !is_hidden_by_code_mode(turn_context, &tool_name, exposure) {
             let spec = runtime.spec();
             specs.push(spec_for_model_request(
                 turn_context,
@@ -364,25 +486,49 @@ fn image_generation_runtime_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool {
-    if !image_generation_runtime_enabled(turn_context) || !namespace_tools_enabled(turn_context) {
-        return false;
-    }
-
-    if turn_context.model_info.use_responses_lite {
-        return true;
-    }
-
-    turn_context.features.get().enabled(Feature::ImageGenExt)
+    standalone_image_generation_runtime_available(turn_context)
+        && turn_context.model_info.use_responses_lite
 }
 
 fn standalone_image_generation_available(
     turn_context: &TurnContext,
     extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
 ) -> bool {
-    standalone_image_generation_model_visible(turn_context)
+    if image_generation_excluded_from_code_mode(turn_context) {
+        return false;
+    }
+
+    standalone_image_generation_extension_registerable(turn_context)
         && extension_tools.iter().any(|executor| {
             executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
         })
+}
+
+fn standalone_image_generation_runtime_available(turn_context: &TurnContext) -> bool {
+    image_generation_runtime_enabled(turn_context)
+        && namespace_tools_enabled(turn_context)
+        && turn_context.features.get().enabled(Feature::ImageGenExt)
+}
+
+fn standalone_image_generation_extension_registerable(turn_context: &TurnContext) -> bool {
+    standalone_image_generation_model_visible(turn_context)
+        || (standalone_image_generation_runtime_available(turn_context)
+            && matches!(
+                turn_context.tool_mode,
+                ToolMode::CodeMode | ToolMode::CodeModeOnly
+            ))
+}
+
+fn image_generation_excluded_from_code_mode(turn_context: &TurnContext) -> bool {
+    matches!(
+        turn_context.tool_mode,
+        ToolMode::CodeMode | ToolMode::CodeModeOnly
+    ) && turn_context
+        .config
+        .code_mode
+        .excluded_tool_namespaces
+        .iter()
+        .any(|namespace| namespace == IMAGE_GEN_NAMESPACE)
 }
 
 fn wait_agent_timeout_options(turn_context: &TurnContext) -> WaitAgentTimeoutOptions {
@@ -423,16 +569,25 @@ fn agent_type_description(
     }
 }
 
-fn is_hidden_by_code_mode_only(
+fn is_hidden_by_code_mode(
     turn_context: &TurnContext,
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
-    turn_context.tool_mode == ToolMode::CodeModeOnly
-        && exposure != ToolExposure::DirectModelOnly
-        && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
-            tool_name,
-        ))
+    if exposure == ToolExposure::DirectModelOnly {
+        return false;
+    }
+
+    match turn_context.tool_mode {
+        ToolMode::CodeMode => {
+            tool_name == &ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+                && standalone_image_generation_extension_registerable(turn_context)
+        }
+        ToolMode::CodeModeOnly => codex_code_mode::is_code_mode_nested_tool(
+            &codex_tools::code_mode_name_for_tool_name(tool_name),
+        ),
+        ToolMode::Direct => false,
+    }
 }
 
 fn is_excluded_from_code_mode(turn_context: &TurnContext, tool_name: &ToolName) -> bool {
@@ -597,8 +752,52 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
                 .enabled(Feature::StandaloneWebSearch))
 }
 
+/// True when the hardened `infinity-agent` AuthCapsule tool policy is active.
+///
+/// Under this policy the model gets no host filesystem tools, no host shell
+/// tools, and no auth-profile control; surviving tool calls are mediated by the
+/// protected remote-tool bridge.
+fn infinity_agent_policy_active(turn_context: &TurnContext) -> bool {
+    matches!(
+        turn_context.config.tools_policy,
+        Some(codex_config::config_toml::ToolPolicy::InfinityAgent)
+    )
+}
+
+/// LEGACY / VESTIGIAL — no longer an enforcement boundary.
+///
+/// This 2-element list was the old (pre-unification) infinity-agent allowlist,
+/// applied as a post-filter in `build_model_visible_specs_and_registry`. That
+/// enforcement model has been REPLACED: the `infinity-agent` policy is now
+/// enforced exclusively by the signed [`crate::tools::policy::VerifiedToolPolicy`]
+/// via [`build_infinity_agent_tool_router`] (tool planning) and the router's
+/// dispatch-time recheck. The authoritative admission allowlist is
+/// `INFINITY_AGENT_PUBLIC_TOOL_NAMES` in `crate::tools::policy` (enforced in
+/// `validate_payload`), NOT this constant. This item is retained only so the
+/// legacy `infinity_agent_allowlist_excludes_host_access` regression test keeps
+/// documenting host-tool exclusion; it participates in no runtime enforcement
+/// path. Do not treat it as a security boundary.
+#[cfg(test)]
+const INFINITY_AGENT_TOOL_ALLOWLIST: &[&str] = &["update_plan", "rename_session"];
+
+/// LEGACY helper for the vestigial [`INFINITY_AGENT_TOOL_ALLOWLIST`]. Not used by
+/// any runtime enforcement path; see that constant's note. Real admission is
+/// decided by `VerifiedToolPolicy` in `crate::tools::policy`.
+#[cfg(test)]
+fn infinity_agent_tool_allowed(tool_name: &ToolName) -> bool {
+    tool_name.namespace.is_none()
+        && INFINITY_AGENT_TOOL_ALLOWLIST.contains(&tool_name.name.as_str())
+}
+
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.turn_context;
+    // The infinity-agent AuthCapsule policy removes every host shell tool
+    // (exec_command, write_stdin, shell_command). Because there is no native
+    // read_file/grep tool, this also removes the model's only host-filesystem
+    // read path via the shell. Effects must go through the remote-tool bridge.
+    if infinity_agent_policy_active(turn_context) {
+        return;
+    }
     let features = turn_context.features.get();
     let environment_mode = turn_context.tool_environment_mode();
     if !environment_mode.has_environment() {
@@ -663,8 +862,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
     planned_tools.add(RenameSessionHandler);
-    planned_tools.add(ManageAuthProfilesHandler);
-    planned_tools.add(GetUsageHandler);
+    // Auth-profile control is forbidden under the infinity-agent policy: the
+    // model may not list, inspect usage of, or switch credential profiles.
+    if !infinity_agent_policy_active(turn_context) {
+        planned_tools.add(ManageAuthProfilesHandler);
+        planned_tools.add(GetUsageHandler);
+    }
     if loop_tools_enabled(turn_context) {
         planned_tools.add(ManageLoopHandler);
         planned_tools.add(ManageMonitorHandler);
@@ -693,7 +896,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
+    if environment_mode.has_environment()
+        && turn_context.model_info.apply_patch_tool_type.is_some()
+        && !infinity_agent_policy_active(turn_context)
     {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ApplyPatchHandler::new(include_environment_id));
@@ -708,7 +913,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add(TestSyncHandler);
     }
 
-    if environment_mode.has_environment() {
+    if environment_mode.has_environment() && !infinity_agent_policy_active(turn_context) {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(
@@ -936,7 +1141,8 @@ fn append_extension_tool_executors(
             continue;
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
-            && !standalone_image_generation_model_visible(turn_context)
+            && (!standalone_image_generation_extension_registerable(turn_context)
+                || image_generation_excluded_from_code_mode(turn_context))
         {
             continue;
         }

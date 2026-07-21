@@ -53,6 +53,8 @@ struct UsagePanelData {
     status: StatusPanelData,
     account_limits_supported: bool,
     rate_limit_state: UsagePanelRateLimitState,
+    reset_credits_available: Option<i64>,
+    usage_limit_auto_reset_enabled: bool,
     minimax_usage_state: Option<UsagePanelMiniMaxUsageState>,
 }
 
@@ -168,6 +170,11 @@ impl ChatWidget {
             status: self.status_panel_data(),
             account_limits_supported: self.should_prefetch_rate_limits(),
             rate_limit_state: self.usage_panel_rate_limit_state.clone(),
+            reset_credits_available: self
+                .rate_limit_reset_credits
+                .as_ref()
+                .map(|credits| credits.available_count.max(0)),
+            usage_limit_auto_reset_enabled: self.config.usage_limit.auto_reset_enabled,
             minimax_usage_state: self
                 .is_minimax_provider_active_for_usage_panel()
                 .then(|| self.usage_panel_minimax_usage_state.clone()),
@@ -247,6 +254,7 @@ fn usage_items(data: &UsagePanelData) -> Vec<SelectionItem> {
         ),
     ));
     items.extend(rate_limit_items(data));
+    items.extend(rate_limit_reset_items(data));
     if let Some(minimax_state) = data.minimax_usage_state.as_ref() {
         items.extend(minimax_usage_items(minimax_state));
     }
@@ -314,6 +322,44 @@ fn rate_limit_items(data: &UsagePanelData) -> Vec<SelectionItem> {
         UsagePanelRateLimitState::Idle => {}
     }
     items
+}
+
+fn rate_limit_reset_items(data: &UsagePanelData) -> Vec<SelectionItem> {
+    if !data.account_limits_supported {
+        return Vec::new();
+    }
+
+    let auto_reset = if data.usage_limit_auto_reset_enabled {
+        "auto on"
+    } else {
+        "auto off"
+    };
+
+    match data.reset_credits_available {
+        Some(count) if count > 0 => {
+            let actions: Vec<SelectionAction> = vec![Box::new(|tx| {
+                tx.send(AppEvent::OpenRateLimitResetConfirm);
+            })];
+            vec![SelectionItem {
+                name: "Usage reset".to_string(),
+                description: Some(format!(
+                    "{count} {} available · {auto_reset}",
+                    super::usage_limit_reset::reset_label(count)
+                )),
+                actions,
+                dismiss_on_select: false,
+                ..Default::default()
+            }]
+        }
+        Some(_) => vec![info_row(
+            "Usage reset",
+            format!("no usage limit resets available · {auto_reset}"),
+        )],
+        None => vec![info_row(
+            "Usage reset",
+            format!("availability unknown until limits refresh · {auto_reset}"),
+        )],
+    }
 }
 
 fn minimax_usage_items(state: &UsagePanelMiniMaxUsageState) -> Vec<SelectionItem> {
@@ -445,12 +491,15 @@ mod tests {
             status: sample_status(),
             account_limits_supported: true,
             rate_limit_state: UsagePanelRateLimitState::Idle,
+            reset_credits_available: None,
+            usage_limit_auto_reset_enabled: false,
             minimax_usage_state: None,
         });
         let items = &params.tabs[0].items;
 
         assert!(items.iter().any(|item| item.name == "Context"));
         assert!(items.iter().any(|item| item.name == "5h limit"));
+        assert!(items.iter().any(|item| item.name == "Usage reset"));
         let refresh = items
             .iter()
             .find(|item| item.name == "Refresh")
@@ -471,6 +520,8 @@ mod tests {
             status,
             account_limits_supported: false,
             rate_limit_state: UsagePanelRateLimitState::Idle,
+            reset_credits_available: Some(2),
+            usage_limit_auto_reset_enabled: true,
             minimax_usage_state: None,
         });
         let account_limits = params.tabs[0]
@@ -490,5 +541,35 @@ mod tests {
                 .any(|item| item.name == "5h limit"),
             "/usage should ignore stale cached ChatGPT limits when account limits are unsupported"
         );
+        assert!(
+            !params.tabs[0]
+                .items
+                .iter()
+                .any(|item| item.name == "Usage reset"),
+            "/usage should hide reset controls when account limits are unsupported"
+        );
+    }
+
+    #[test]
+    fn usage_panel_exposes_available_reset_action() {
+        let params = build_usage_panel_params(UsagePanelData {
+            status: sample_status(),
+            account_limits_supported: true,
+            rate_limit_state: UsagePanelRateLimitState::Idle,
+            reset_credits_available: Some(4),
+            usage_limit_auto_reset_enabled: true,
+            minimax_usage_state: None,
+        });
+
+        let reset = params.tabs[0]
+            .items
+            .iter()
+            .find(|item| item.name == "Usage reset")
+            .expect("usage reset row");
+        assert_eq!(
+            reset.description.as_deref(),
+            Some("4 usage limit resets available · auto on")
+        );
+        assert!(!reset.actions.is_empty());
     }
 }

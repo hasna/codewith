@@ -49,6 +49,11 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "MachineRegistryRedaction",
     "MachineRegistrySourceKind",
     "MachineRegistryTrustState",
+    "PullRequest",
+    "PullRequestOverview",
+    "PullRequestQueryState",
+    "PullRequestReviewDecision",
+    "PullRequestState",
     "ThreadMailboxClaim",
     "ThreadMailboxDeliveryAttempt",
     "ThreadMailboxFailDisposition",
@@ -90,6 +95,7 @@ const FLAT_V2_SHARED_DEFINITIONS: &[&str] = &["ClientRequest", "ServerNotificati
 const V1_CLIENT_REQUEST_METHODS: &[&str] =
     &["getConversationSummary", "gitDiffToRemote", "getAuthStatus"];
 const EXCLUDED_SERVER_NOTIFICATION_METHODS_FOR_JSON: &[&str] = &["rawResponseItem/completed"];
+const JSON_SCHEMA_DEFINITION_KEYS: &[&str] = &["definitions", "$defs"];
 
 #[derive(Clone)]
 pub struct GeneratedSchema {
@@ -465,11 +471,31 @@ fn filter_experimental_fields_in_definitions(
     bundle: &mut Value,
     experimental_fields: &[&'static crate::experimental_api::ExperimentalField],
 ) {
-    let Some(definitions) = bundle.get_mut("definitions").and_then(Value::as_object_mut) else {
-        return;
-    };
+    filter_experimental_fields_in_definition_containers(bundle, experimental_fields);
+}
 
-    filter_experimental_fields_in_definitions_map(definitions, experimental_fields);
+fn filter_experimental_fields_in_definition_containers(
+    value: &mut Value,
+    experimental_fields: &[&'static crate::experimental_api::ExperimentalField],
+) {
+    match value {
+        Value::Object(map) => {
+            for defs_key in JSON_SCHEMA_DEFINITION_KEYS {
+                if let Some(definitions) = map.get_mut(*defs_key).and_then(Value::as_object_mut) {
+                    filter_experimental_fields_in_definitions_map(definitions, experimental_fields);
+                }
+            }
+            for child in map.values_mut() {
+                filter_experimental_fields_in_definition_containers(child, experimental_fields);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                filter_experimental_fields_in_definition_containers(child, experimental_fields);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn filter_experimental_fields_in_definitions_map(
@@ -654,10 +680,31 @@ fn remove_generated_type_entries(
 
 fn remove_experimental_method_type_definitions(bundle: &mut Value) {
     let type_names = experimental_method_types();
-    let Some(definitions) = bundle.get_mut("definitions").and_then(Value::as_object_mut) else {
-        return;
-    };
-    remove_experimental_method_type_definitions_map(definitions, &type_names);
+    remove_experimental_method_type_definition_containers(bundle, &type_names);
+}
+
+fn remove_experimental_method_type_definition_containers(
+    value: &mut Value,
+    type_names: &HashSet<String>,
+) {
+    match value {
+        Value::Object(map) => {
+            for defs_key in JSON_SCHEMA_DEFINITION_KEYS {
+                if let Some(definitions) = map.get_mut(*defs_key).and_then(Value::as_object_mut) {
+                    remove_experimental_method_type_definitions_map(definitions, type_names);
+                }
+            }
+            for child in map.values_mut() {
+                remove_experimental_method_type_definition_containers(child, type_names);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                remove_experimental_method_type_definition_containers(child, type_names);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn remove_experimental_method_type_definitions_map(
@@ -1040,37 +1087,37 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
         }
 
         let mut forced_namespace_refs: Vec<(String, String)> = Vec::new();
-        if let Value::Object(ref mut obj) = value
-            && let Some(defs) = obj.remove("definitions")
-            && let Value::Object(defs_obj) = defs
-        {
-            for (def_name, mut def_schema) in defs_obj {
-                if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
-                    continue;
+        for (def_name, mut def_schema) in take_local_definitions(&mut value) {
+            if IGNORED_DEFINITIONS.contains(&def_name.as_str()) {
+                continue;
+            }
+            if SPECIAL_DEFINITIONS.contains(&def_name.as_str()) {
+                continue;
+            }
+            annotate_schema(&mut def_schema, Some(def_name.as_str()));
+            let target_namespace = match namespace {
+                Some(ref ns) => Some(ns.clone()),
+                None => namespace_for_definition(&def_name, &namespaced_types)
+                    .cloned()
+                    .filter(|_| !in_v1_dir),
+            };
+            if let Some(ref ns) = target_namespace {
+                if namespace.as_deref() == Some(ns.as_str()) {
+                    rewrite_refs_to_namespace(&mut def_schema, ns);
+                    insert_into_namespace(&mut definitions, ns, def_name.clone(), def_schema)?;
+                } else if !forced_namespace_refs
+                    .iter()
+                    .any(|(name, existing_ns)| name == &def_name && existing_ns == ns)
+                {
+                    forced_namespace_refs.push((def_name.clone(), ns.clone()));
                 }
-                if SPECIAL_DEFINITIONS.contains(&def_name.as_str()) {
-                    continue;
-                }
-                annotate_schema(&mut def_schema, Some(def_name.as_str()));
-                let target_namespace = match namespace {
-                    Some(ref ns) => Some(ns.clone()),
-                    None => namespace_for_definition(&def_name, &namespaced_types)
-                        .cloned()
-                        .filter(|_| !in_v1_dir),
-                };
-                if let Some(ref ns) = target_namespace {
-                    if namespace.as_deref() == Some(ns.as_str()) {
-                        rewrite_refs_to_namespace(&mut def_schema, ns);
-                        insert_into_namespace(&mut definitions, ns, def_name.clone(), def_schema)?;
-                    } else if !forced_namespace_refs
-                        .iter()
-                        .any(|(name, existing_ns)| name == &def_name && existing_ns == ns)
-                    {
-                        forced_namespace_refs.push((def_name.clone(), ns.clone()));
-                    }
-                } else {
-                    definitions.insert(def_name, def_schema);
-                }
+            } else {
+                insert_definition(
+                    &mut definitions,
+                    def_name.clone(),
+                    def_schema,
+                    "bundle root",
+                )?;
             }
         }
 
@@ -1098,6 +1145,22 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("definitions".to_string(), Value::Object(definitions));
 
     Ok(Value::Object(root))
+}
+
+fn take_local_definitions(value: &mut Value) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    let Value::Object(obj) = value else {
+        return out;
+    };
+    for defs_key in JSON_SCHEMA_DEFINITION_KEYS {
+        let Some(defs) = obj.remove(*defs_key) else {
+            continue;
+        };
+        if let Value::Object(defs_obj) = defs {
+            out.extend(defs_obj);
+        }
+    }
+    out
 }
 
 /// Build a datamodel-code-generator-friendly v2 bundle from the mixed export.
@@ -1172,8 +1235,9 @@ fn collect_non_v2_refs_inner(value: &Value, refs: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
+                && let Some(name) = local_definition_ref_suffix(reference)
                 && !reference.starts_with("#/definitions/v2/")
+                && !reference.starts_with("#/$defs/v2/")
             {
                 refs.insert(name.to_string());
             }
@@ -1429,12 +1493,14 @@ fn strip_method_variants_from_json_schema(schema: &mut Value, methods_to_remove:
         variants.retain(|variant| !is_method_variant_in_set(variant, methods_to_remove));
     }
 
-    let reachable = reachable_local_definitions(schema, "definitions");
-    let Some(root) = schema.as_object_mut() else {
-        return;
-    };
-    if let Some(definitions) = root.get_mut("definitions").and_then(Value::as_object_mut) {
-        definitions.retain(|name, _| reachable.contains(name));
+    for defs_key in JSON_SCHEMA_DEFINITION_KEYS {
+        let reachable = reachable_local_definitions(schema, defs_key);
+        let Some(root) = schema.as_object_mut() else {
+            return;
+        };
+        if let Some(definitions) = root.get_mut(*defs_key).and_then(Value::as_object_mut) {
+            definitions.retain(|name, _| reachable.contains(name));
+        }
     }
 }
 
@@ -1577,13 +1643,13 @@ fn split_namespace(name: &str) -> (Option<&str>, &str) {
         .map_or((None, name), |(ns, rest)| (Some(ns), rest))
 }
 
-/// Recursively rewrite $ref values that point at "#/definitions/..." so that
+/// Recursively rewrite $ref values that point at local definitions so that
 /// they point to a namespaced location under the bundle.
 fn rewrite_refs_to_namespace(value: &mut Value, ns: &str) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(r)) = obj.get_mut("$ref")
-                && let Some(suffix) = r.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(r)
             {
                 let prefix = format!("{ns}/");
                 if !suffix.starts_with(&prefix) {
@@ -1608,7 +1674,8 @@ fn rewrite_refs_to_namespace(value: &mut Value, ns: &str) {
 ///
 /// The mixed export contains shared root helper schemas that are intentionally
 /// left outside the `v2` namespace, but some of their extracted child
-/// definitions still contain refs like `#/definitions/ThreadId`. When the real
+/// definitions still contain refs like `#/definitions/ThreadId` or
+/// `#/$defs/ThreadId`. When the real
 /// schema only exists under `#/definitions/v2/ThreadId`, those refs become
 /// dangling and downstream codegen falls back to placeholder `Any` models. This
 /// rewrite keeps the shared helpers at the root while retargeting their refs to
@@ -1617,7 +1684,7 @@ fn rewrite_refs_to_known_namespaces(value: &mut Value, types: &HashMap<String, S
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref")
-                && let Some(suffix) = reference.strip_prefix("#/definitions/")
+                && let Some(suffix) = local_definition_ref_suffix(reference)
             {
                 let (name, tail) = suffix
                     .split_once('/')
@@ -1625,6 +1692,8 @@ fn rewrite_refs_to_known_namespaces(value: &mut Value, types: &HashMap<String, S
                 if let Some(ns) = namespace_for_definition(name, types) {
                     let tail = tail.map_or(String::new(), |rest| format!("/{rest}"));
                     *reference = format!("#/definitions/{ns}/{name}{tail}");
+                } else if reference.starts_with("#/$defs/") {
+                    *reference = format!("#/definitions/{suffix}");
                 }
             }
             for v in obj.values_mut() {
@@ -1935,14 +2004,18 @@ fn ensure_dir(dir: &Path) -> Result<()> {
 fn rewrite_named_ref_to_namespace(value: &mut Value, ns: &str, name: &str) {
     let direct = format!("#/definitions/{name}");
     let prefixed = format!("{direct}/");
+    let direct_defs = format!("#/$defs/{name}");
+    let prefixed_defs = format!("{direct_defs}/");
     let replacement = format!("#/definitions/{ns}/{name}");
     let replacement_prefixed = format!("{replacement}/");
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get_mut("$ref") {
-                if reference == &direct {
+                if reference == &direct || reference == &direct_defs {
                     *reference = replacement;
                 } else if let Some(rest) = reference.strip_prefix(&prefixed) {
+                    *reference = format!("{replacement_prefixed}{rest}");
+                } else if let Some(rest) = reference.strip_prefix(&prefixed_defs) {
                     *reference = format!("{replacement_prefixed}{rest}");
                 }
             }
@@ -1957,6 +2030,12 @@ fn rewrite_named_ref_to_namespace(value: &mut Value, ns: &str, name: &str) {
         }
         _ => {}
     }
+}
+
+fn local_definition_ref_suffix(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/definitions/")
+        .or_else(|| reference.strip_prefix("#/$defs/"))
 }
 
 fn prepend_header_if_missing(path: &Path) -> Result<()> {
@@ -2513,6 +2592,121 @@ mod tests {
     }
 
     #[test]
+    fn build_schema_bundle_rewrites_dollar_defs_refs_to_bundle_definitions() -> Result<()> {
+        let bundle = build_schema_bundle(vec![
+            GeneratedSchema {
+                namespace: None,
+                logical_name: "LegacyEnvelope".to_string(),
+                in_v1_dir: false,
+                value: serde_json::json!({
+                    "title": "LegacyEnvelope",
+                    "type": "object",
+                    "properties": {
+                        "current_thread": { "$ref": "#/$defs/ThreadId" },
+                        "turn_item": { "$ref": "#/$defs/TurnItem" }
+                    },
+                    "$defs": {
+                        "TurnItem": {
+                            "type": "object",
+                            "properties": {
+                                "thread_id": { "$ref": "#/$defs/ThreadId" },
+                                "phase": { "$ref": "#/$defs/MessagePhase" }
+                            }
+                        }
+                    }
+                }),
+            },
+            GeneratedSchema {
+                namespace: Some("v2".to_string()),
+                logical_name: "ThreadId".to_string(),
+                in_v1_dir: false,
+                value: serde_json::json!({
+                    "title": "ThreadId",
+                    "type": "string"
+                }),
+            },
+            GeneratedSchema {
+                namespace: Some("v2".to_string()),
+                logical_name: "MessagePhase".to_string(),
+                in_v1_dir: false,
+                value: serde_json::json!({
+                    "title": "MessagePhase",
+                    "type": "string"
+                }),
+            },
+        ])?;
+
+        assert_eq!(serde_json::to_string(&bundle)?.contains("#/$defs/"), false);
+        assert_eq!(serde_json::to_string(&bundle)?.contains("\"$defs\""), false);
+        assert_eq!(
+            bundle["definitions"]["LegacyEnvelope"]["properties"]["current_thread"]["$ref"],
+            serde_json::json!("#/definitions/v2/ThreadId")
+        );
+        assert_eq!(
+            bundle["definitions"]["LegacyEnvelope"]["properties"]["turn_item"]["$ref"],
+            serde_json::json!("#/definitions/TurnItem")
+        );
+        assert_eq!(
+            bundle["definitions"]["TurnItem"]["properties"]["thread_id"]["$ref"],
+            serde_json::json!("#/definitions/v2/ThreadId")
+        );
+        assert_eq!(
+            bundle["definitions"]["TurnItem"]["properties"]["phase"]["$ref"],
+            serde_json::json!("#/definitions/v2/MessagePhase")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn stable_schema_filter_handles_dollar_defs_containers() -> Result<()> {
+        let mut bundle = serde_json::json!({
+            "$defs": {
+                "v2": {
+                    "ThreadStartParams": {
+                        "type": "object",
+                        "properties": {
+                            "cwd": { "type": "string" },
+                            "mockExperimentalField": { "type": "string" }
+                        },
+                        "required": ["cwd", "mockExperimentalField"]
+                    },
+                    "MockExperimentalMethodParams": {
+                        "type": "object"
+                    }
+                }
+            }
+        });
+
+        filter_experimental_schema(&mut bundle)?;
+
+        let thread_start = &bundle["$defs"]["v2"]["ThreadStartParams"];
+        assert_eq!(
+            thread_start["properties"]
+                .as_object()
+                .expect("ThreadStartParams should have properties")
+                .contains_key("mockExperimentalField"),
+            false
+        );
+        assert_eq!(
+            thread_start["required"]
+                .as_array()
+                .expect("ThreadStartParams should have required fields")
+                .contains(&serde_json::json!("mockExperimentalField")),
+            false
+        );
+        assert_eq!(
+            bundle["$defs"]["v2"]
+                .as_object()
+                .expect("v2 definitions should remain an object")
+                .contains_key("MockExperimentalMethodParams"),
+            false
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn build_flat_v2_schema_keeps_shared_root_schemas_and_dependencies() -> Result<()> {
         let bundle = serde_json::json!({
             "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2917,11 +3111,7 @@ permissionProfile?: string | null};
             .expect("flat v2 ClientRequest should remain a oneOf")
             .iter()
             .filter_map(|variant| {
-                variant["properties"]["method"]["enum"]
-                    .as_array()
-                    .and_then(|values| values.first())
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                string_literal(&variant["properties"]["method"]).map(str::to_string)
             })
             .collect();
         let missing_client_request_methods: Vec<String> = [
@@ -2943,11 +3133,7 @@ permissionProfile?: string | null};
                 .expect("flat v2 ServerNotification should remain a oneOf")
                 .iter()
                 .filter_map(|variant| {
-                    variant["properties"]["method"]["enum"]
-                        .as_array()
-                        .and_then(|values| values.first())
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
+                    string_literal(&variant["properties"]["method"]).map(str::to_string)
                 })
                 .collect();
         let missing_server_notification_methods: Vec<String> = [

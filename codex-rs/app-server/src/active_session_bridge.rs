@@ -218,16 +218,15 @@ impl ActiveChannelRouter {
                     )
                     .await
                 {
-                    Ok(()) => {
-                        if envelope.delivery.trigger_turn() {
-                            // Durable mailbox dispatch acks after this method returns, so make
-                            // the first wake attempt before releasing the unload serialization.
-                            let _ = target_thread.maybe_start_turn_for_pending_work().await;
-                        }
-                        Ok(ActiveChannelDeliveryOutcome::Delivered {
-                            message_id: envelope.message_id.clone(),
-                        })
-                    }
+                    // Only enqueue here. The durable mailbox dispatcher must ack the
+                    // claim before any pending-work wake fires; waking now (before the
+                    // ack) risks the target draining the item into model-visible context
+                    // while the durable row is still claimable, so a crash or ack failure
+                    // could redeliver the same message. The dispatcher wakes the target
+                    // after a successful ack instead (see dispatch_claim).
+                    Ok(()) => Ok(ActiveChannelDeliveryOutcome::Delivered {
+                        message_id: envelope.message_id.clone(),
+                    }),
                     Err(CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied) => {
                         Ok(ActiveChannelDeliveryOutcome::NotLoaded {
                             recipient_id: recipient.peer_id.clone(),

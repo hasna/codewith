@@ -1,13 +1,12 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::InstanceType;
-use schemars::schema::Metadata;
-use schemars::schema::Schema;
-use schemars::schema::SchemaObject;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -172,8 +171,8 @@ pub enum ApprovalsReviewer {
 }
 
 impl JsonSchema for ApprovalsReviewer {
-    fn schema_name() -> String {
-        "ApprovalsReviewer".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        "ApprovalsReviewer".into()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -244,21 +243,22 @@ impl Default for ShellEnvironmentPolicy {
 }
 
 fn string_enum_schema_with_description(values: &[&str], description: &str) -> Schema {
-    let mut schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        metadata: Some(Box::new(Metadata {
-            description: Some(description.to_string()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    schema.enum_values = Some(
-        values
-            .iter()
-            .map(|value| Value::String((*value).to_string()))
-            .collect(),
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("string".to_string()));
+    schema.insert(
+        "enum".to_string(),
+        Value::Array(
+            values
+                .iter()
+                .map(|value| Value::String((*value).to_string()))
+                .collect(),
+        ),
     );
-    Schema::Object(schema)
+    schema.insert(
+        "description".to_string(),
+        Value::String(description.to_string()),
+    );
+    schema.into()
 }
 
 #[derive(
@@ -583,16 +583,6 @@ pub enum ModeKind {
         alias = "custom"
     )]
     Default,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    PairProgramming,
-    #[doc(hidden)]
-    #[serde(skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    Execute,
 }
 
 pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
@@ -602,8 +592,6 @@ impl ModeKind {
         match self {
             Self::Plan => "Plan",
             Self::Default => "Default",
-            Self::PairProgramming => "Pair Programming",
-            Self::Execute => "Execute",
         }
     }
 
@@ -802,9 +790,6 @@ mod tests {
         for mode in TUI_VISIBLE_COLLABORATION_MODES {
             assert!(mode.is_tui_visible());
         }
-
-        assert!(!ModeKind::PairProgramming.is_tui_visible());
-        assert!(!ModeKind::Execute.is_tui_visible());
     }
 
     #[test]

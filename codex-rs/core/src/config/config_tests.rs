@@ -61,6 +61,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::UsageLimitToml;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
@@ -444,6 +445,7 @@ web_search = true
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            policy: None,
         })
     );
 }
@@ -463,6 +465,7 @@ web_search = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: None,
+            policy: None,
         })
     );
 }
@@ -481,6 +484,7 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
+            policy: None,
         })
     );
 }
@@ -500,6 +504,7 @@ enabled = false
         Some(ToolsToml {
             web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
+            policy: None,
         })
     );
 }
@@ -514,6 +519,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
                 experimental_request_user_input: Some(ExperimentalRequestUserInput {
                     enabled: false,
                 }),
+                policy: None,
             }),
             ..ConfigToml::default()
         },
@@ -5586,6 +5592,39 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
 
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
+async fn config_resolves_usage_limit_auto_reset() -> std::io::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+
+    let default_config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(!default_config.usage_limit.auto_reset_enabled);
+
+    let enabled_config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            usage_limit: Some(UsageLimitToml {
+                auto_reset_enabled: Some(true),
+            }),
+            ..ConfigToml::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(enabled_config.usage_limit.auto_reset_enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
 async fn config_rejects_invalid_auth_profile_auto_switch_profile() -> std::io::Result<()> {
     let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
     let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
@@ -9113,6 +9152,8 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
     let fixture = create_test_fixture()?;
 
     let requirements_toml = codex_config::ConfigRequirementsToml {
+        allowed_tool_policies: None,
+        infinity_agent_trust_key: None,
         allowed_approval_policies: None,
         allowed_approvals_reviewers: None,
         allowed_sandbox_modes: None,
@@ -10845,6 +10886,100 @@ max_threads = 3
         Some(3)
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_from_config_file_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 4
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::Disabled),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_defaults_to_builtin_when_unset() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    // Unset preserves current behavior: the built-in default cap applies.
+    assert_eq!(config.agent_max_threads, None);
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        DEFAULT_AGENT_MAX_THREADS
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_cli_override_caps_concurrency() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), "")?;
+
+    // Mirrors `-c agents.max_threads=4` on the command line.
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .cli_overrides(vec![(
+            "agents.max_threads".to_string(),
+            toml::Value::Integer(4),
+        )])
+        .build()
+        .await?;
+
+    assert_eq!(config.agent_max_threads, Some(4));
+    assert_eq!(
+        config.effective_agent_max_threads(MultiAgentVersion::V1),
+        Some(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agents_max_threads_zero_is_rejected() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents]
+max_threads = 0
+"#,
+    )?;
+
+    let err = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("agents.max_threads = 0 should be rejected");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(err.to_string(), "agents.max_threads must be at least 1");
     Ok(())
 }
 

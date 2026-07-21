@@ -8,11 +8,15 @@ use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
+use crate::app_event::AuthProfileSwitchReason;
 use crate::app_event::McpInventoryTarget;
+use crate::app_event::RateLimitRefreshData;
 
 use crate::chatwidget::ChatWidgetInit;
+use crate::chatwidget::UsageLimitAutoResetCheckOutcome;
 use crate::chatwidget::create_initial_user_message;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
+use crate::chatwidget::tests::set_active_cell;
 use crate::chatwidget::tests::set_chatgpt_auth;
 use crate::chatwidget::tests::set_fast_mode_test_catalog;
 use crate::file_search::FileSearchManager;
@@ -32,6 +36,7 @@ use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::TerminalResizeReflowMaxRows;
+use codex_app_server_protocol::AccountUpdatedNotification;
 use codex_app_server_protocol::AdditionalFileSystemPermissions;
 use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
@@ -56,6 +61,10 @@ use codex_app_server_protocol::NetworkPolicyRuleAction as AppServerNetworkPolicy
 use codex_app_server_protocol::NonSteerableTurnKind as AppServerNonSteerableTurnKind;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::PermissionsRequestApprovalParams;
+use codex_app_server_protocol::RateLimitResetCredit;
+use codex_app_server_protocol::RateLimitResetCreditStatus;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
+use codex_app_server_protocol::RateLimitResetType;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
@@ -106,11 +115,14 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crossterm::event::KeyModifiers;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+use ratatui::buffer::Buffer;
 use ratatui::prelude::Line;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 use tokio::time;
 
@@ -124,6 +136,49 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+#[tokio::test]
+async fn chat_widget_frame_reuses_active_cell_height_across_frame_passes() {
+    #[derive(Debug)]
+    struct CountingHistoryCell {
+        desired_height_calls: Arc<AtomicUsize>,
+    }
+
+    impl HistoryCell for CountingHistoryCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("active cell")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("active cell")]
+        }
+
+        fn desired_height(&self, _width: u16) -> u16 {
+            self.desired_height_calls.fetch_add(1, Ordering::Relaxed);
+            1
+        }
+    }
+
+    let mut app = make_test_app().await;
+    let desired_height_calls = Arc::new(AtomicUsize::new(0));
+    set_active_cell(
+        &mut app.chat_widget,
+        Box::new(CountingHistoryCell {
+            desired_height_calls: Arc::clone(&desired_height_calls),
+        }),
+    );
+    let width = 80;
+    app.with_chat_widget_frame(width, |desired_height, chat_widget| {
+        let area = Rect::new(/*x*/ 0, /*y*/ 0, width, desired_height);
+        let mut buffer = Buffer::empty(area);
+
+        chat_widget.render(area, &mut buffer);
+        assert!(chat_widget.cursor_pos(area).is_some());
+        let _ = chat_widget.cursor_style(area);
+    });
+
+    assert_eq!(desired_height_calls.load(Ordering::Relaxed), 1);
 }
 
 async fn next_thread_settings_updated(
@@ -4511,6 +4566,207 @@ async fn failed_auth_profile_login_does_not_switch_profile() {
 }
 
 #[tokio::test]
+async fn queued_manual_profile_switch_is_rejected_after_automatic_reset_takes_ownership() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    save_test_auth_profile_for_app(&app, "work");
+    let app_profile_before = app.config.selected_auth_profile.clone();
+    let widget_profile_before = app.chat_widget.config_ref().selected_auth_profile.clone();
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    let automatic_generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("automatic reset refresh");
+    app.chat_widget.finish_usage_limit_auto_reset_check(
+        automatic_generation,
+        Err("refresh failed".to_string()),
+    );
+    assert!(
+        !app.chat_widget
+            .automatic_usage_limit_reset_owns_failed_turn()
+    );
+    while app_event_rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_auth_profile_switch_event(
+        Some("work".to_string()),
+        AuthProfileSwitchReason::Manual,
+        /*resume_queued_input*/ false,
+        automatic_generation.saturating_sub(1),
+    )
+    .await;
+
+    assert_eq!(app.config.selected_auth_profile, app_profile_before);
+    assert_eq!(
+        app.chat_widget.config_ref().selected_auth_profile,
+        widget_profile_before
+    );
+    assert!(op_rx.try_recv().is_err());
+}
+
+fn profile_popup_workflow_events(reset_generation: u64) -> Vec<AppEvent> {
+    let profile = "work".to_string();
+    vec![
+        AppEvent::OpenAuthProfileRenamePrompt {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileSettings {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileDeleteConfirm {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::ReloginAuthProfile {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::AuthProfileReloginFinished {
+            profile: profile.clone(),
+            result: Ok(()),
+            reset_generation,
+        },
+        AppEvent::OpenAuthProfileLoginPrompt { reset_generation },
+        AppEvent::OpenAuthProfileNamePrompt {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
+        AppEvent::LoginNewAuthProfile {
+            profile: profile.clone(),
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
+        AppEvent::AuthProfileLoginCompleted {
+            profile: profile.clone(),
+            success: true,
+            error: None,
+            reset_generation,
+        },
+        AppEvent::RenameAuthProfile {
+            old_name: profile.clone(),
+            new_name: "renamed".to_string(),
+            reset_generation,
+        },
+        AppEvent::DeleteAuthProfile {
+            profile: profile.clone(),
+            reset_generation,
+        },
+        AppEvent::MoveAuthProfile {
+            profile,
+            direction: codex_login::AuthProfileMoveDirection::Up,
+            reset_generation,
+        },
+    ]
+}
+
+#[tokio::test]
+async fn profile_popup_actions_are_rejected_during_manual_and_automatic_reset_ownership() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let initial_generation = 0;
+    let initial_events = profile_popup_workflow_events(initial_generation);
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| app.auth_profile_event_is_current(event))
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.chat_widget.start_rate_limit_reset_picker();
+    let manual_generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::ResetPicker { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("manual reset refresh");
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
+        "manual reset ownership must block every profile popup action"
+    );
+    app.chat_widget
+        .finish_rate_limit_reset_picker(manual_generation, Err("cancelled".to_string()));
+    let post_manual_events = profile_popup_workflow_events(manual_generation);
+    assert!(
+        post_manual_events
+            .iter()
+            .all(|event| app.auth_profile_event_is_current(event)),
+        "new profile actions must use the manual reset's retained generation after release"
+    );
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
+        "profile actions queued before manual reset ownership must remain stale after release"
+    );
+
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    let automatic_generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("automatic reset refresh");
+    let automatic_events = profile_popup_workflow_events(automatic_generation);
+    assert!(
+        automatic_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
+        "automatic reset ownership must block every profile popup action"
+    );
+    app.chat_widget.finish_usage_limit_auto_reset_check(
+        automatic_generation,
+        Err("recovery completed".to_string()),
+    );
+    assert!(
+        initial_events
+            .iter()
+            .all(|event| !app.auth_profile_event_is_current(event)),
+        "an action queued before automatic recovery must remain stale after completion"
+    );
+}
+
+#[test]
+fn every_profile_popup_workflow_event_exposes_its_originating_reset_generation() {
+    let reset_generation = 29;
+    let events = profile_popup_workflow_events(reset_generation);
+
+    assert_eq!(
+        events
+            .iter()
+            .map(AppEvent::auth_profile_action_reset_generation)
+            .collect::<Vec<_>>(),
+        vec![Some(reset_generation); events.len()]
+    );
+}
+
+#[tokio::test]
 async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch_back() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     save_test_auth_profile_for_app(&app, "work");
@@ -4532,9 +4788,14 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshOrigin::StartupPrefetch,
         RateLimitRefreshTarget::Selected,
         Some("work".to_string()),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:work-account".to_string()),
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100, /*window_duration_mins*/ 300,
+                /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4553,9 +4814,14 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         RateLimitRefreshOrigin::StartupPrefetch,
         RateLimitRefreshTarget::Selected,
         Some("personal".to_string()),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:personal-account".to_string()),
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100, /*window_duration_mins*/ 300,
+                /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4568,6 +4834,289 @@ async fn stale_rate_limit_refresh_after_auth_profile_change_does_not_auto_switch
         }
         other => panic!("expected current-profile rate limits to auto-switch, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn auto_reset_refresh_replaces_stale_codex_decision_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    app.chat_widget
+        .on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+            /*used_percent*/ 100,
+            /*window_duration_mins*/ 7 * 24 * 60,
+            /*resets_at*/ 123,
+        )));
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    let generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("automatic reset refresh");
+
+    let mut non_codex = rate_limit_snapshot_for_window(
+        /*used_percent*/ 100,
+        /*window_duration_mins*/ 7 * 24 * 60,
+        /*resets_at*/ 123,
+    );
+    non_codex.limit_id = Some("other".to_string());
+    non_codex.limit_name = Some("Other".to_string());
+    let completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::AutoResetCheck { generation },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
+            snapshots: vec![non_codex],
+            reset_credits: Some(RateLimitResetCreditsSummary {
+                available_count: 1,
+                credits: Some(vec![RateLimitResetCredit {
+                    id: "credit-exact".to_string(),
+                    reset_type: RateLimitResetType::CodexRateLimits,
+                    status: RateLimitResetCreditStatus::Available,
+                    granted_at: 1,
+                    expires_at: Some(i64::MAX),
+                    title: None,
+                    description: None,
+                }]),
+            }),
+        }),
+    );
+
+    assert_eq!(
+        completion,
+        super::event_dispatch::RateLimitRefreshCompletion::ScheduleFrame
+    );
+    while let Ok(event) = app_event_rx.try_recv() {
+        assert!(!matches!(
+            event,
+            AppEvent::ConsumeRateLimitResetCredit { .. }
+        ));
+    }
+}
+
+#[tokio::test]
+async fn stale_reset_generation_never_applies_credits_or_snapshots() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    app.chat_widget
+        .on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+            /*used_percent*/ 100,
+            /*window_duration_mins*/ 7 * 24 * 60,
+            /*resets_at*/ 123,
+        )));
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(false),
+    );
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    let completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::AutoResetCheck { generation: 0 },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100,
+                /*window_duration_mins*/ 7 * 24 * 60,
+                /*resets_at*/ 123,
+            )],
+            reset_credits: Some(RateLimitResetCreditsSummary {
+                available_count: 1,
+                credits: Some(vec![RateLimitResetCredit {
+                    id: "stale-credit".to_string(),
+                    reset_type: RateLimitResetType::CodexRateLimits,
+                    status: RateLimitResetCreditStatus::Available,
+                    granted_at: 1,
+                    expires_at: Some(i64::MAX),
+                    title: None,
+                    description: None,
+                }]),
+            }),
+        }),
+    );
+    assert_eq!(
+        completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .finish_usage_limit_auto_reset_check(1, Ok(()));
+
+    while let Ok(event) = app_event_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::ConsumeRateLimitResetCredit { .. }),
+            "a stale reset response must not seed a later automatic spend"
+        );
+    }
+}
+
+#[tokio::test]
+async fn same_generation_wrong_phase_auto_reset_refresh_never_applies_payload() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    let generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("automatic reset refresh");
+    app.chat_widget
+        .finish_usage_limit_auto_reset_check(generation, Err("superseded".to_string()));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let completion = app.apply_rate_limits_loaded(
+        RateLimitRefreshOrigin::AutoResetCheck { generation },
+        RateLimitRefreshTarget::Selected,
+        app.config.selected_auth_profile.clone(),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 100,
+                /*window_duration_mins*/ 7 * 24 * 60,
+                /*resets_at*/ 123,
+            )],
+            reset_credits: Some(RateLimitResetCreditsSummary {
+                available_count: 1,
+                credits: Some(vec![RateLimitResetCredit {
+                    id: "wrong-phase-credit".to_string(),
+                    reset_type: RateLimitResetType::CodexRateLimits,
+                    status: RateLimitResetCreditStatus::Available,
+                    granted_at: 1,
+                    expires_at: Some(i64::MAX),
+                    title: None,
+                    description: None,
+                }]),
+            }),
+        }),
+    );
+    assert_eq!(
+        completion,
+        super::event_dispatch::RateLimitRefreshCompletion::None
+    );
+
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .finish_usage_limit_auto_reset_check(generation, Ok(()));
+    while let Ok(event) = app_event_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::ConsumeRateLimitResetCredit { .. }),
+            "a wrong-phase response must not seed a later automatic spend"
+        );
+    }
+}
+
+#[tokio::test]
+async fn account_updated_invalidates_same_profile_reset_generation() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let mut session = test_thread_session(ThreadId::new(), test_path_buf("/tmp/project"));
+    session.model_provider_id = codex_model_provider_info::OPENAI_PROVIDER_ID.to_string();
+    app.chat_widget.handle_thread_session(session);
+    set_chatgpt_auth(&mut app.chat_widget);
+    while op_rx.try_recv().is_ok() {}
+    app.chat_widget.apply_config_popup_value(
+        "usage_limit.auto_reset_enabled",
+        &serde_json::Value::Bool(true),
+    );
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    assert_eq!(
+        app.chat_widget.submit_user_message_as_plain_user_turn(
+            crate::chatwidget::UserMessage::from("queued across account update"),
+        ),
+        None
+    );
+    assert!(op_rx.try_recv().is_err());
+    let initial_generation = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } => Some(generation),
+            _ => None,
+        })
+        .expect("initial automatic reset check");
+    let mut app_server = start_config_write_test_app_server(&app)
+        .await
+        .expect("embedded app server");
+
+    app.handle_app_server_event(
+        &mut app_server,
+        codex_app_server_client::AppServerEvent::ServerNotification(
+            ServerNotification::AccountUpdated(AccountUpdatedNotification {
+                auth_mode: Some(AuthMode::Chatgpt),
+                plan_type: None,
+            }),
+        ),
+    )
+    .await;
+
+    match next_user_turn_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "queued across account update".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected queued follow-up after account update, got {other:?}"),
+    }
+
+    assert_eq!(
+        app.chat_widget.request_usage_limit_auto_reset_check(),
+        UsageLimitAutoResetCheckOutcome::Started
+    );
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation },
+                target: RateLimitRefreshTarget::Selected,
+            } if generation > initial_generation
+        ))
+    );
 }
 
 #[tokio::test]
@@ -4587,7 +5136,11 @@ async fn usage_panel_usage_refresh_completion_requests_frame() {
         RateLimitRefreshOrigin::UsagePanel { request_id },
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
-        Ok(vec![]),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
+            snapshots: vec![],
+            reset_credits: None,
+        }),
     );
 
     assert_eq!(
@@ -4630,9 +5183,13 @@ async fn superseded_usage_panel_rate_limit_refresh_does_not_update_cached_limits
         },
         RateLimitRefreshTarget::Selected,
         app.config.selected_auth_profile.clone(),
-        Ok(vec![rate_limit_snapshot_for_window(
-            /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
-        )]),
+        Ok(RateLimitRefreshData {
+            account_identity_fingerprint: Some("sha256:test-account".to_string()),
+            snapshots: vec![rate_limit_snapshot_for_window(
+                /*used_percent*/ 27, /*window_duration_mins*/ 60, /*resets_at*/ 123,
+            )],
+            reset_credits: None,
+        }),
     );
     assert_eq!(
         stale_completion,

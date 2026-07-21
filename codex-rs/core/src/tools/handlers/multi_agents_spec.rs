@@ -567,7 +567,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_context".to_string(),
             JsonSchema::boolean(Some(
-                "True forks the current thread history into the new agent; false or omitted starts with only the initial prompt."
+                "True forks the current thread history into the new agent; false or omitted starts with only the initial prompt. A full-history fork inherits the parent agent type, model, and reasoning effort, so agent_type, model, and reasoning_effort are ignored when fork_context is true; omit them, or spawn without a full-history fork to override them."
                     .to_string(),
             )),
         ),
@@ -609,7 +609,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns. A full-history fork (`all`) inherits the parent agent type, model, and reasoning effort, so agent_type, model, and reasoning_effort are ignored; use `none` or a positive integer to override them."
                     .to_string(),
             )),
         ),

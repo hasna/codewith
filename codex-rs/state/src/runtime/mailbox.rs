@@ -115,8 +115,11 @@ impl MailboxMessageStore {
             .unwrap_or(now_ms);
         let expires_at_ms = params.expires_at.map(datetime_to_epoch_millis);
         let message_id = Uuid::new_v4().to_string();
-        let payload_json = serde_json::to_string(&params.payload_json)?;
+        let payload_json = redact_state_json_string(&params.payload_json)?;
         let payload_sha256 = payload_sha256(payload_json.as_bytes());
+        let sender_label = params.sender_label.as_deref().map(redact_state_string);
+        let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
+        let payload_preview = redact_state_string(params.payload_preview.as_str());
         let mut tx = self.pool.begin().await?;
         let sql = mailbox_message_returning(
             r#"
@@ -149,13 +152,13 @@ RETURNING
                     .sender_thread_id
                     .map(|thread_id| thread_id.to_string()),
             )
-            .bind(params.sender_label)
-            .bind(params.idempotency_key.as_deref())
+            .bind(sender_label)
+            .bind(idempotency_key.as_deref())
             .bind(params.kind.as_str())
             .bind(crate::MailboxMessageStatus::Queued.as_str())
             .bind(payload_json)
             .bind(payload_sha256)
-            .bind(params.payload_preview)
+            .bind(payload_preview)
             .bind(params.priority)
             .bind(params.max_attempts)
             .bind(next_attempt_at_ms)
@@ -177,7 +180,7 @@ RETURNING
             )
             .await?;
             (message, true)
-        } else if let Some(idempotency_key) = params.idempotency_key {
+        } else if let Some(idempotency_key) = idempotency_key {
             let message = select_message_by_target_idempotency_in_tx(
                 &mut tx,
                 params.target_thread_id,
@@ -266,12 +269,36 @@ WHERE target_thread_id = ? AND owner_id = ? AND lease_id = ?
         lease_duration: std::time::Duration,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<MailboxClaim>> {
+        // The dispatcher polls this path once per second in every process with
+        // a read-then-write transaction, making it the dominant source of
+        // SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517) contention on the shared
+        // state DB. Retry transient busy/snapshot errors with jittered backoff
+        // (each attempt restarts the BEGIN IMMEDIATE transaction) so a raced
+        // poll succeeds instead of being dropped with a warning.
+        crate::busy_retry::retry_on_busy("mailbox claim next message", || {
+            self.claim_next_message_once(&scope, &lease_owner, lease_duration, now)
+        })
+        .await
+    }
+
+    async fn claim_next_message_once(
+        &self,
+        scope: &MailboxClaimScope,
+        lease_owner: &str,
+        lease_duration: std::time::Duration,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<MailboxClaim>> {
         let now_ms = datetime_to_epoch_millis(now);
         let lease_expires_at = now + chrono::Duration::from_std(lease_duration)?;
         let lease_expires_at_ms = datetime_to_epoch_millis(lease_expires_at);
         let lease_id = Uuid::new_v4().to_string();
         let attempt_id = Uuid::new_v4().to_string();
-        let mut tx = self.pool.begin().await?;
+        // BEGIN IMMEDIATE takes the write lock up front so contention waits on
+        // busy_timeout (which handles plain SQLITE_BUSY) instead of racing a
+        // read snapshot and failing instantly with SQLITE_BUSY_SNAPSHOT (517),
+        // which the busy handler cannot absorb. Safe only because the caller
+        // retries busy errors (see `claim_next_message_inner`).
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         expire_stale_mailbox_leases_in_tx(&mut tx, now_ms).await?;
         expire_due_messages_in_tx(&mut tx, now_ms).await?;
         if matches!(scope, MailboxClaimScope::Dispatch { .. }) {
@@ -281,7 +308,7 @@ WHERE target_thread_id = ? AND owner_id = ? AND lease_id = ?
                 .await?;
         }
 
-        let sql = mailbox_message_returning(match &scope {
+        let sql = mailbox_message_returning(match scope {
             MailboxClaimScope::Target(_) => {
                 r#"
 UPDATE thread_mailbox_messages
@@ -355,11 +382,11 @@ RETURNING
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(crate::MailboxMessageStatus::Claimed.as_str())
             .bind(lease_id.as_str())
-            .bind(lease_owner.as_str())
+            .bind(lease_owner)
             .bind(lease_expires_at_ms)
             .bind(attempt_id.as_str())
             .bind(now_ms);
-        match &scope {
+        match scope {
             MailboxClaimScope::Target(target_thread_id) => {
                 query = query
                     .bind(target_thread_id.to_string())
@@ -388,7 +415,7 @@ RETURNING
         if let MailboxClaimScope::Dispatch {
             local_active_owner_id,
             ..
-        } = &scope
+        } = scope
         {
             reserve_mailbox_target_lease_in_tx(
                 &mut tx,
@@ -405,7 +432,7 @@ RETURNING
             &attempt_id,
             &message,
             &lease_id,
-            lease_owner.as_str(),
+            lease_owner,
             now_ms,
             lease_expires_at_ms,
         )
@@ -430,7 +457,7 @@ RETURNING
         let now_ms = datetime_to_epoch_millis(params.now);
         let receipt_payload_json = params
             .receipt_payload_json
-            .map(|payload| serde_json::to_string(&payload))
+            .map(|payload| redact_state_json_string(&payload))
             .transpose()?;
         let mut tx = self.pool.begin().await?;
         let Some(attempt) = select_attempt_for_lease_in_tx(
@@ -547,6 +574,7 @@ RETURNING
             }
         }
 
+        let error = redact_state_string(params.error.as_str());
         sqlx::query(
             r#"
 UPDATE thread_mailbox_delivery_attempts
@@ -556,7 +584,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
         )
         .bind(crate::MailboxDeliveryAttemptStatus::Failed.as_str())
         .bind(now_ms)
-        .bind(params.error.as_str())
+        .bind(error.as_str())
         .bind(params.attempt_id.as_str())
         .bind(params.message_id.as_str())
         .bind(params.lease_id.as_str())
@@ -570,7 +598,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
                     &mut tx,
                     &params.message_id,
                     &params.lease_id,
-                    &params.error,
+                    &error,
                     datetime_to_epoch_millis(next_attempt_at),
                     now_ms,
                 )
@@ -581,7 +609,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
                     &mut tx,
                     &params.message_id,
                     &params.lease_id,
-                    &params.error,
+                    &error,
                     now_ms,
                 )
                 .await?

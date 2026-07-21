@@ -18,6 +18,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::timeout;
@@ -205,19 +206,33 @@ async fn write_shell_snapshot(
         .with_context(|| format!("No available shell for {shell_type:?}"))?;
 
     let raw_snapshot = capture_snapshot(&shell, cwd).await?;
-    let snapshot = strip_snapshot_preamble(&raw_snapshot)?;
+    let snapshot = codex_state::redact_local_state_string(strip_snapshot_preamble(&raw_snapshot)?);
 
     if let Some(parent) = output_path.parent() {
         let parent_display = parent.display();
         fs::create_dir_all(&parent)
             .await
             .with_context(|| format!("Failed to create snapshot parent {parent_display}"))?;
+        codex_state::set_owner_only_dir(parent.as_path())
+            .with_context(|| format!("Failed to restrict snapshot parent {parent_display}"))?;
     }
 
     let snapshot_path = output_path.display();
-    fs::write(output_path, snapshot)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output_path)
+        .await
+        .with_context(|| format!("Failed to open snapshot at {snapshot_path}"))?;
+    file.write_all(snapshot.as_bytes())
         .await
         .with_context(|| format!("Failed to write snapshot to {snapshot_path}"))?;
+    file.flush()
+        .await
+        .with_context(|| format!("Failed to flush snapshot to {snapshot_path}"))?;
+    codex_state::set_owner_only_file(output_path.as_path())
+        .with_context(|| format!("Failed to restrict snapshot at {snapshot_path}"))?;
 
     Ok(())
 }

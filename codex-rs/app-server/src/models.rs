@@ -228,7 +228,7 @@ mod tests {
         let models =
             fallback_supported_models_for_provider("cerebras", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 2);
+        assert_eq!(models.len(), 3);
         assert_eq!(models[0].model, "gpt-oss-120b");
         assert_eq!(models[0].display_name, "OpenAI GPT OSS 120B");
         assert!(models[0].is_default);
@@ -250,6 +250,9 @@ mod tests {
         assert_eq!(models[1].display_name, "Z.ai GLM 4.7");
         assert!(!models[1].is_default);
         assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::Medium);
+        assert_eq!(models[2].model, "gemma-4-31b");
+        assert_eq!(models[2].display_name, "Gemma 4 31B");
+        assert!(!models[2].is_default);
     }
 
     #[test]
@@ -266,8 +269,8 @@ mod tests {
         assert_eq!(models[1].display_name, "OpenAI GPT OSS 120B");
         assert!(!models[1].is_default);
         assert_eq!(models[1].default_reasoning_effort, ReasoningEffort::Medium);
-        assert_eq!(models[2].model, "z-ai/glm-5.1");
-        assert_eq!(models[2].display_name, "Z.ai GLM 5.1");
+        assert_eq!(models[2].model, "z-ai/glm-5.2");
+        assert_eq!(models[2].display_name, "Z.ai GLM 5.2");
         assert!(!models[2].is_default);
         assert_eq!(models[2].default_reasoning_effort, ReasoningEffort::None);
     }
@@ -277,7 +280,7 @@ mod tests {
         let models =
             fallback_supported_models_for_provider("anthropic", /*include_hidden*/ false);
 
-        assert_eq!(models.len(), 4);
+        assert_eq!(models.len(), 5);
         assert_eq!(models[0].model, "claude-fable-5");
         assert_eq!(models[0].display_name, "Claude Fable 5");
         assert!(models[0].is_default);
@@ -285,8 +288,9 @@ mod tests {
         assert_eq!(models[0].default_reasoning_effort, ReasoningEffort::None);
         assert_eq!(models[0].supported_reasoning_efforts, Vec::new());
         assert_eq!(models[1].model, "claude-opus-4-8");
-        assert_eq!(models[2].model, "claude-sonnet-4-6");
-        assert_eq!(models[3].model, "claude-haiku-4-5-20251001");
+        assert_eq!(models[2].model, "claude-sonnet-5");
+        assert_eq!(models[3].model, "claude-sonnet-4-6");
+        assert_eq!(models[4].model, "claude-haiku-4-5-20251001");
     }
 
     #[test]

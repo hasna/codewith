@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "MissionControlDeliveryPolicy": {
       "enum": [
         "liveOnly",
@@ -53,7 +52,7 @@
           ]
         },
         "kind": {
-          "$ref": "#/definitions/ThreadMailboxMessageKind"
+          "$ref": "#/$defs/ThreadMailboxMessageKind"
         },
         "lastError": {
           "type": [
@@ -91,7 +90,7 @@
         },
         "redactions": {
           "items": {
-            "$ref": "#/definitions/ThreadMailboxRedaction"
+            "$ref": "#/$defs/ThreadMailboxRedaction"
           },
           "type": "array"
         },
@@ -108,7 +107,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/ThreadMailboxMessageStatus"
+          "$ref": "#/$defs/ThreadMailboxMessageStatus"
         },
         "targetThreadId": {
           "type": "string"
@@ -126,18 +125,18 @@
         }
       },
       "required": [
-        "attemptCount",
-        "createdAt",
-        "kind",
-        "maxAttempts",
         "messageId",
-        "nextAttemptAt",
-        "payloadPreview",
-        "payloadSha256",
-        "priority",
-        "redactions",
-        "status",
         "targetThreadId",
+        "kind",
+        "status",
+        "payloadSha256",
+        "payloadPreview",
+        "redactions",
+        "priority",
+        "attemptCount",
+        "maxAttempts",
+        "nextAttemptAt",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -150,6 +149,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "created": {
       "type": [
@@ -158,7 +158,7 @@
       ]
     },
     "deliveryPolicy": {
-      "$ref": "#/definitions/MissionControlDeliveryPolicy"
+      "$ref": "#/$defs/MissionControlDeliveryPolicy"
     },
     "dryRun": {
       "type": "boolean"
@@ -166,7 +166,7 @@
     "message": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadMailboxMessageSummary"
+          "$ref": "#/$defs/ThreadMailboxMessageSummary"
         },
         {
           "type": "null"
@@ -178,8 +178,8 @@
     }
   },
   "required": [
-    "deliveryPolicy",
     "dryRun",
+    "deliveryPolicy",
     "preview"
   ],
   "title": "MissionControlEnqueueInstructionResponse",

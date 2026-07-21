@@ -4,6 +4,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::policy::VerifiedToolPolicy;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
@@ -24,6 +25,8 @@ use tracing::instrument;
 
 pub use crate::tools::context::ToolCallSource;
 
+const MAX_INFINITY_AGENT_ARGUMENT_BYTES: usize = 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct ToolCall {
     pub tool_name: ToolName,
@@ -34,6 +37,13 @@ pub struct ToolCall {
 pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Vec<ToolSpec>,
+    // Fail-closed policy-build error recorded by `from_policy_error` and surfaced
+    // via the unit-tested `ensure_policy_ready` readiness gate. Production dispatch
+    // fail-closes independently on a missing verified policy, so this is not yet
+    // wired into the hot path.
+    #[allow(dead_code)]
+    policy_error: Option<String>,
+    infinity_agent_policy: Option<Arc<VerifiedToolPolicy>>,
 }
 
 pub(crate) struct ToolRouterParams<'a> {
@@ -53,7 +63,46 @@ impl ToolRouter {
         Self {
             registry,
             model_visible_specs,
+            policy_error: None,
+            infinity_agent_policy: None,
         }
+    }
+
+    pub(crate) fn from_infinity_policy(
+        registry: ToolRegistry,
+        model_visible_specs: Vec<ToolSpec>,
+        policy: Arc<VerifiedToolPolicy>,
+    ) -> Self {
+        Self {
+            registry,
+            model_visible_specs,
+            policy_error: None,
+            infinity_agent_policy: Some(policy),
+        }
+    }
+
+    pub(crate) fn from_policy_error(error: impl Into<String>) -> Self {
+        Self {
+            registry: ToolRegistry::from_tools(std::iter::empty::<
+                Arc<dyn crate::tools::registry::CoreToolRuntime>,
+            >()),
+            model_visible_specs: Vec::new(),
+            policy_error: Some(error.into()),
+            infinity_agent_policy: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn ensure_policy_ready(&self) -> Result<(), String> {
+        if let Some(error) = &self.policy_error {
+            return Err(error.clone());
+        }
+        if let Some(policy) = &self.infinity_agent_policy {
+            policy
+                .ensure_active(chrono::Utc::now())
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
@@ -206,6 +255,38 @@ impl ToolRouter {
             payload,
         } = call;
 
+        if turn.config.is_infinity_agent() {
+            let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
+                FunctionCallError::Fatal(
+                    "Infinity Agent tool dispatch has no router-bound verified process policy"
+                        .to_string(),
+                )
+            })?;
+            let config_policy = turn.config.infinity_agent_policy.as_ref().ok_or_else(|| {
+                FunctionCallError::Fatal(
+                    "Infinity Agent turn has no verified process policy".to_string(),
+                )
+            })?;
+            if policy.digest() != config_policy.digest() {
+                return Err(FunctionCallError::Fatal(
+                    "Infinity Agent router policy does not match the turn policy".to_string(),
+                ));
+            }
+            policy
+                .authorize_dispatch(&tool_name, chrono::Utc::now())
+                .map_err(|error| {
+                    FunctionCallError::Fatal(format!(
+                        "Infinity Agent tool dispatch rejected before handler execution: {error}"
+                    ))
+                })?;
+            let ToolPayload::Function { arguments } = &payload else {
+                return Err(FunctionCallError::Fatal(
+                    "Infinity Agent received a non-function tool payload".to_string(),
+                ));
+            };
+            validate_infinity_agent_arguments(arguments)?;
+        }
+
         let invocation = ToolInvocation {
             session,
             turn,
@@ -221,6 +302,21 @@ impl ToolRouter {
             .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
             .await
     }
+}
+
+fn validate_infinity_agent_arguments(arguments: &str) -> Result<(), FunctionCallError> {
+    if arguments.len() > MAX_INFINITY_AGENT_ARGUMENT_BYTES {
+        return Err(FunctionCallError::RespondToModel(
+            "Infinity Agent rejected oversized tool arguments before handler execution".to_string(),
+        ));
+    }
+    codex_protocol::strict_json::validate_slice_no_duplicates(arguments.as_bytes()).map_err(
+        |error| {
+            FunctionCallError::RespondToModel(format!(
+                "Infinity Agent rejected ambiguous tool arguments before handler execution: {error}"
+            ))
+        },
+    )
 }
 
 pub(crate) fn extension_tool_executors(

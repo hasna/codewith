@@ -93,12 +93,15 @@ async fn handle_spawn_agent(
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
-    if args.fork_context {
-        reject_full_fork_spawn_overrides(
+    let source_role_name = if args.fork_context {
+        if let Some(notice) = full_fork_ignored_overrides_notice(
             role_name,
             args.model.as_deref(),
-            args.reasoning_effort.clone(),
-        )?;
+            args.reasoning_effort.as_ref(),
+        ) {
+            tracing::warn!("{notice}");
+        }
+        None
     } else {
         apply_requested_spawn_agent_model_overrides(
             &session,
@@ -111,7 +114,8 @@ async fn handle_spawn_agent(
         apply_role_to_config(&mut config, role_name)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
-    }
+        role_name
+    };
     apply_spawn_agent_service_tier(
         &session,
         &mut config,
@@ -128,7 +132,7 @@ async fn handle_spawn_agent(
             session.thread_id,
             &turn.session_source,
             child_depth,
-            role_name,
+            source_role_name,
             /*task_name*/ None,
         )?),
         SpawnAgentOptions {

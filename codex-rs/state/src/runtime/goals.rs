@@ -104,7 +104,9 @@ WHERE thread_id = ?
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
-        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
+        let objective = redact_state_string(objective);
+        let title = title.map(redact_state_string);
+        let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -201,7 +203,9 @@ RETURNING
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
+        let objective = redact_state_string(objective);
+        let title = title.map(redact_state_string);
+        let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -418,10 +422,13 @@ WHERE thread_id = ?
             token_budget,
             expected_goal_id,
         } = update;
-        let objective = objective.as_deref();
+        let objective = objective.as_deref().map(redact_state_string);
         let update_title = title.is_some();
-        let title = title.as_ref().and_then(|title| title.as_deref());
-        let title = normalize_thread_goal_title(title).map_err(anyhow::Error::msg)?;
+        let title = title
+            .as_ref()
+            .and_then(|title| title.as_deref())
+            .map(redact_state_string);
+        let title = normalize_thread_goal_title(title.as_deref()).map_err(anyhow::Error::msg)?;
         let title = title.as_deref();
         let expected_goal_id = expected_goal_id.as_deref();
         let now_ms = datetime_to_epoch_millis(Utc::now());
@@ -445,7 +452,7 @@ WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                 )
-                .bind(objective)
+                .bind(objective.as_deref())
                 .bind(update_title)
                 .bind(title)
                 .bind(crate::ThreadGoalStatus::Complete.as_str())
@@ -486,7 +493,7 @@ WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                 )
-                .bind(objective)
+                .bind(objective.as_deref())
                 .bind(update_title)
                 .bind(title)
                 .bind(crate::ThreadGoalStatus::Complete.as_str())
@@ -523,7 +530,7 @@ WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                 )
-                .bind(objective)
+                .bind(objective.as_deref())
                 .bind(update_title)
                 .bind(title)
                 .bind(token_budget)
@@ -550,7 +557,7 @@ WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                     )
-                    .bind(objective)
+                    .bind(objective.as_deref())
                     .bind(update_title)
                     .bind(title)
                     .bind(now_ms)

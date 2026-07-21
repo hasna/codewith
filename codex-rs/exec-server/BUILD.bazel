@@ -16,5 +16,8 @@ codex_rust_crate(
     extra_binaries = [
         "//codex-rs/bwrap:bwrap",
     ],
-    test_tags = ["no-sandbox"],
+    test_tags = [
+        "exclusive",
+        "no-sandbox",
+    ],
 )

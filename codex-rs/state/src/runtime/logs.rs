@@ -2,6 +2,48 @@ use super::*;
 
 const LOG_RETENTION_DAYS: i64 = 10;
 
+/// Accumulates the set of log partitions touched by recent inserts so the
+/// retention prune can be run separately from (and less frequently than) the
+/// hot insert path while still only scanning partitions that could have grown.
+///
+/// Partitioning mirrors [`StateRuntime::prune_logs_in_tx`]:
+/// - `thread_ids`: rows with a `thread_id` (capped per thread).
+/// - `process_uuids`: threadless rows keyed by `process_uuid`.
+/// - `has_threadless_null_process_uuid`: threadless rows with no `process_uuid`.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct LogPruneTargets {
+    thread_ids: BTreeSet<String>,
+    process_uuids: BTreeSet<String>,
+    has_threadless_null_process_uuid: bool,
+}
+
+impl LogPruneTargets {
+    /// Record the partitions touched by a batch of freshly inserted entries.
+    pub(crate) fn record(&mut self, entries: &[LogEntry]) {
+        for entry in entries {
+            match entry.thread_id.as_deref() {
+                Some(thread_id) => {
+                    self.thread_ids.insert(thread_id.to_string());
+                }
+                None => match entry.process_uuid.as_deref() {
+                    Some(process_uuid) => {
+                        self.process_uuids.insert(process_uuid.to_string());
+                    }
+                    None => {
+                        self.has_threadless_null_process_uuid = true;
+                    }
+                },
+            }
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.thread_ids.is_empty()
+            && self.process_uuids.is_empty()
+            && !self.has_threadless_null_process_uuid
+    }
+}
+
 impl StateRuntime {
     pub async fn insert_log(&self, entry: &LogEntry) -> anyhow::Result<()> {
         self.insert_logs(std::slice::from_ref(entry)).await
@@ -12,41 +54,85 @@ impl StateRuntime {
         if entries.is_empty() {
             return Ok(());
         }
+        // Log ingestion is a hot, high-frequency write path shared across every
+        // process. Retry transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (517)
+        // errors with jittered backoff (each attempt restarts the BEGIN
+        // IMMEDIATE transaction) instead of dropping the batch.
+        crate::busy_retry::retry_on_busy("insert logs", || self.insert_logs_once(entries)).await
+    }
 
-        let mut tx = self.logs_pool.begin().await?;
+    async fn insert_logs_once(&self, entries: &[LogEntry]) -> anyhow::Result<()> {
+        // BEGIN IMMEDIATE grabs the write lock before the insert, so contention
+        // waits on busy_timeout (plain BUSY) rather than failing instantly with
+        // BUSY_SNAPSHOT (517). Safe only because `insert_logs` retries transient
+        // busy errors. Retention pruning is intentionally *not* run here: it is
+        // a heavier window-function read/write cycle that would hold the writer
+        // lock far longer on the hot insert path. It runs separately on a
+        // cadence via [`StateRuntime::prune_logs`].
+        let mut tx = self.logs_pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid, module_path, file, line, estimated_bytes) ",
         );
         builder.push_values(entries, |mut row, entry| {
-            let feedback_log_body = entry.feedback_log_body.as_ref().or(entry.message.as_ref());
+            let feedback_log_body = entry
+                .feedback_log_body
+                .as_ref()
+                .or(entry.message.as_ref())
+                .map(redact_state_string);
+            let level = redact_state_string(entry.level.as_str());
+            let target = redact_state_string(entry.target.as_str());
+            let module_path = entry.module_path.as_deref().map(redact_state_string);
+            let file = entry.file.as_deref().map(redact_state_string);
             // Keep about 10 MiB of reader-visible log content per partition.
             // Both `query_logs` and `/feedback` read the persisted
             // `feedback_log_body`, while `LogEntry.message` is only a write-time
             // fallback for callers that still populate the old field.
-            let estimated_bytes = feedback_log_body.map_or(0, String::len) as i64
-                + entry.level.len() as i64
-                + entry.target.len() as i64
-                + entry.module_path.as_ref().map_or(0, String::len) as i64
-                + entry.file.as_ref().map_or(0, String::len) as i64;
+            let estimated_bytes = feedback_log_body.as_ref().map_or(0, String::len) as i64
+                + level.len() as i64
+                + target.len() as i64
+                + module_path.as_ref().map_or(0, String::len) as i64
+                + file.as_ref().map_or(0, String::len) as i64;
             row.push_bind(entry.ts)
                 .push_bind(entry.ts_nanos)
-                .push_bind(&entry.level)
-                .push_bind(&entry.target)
+                .push_bind(level)
+                .push_bind(target)
                 .push_bind(feedback_log_body)
                 .push_bind(&entry.thread_id)
                 .push_bind(&entry.process_uuid)
-                .push_bind(&entry.module_path)
-                .push_bind(&entry.file)
+                .push_bind(module_path)
+                .push_bind(file)
                 .push_bind(entry.line)
                 .push_bind(estimated_bytes);
         });
         builder.build().execute(&mut *tx).await?;
-        self.prune_logs_after_insert(entries, &mut tx).await?;
         tx.commit().await?;
         Ok(())
     }
 
-    /// Enforce per-partition retained-log-content caps after a successful batch insert.
+    /// Enforce per-partition retained-log-content caps for the partitions
+    /// touched by recent inserts.
+    ///
+    /// This runs on a cadence (see `log_db`), *outside* the hot insert
+    /// transaction, in its own retry-wrapped `BEGIN IMMEDIATE` transaction so
+    /// the writer lock is held for the minimum time during ingestion. Callers
+    /// may briefly observe "inserted but not yet pruned" rows between the
+    /// insert and the next prune tick; reader queries already bound results to
+    /// the retention budget so this is not observable through the public API.
+    pub(crate) async fn prune_logs(&self, targets: &LogPruneTargets) -> anyhow::Result<()> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        crate::busy_retry::retry_on_busy("prune logs", || self.prune_logs_once(targets)).await
+    }
+
+    async fn prune_logs_once(&self, targets: &LogPruneTargets) -> anyhow::Result<()> {
+        let mut tx = self.logs_pool.begin_with("BEGIN IMMEDIATE").await?;
+        self.prune_logs_in_tx(targets, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Enforce per-partition retained-log-content caps for the given partitions.
     ///
     /// We maintain two independent budgets:
     /// - Thread logs: rows with `thread_id IS NOT NULL`, capped per `thread_id`.
@@ -56,18 +142,12 @@ impl StateRuntime {
     ///
     /// "Threadless" means the log row is not associated with any conversation
     /// thread, so retention is keyed by process identity instead.
-    ///
-    /// This runs inside the same transaction as the insert so callers never
-    /// observe "inserted but not yet pruned" rows.
-    async fn prune_logs_after_insert(
+    async fn prune_logs_in_tx(
         &self,
-        entries: &[LogEntry],
+        targets: &LogPruneTargets,
         tx: &mut SqliteConnection,
     ) -> anyhow::Result<()> {
-        let thread_ids: BTreeSet<&str> = entries
-            .iter()
-            .filter_map(|entry| entry.thread_id.as_deref())
-            .collect();
+        let thread_ids: BTreeSet<&str> = targets.thread_ids.iter().map(String::as_str).collect();
         if !thread_ids.is_empty() {
             // Cheap precheck: only run the heavier window-function prune for
             // threads that are currently above the cap.
@@ -142,14 +222,9 @@ WHERE id IN (
             }
         }
 
-        let threadless_process_uuids: BTreeSet<&str> = entries
-            .iter()
-            .filter(|entry| entry.thread_id.is_none())
-            .filter_map(|entry| entry.process_uuid.as_deref())
-            .collect();
-        let has_threadless_null_process_uuid = entries
-            .iter()
-            .any(|entry| entry.thread_id.is_none() && entry.process_uuid.is_none());
+        let threadless_process_uuids: BTreeSet<&str> =
+            targets.process_uuids.iter().map(String::as_str).collect();
+        let has_threadless_null_process_uuid = targets.has_threadless_null_process_uuid;
         if !threadless_process_uuids.is_empty() {
             // Threadless logs are budgeted separately per process UUID.
             let mut over_limit_processes_query = QueryBuilder::<Sqlite>::new(
@@ -326,7 +401,9 @@ WHERE id IN (
 
         let rows = builder
             .build_query_as::<LogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            // Read-only query: route to the reader pool so log tailing stays
+            // concurrent with the single-connection logs writer.
+            .fetch_all(self.logs_reader_pool.as_ref())
             .await?;
         Ok(rows)
     }
@@ -407,7 +484,8 @@ WHERE cumulative_estimated_bytes <=
         builder.push(" ORDER BY ts DESC, ts_nanos DESC, id DESC");
         let rows = builder
             .build_query_as::<FeedbackLogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            // Read-only query: route to the reader pool (see `query_logs`).
+            .fetch_all(self.logs_reader_pool.as_ref())
             .await?;
 
         let mut lines = Vec::new();
@@ -440,7 +518,11 @@ WHERE cumulative_estimated_bytes <=
         let mut builder =
             QueryBuilder::<Sqlite>::new("SELECT MAX(id) AS max_id FROM logs WHERE 1 = 1");
         push_log_filters(&mut builder, query);
-        let row = builder.build().fetch_one(self.logs_pool.as_ref()).await?;
+        // Read-only query: route to the reader pool (see `query_logs`).
+        let row = builder
+            .build()
+            .fetch_one(self.logs_reader_pool.as_ref())
+            .await?;
         let max_id: Option<i64> = row.try_get("max_id")?;
         Ok(max_id.unwrap_or(0))
     }
@@ -540,6 +622,7 @@ fn push_like_filters(builder: &mut QueryBuilder<Sqlite>, column: &str, filters: 
 
 #[cfg(test)]
 mod tests {
+    use super::LogPruneTargets;
     use super::StateRuntime;
     use super::format_feedback_log_line;
     use super::test_support::unique_temp_dir;
@@ -554,6 +637,20 @@ mod tests {
     use sqlx::sqlite::SqliteConnectOptions;
     use std::borrow::Cow;
     use std::path::Path;
+
+    /// Insert a batch and then run retention pruning against exactly the
+    /// partitions those entries touched. Production runs the prune on a
+    /// separate cadence (outside the insert transaction); tests exercise both
+    /// steps back-to-back so the pruning assertions stay deterministic.
+    async fn insert_and_prune(runtime: &StateRuntime, entries: &[LogEntry]) {
+        runtime
+            .insert_logs(entries)
+            .await
+            .expect("insert test logs");
+        let mut targets = LogPruneTargets::default();
+        targets.record(entries);
+        runtime.prune_logs(&targets).await.expect("prune test logs");
+    }
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
         SqlitePool::connect_with(
@@ -895,8 +992,9 @@ mod tests {
             .expect("initialize runtime");
 
         let six_mebibytes = "a".repeat(6 * 1024 * 1024);
-        runtime
-            .insert_logs(&[
+        insert_and_prune(
+            &runtime,
+            &[
                 LogEntry {
                     ts: 1,
                     ts_nanos: 0,
@@ -923,9 +1021,9 @@ mod tests {
                     line: Some(2),
                     module_path: Some("mod".to_string()),
                 },
-            ])
-            .await
-            .expect("insert test logs");
+            ],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -949,8 +1047,9 @@ mod tests {
             .expect("initialize runtime");
 
         let eleven_mebibytes = "d".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
+        insert_and_prune(
+            &runtime,
+            &[LogEntry {
                 ts: 1,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
@@ -962,9 +1061,9 @@ mod tests {
                 file: Some("main.rs".to_string()),
                 line: Some(1),
                 module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
+            }],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -987,8 +1086,9 @@ mod tests {
             .expect("initialize runtime");
 
         let six_mebibytes = "b".repeat(6 * 1024 * 1024);
-        runtime
-            .insert_logs(&[
+        insert_and_prune(
+            &runtime,
+            &[
                 LogEntry {
                     ts: 1,
                     ts_nanos: 0,
@@ -1028,9 +1128,9 @@ mod tests {
                     line: Some(3),
                     module_path: Some("mod".to_string()),
                 },
-            ])
-            .await
-            .expect("insert test logs");
+            ],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1056,8 +1156,9 @@ mod tests {
             .expect("initialize runtime");
 
         let eleven_mebibytes = "e".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
+        insert_and_prune(
+            &runtime,
+            &[LogEntry {
                 ts: 1,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
@@ -1069,9 +1170,9 @@ mod tests {
                 file: Some("main.rs".to_string()),
                 line: Some(1),
                 module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
+            }],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1094,8 +1195,9 @@ mod tests {
             .expect("initialize runtime");
 
         let six_mebibytes = "c".repeat(6 * 1024 * 1024);
-        runtime
-            .insert_logs(&[
+        insert_and_prune(
+            &runtime,
+            &[
                 LogEntry {
                     ts: 1,
                     ts_nanos: 0,
@@ -1135,9 +1237,9 @@ mod tests {
                     line: Some(3),
                     module_path: Some("mod".to_string()),
                 },
-            ])
-            .await
-            .expect("insert test logs");
+            ],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1162,8 +1264,9 @@ mod tests {
             .expect("initialize runtime");
 
         let eleven_mebibytes = "f".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
+        insert_and_prune(
+            &runtime,
+            &[LogEntry {
                 ts: 1,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
@@ -1175,9 +1278,9 @@ mod tests {
                 file: Some("main.rs".to_string()),
                 line: Some(1),
                 module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
+            }],
+        )
+        .await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1214,10 +1317,7 @@ mod tests {
                 module_path: Some("mod".to_string()),
             })
             .collect();
-        runtime
-            .insert_logs(&entries)
-            .await
-            .expect("insert test logs");
+        insert_and_prune(&runtime, &entries).await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1257,10 +1357,7 @@ mod tests {
                 module_path: Some("mod".to_string()),
             })
             .collect();
-        runtime
-            .insert_logs(&entries)
-            .await
-            .expect("insert test logs");
+        insert_and_prune(&runtime, &entries).await;
 
         let rows = runtime
             .query_logs(&LogQuery {
@@ -1304,10 +1401,7 @@ mod tests {
                 module_path: Some("mod".to_string()),
             })
             .collect();
-        runtime
-            .insert_logs(&entries)
-            .await
-            .expect("insert test logs");
+        insert_and_prune(&runtime, &entries).await;
 
         let rows = runtime
             .query_logs(&LogQuery {
