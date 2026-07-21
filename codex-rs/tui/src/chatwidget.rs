@@ -438,10 +438,12 @@ mod session_prompt;
 use self::review::ReviewState;
 #[cfg(test)]
 pub(crate) use self::review_popups::show_review_commit_picker_with_entries;
+mod collab_wait_status;
 mod service_tiers;
 mod settings;
 mod settings_popups;
 mod side;
+use self::collab_wait_status::CollabWaitStatus;
 mod status_state;
 mod windows_sandbox_prompts;
 use self::status_state::StatusIndicatorState;
@@ -661,6 +663,7 @@ pub(crate) struct ChatWidget {
     cycle_permissions_binding: Vec<KeyBinding>,
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
+    collab_wait_status: CollabWaitStatus,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
@@ -1018,6 +1021,7 @@ impl ChatWidget {
                 agent_role,
             },
         );
+        self.refresh_collab_wait_status_at(Instant::now());
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
@@ -1274,6 +1278,9 @@ impl ChatWidget {
         }
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
+        if self.collab_wait_status.has_active_waits() {
+            self.refresh_collab_wait_status_at(Instant::now());
+        }
         if self.terminal_title_requires_action() != self.last_terminal_title_requires_action
             || self.status_line_uses_schedule_countdown()
         {

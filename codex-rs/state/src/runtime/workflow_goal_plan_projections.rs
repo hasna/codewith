@@ -430,7 +430,7 @@ INSERT INTO workflow_goal_plan_projections (
     .bind(params.run.run.run_id.as_str())
     .bind(params.thread_id.to_string())
     .bind(params.plan_id)
-    .bind(params.idempotency_key)
+    .bind(params.idempotency_key.map(redact_state_string))
     .bind(metadata_json)
     .bind(params.now_ms)
     .bind(params.now_ms)

@@ -845,15 +845,15 @@ include_local = false
             environment_provider_from_codex_home(codex_home.path()).expect("environment provider");
 
         let snapshot = provider.snapshot().await.expect("environments");
-        let environment_ids: Vec<_> = snapshot
-            .environments
-            .into_iter()
-            .map(|(id, _environment)| id)
-            .collect();
 
         assert!(!snapshot.include_local);
-        assert!(!environment_ids.contains(&LOCAL_ENVIRONMENT_ID.to_string()));
         assert_eq!(snapshot.default, EnvironmentDefault::Disabled);
+        assert!(
+            !snapshot
+                .environments
+                .into_iter()
+                .any(|(id, _environment)| id == LOCAL_ENVIRONMENT_ID)
+        );
     }
 
     #[tokio::test]
@@ -864,17 +864,17 @@ include_local = false
             environment_provider_from_codex_home(codex_home.path()).expect("environment provider");
 
         let snapshot = provider.snapshot().await.expect("environments");
-        let environment_ids: Vec<_> = snapshot
-            .environments
-            .into_iter()
-            .map(|(id, _environment)| id)
-            .collect();
 
         assert!(snapshot.include_local);
-        assert!(!environment_ids.contains(&LOCAL_ENVIRONMENT_ID.to_string()));
         assert_eq!(
             snapshot.default,
             EnvironmentDefault::EnvironmentId(LOCAL_ENVIRONMENT_ID.to_string())
+        );
+        assert!(
+            !snapshot
+                .environments
+                .into_iter()
+                .any(|(id, _environment)| id == LOCAL_ENVIRONMENT_ID)
         );
     }
 }
