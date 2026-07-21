@@ -1883,6 +1883,65 @@ async fn configured_reasoning_summary_is_sent() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_without_summary_parameter_support_omits_configured_summary() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let mut model_catalog = bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+    let model = model_catalog
+        .models
+        .iter_mut()
+        .find(|model| model.slug == "gpt-5.4")
+        .expect("gpt-5.4 exists in bundled models.json");
+    model.supports_reasoning_summaries = true;
+    model.supports_reasoning_summary_parameter = false;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(move |config| {
+            config.model_catalog = Some(model_catalog);
+            config.model_reasoning_effort = Some(ReasoningEffort::High);
+            config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+        })
+        .build(&server)
+        .await?;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let request_body = resp_mock.single_request().body_json();
+    // A model that does not accept the summary parameter still sends reasoning
+    // effort and encrypted content, but omits `reasoning.summary`.
+    pretty_assertions::assert_eq!(request_body["reasoning"], json!({"effort": "high"}));
+    pretty_assertions::assert_eq!(
+        request_body["include"],
+        json!(["reasoning.encrypted_content"])
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_sets_all_turns_context_and_disables_parallel_tool_calls()
 -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
