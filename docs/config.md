@@ -71,8 +71,8 @@ the default.
 
 Controls the "auto on/off" banked-reset behavior for the weekly usage limit.
 
-| Key | Default | Behavior |
-| --- | --- | --- |
+| Key                  | Default | Behavior                                                                                                             |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
 | `auto_reset_enabled` | `false` | When enabled, Codewith may consume one available reset credit after it confirms the weekly usage limit is exhausted. |
 
 ```toml
@@ -84,14 +84,14 @@ auto_reset_enabled = false
 
 Automatic retry for recoverable usage-limit and transient availability errors.
 
-| Key | Default | Behavior |
-| --- | --- | --- |
-| `enabled` | `false` | Enables automatic retry for recoverable usage and transient availability errors. |
-| `max_retries` | `3` | Maximum automatic retry attempts per failing turn. |
-| `initial_backoff_secs` | `30` | Initial retry delay for transient errors, or usage errors without reset metadata (minimum 1 second). |
-| `max_backoff_secs` | `300` | Ceiling for exponential backoff (5 minutes); never drops below the initial backoff. |
-| `reset_retry_buffer_secs` | `60` | Extra seconds to wait after a usage-limit reset timestamp before retrying. |
-| `max_reset_retry_delay_secs` | `86400` | Longest reset-based delay Codewith schedules automatically (24 hours). |
+| Key                          | Default | Behavior                                                                                             |
+| ---------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`                    | `false` | Enables automatic retry for recoverable usage and transient availability errors.                     |
+| `max_retries`                | `3`     | Maximum automatic retry attempts per failing turn.                                                   |
+| `initial_backoff_secs`       | `30`    | Initial retry delay for transient errors, or usage errors without reset metadata (minimum 1 second). |
+| `max_backoff_secs`           | `300`   | Ceiling for exponential backoff (5 minutes); never drops below the initial backoff.                  |
+| `reset_retry_buffer_secs`    | `60`    | Extra seconds to wait after a usage-limit reset timestamp before retrying.                           |
+| `max_reset_retry_delay_secs` | `86400` | Longest reset-based delay Codewith schedules automatically (24 hours).                               |
 
 ```toml
 [usage_self_heal]
@@ -108,15 +108,15 @@ max_reset_retry_delay_secs = 86400
 Switches to another saved auth profile when the selected Codewith rate-limit windows are
 fully exhausted.
 
-| Key | Default | Behavior |
-| --- | --- | --- |
-| `enabled` | `false` | Enables runtime switching to another auth profile when selected rate-limit windows are fully exhausted. |
-| `profiles` | `[]` | Preferred profile order; when empty, saved auth profiles are used in sorted name order. |
-| `on_5h_limit` | `true` | Switch when the 5h Codewith window reaches 100%. |
-| `on_weekly_limit` | `true` | Switch when the weekly Codewith window reaches 100%. |
-| `strategy` | `highest_available` | Next-profile strategy: `highest_available` prefers the profile with the most remaining limit; `ordered` follows the configured order. |
-| `heartbeat_interval_secs` | `60` | Seconds between background usage heartbeat checks (minimum 60). |
-| `heartbeat_freshness_secs` | `120` | Maximum age (seconds) of usage data used to guide selection; clamped to at least the heartbeat interval. |
+| Key                        | Default             | Behavior                                                                                                                              |
+| -------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | `false`             | Enables runtime switching to another auth profile when selected rate-limit windows are fully exhausted.                               |
+| `profiles`                 | `[]`                | Preferred profile order; when empty, saved auth profiles are used in sorted name order.                                               |
+| `on_5h_limit`              | `true`              | Switch when the 5h Codewith window reaches 100%.                                                                                      |
+| `on_weekly_limit`          | `true`              | Switch when the weekly Codewith window reaches 100%.                                                                                  |
+| `strategy`                 | `highest_available` | Next-profile strategy: `highest_available` prefers the profile with the most remaining limit; `ordered` follows the configured order. |
+| `heartbeat_interval_secs`  | `60`                | Seconds between background usage heartbeat checks (minimum 60).                                                                       |
+| `heartbeat_freshness_secs` | `120`               | Maximum age (seconds) of usage data used to guide selection; clamped to at least the heartbeat interval.                              |
 
 ```toml
 [auth_profile_auto_switch]
