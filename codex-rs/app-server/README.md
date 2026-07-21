@@ -187,9 +187,9 @@ Example with notification opt-out:
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
 - `thread/rollback` — drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success.
-- `turn/start` — add user input to a thread and begin Codewith generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Pass `modelProvider` with `model` when switching to a provider whose model slugs are not provider-prefixed. Experimental `additionalContext` injects keyed context fragments before the turn input; each entry declares its trust `kind` and may include `source` provenance for local app-store records such as OpenProjects projects, OpenTodos tasks, Conversations threads, or Mementos notes. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
+- `turn/start` — add user input to a thread and begin Codewith generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Pass `modelProvider` with `model` when switching to a provider whose model slugs are not provider-prefixed. Experimental `additionalContext` injects keyed context fragments before the turn input; normal app-server clients may only send `kind: "untrusted"` and may include `source` provenance for local app-store records such as OpenProjects projects, OpenTodos tasks, Conversations threads, or Mementos notes. `kind: "application"` is reserved for trusted server-owned context and is rejected by `turn/start`. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode".
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
-- `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Like `turn/start`, experimental `additionalContext` may refresh keyed context for the active turn. Review and manual compaction turns reject `turn/steer`.
+- `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `additionalContext` has the same trust and size limits as `turn/start` and may refresh keyed untrusted context for the active turn. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
 - `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`.
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
@@ -1353,7 +1353,12 @@ You can optionally specify config overrides on the new turn. If specified, these
 
 ### Example: Start a turn with sourced context
 
-Use experimental `additionalContext` when a host app wants Codewith to see local app-store context without adding a visible user message. The map key is the stable dedupe key for that fragment. `kind` controls trust: use `"untrusted"` for project/task/conversation/memento content unless it was generated by the trusted host application. Optional `source` metadata identifies the local record so clients can render, edit, refresh, or remove the context source without granting the agent hidden write access to that store.
+Use experimental `additionalContext` when a host app wants Codewith to see local app-store context without adding a visible user message. The map key is the stable dedupe key for that fragment. Normal app-server clients may only send entries with `kind: "untrusted"`; these are rendered as external user context. `kind: "application"` is reserved for trusted server-owned context and is rejected on client `turn/start` and `turn/steer` requests. Optional `source` metadata identifies the local record so clients can render, edit, refresh, or remove the context source without granting the agent hidden write access to that store.
+
+The request is rejected with `invalid params` before model submission if
+`additionalContext` exceeds 16 entries, a key exceeds 128 characters, a value exceeds 65,536
+bytes, or all keys, values, and source metadata exceed 131,072 bytes. Limit errors include
+`input_error_code: "input_too_large"` in the JSON-RPC error data.
 
 ```json
 { "method": "turn/start", "id": 31, "params": {
@@ -1536,6 +1541,9 @@ Use `thread/backgroundTerminals/clean` to terminate all running background termi
 
 Use `turn/steer` to append additional user input to the currently active regular turn. This does
 not emit `turn/started` and does not accept thread settings overrides.
+
+`additionalContext`, when provided, follows the same `untrusted`-only trust boundary and size
+limits documented for `turn/start`.
 
 ```json
 { "method": "turn/steer", "id": 32, "params": {

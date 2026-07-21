@@ -96,6 +96,8 @@ pub struct TurnStartParams {
     #[ts(optional = nullable)]
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Optional client-provided context fragments keyed by an opaque source identifier.
+    // App-server request validation only accepts `untrusted` here. `application` is reserved for
+    // trusted server-owned context handled before client request submission.
     #[experimental("turn/start.additionalContext")]
     #[ts(optional = nullable)]
     pub additional_context: Option<HashMap<String, AdditionalContextEntry>>,
@@ -192,6 +194,8 @@ pub struct TurnSteerParams {
     #[ts(optional = nullable)]
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
     /// Optional client-provided context fragments keyed by an opaque source identifier.
+    // App-server request validation only accepts `untrusted` here. `application` is reserved for
+    // trusted server-owned context handled before client request submission.
     #[experimental("turn/steer.additionalContext")]
     #[ts(optional = nullable)]
     pub additional_context: Option<HashMap<String, AdditionalContextEntry>>,
