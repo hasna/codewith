@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadMonitorRouting": {
       "enum": [
         "stream",
@@ -10,12 +9,13 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "command": {
       "type": "string"
     },
     "cwd": {
-      "description": "Optional working directory relative to the thread cwd. Parent directory traversal and absolute paths are rejected.",
+      "description": "Optional working directory relative to the thread cwd. Parent directory\ntraversal and absolute paths are rejected.",
       "type": [
         "string",
         "null"
@@ -25,7 +25,7 @@
       "type": "string"
     },
     "outputFile": {
-      "description": "Optional output file relative to the monitor cwd. Parent directory traversal, absolute paths, and symlink targets are rejected.",
+      "description": "Optional output file relative to the monitor cwd. Parent directory\ntraversal, absolute paths, and symlink targets are rejected.",
       "type": [
         "string",
         "null"
@@ -37,7 +37,7 @@
     "routing": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadMonitorRouting"
+          "$ref": "#/$defs/ThreadMonitorRouting"
         },
         {
           "type": "null"
@@ -49,10 +49,10 @@
     }
   },
   "required": [
-    "command",
+    "threadId",
     "name",
     "prompt",
-    "threadId"
+    "command"
   ],
   "title": "ThreadMonitorCreateParams",
   "type": "object"

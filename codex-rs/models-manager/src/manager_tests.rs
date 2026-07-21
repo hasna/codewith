@@ -26,6 +26,7 @@ const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
 const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
 const GPT_5_4_CONTEXT_WINDOW: i64 = 1_050_000;
+const CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW: i64 = 272_000;
 
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
@@ -103,6 +104,44 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
             "expected model {} in cached list",
             model.slug
         );
+    }
+}
+
+fn required_bundled_remote_gap_models(required_models: &[ModelInfo]) -> Vec<ModelInfo> {
+    let hidden_required = required_models
+        .first()
+        .expect("bundled registry should mark at least one required local model");
+    vec![
+        remote_model_with_visibility(
+            &hidden_required.slug,
+            &hidden_required.display_name,
+            /*priority*/ 0,
+            "hide",
+        ),
+        remote_model(
+            "chatgpt-authoritative-model-info",
+            "ChatGPT Model Info",
+            /*priority*/ 10,
+        ),
+    ]
+}
+
+fn assert_required_bundled_models_available_once(
+    actual_models: &[ModelInfo],
+    expected_required: &[ModelInfo],
+) {
+    for expected in expected_required {
+        let matches = actual_models
+            .iter()
+            .filter(|model| model.slug == expected.slug)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matches.len(),
+            1,
+            "required model {} should appear exactly once",
+            expected.slug
+        );
+        assert_eq!(matches[0], expected);
     }
 }
 
@@ -244,6 +283,94 @@ fn openai_manager_for_tests_with_provider_key(
         endpoint_client,
         auth_manager,
     )
+}
+
+#[tokio::test]
+async fn chatgpt_explicit_bare_gpt_5_6_resolves_to_sol() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6-sol");
+}
+
+#[tokio::test]
+async fn api_key_explicit_bare_gpt_5_6_remains_unchanged() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests_with_auth(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+        Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+            "test-api-key",
+        ))),
+    );
+
+    let model = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::Offline,
+        )
+        .await;
+
+    assert_eq!(model, "gpt-5.6");
+}
+
+#[tokio::test]
+async fn chatgpt_model_resolution_only_migrates_exact_bare_openai_gpt_5_6() {
+    let temp_dir = tempdir().expect("tempdir");
+    let manager = openai_manager_for_tests(
+        temp_dir.path().to_path_buf(),
+        TestModelsEndpoint::without_refresh(Vec::new()),
+    );
+    let openai_config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    let migrated = manager.get_model_info("gpt-5.6", &openai_config).await;
+    assert_eq!(migrated.slug, "gpt-5.6-sol");
+
+    for model in [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6",
+    ] {
+        let resolved = manager.get_model_info(model, &openai_config).await;
+        assert_eq!(resolved.slug, model);
+    }
+
+    let custom_config = ModelsManagerConfig {
+        model_provider_id: Some("custom-openai-compatible".to_string()),
+        ..Default::default()
+    };
+    let custom_default = manager
+        .get_default_model(
+            &Some("gpt-5.6".to_string()),
+            &custom_config,
+            RefreshStrategy::Offline,
+        )
+        .await;
+    assert_eq!(custom_default, "gpt-5.6");
+    let custom_info = manager.get_model_info("gpt-5.6", &custom_config).await;
+    assert_eq!(custom_info.slug, "gpt-5.6");
 }
 
 fn openai_manager_for_tests_with_provider_key_and_catalog(
@@ -524,6 +651,108 @@ async fn get_model_info_keeps_chatgpt_remote_gpt_5_5_context_window() {
 }
 
 #[tokio::test]
+async fn get_model_info_caps_bundled_api_sized_gpt_context_window_for_chatgpt_auth() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+
+    for (slug, expected_fallback_metadata) in [
+        ("gpt-5.4", false),
+        ("gpt-5.5", false),
+        ("gpt-5.6", false),
+        ("gpt-5.6-sol", false),
+        ("gpt-5.6-terra", false),
+        ("gpt-5.6-luna", false),
+        ("openai/gpt-5.5", false),
+    ] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(
+            model_info.context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default context window"
+        );
+        assert_eq!(
+            model_info.max_context_window,
+            Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW),
+            "{slug} should use the subscription-sized default max context window"
+        );
+        assert_eq!(
+            model_info.used_fallback_model_metadata, expected_fallback_metadata,
+            "{slug} fallback metadata state"
+        );
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_auth_caps_api_sized_remote_gpt_context_window() {
+    let mut remote = remote_model(GPT_5_5_MODEL_ID, "GPT-5.5", /*priority*/ 0);
+    remote.context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    remote.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![vec![remote]]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        ..Default::default()
+    };
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(
+        model_info.context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert_eq!(
+        model_info.max_context_window,
+        Some(CHATGPT_DEFAULT_GPT_CONTEXT_WINDOW)
+    );
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_explicit_gpt_context_window_override() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        model_context_window: Some(500_000),
+        ..Default::default()
+    };
+
+    let model_info = manager.get_model_info(GPT_5_5_MODEL_ID, &config).await;
+
+    assert_eq!(model_info.context_window, Some(500_000));
+    assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[tokio::test]
+async fn chatgpt_auth_preserves_api_sized_gpt_context_window_for_non_openai_provider() {
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(Vec::new());
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openrouter".to_string()),
+        ..Default::default()
+    };
+
+    for slug in [GPT_5_5_MODEL_ID, "openrouter/gpt-5.5"] {
+        let model_info = manager.get_model_info(slug, &config).await;
+        assert_eq!(model_info.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+        assert_eq!(model_info.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+    }
+}
+
+#[tokio::test]
 async fn get_model_info_keeps_chatgpt_remote_gpt_5_4_context_window() {
     let remote_context_window = 273_000;
     let remote_max_context_window = 274_000;
@@ -723,24 +952,37 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(vec![remote_models]);
     let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
-    let bundled_slug = load_remote_models_from_file()
-        .expect("bundled models should parse")
-        .first()
-        .expect("bundled models should contain at least one model")
-        .slug
-        .clone();
 
     manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
         .await
         .expect("refresh succeeds");
+    let remote_models = manager.get_remote_models().await;
+    let bundled_slug = load_remote_models_from_file()
+        .expect("bundled models should parse")
+        .into_iter()
+        .find(|bundled| {
+            !remote_models
+                .iter()
+                .any(|remote| remote.slug == bundled.slug)
+        })
+        .expect("bundled models should contain at least one non-required model")
+        .slug;
 
     let model_info = manager
         .get_model_info(&bundled_slug, &ModelsManagerConfig::default())
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    // The ChatGPT remote catalog is authoritative, so a bundled slug absent from
+    // it is resolved via a fallback rather than the bundled catalog's own entry.
+    // Authoritative catalog entries carry a `List`/`Hide` visibility; both the
+    // generic and the known-provider (e.g. OpenAI GPT-5.x) fallbacks yield
+    // `None`, which is the reliable signal that the bundled entry was not used.
+    assert_eq!(
+        model_info.visibility,
+        codex_protocol::openai_models::ModelVisibility::None,
+    );
 }
 
 #[tokio::test]
@@ -769,6 +1011,94 @@ async fn refresh_available_models_keeps_codex_spark_when_chatgpt_remote_omits_it
     assert_eq!(spark.input_modalities, vec![InputModality::Text]);
     assert_eq!(spark.default_reasoning_level, Some(ReasoningEffort::High));
     assert!(!spark.supported_in_api);
+}
+
+#[tokio::test]
+async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_remote() {
+    let required_models = crate::model_info::required_bundled_model_infos();
+    let remote_models = required_bundled_remote_gap_models(&required_models);
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let models = manager.get_remote_models().await;
+    assert_models_contain(&models, &remote_models);
+    assert_required_bundled_models_available_once(&models, &required_models);
+}
+
+#[tokio::test]
+async fn chatgpt_remote_catalog_omission_injects_only_supported_gpt_5_6_variants() {
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 1),
+        remote_model(
+            "chatgpt-authoritative-model-info",
+            "ChatGPT Model Info",
+            /*priority*/ 10,
+        ),
+    ];
+    let codex_home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![remote_models]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint);
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("refresh succeeds");
+
+    let gpt_5_6_models = manager
+        .list_models(RefreshStrategy::Offline)
+        .await
+        .into_iter()
+        .filter(|model| model.model.starts_with("gpt-5.6"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        gpt_5_6_models
+            .iter()
+            .map(|model| model.model.as_str())
+            .collect::<Vec<_>>(),
+        vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    );
+    assert!(gpt_5_6_models[0].is_default);
+}
+
+#[tokio::test]
+async fn refresh_available_models_keeps_required_bundled_models_for_chatgpt_cache() {
+    let required_models = crate::model_info::required_bundled_model_infos();
+    let remote_models = required_bundled_remote_gap_models(&required_models);
+    let codex_home = tempdir().expect("temp dir");
+    let fetch_endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
+    let fetch_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), fetch_endpoint.clone());
+
+    fetch_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    let cache_endpoint = TestModelsEndpoint::new(Vec::new());
+    let cache_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+
+    cache_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("cached refresh succeeds");
+
+    assert_eq!(
+        cache_endpoint.fetch_count(),
+        0,
+        "fresh cache should avoid a model fetch"
+    );
+
+    let models = cache_manager.get_remote_models().await;
+    assert_models_contain(&models, &remote_models);
+    assert_required_bundled_models_available_once(&models, &required_models);
 }
 
 #[tokio::test]
@@ -843,11 +1173,14 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
 
 #[tokio::test]
 async fn refresh_available_models_uses_provider_catalog_without_bundled_fallback() {
-    let remote_models = vec![remote_model(
-        "provider-visible-remote",
-        "Provider Visible",
-        /*priority*/ 0,
-    )];
+    let remote_models = vec![
+        remote_model("gpt-5.6", "GPT-5.6", /*priority*/ 0),
+        remote_model(
+            "provider-visible-remote",
+            "Provider Visible",
+            /*priority*/ 1,
+        ),
+    ];
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
         has_provider_auth: true,
@@ -931,6 +1264,39 @@ async fn refresh_available_models_refetches_when_cache_stale() {
         endpoint.fetch_count(),
         2,
         "stale cache refresh should fetch models again"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_refetches_when_cache_timestamp_is_in_the_future() {
+    let initial_models = vec![remote_model("future", "Future", /*priority*/ 1)];
+    let codex_home = tempdir().expect("temp dir");
+    let updated_models = vec![remote_model("refetched", "Refetched", /*priority*/ 9)];
+    let endpoint = TestModelsEndpoint::new(vec![initial_models.clone(), updated_models.clone()]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint.clone());
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    manager
+        .cache_manager
+        .manipulate_cache_for_test(|fetched_at| {
+            *fetched_at = Utc::now() + chrono::Duration::hours(1);
+        })
+        .await
+        .expect("cache manipulation succeeds");
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("second refresh succeeds");
+    assert_models_contain(&manager.get_remote_models().await, &updated_models);
+    assert_eq!(
+        endpoint.fetch_count(),
+        2,
+        "future-dated cache should fetch models again"
     );
 }
 

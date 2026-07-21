@@ -7,13 +7,25 @@
 //! while keeping transcript, approval, and audit ownership in Codewith.
 
 mod acp;
+mod acp_adapter;
 mod claude;
+#[cfg(windows)]
+mod claude_windows;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
+#[cfg(windows)]
+mod windows_cmd_shim;
 
 pub use acp::*;
+pub use acp_adapter::*;
 pub use claude::*;
 pub use contract::*;
 pub use platform_sandbox::*;
 pub use runtimes::*;
+#[cfg(windows)]
+pub use windows_cmd_shim::WindowsBatchLaunchError;
+#[cfg(windows)]
+pub use windows_cmd_shim::WindowsNativeLaunch;
+#[cfg(windows)]
+pub use windows_cmd_shim::prepare_windows_batch_launch_from_source_env;

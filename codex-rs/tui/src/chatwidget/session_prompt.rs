@@ -43,7 +43,7 @@ impl ChatWidget {
         let (verb, rest) = split_first_token(trimmed);
         match verb.to_ascii_lowercase().as_str() {
             "clear" | "reset" | "unset" | "off" if rest.is_empty() => {
-                self.apply_session_prompt(None);
+                self.apply_session_prompt(/*prompt*/ None);
             }
             "show" | "status" if rest.is_empty() => {
                 self.show_session_prompt();

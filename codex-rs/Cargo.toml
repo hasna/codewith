@@ -125,7 +125,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.61"
+version = "0.1.70"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -277,13 +277,13 @@ axum = { version = "0.8", default-features = false }
 base64 = "0.22.1"
 bm25 = "2.3.2"
 bytes = "1.10.1"
-chardetng = "0.1.17"
+chardetng = "1.0.0"
 chrono = "0.4.43"
 chrono-tz = "0.10.4"
 clap = "4"
 clap_complete = "4"
 color-eyre = "0.6.3"
-constant_time_eq = "0.3.1"
+constant_time_eq = "0.5.0"
 crossbeam-channel = "0.5.15"
 croner = "3.0.1"
 crypto_box = { version = "0.9.1", features = ["seal"] }
@@ -363,18 +363,20 @@ regex-lite = "0.1.8"
 reqwest = { version = "0.12", features = ["cookies"] }
 rmcp = { version = "1.7.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
+rustix = "1.1.4"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "std",
 ] }
 rustls-native-certs = "0.8.3"
 rustls-pki-types = "1.14.0"
-schemars = "0.8.22"
+schemars = "1.2.1"
 seccompiler = "0.5.0"
 semver = "1.0"
 serde = "1"
 serde_ignored = "0.1.14"
 serde_json = "1"
+serde_json_canonicalizer = "0.3.2"
 serde_path_to_error = "0.1.20"
 serde_with = "3.17"
 serde_yaml = "0.9"
@@ -440,7 +442,7 @@ vt100 = "0.16.2"
 walkdir = "2.5.0"
 webbrowser = "1.0"
 which = "8"
-whoami = "1.6.1"
+whoami = "2.1.2"
 wildmatch = "2.6.1"
 winapi-util = "0.1.11"
 zip = "2.4.2"

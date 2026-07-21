@@ -1,8 +1,7 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "ActiveSessionCapability": {
@@ -22,30 +21,21 @@
       ],
       "type": "string"
     },
-    "AgentPath": {
-      "type": "string"
-    },
     "AuthProfileKind": {
       "oneOf": [
         {
+          "const": "unknown",
           "description": "The source did not record auth profile selection.",
-          "enum": [
-            "unknown"
-          ],
           "type": "string"
         },
         {
+          "const": "default",
           "description": "The default root auth profile was selected explicitly or by runtime default.",
-          "enum": [
-            "default"
-          ],
           "type": "string"
         },
         {
+          "const": "named",
           "description": "A named auth profile was selected.",
-          "enum": [
-            "named"
-          ],
           "type": "string"
         }
       ]
@@ -61,9 +51,9 @@
           ]
         },
         "activeFlags": {
-          "description": "Active-status flags from the thread runtime. Empty for non-active sessions.",
+          "description": "Active-status flags from the thread runtime. Empty for non-active\nsessions.",
           "items": {
-            "$ref": "#/definitions/ThreadActiveFlag"
+            "$ref": "#/$defs/ThreadActiveFlag"
           },
           "type": "array"
         },
@@ -82,11 +72,7 @@
           ]
         },
         "authProfileKind": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/AuthProfileKind"
-            }
-          ],
+          "$ref": "#/$defs/AuthProfileKind",
           "default": "unknown",
           "description": "Whether `authProfile` is unknown, the default root profile, or a named profile."
         },
@@ -95,7 +81,7 @@
           "type": "integer"
         },
         "cwd": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "displayName": {
           "type": [
@@ -106,7 +92,7 @@
         "gitInfo": {
           "anyOf": [
             {
-              "$ref": "#/definitions/LocalSessionGitInfo"
+              "$ref": "#/$defs/LocalSessionGitInfo"
             },
             {
               "type": "null"
@@ -131,32 +117,32 @@
         "peer": {
           "anyOf": [
             {
-              "$ref": "#/definitions/LocalSessionPeer"
+              "$ref": "#/$defs/LocalSessionPeer"
             },
             {
               "type": "null"
             }
           ],
-          "description": "Live active-session routing metadata when this record can receive in-memory activeSession/send traffic."
+          "description": "Live active-session routing metadata when this record can receive\nin-memory activeSession/send traffic."
         },
         "redactions": {
           "items": {
-            "$ref": "#/definitions/LocalSessionRedaction"
+            "$ref": "#/$defs/LocalSessionRedaction"
           },
           "type": "array"
         },
         "runtimeSessionId": {
-          "description": "Live session instance id when known. Persisted-only records return null because a durable thread id is not the same as a runtime session id.",
+          "description": "Live session instance id when known. Persisted-only records return null\nbecause a durable thread id is not the same as a runtime session id.",
           "type": [
             "string",
             "null"
           ]
         },
         "source": {
-          "$ref": "#/definitions/SessionSource"
+          "$ref": "#/$defs/SessionSource"
         },
         "status": {
-          "$ref": "#/definitions/LocalSessionStatus"
+          "$ref": "#/$defs/LocalSessionStatus"
         },
         "threadId": {
           "description": "Durable Codewith thread id for the session record.",
@@ -165,7 +151,7 @@
         "threadSource": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadSource"
+              "$ref": "#/$defs/ThreadSource"
             },
             {
               "type": "null"
@@ -178,15 +164,15 @@
         }
       },
       "required": [
+        "threadId",
+        "status",
         "activeFlags",
-        "createdAt",
         "cwd",
         "modelProvider",
-        "redactions",
         "source",
-        "status",
-        "threadId",
-        "updatedAt"
+        "createdAt",
+        "updatedAt",
+        "redactions"
       ],
       "type": "object"
     },
@@ -211,12 +197,12 @@
       "properties": {
         "capabilities": {
           "items": {
-            "$ref": "#/definitions/ActiveSessionCapability"
+            "$ref": "#/$defs/ActiveSessionCapability"
           },
           "type": "array"
         },
         "kind": {
-          "$ref": "#/definitions/ActiveSessionPeerKind"
+          "$ref": "#/$defs/ActiveSessionPeerKind"
         },
         "lastSeenAt": {
           "format": "int64",
@@ -227,10 +213,10 @@
         }
       },
       "required": [
-        "capabilities",
+        "peerId",
         "kind",
-        "lastSeenAt",
-        "peerId"
+        "capabilities",
+        "lastSeenAt"
       ],
       "type": "object"
     },
@@ -283,15 +269,15 @@
         }
       },
       "required": [
-        "durableMailbox",
-        "filesystemMutation",
-        "goals",
         "localSessions",
+        "durableMailbox",
         "pendingInteractions",
-        "remoteDispatch",
+        "goals",
         "scheduledTasks",
+        "remoteDispatch",
+        "workflowMutation",
         "shellExecution",
-        "workflowMutation"
+        "filesystemMutation"
       ],
       "type": "object"
     },
@@ -300,7 +286,7 @@
         "goal": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ThreadGoal"
+              "$ref": "#/$defs/ThreadGoal"
             },
             {
               "type": "null"
@@ -309,24 +295,24 @@
         },
         "goalPlans": {
           "items": {
-            "$ref": "#/definitions/ThreadGoalPlan"
+            "$ref": "#/$defs/ThreadGoalPlan"
           },
           "type": "array"
         },
         "schedules": {
           "items": {
-            "$ref": "#/definitions/ThreadSchedule"
+            "$ref": "#/$defs/ThreadSchedule"
           },
           "type": "array"
         },
         "session": {
-          "$ref": "#/definitions/LocalSession"
+          "$ref": "#/$defs/LocalSession"
         }
       },
       "required": [
+        "session",
         "goalPlans",
-        "schedules",
-        "session"
+        "schedules"
       ],
       "type": "object"
     },
@@ -359,7 +345,7 @@
           "additionalProperties": false,
           "properties": {
             "subAgent": {
-              "$ref": "#/definitions/SubAgentSource"
+              "$ref": "#/$defs/SubAgentSource"
             }
           },
           "required": [
@@ -393,15 +379,11 @@
                   ]
                 },
                 "agent_path": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/definitions/AgentPath"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "agent_role": {
                   "default": null,
@@ -415,12 +397,12 @@
                   "type": "integer"
                 },
                 "parent_thread_id": {
-                  "$ref": "#/definitions/ThreadId"
+                  "$ref": "#/$defs/ThreadId"
                 }
               },
               "required": [
-                "depth",
-                "parent_thread_id"
+                "parent_thread_id",
+                "depth"
               ],
               "type": "object"
             }
@@ -466,7 +448,7 @@
           "type": "string"
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalStatus"
+          "$ref": "#/$defs/ThreadGoalStatus"
         },
         "threadId": {
           "type": "string"
@@ -498,13 +480,13 @@
         }
       },
       "required": [
-        "createdAt",
+        "threadId",
         "goalId",
         "objective",
         "status",
-        "threadId",
-        "timeUsedSeconds",
         "tokensUsed",
+        "timeUsedSeconds",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -516,7 +498,7 @@
           "type": "integer"
         },
         "autoExecute": {
-          "$ref": "#/definitions/ThreadGoalPlanAutoExecute"
+          "$ref": "#/$defs/ThreadGoalPlanAutoExecute"
         },
         "blockedNodeCount": {
           "format": "int64",
@@ -555,7 +537,7 @@
         },
         "nodes": {
           "items": {
-            "$ref": "#/definitions/ThreadGoalPlanNode"
+            "$ref": "#/$defs/ThreadGoalPlanNode"
           },
           "type": "array"
         },
@@ -582,7 +564,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalPlanStatus"
+          "$ref": "#/$defs/ThreadGoalPlanStatus"
         },
         "threadId": {
           "type": "string"
@@ -605,26 +587,26 @@
         }
       },
       "required": [
-        "activeNodeCount",
-        "autoExecute",
-        "blockedNodeCount",
-        "budgetLimitedNodeCount",
-        "cancelledNodeCount",
-        "completedNodeCount",
-        "createdAt",
-        "deferredNodeCount",
-        "nodeCount",
-        "nodes",
-        "pausedNodeCount",
-        "pendingNodeCount",
         "planId",
-        "readyNodeCount",
-        "status",
         "threadId",
-        "totalTimeUsedSeconds",
+        "status",
+        "autoExecute",
         "totalTokensUsed",
+        "totalTimeUsedSeconds",
+        "nodeCount",
+        "completedNodeCount",
+        "readyNodeCount",
+        "activeNodeCount",
+        "pendingNodeCount",
+        "pausedNodeCount",
+        "blockedNodeCount",
+        "usageLimitedNodeCount",
+        "budgetLimitedNodeCount",
+        "deferredNodeCount",
+        "cancelledNodeCount",
+        "createdAt",
         "updatedAt",
-        "usageLimitedNodeCount"
+        "nodes"
       ],
       "type": "object"
     },
@@ -681,7 +663,7 @@
           "type": "integer"
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalPlanNodeStatus"
+          "$ref": "#/$defs/ThreadGoalPlanNodeStatus"
         },
         "threadId": {
           "type": "string"
@@ -713,20 +695,20 @@
         }
       },
       "required": [
-        "assignedThreadId",
-        "createdAt",
-        "dependsOn",
-        "key",
         "nodeId",
-        "objective",
         "planId",
-        "priority",
-        "ready",
-        "sequence",
-        "status",
         "threadId",
-        "timeUsedSeconds",
+        "assignedThreadId",
+        "key",
+        "sequence",
+        "priority",
+        "objective",
+        "status",
+        "ready",
         "tokensUsed",
+        "timeUsedSeconds",
+        "dependsOn",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -789,7 +771,7 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/definitions/ThreadPendingInteractionKind"
+          "$ref": "#/$defs/ThreadPendingInteractionKind"
         },
         "noClientPolicy": {
           "type": "string"
@@ -840,10 +822,10 @@
           ]
         },
         "sourceKind": {
-          "$ref": "#/definitions/ThreadPendingInteractionSourceKind"
+          "$ref": "#/$defs/ThreadPendingInteractionSourceKind"
         },
         "status": {
-          "$ref": "#/definitions/ThreadPendingInteractionStatus"
+          "$ref": "#/$defs/ThreadPendingInteractionStatus"
         },
         "terminalAt": {
           "format": "int64",
@@ -880,18 +862,18 @@
         }
       },
       "required": [
-        "createdAt",
         "interactionId",
+        "threadId",
+        "sourceKind",
         "kind",
-        "noClientPolicy",
+        "status",
         "requestPayload",
-        "requestPayloadPreview",
         "requestPayloadSha256",
+        "requestPayloadPreview",
         "requestRedactions",
         "responseRedactions",
-        "sourceKind",
-        "status",
-        "threadId",
+        "noClientPolicy",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -983,16 +965,16 @@
           "type": "string"
         },
         "promptSource": {
-          "$ref": "#/definitions/ThreadSchedulePromptSource"
+          "$ref": "#/$defs/ThreadSchedulePromptSource"
         },
         "schedule": {
-          "$ref": "#/definitions/ThreadScheduleSpec"
+          "$ref": "#/$defs/ThreadScheduleSpec"
         },
         "scheduleId": {
           "type": "string"
         },
         "status": {
-          "$ref": "#/definitions/ThreadScheduleStatus"
+          "$ref": "#/$defs/ThreadScheduleStatus"
         },
         "threadId": {
           "type": "string"
@@ -1006,16 +988,16 @@
         }
       },
       "required": [
-        "createdAt",
-        "failureCount",
+        "threadId",
+        "scheduleId",
         "nestingDepth",
         "prompt",
         "promptSource",
         "schedule",
-        "scheduleId",
-        "status",
-        "threadId",
         "timezone",
+        "status",
+        "failureCount",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -1040,9 +1022,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "once"
-              ],
+              "const": "once",
               "title": "OnceThreadScheduleSpecType",
               "type": "string"
             }
@@ -1056,9 +1036,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "dynamic"
-              ],
+              "const": "dynamic",
               "title": "DynamicThreadScheduleSpecType",
               "type": "string"
             }
@@ -1076,19 +1054,17 @@
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "interval"
-              ],
+              "const": "interval",
               "title": "IntervalThreadScheduleSpecType",
               "type": "string"
             },
             "unit": {
-              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+              "$ref": "#/$defs/ThreadScheduleIntervalUnit"
             }
           },
           "required": [
-            "amount",
             "type",
+            "amount",
             "unit"
           ],
           "title": "IntervalThreadScheduleSpec",
@@ -1100,16 +1076,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "cron"
-              ],
+              "const": "cron",
               "title": "CronThreadScheduleSpecType",
               "type": "string"
             }
           },
           "required": [
-            "expression",
-            "type"
+            "type",
+            "expression"
           ],
           "title": "CronThreadScheduleSpec",
           "type": "object"
@@ -1133,9 +1107,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "capabilities": {
-      "$ref": "#/definitions/MissionControlCapabilities"
+      "$ref": "#/$defs/MissionControlCapabilities"
     },
     "nextPendingInteractionCursor": {
       "type": [
@@ -1151,21 +1126,21 @@
     },
     "pendingInteractions": {
       "items": {
-        "$ref": "#/definitions/ThreadPendingInteraction"
+        "$ref": "#/$defs/ThreadPendingInteraction"
       },
       "type": "array"
     },
     "sessions": {
       "items": {
-        "$ref": "#/definitions/MissionControlSession"
+        "$ref": "#/$defs/MissionControlSession"
       },
       "type": "array"
     }
   },
   "required": [
-    "capabilities",
+    "sessions",
     "pendingInteractions",
-    "sessions"
+    "capabilities"
   ],
   "title": "MissionControlOverviewResponse",
   "type": "object"

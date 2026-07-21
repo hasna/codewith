@@ -29,16 +29,29 @@ impl ChatWidget {
                     StatusDetailsCapitalization::Preserve => trimmed.to_string(),
                 }
             });
-        self.status_state.set_status(StatusIndicatorState {
-            header: header.clone(),
-            details: details.clone(),
-            details_max_lines,
-        });
-        self.bottom_pane.update_status(
+        let status = StatusIndicatorState {
             header,
             details,
-            StatusDetailsCapitalization::Preserve,
             details_max_lines,
+        };
+        self.collab_wait_status.record_base_status(status.clone());
+        self.apply_status(status);
+        if self.collab_wait_status.has_active_waits() {
+            self.refresh_collab_wait_status_at(Instant::now());
+        }
+    }
+
+    pub(super) fn set_collab_wait_status(&mut self, status: StatusIndicatorState) {
+        self.apply_status(status);
+    }
+
+    fn apply_status(&mut self, status: StatusIndicatorState) {
+        self.status_state.set_status(status.clone());
+        self.bottom_pane.update_status(
+            status.header,
+            status.details,
+            StatusDetailsCapitalization::Preserve,
+            status.details_max_lines,
         );
         let uses_status = |items: Option<&[String]>| {
             items.is_some_and(|items| {

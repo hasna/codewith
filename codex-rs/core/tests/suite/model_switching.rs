@@ -141,6 +141,93 @@ fn test_model_info(
     }
 }
 
+async fn response_model_after_legacy_bare_thread_setting(
+    auth: CodexAuth,
+    model_provider_id: &str,
+) -> Result<String> {
+    let server = MockServer::start().await;
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![test_model_info(
+                "gpt-5.6",
+                "GPT-5.6",
+                "legacy bare model",
+                default_input_modalities(),
+            )],
+        },
+    )
+    .await;
+    let response = mount_sse_once(&server, sse_completed("resp-legacy-gpt-5.6")).await;
+    let model_provider_id = model_provider_id.to_string();
+    let mut builder = test_codex().with_auth(auth).with_config(move |config| {
+        config.model_provider_id = model_provider_id;
+    });
+    let test = builder.build(&server).await?;
+
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
+            model: Some("gpt-5.6".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "use the selected model".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: None,
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let body = response.single_request().body_json();
+    body["model"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("response request should include a model"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_bare_gpt_5_6_thread_setting_is_resolved_for_chatgpt_only() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let chatgpt_model = response_model_after_legacy_bare_thread_setting(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        "openai",
+    )
+    .await?;
+    let api_model =
+        response_model_after_legacy_bare_thread_setting(CodexAuth::from_api_key("dummy"), "openai")
+            .await?;
+    let custom_provider_model = response_model_after_legacy_bare_thread_setting(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        "custom-openai-compatible",
+    )
+    .await?;
+
+    assert_eq!(
+        (
+            chatgpt_model.as_str(),
+            api_model.as_str(),
+            custom_provider_model.as_str()
+        ),
+        ("gpt-5.6-sol", "gpt-5.6", "gpt-5.6")
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn model_change_appends_model_instructions_developer_message() -> Result<()> {
     skip_if_no_network!(Ok(()));

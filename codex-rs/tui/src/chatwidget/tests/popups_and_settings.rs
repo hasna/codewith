@@ -2950,7 +2950,8 @@ async fn profile_selection_popup_snapshot_and_selection() {
         Ok(AppEvent::SwitchAuthProfile {
             profile,
             reason,
-            resume_queued_input
+            resume_queued_input,
+        ..
         })
             if profile.as_deref() == Some("personal")
                 && reason == crate::app_event::AuthProfileSwitchReason::Manual
@@ -2962,7 +2963,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::ReloginAuthProfile { profile }) if profile == "personal"
+        Ok(AppEvent::ReloginAuthProfile { profile, .. }) if profile == "personal"
     );
 
     chat.open_profile_popup();
@@ -2970,15 +2971,15 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenAuthProfileRenamePrompt { profile }) if profile == "personal"
+        Ok(AppEvent::OpenAuthProfileRenamePrompt { profile, .. }) if profile == "personal"
     );
 
-    chat.open_auth_profile_settings_popup("personal".to_string());
+    chat.open_auth_profile_settings_popup("personal".to_string(), chat.rate_limit_reset_generation);
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile }) if profile == "personal"
+        Ok(AppEvent::OpenAuthProfileDeleteConfirm { profile, .. }) if profile == "personal"
     );
 
     chat.open_profile_popup();
@@ -2986,7 +2987,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::MoveAuthProfile { profile, direction })
+        Ok(AppEvent::MoveAuthProfile { profile, direction, .. })
             if profile == "personal"
                 && direction == codex_login::AuthProfileMoveDirection::Down
     );
@@ -2996,7 +2997,7 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::MoveAuthProfile { profile, direction })
+        Ok(AppEvent::MoveAuthProfile { profile, direction, .. })
             if profile == "personal"
                 && direction == codex_login::AuthProfileMoveDirection::Up
     );
@@ -3006,7 +3007,10 @@ async fn profile_selection_popup_snapshot_and_selection() {
         chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAuthProfileLoginPrompt));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAuthProfileLoginPrompt { .. })
+    );
 }
 
 #[tokio::test]
@@ -3015,7 +3019,7 @@ async fn profile_login_prompt_snapshot_and_submit() {
     chat.thread_id = Some(ThreadId::new());
     while rx.try_recv().is_ok() {}
 
-    chat.open_auth_profile_login_prompt();
+    chat.open_auth_profile_login_prompt(chat.rate_limit_reset_generation);
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_prompt", popup);
@@ -3027,6 +3031,7 @@ async fn profile_login_prompt_snapshot_and_submit() {
     let subscription_provider = match rx.try_recv() {
         Ok(AppEvent::OpenAuthProfileNamePrompt {
             subscription_provider,
+            ..
         }) => subscription_provider,
         event => panic!("expected profile provider name prompt event, got {event:?}"),
     };
@@ -3034,7 +3039,7 @@ async fn profile_login_prompt_snapshot_and_submit() {
         subscription_provider,
         AuthProfileSubscriptionProvider::ChatGpt
     );
-    chat.open_auth_profile_name_prompt(subscription_provider);
+    chat.open_auth_profile_name_prompt(subscription_provider, chat.rate_limit_reset_generation);
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_name_prompt", popup);
@@ -3050,7 +3055,8 @@ async fn profile_login_prompt_snapshot_and_submit() {
         rx.try_recv(),
         Ok(AppEvent::LoginNewAuthProfile {
             profile,
-            subscription_provider
+            subscription_provider,
+            ..
         }) if profile == "work-dev"
             && subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
     );
@@ -3080,6 +3086,7 @@ async fn profile_login_validation_errors_do_not_start_browser_login() {
     chat.start_auth_profile_login(
         "nested/work".to_string(),
         AuthProfileSubscriptionProvider::ChatGpt,
+        chat.rate_limit_reset_generation,
     );
     let rendered = drain_insert_history(&mut rx)
         .iter()
@@ -3102,6 +3109,7 @@ async fn profile_login_duplicate_errors_do_not_start_browser_login() {
     chat.start_auth_profile_login(
         "personal".to_string(),
         AuthProfileSubscriptionProvider::ChatGpt,
+        chat.rate_limit_reset_generation,
     );
     let rendered = drain_insert_history(&mut rx)
         .iter()
@@ -3121,7 +3129,11 @@ async fn profile_login_api_only_mode_points_to_cli_flow() {
     chat.config.forced_login_method = Some(codex_protocol::config_types::ForcedLoginMethod::Api);
     while rx.try_recv().is_ok() {}
 
-    chat.start_auth_profile_login("work".to_string(), AuthProfileSubscriptionProvider::ChatGpt);
+    chat.start_auth_profile_login(
+        "work".to_string(),
+        AuthProfileSubscriptionProvider::ChatGpt,
+        chat.rate_limit_reset_generation,
+    );
     let rendered = drain_insert_history(&mut rx)
         .iter()
         .map(|lines| lines_to_single_string(lines))
@@ -3142,6 +3154,7 @@ async fn external_profile_login_creates_metadata_profile() {
     chat.start_auth_profile_login(
         "claude-work".to_string(),
         AuthProfileSubscriptionProvider::ClaudeAi,
+        chat.rate_limit_reset_generation,
     );
 
     assert_matches!(
@@ -3150,6 +3163,7 @@ async fn external_profile_login_creates_metadata_profile() {
             profile,
             success: true,
             error: None,
+            ..
         }) if profile == "claude-work"
     );
     let profiles = list_auth_profiles(&chat.config.codex_home, AuthCredentialsStoreMode::File)
@@ -3234,19 +3248,44 @@ async fn profile_popup_requests_usage_heartbeat_when_selected_usage_is_missing()
 }
 
 #[tokio::test]
-async fn profile_popup_skips_usage_heartbeat_when_selected_usage_is_fresh() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+async fn usage_heartbeat_preserves_selected_refresh_throttle_and_non_selected_expiry() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.selected_auth_profile = Some("work".to_string());
     set_chatgpt_auth(&mut chat);
     save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "personal@example.com");
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+        )],
+    );
     chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
-        /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+        /*secondary_used_percent*/ 100, /*primary_used_percent*/ 100,
     )));
-    while rx.try_recv().is_ok() {}
 
-    chat.open_profile_popup();
-    assert_no_rate_limit_refresh_event(&mut rx);
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+    assert_eq!(chat.auth_profile_usage_refresh_targets(), Vec::new());
+
+    let freshness_secs = i64::try_from(
+        chat.config
+            .auth_profile_auto_switch
+            .heartbeat_freshness_secs,
+    )
+    .unwrap_or(i64::MAX - 1);
+    chat.auth_profile_rate_limit_snapshots_by_profile
+        .get_mut(&Some("personal".to_string()))
+        .and_then(|snapshots| snapshots.get_mut("codex"))
+        .expect("personal usage snapshot")
+        .captured_at = Local::now() - chrono::Duration::seconds(freshness_secs.saturating_add(1));
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("personal".to_string())]
+    );
 }
 
 #[tokio::test]
@@ -3293,16 +3332,16 @@ async fn profile_delete_confirm_defaults_to_cancel() {
     chat.thread_id = Some(ThreadId::new());
     while rx.try_recv().is_ok() {}
 
-    chat.open_auth_profile_delete_confirm("personal".to_string());
+    chat.open_auth_profile_delete_confirm("personal".to_string(), chat.rate_limit_reset_generation);
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(rx.try_recv().is_err());
 
-    chat.open_auth_profile_delete_confirm("personal".to_string());
+    chat.open_auth_profile_delete_confirm("personal".to_string(), chat.rate_limit_reset_generation);
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::DeleteAuthProfile { profile }) if profile == "personal"
+        Ok(AppEvent::DeleteAuthProfile { profile, .. }) if profile == "personal"
     );
 }
 
@@ -3336,10 +3375,33 @@ async fn config_popup_snapshot_and_toggle() {
     );
     let account_popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_account_automation_popup", account_popup);
+    assert!(account_popup.contains("Use a usage limit reset"));
+    assert!(account_popup.contains("Usage limit auto-reset"));
     assert!(account_popup.contains("Update checks"));
     assert!(account_popup.contains("Codewith"));
     assert!(account_popup.contains("Auth profile auto-switch"));
     assert!(account_popup.contains("Session recap"));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenRateLimitResetConfirm));
+
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::AccountAutomation,
+    );
+    for _ in 0..4 {
+        chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "usage_limit.auto_reset_enabled"
+            && value == serde_json::json!(true)
+            && label == "Usage limit auto-reset"
+    );
 
     chat.open_config_section_popup(crate::common_config_options::CommonConfigSection::AiContext);
     let ai_context_popup = render_bottom_popup(&chat, /*width*/ 90);
@@ -3361,6 +3423,7 @@ async fn config_popup_snapshot_and_toggle() {
     chat.open_config_section_popup(
         crate::common_config_options::CommonConfigSection::AccountAutomation,
     );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert_matches!(

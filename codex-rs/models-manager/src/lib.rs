@@ -18,12 +18,38 @@ pub fn bundled_models_response()
     Ok(response)
 }
 
-/// Convert the client version string to a whole version string (e.g. "1.2.3-alpha.4" -> "1.2.3").
+/// Convert the advertised Codex API compatibility version to a whole version
+/// string (e.g. "1.2.3-alpha.4" -> "1.2.3").
 pub fn client_version_to_whole() -> String {
-    format!(
-        "{}.{}.{}",
-        env!("CARGO_PKG_VERSION_MAJOR"),
-        env!("CARGO_PKG_VERSION_MINOR"),
-        env!("CARGO_PKG_VERSION_PATCH")
-    )
+    version_without_build_metadata(&codex_protocol::client_version::codex_api_version()).to_string()
+}
+
+fn version_without_build_metadata(version: &str) -> &str {
+    version.split(['-', '+']).next().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_version_to_whole_uses_codex_api_compat_version() {
+        if std::env::var(codex_protocol::client_version::CODEX_API_VERSION_ENV_VAR).is_err() {
+            assert_eq!(
+                client_version_to_whole(),
+                codex_protocol::client_version::CODEX_API_COMPAT_VERSION
+            );
+            assert_ne!(client_version_to_whole(), env!("CARGO_PKG_VERSION"));
+        }
+    }
+
+    #[test]
+    fn version_without_build_metadata_strips_prerelease_and_build_metadata() {
+        assert_eq!(version_without_build_metadata("0.144.4-alpha.9"), "0.144.4");
+        assert_eq!(version_without_build_metadata("0.144.4+build.1"), "0.144.4");
+        assert_eq!(
+            version_without_build_metadata("0.144.4-alpha.9+build.1"),
+            "0.144.4"
+        );
+    }
 }

@@ -90,6 +90,72 @@ async fn get_account_rate_limits_requires_chatgpt_auth() -> Result<()> {
 }
 
 #[tokio::test]
+async fn get_account_rate_limits_without_account_id_preserves_limits_but_hides_resets() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let server = MockServer::start().await;
+    write_chatgpt_base_url(codex_home.path(), &server.uri())?;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/usage"))
+        .and(header("authorization", "Bearer chatgpt-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {
+                    "used_percent": 42,
+                    "limit_window_seconds": 3600,
+                    "reset_after_seconds": 120,
+                    "reset_at": 1783987200
+                }
+            },
+            "rate_limit_reset_credits": { "available_count": 1 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/codex/rate-limit-reset-credits"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("CODEWITH_AUTH_PROFILE", None),
+            ("CODEX_AUTH_PROFILE", None),
+            ("OPENAI_API_KEY", None),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let request_id = mcp.send_get_account_rate_limits_request().await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let result = response.result;
+
+    assert_eq!(
+        result["accountIdentityFingerprint"],
+        serde_json::Value::Null
+    );
+    assert_eq!(result["rateLimits"]["primary"]["usedPercent"], 42);
+    assert_eq!(result["rateLimitResetCredits"], serde_json::Value::Null);
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_chatgpt_auth(
@@ -183,8 +249,14 @@ async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
     .await??;
 
     let received: GetAccountRateLimitsResponse = to_response(response)?;
+    let account_identity_fingerprint = received
+        .account_identity_fingerprint
+        .clone()
+        .expect("account identity fingerprint should be present");
+    assert_opaque_account_identity(&account_identity_fingerprint, "account-123");
 
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: Some(account_identity_fingerprint),
         rate_limits: RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
@@ -259,6 +331,7 @@ async fn get_account_rate_limits_returns_snapshot() -> Result<()> {
             .into_iter()
             .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
@@ -317,6 +390,7 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
         })
         .await?;
 
@@ -326,6 +400,11 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
     )
     .await??;
     let received: GetAccountRateLimitsResponse = to_response(response)?;
+    let account_identity_fingerprint = received
+        .account_identity_fingerprint
+        .clone()
+        .expect("account identity fingerprint should be present");
+    assert_opaque_account_identity(&account_identity_fingerprint, "work-account");
     let expected_snapshot = RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
         limit_name: None,
@@ -341,12 +420,14 @@ async fn get_account_rate_limits_reads_named_auth_profile() -> Result<()> {
         rate_limit_reached_type: None,
     };
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: Some(account_identity_fingerprint),
         rate_limits: expected_snapshot.clone(),
         rate_limits_by_limit_id: Some(
             [("codex".to_string(), expected_snapshot)]
                 .into_iter()
                 .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
@@ -419,6 +500,7 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(None),
+            ..Default::default()
         })
         .await?;
 
@@ -428,6 +510,11 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
     )
     .await??;
     let received: GetAccountRateLimitsResponse = to_response(response)?;
+    let account_identity_fingerprint = received
+        .account_identity_fingerprint
+        .clone()
+        .expect("account identity fingerprint should be present");
+    assert_opaque_account_identity(&account_identity_fingerprint, "root-account");
     let expected_snapshot = RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
         limit_name: None,
@@ -443,12 +530,14 @@ async fn get_account_rate_limits_reads_root_auth_profile_when_selected_profile_d
         rate_limit_reached_type: None,
     };
     let expected = GetAccountRateLimitsResponse {
+        account_identity_fingerprint: Some(account_identity_fingerprint),
         rate_limits: expected_snapshot.clone(),
         rate_limits_by_limit_id: Some(
             [("codex".to_string(), expected_snapshot)]
                 .into_iter()
                 .collect(),
         ),
+        rate_limit_reset_credits: None,
     };
     assert_eq!(received, expected);
 
@@ -466,6 +555,7 @@ async fn get_account_rate_limits_rejects_invalid_auth_profile_name() -> Result<(
     let request_id = mcp
         .send_get_account_rate_limits_request_with_params(GetAccountRateLimitsParams {
             auth_profile: Some(Some("bad/profile".to_string())),
+            ..Default::default()
         })
         .await?;
 
@@ -703,6 +793,12 @@ async fn login_with_api_key(mcp: &mut TestAppServer, api_key: &str) -> Result<()
     assert_eq!(login, LoginAccountResponse::ApiKey {});
 
     Ok(())
+}
+
+fn assert_opaque_account_identity(fingerprint: &str, raw_account_id: &str) {
+    assert!(fingerprint.starts_with("opaque:"));
+    assert_eq!(fingerprint.len(), "opaque:".len() + 64);
+    assert!(!fingerprint.contains(raw_account_id));
 }
 
 fn write_chatgpt_base_url(codex_home: &Path, base_url: &str) -> std::io::Result<()> {

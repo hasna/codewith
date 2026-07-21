@@ -1,0 +1,39 @@
+{
+  "pr_view": {
+    "baseRefName": "main",
+    "headRefName": "feature",
+    "headRefOid": "2222222222222222222222222222222222222222",
+    "headRepositoryOwner": {
+      "login": "hasna"
+    },
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "number": 215,
+    "reviewDecision": "APPROVED",
+    "reviews": [
+      {
+        "author": {
+          "login": "reviewer-a"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "state": "OPEN",
+    "url": "https://github.com/hasna/codewith/pull/215"
+  },
+  "checks": [
+    {
+      "conclusion": "failure",
+      "link": "https://github.com/hasna/codewith/actions/runs/2/job/1",
+      "name": "legacy failed check",
+      "status": "completed"
+    },
+    {
+      "bucket": "cancel",
+      "link": "https://github.com/hasna/codewith/actions/runs/2/job/2",
+      "name": "current cancelled check",
+      "state": "CANCELLED"
+    }
+  ]
+}

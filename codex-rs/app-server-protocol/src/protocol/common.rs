@@ -994,6 +994,24 @@ client_request_definitions! {
         serialization: global("worktree"),
         response: v2::WorktreeMergeCandidateDismissResponse,
     },
+    #[experimental("pullRequest/overview")]
+    PullRequestOverview => "pullRequest/overview" {
+        params: v2::PullRequestOverviewParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestOverviewResponse,
+    },
+    #[experimental("pullRequest/list")]
+    PullRequestList => "pullRequest/list" {
+        params: v2::PullRequestListParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestListResponse,
+    },
+    #[experimental("pullRequest/read")]
+    PullRequestRead => "pullRequest/read" {
+        params: v2::PullRequestReadParams,
+        serialization: global_shared_read("pull-request"),
+        response: v2::PullRequestReadResponse,
+    },
     #[experimental("machineRegistry/list")]
     MachineRegistryList => "machineRegistry/list" {
         params: v2::MachineRegistryListParams,
@@ -1556,6 +1574,12 @@ client_request_definitions! {
         params: #[serde(default, deserialize_with = "crate::protocol::serde_helpers::deserialize_null_default")] v2::GetAccountRateLimitsParams,
         serialization: None,
         response: v2::GetAccountRateLimitsResponse,
+    },
+
+    ConsumeAccountRateLimitResetCredit => "account/rateLimitResetCredit/consume" {
+        params: v2::ConsumeAccountRateLimitResetCreditParams,
+        serialization: global("account-auth"),
+        response: v2::ConsumeAccountRateLimitResetCreditResponse,
     },
 
     GetAccountTokenUsage => "account/usage/read" {
@@ -3286,6 +3310,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::GetAccountRateLimitsParams {
                 auth_profile: Some(Some("work".to_string())),
+                ..Default::default()
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3309,6 +3334,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: v2::GetAccountRateLimitsParams {
                 auth_profile: Some(None),
+                ..Default::default()
             },
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
@@ -3340,6 +3366,51 @@ mod tests {
                 request_id: RequestId::Integer(1),
                 params: v2::GetAccountRateLimitsParams::default(),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_consume_account_rate_limit_reset_credit() -> Result<()> {
+        let request = ClientRequest::ConsumeAccountRateLimitResetCredit {
+            request_id: RequestId::Integer(1),
+            params: v2::ConsumeAccountRateLimitResetCreditParams {
+                idempotency_key: "redeem-123".to_string(),
+                credit_id: None,
+                auth_profile: Some(Some("work".to_string())),
+                expected_account_identity_fingerprint: "opaque:account".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(1));
+        assert_eq!(request.method(), "account/rateLimitResetCredit/consume");
+        assert_eq!(
+            json!({
+                "method": "account/rateLimitResetCredit/consume",
+                "id": 1,
+                "params": {
+                    "idempotencyKey": "redeem-123",
+                    "authProfile": "work",
+                    "expectedAccountIdentityFingerprint": "opaque:account",
+                },
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_consume_account_rate_limit_reset_credit_outcome_as_camel_case() -> Result<()> {
+        let response = v2::ConsumeAccountRateLimitResetCreditResponse {
+            outcome: v2::ConsumeAccountRateLimitResetCreditOutcome::AlreadyRedeemed,
+            account_identity_fingerprint: "sha256:test-account".to_string(),
+        };
+
+        assert_eq!(
+            json!({
+                "outcome": "alreadyRedeemed",
+                "accountIdentityFingerprint": "sha256:test-account",
+            }),
+            serde_json::to_value(response)?,
         );
         Ok(())
     }

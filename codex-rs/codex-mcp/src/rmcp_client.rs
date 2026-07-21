@@ -657,6 +657,28 @@ async fn make_rmcp_client(
     }
 }
 
+/// Whether the URL is a credential-free HTTPS endpoint safe for a
+/// credential-forbidden (Infinity Agent) MCP bridge: HTTPS, a real host, and no
+/// embedded userinfo, query, or fragment that could smuggle a credential.
+pub fn is_credential_forbidden_mcp_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    let raw_authority_is_safe = value
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+        .and_then(|(_, remainder)| remainder.split(['/', '?', '#']).next())
+        .is_some_and(|authority| !authority.is_empty() && !authority.contains('@'));
+    url.scheme() == "https"
+        && !url.cannot_be_a_base()
+        && !url.host_str().unwrap_or_default().is_empty()
+        && raw_authority_is_safe
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

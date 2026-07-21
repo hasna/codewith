@@ -22,6 +22,7 @@ use codex_app_server_protocol::ThreadStartResponse;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -366,10 +367,15 @@ async fn thread_external_agent_permission_respond_unknown_request_is_not_accepte
 }
 
 fn path_with_fake_bin(bin_dir: &Path) -> Result<String> {
-    let existing_path = std::env::var("PATH").unwrap_or_default();
-    let path = std::env::join_paths(
-        std::iter::once(bin_dir.to_path_buf()).chain(std::env::split_paths(&existing_path)),
-    )?;
+    let mut paths = vec![bin_dir.to_path_buf()];
+    if cfg!(windows) {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| anyhow::anyhow!("SystemRoot is required on Windows"))?;
+        paths.push(PathBuf::from(system_root).join("System32"));
+    } else {
+        paths.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+    }
+    let path = std::env::join_paths(paths)?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -389,7 +395,7 @@ fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
 fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
     std::fs::write(
         bin_dir.join(format!("{name}.cmd")),
-        "@echo off\r\nping -n 30 127.0.0.1 >NUL\r\n",
+        "@echo off\r\nif \"%2\"==\"--help\" exit /b 0\r\ntimeout /t 30 /nobreak >NUL\r\n",
     )?;
     Ok(())
 }

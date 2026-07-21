@@ -562,7 +562,11 @@ wire_api = "responses"
         data.iter()
             .map(|model| (model.id.as_str(), model.is_default))
             .collect::<Vec<_>>(),
-        vec![("gpt-oss-120b", true), ("zai-glm-4.7", false)]
+        vec![
+            ("gpt-oss-120b", true),
+            ("zai-glm-4.7", false),
+            ("gemma-4-31b", false),
+        ],
     );
     assert!(next_cursor.is_none());
     Ok(())
@@ -583,6 +587,7 @@ async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> 
         ("cerebras", "gpt-oss-120b"),
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
+        ("kimi", "kimi-k3"),
         ("minimax", "MiniMax-M3"),
         ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
         ("openrouter", "z-ai/glm-5.2"),

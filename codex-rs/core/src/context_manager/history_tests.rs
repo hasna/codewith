@@ -1,4 +1,5 @@
 use super::*;
+use crate::context_manager::normalize;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_protocol::AgentPath;
@@ -686,6 +687,65 @@ fn remove_first_item_removes_matching_call_for_output() {
     let mut h = create_history_with_items(items);
     h.remove_first_item();
     assert_eq!(h.raw_items(), vec![]);
+}
+
+#[test]
+fn required_call_predicate_matches_prompt_normalization() {
+    let cases = [
+        (
+            ResponseItem::FunctionCallOutput {
+                call_id: "orphan-function".to_string(),
+                output: FunctionCallOutputPayload::from_text("orphan".to_string()),
+            },
+            true,
+        ),
+        (
+            ResponseItem::CustomToolCallOutput {
+                call_id: "orphan-custom".to_string(),
+                name: Some("custom_tool".to_string()),
+                output: FunctionCallOutputPayload::from_text("orphan".to_string()),
+            },
+            true,
+        ),
+        (
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("server-search".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: Vec::new(),
+            },
+            false,
+        ),
+        (
+            ResponseItem::ToolSearchOutput {
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: Vec::new(),
+            },
+            false,
+        ),
+    ];
+
+    for (item, requires_call) in cases {
+        assert_eq!(
+            normalize::required_call_for_output(&item).is_some(),
+            requires_call
+        );
+        let history = create_history_with_items(vec![item]);
+        let normalized =
+            std::panic::catch_unwind(|| history.for_prompt(&default_input_modalities()));
+        if requires_call && cfg!(debug_assertions) {
+            assert!(normalized.is_err());
+        } else {
+            assert_eq!(
+                normalized
+                    .expect("normalization should complete")
+                    .is_empty(),
+                requires_call
+            );
+        }
+    }
 }
 
 #[test]

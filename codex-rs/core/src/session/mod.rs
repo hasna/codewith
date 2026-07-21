@@ -564,8 +564,9 @@ impl Codex {
         {
             let _ = models_manager.list_models(refresh_strategy).await;
         }
+        let models_manager_config = config.to_models_manager_config();
         let model = models_manager
-            .get_default_model(&config.model, refresh_strategy)
+            .get_default_model(&config.model, &models_manager_config, refresh_strategy)
             .await;
 
         // Resolve base instructions for the session. Priority order:
@@ -573,7 +574,7 @@ impl Codex {
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
         let model_info = models_manager
-            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .get_model_info(model.as_str(), &models_manager_config)
             .await;
         let multi_agent_version =
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);
@@ -1438,7 +1439,11 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
-                    let info = Self::token_info_for_current_model(info, &turn_context);
+                    let info = Self::token_info_for_current_model(
+                        info,
+                        &turn_context,
+                        /*preserve_chatgpt_replay_window*/ true,
+                    );
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1457,7 +1462,11 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
-                    let info = Self::token_info_for_current_model(info, &turn_context);
+                    let info = Self::token_info_for_current_model(
+                        info,
+                        &turn_context,
+                        /*preserve_chatgpt_replay_window*/ true,
+                    );
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1545,13 +1554,23 @@ impl Session {
     fn token_info_for_current_model(
         mut info: TokenUsageInfo,
         turn_context: &TurnContext,
+        preserve_chatgpt_replay_window: bool,
     ) -> TokenUsageInfo {
-        if turn_context
-            .auth_manager
-            .as_deref()
-            .and_then(AuthManager::auth_mode)
-            .is_some_and(AuthMode::has_chatgpt_account)
+        if preserve_chatgpt_replay_window
+            && turn_context
+                .auth_manager
+                .as_deref()
+                .and_then(AuthManager::auth_mode)
+                .is_some_and(AuthMode::has_chatgpt_account)
         {
+            if let Some(current_model_context_window) = turn_context.model_context_window() {
+                info.model_context_window = Some(info.model_context_window.map_or(
+                    current_model_context_window,
+                    |recorded_context_window| {
+                        recorded_context_window.min(current_model_context_window)
+                    },
+                ));
+            }
             return info;
         }
 
@@ -1570,7 +1589,11 @@ impl Session {
                 last_token_usage: TokenUsage::default(),
                 model_context_window: None,
             });
-            let info = Self::token_info_for_current_model(info, turn_context);
+            let info = Self::token_info_for_current_model(
+                info,
+                turn_context,
+                /*preserve_chatgpt_replay_window*/ false,
+            );
             state.set_token_info(Some(info));
         }
         self.send_token_count_event(turn_context).await;

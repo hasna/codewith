@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WorktreeCleanupPolicy": {
       "enum": [
         "retain",
@@ -10,11 +9,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cleanupPolicy": {
       "anyOf": [
         {
-          "$ref": "#/definitions/WorktreeCleanupPolicy"
+          "$ref": "#/$defs/WorktreeCleanupPolicy"
         },
         {
           "type": "null"
