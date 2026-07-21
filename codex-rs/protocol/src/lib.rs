@@ -30,4 +30,5 @@ pub mod provider_identity;
 pub mod request_permissions;
 pub mod request_user_input;
 pub mod shell_environment;
+pub mod strict_json;
 pub mod user_input;
