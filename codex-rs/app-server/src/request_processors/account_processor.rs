@@ -1226,19 +1226,14 @@ impl AccountRequestProcessor {
         ),
         JSONRPCErrorError,
     > {
-        let include_reset_credit_details = params.include_reset_credit_details;
         let auth_manager = self.auth_manager_for_rate_limits(params).await?;
-        self.fetch_account_rate_limits_with_auth_manager(
-            &auth_manager,
-            include_reset_credit_details,
-        )
-        .await
+        self.fetch_account_rate_limits_with_auth_manager(&auth_manager)
+            .await
     }
 
     async fn fetch_account_rate_limits_with_auth_manager(
         &self,
         auth_manager: &AuthManager,
-        include_reset_credit_details: bool,
     ) -> Result<
         (
             Option<String>,
@@ -1277,12 +1272,8 @@ impl AccountRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to fetch codex rate limits: {err}")))?;
         let reset_credits = if account_identity_fingerprint.is_some() {
-            account_rate_limit_resets::enrich_summary(
-                &client,
-                rate_limits.rate_limit_reset_credits,
-                include_reset_credit_details,
-            )
-            .await
+            account_rate_limit_resets::enrich_summary(&client, rate_limits.rate_limit_reset_credits)
+                .await
         } else {
             None
         };

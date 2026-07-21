@@ -80,6 +80,7 @@ pub(crate) struct UnifiedExecProcess {
     output_closed_notify: Arc<Notify>,
     cancellation_token: CancellationToken,
     output_drained: Arc<Notify>,
+    interaction_lock: Arc<Mutex<()>>,
     state_tx: watch::Sender<ProcessState>,
     state_rx: watch::Receiver<ProcessState>,
     output_task: Option<JoinHandle<()>>,
@@ -121,6 +122,7 @@ impl UnifiedExecProcess {
             output_closed_notify,
             cancellation_token,
             output_drained,
+            interaction_lock: Arc::new(Mutex::new(())),
             state_tx,
             state_rx,
             output_task: None,
@@ -174,6 +176,10 @@ impl UnifiedExecProcess {
 
     pub(super) fn output_drained_notify(&self) -> Arc<Notify> {
         Arc::clone(&self.output_drained)
+    }
+
+    pub(super) fn interaction_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.interaction_lock)
     }
 
     pub(super) fn has_exited(&self) -> bool {

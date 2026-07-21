@@ -424,17 +424,13 @@ impl McpConnectionManager {
     #[instrument(level = "trace", skip_all, fields(mcp_server_count = self.clients.len()))]
     pub async fn list_all_tools(&self) -> Vec<ToolInfo> {
         let mut tools = Vec::new();
+        let mut available_server_count = 0;
+        let mut unavailable_server_count = 0;
         for (server_name, managed_client) in &self.clients {
             let has_cached_tool_info_snapshot = managed_client.cached_tool_info_snapshot.is_some();
             let startup_complete = managed_client
                 .startup_complete
                 .load(std::sync::atomic::Ordering::Acquire);
-            trace!(
-                server_name = %server_name,
-                has_cached_tool_info_snapshot,
-                startup_complete,
-                "waiting for MCP server tools while building tool list"
-            );
             let Some(server_tools) = managed_client
                 .listed_tools()
                 .instrument(trace_span!(
@@ -445,20 +441,30 @@ impl McpConnectionManager {
                 ))
                 .await
             else {
+                unavailable_server_count += 1;
+                trace!(
+                    server_name = %server_name,
+                    has_cached_tool_info_snapshot,
+                    startup_complete,
+                    "MCP server tools unavailable while building tool list"
+                );
                 continue;
             };
-            trace!(
-                server_name = %server_name,
-                tool_count = server_tools.len(),
-                "listed MCP server tools while building tool list"
-            );
+            available_server_count += 1;
             tools.extend(
                 server_tools
                     .into_iter()
                     .map(|tool| self.with_server_metadata(tool)),
             );
         }
-        normalize_tools_for_model_with_prefix(tools, self.prefix_mcp_tool_names)
+        let tools = normalize_tools_for_model_with_prefix(tools, self.prefix_mcp_tool_names);
+        trace!(
+            available_server_count,
+            unavailable_server_count,
+            tool_count = tools.len(),
+            "built MCP tool list"
+        );
+        tools
     }
 
     /// Returns presentation metadata without waiting for uncached clients still initializing.
@@ -1016,6 +1022,7 @@ fn is_mcp_client_startup_timeout_error(error: &StartupOutcomeError) -> bool {
         StartupOutcomeError::Failed { error } => {
             error.contains("request timed out")
                 || error.contains("timed out handshaking with MCP server")
+                || error.contains("MCP client startup timed out")
         }
         _ => false,
     }
