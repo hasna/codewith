@@ -224,6 +224,17 @@ pub(super) async fn make_chatwidget_manual(
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
 ) {
+    make_chatwidget_manual_with_frame_requester(model_override, FrameRequester::test_dummy()).await
+}
+
+pub(super) async fn make_chatwidget_manual_with_frame_requester(
+    model_override: Option<&str>,
+    frame_requester: FrameRequester,
+) -> (
+    ChatWidget,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
     let (tx_raw, rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
@@ -238,7 +249,7 @@ pub(super) async fn make_chatwidget_manual(
     let model_catalog = test_model_catalog(&cfg);
     let common = ChatWidgetInit {
         config: cfg,
-        frame_requester: FrameRequester::test_dummy(),
+        frame_requester,
         app_event_tx,
         workspace_command_runner: None,
         initial_user_message: None,

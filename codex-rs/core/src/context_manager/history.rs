@@ -390,6 +390,7 @@ impl ContextManager {
     /// 1. every call (function/custom) has a corresponding output entry
     /// 2. every output has a corresponding call entry
     /// 3. when images are unsupported, image content is stripped from messages and tool outputs
+    /// 4. remaining remote (HTTP/HTTPS) image URLs are replaced with a model-visible error message
     fn normalize_history(&mut self, input_modalities: &[InputModality]) {
         // all function/tool calls must have a corresponding output
         normalize::ensure_call_outputs_present(&mut self.items);
@@ -399,6 +400,9 @@ impl ContextManager {
 
         // strip images when model does not support them
         normalize::strip_images_when_unsupported(input_modalities, &mut self.items);
+
+        // remote image URLs are unsupported; replace them with model-visible error text
+        normalize::replace_remote_images_with_error(&mut self.items);
     }
 
     fn process_item(&self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {

@@ -62,6 +62,31 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
     }
 }
 
+/// Reconstruct fork-ready rollout items from a live parent session that has no durable rollout
+/// (an ephemeral thread whose history is only held in memory).
+///
+/// The parent's in-memory conversation carries the model-visible history, and the current
+/// reference context item is appended as a `TurnContext` so a full-history fork keeps the parent's
+/// diff baseline — mirroring what the persisted-store fork path reads back from the thread store.
+/// The result is fed through the same `keep_forked_rollout_item` filtering as a stored rollout, so
+/// non-final assistant/tool chatter is dropped identically for ephemeral and persistent parents.
+async fn in_memory_fork_rollout_items(
+    parent_thread: &Arc<crate::codex_thread::CodexThread>,
+) -> Vec<RolloutItem> {
+    let session = &parent_thread.codex.session;
+    let mut items: Vec<RolloutItem> = session
+        .clone_history()
+        .await
+        .into_raw_items()
+        .into_iter()
+        .map(RolloutItem::ResponseItem)
+        .collect();
+    if let Some(reference_context_item) = session.reference_context_item().await {
+        items.push(RolloutItem::TurnContext(reference_context_item));
+    }
+    items
+}
+
 fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &[String]) -> bool {
     let ResponseItem::Message { role, content, .. } = item else {
         return false;
@@ -385,21 +410,34 @@ impl AgentControl {
             parent_thread.flush_rollout().await?;
         }
 
-        let parent_history = state
+        // Prefer the durable store rollout when the parent persists one. Ephemeral parents
+        // (for example `codex exec --ephemeral` drain workers) never write to the thread store, so
+        // the store read reports the thread as missing. In that case reconstruct the fork history
+        // from the parent's live in-memory session instead of failing the spawn with
+        // `ThreadNotFound` / "parent thread history unavailable".
+        let stored_parent_history = match state
             .read_stored_thread(ReadThreadParams {
                 thread_id: parent_thread_id,
                 include_archived: true,
                 include_history: true,
             })
-            .await?
-            .history
-            .ok_or_else(|| {
-                CodexErr::Fatal(format!(
-                    "parent thread history unavailable for fork: {parent_thread_id}"
-                ))
-            })?;
-
-        let mut forked_rollout_items = parent_history.items;
+            .await
+        {
+            Ok(stored_thread) => stored_thread.history.map(|history| history.items),
+            Err(CodexErr::ThreadNotFound(_)) => None,
+            Err(err) => return Err(err),
+        };
+        let mut forked_rollout_items = match stored_parent_history {
+            Some(items) => items,
+            None => {
+                let parent_thread = parent_thread.as_ref().ok_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "parent thread history unavailable for fork: {parent_thread_id}"
+                    ))
+                })?;
+                in_memory_fork_rollout_items(parent_thread).await
+            }
+        };
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
             forked_rollout_items =
                 truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
