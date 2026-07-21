@@ -168,7 +168,7 @@ impl ChatWidget {
     }
 
     /// Whether a usage self-heal retry is currently scheduled. Used to keep
-    /// keep-going from pre-empting the self-heal machinery.
+    /// keep-going from preempting the self-heal machinery.
     pub(super) fn has_pending_usage_self_heal_retry(&self) -> bool {
         self.usage_self_heal.pending_retry.is_some()
     }

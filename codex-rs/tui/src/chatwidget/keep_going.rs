@@ -201,7 +201,7 @@ impl ChatWidget {
             return false;
         }
         // A pending rate-limit model-switch prompt is about to be shown for the
-        // user to decide; do not pre-empt it with an auto-continuation.
+        // user to decide; do not preempt it with an auto-continuation.
         if matches!(
             self.rate_limit_switch_prompt,
             RateLimitSwitchPromptState::Pending
