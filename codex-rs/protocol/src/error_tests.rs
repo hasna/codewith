@@ -191,6 +191,38 @@ fn to_error_event_handles_response_stream_failed() {
 }
 
 #[test]
+fn unexpected_status_preserves_http_status_in_protocol_error() {
+    let err = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+        status: StatusCode::BAD_GATEWAY,
+        body: "{\"error\":{\"message\":\"upstream boom\"}}".to_string(),
+        url: Some("https://chatgpt.com/backend-api/codex/responses".to_string()),
+        cf_ray: None,
+        request_id: Some("req-502".to_string()),
+        identity_authorization_error: None,
+        identity_error_code: None,
+    });
+
+    // The HTTP status must survive translation instead of collapsing to `Other`.
+    assert_eq!(err.http_status_code_value(), Some(502));
+    let info = err.to_codex_protocol_error();
+    assert_eq!(
+        info,
+        CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: Some(502)
+        }
+    );
+
+    // The public-safe typed error must not leak the provider response body.
+    let event = err.to_error_event(None);
+    assert_eq!(
+        event.codex_error_info,
+        Some(CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: Some(502)
+        })
+    );
+}
+
+#[test]
 fn sandbox_denied_reports_exit_code_when_no_output_available() {
     let output = ExecToolCallOutput {
         exit_code: 13,

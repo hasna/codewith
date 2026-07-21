@@ -58,6 +58,11 @@ jobs:
           CODEWITH_SMOKE_STRICT: "1"
         run: python3 -m unittest codex-cli/scripts/test_install_smoke.py
 
+      - name: Test SDK clean-prefix npm and Bun install smoke
+        env:
+          CODEWITH_SMOKE_STRICT: "1"
+        run: python3 -m unittest sdk/typescript/scripts/test_install_smoke.py
+
       - name: Stage npm package
         id: stage_npm_package
         run: |

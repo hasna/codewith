@@ -1,5 +1,6 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
+use app_test_support::create_empty_completed_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
@@ -1173,6 +1174,49 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
     assert_eq!(
         respond.interaction.expect("responded interaction").status,
         AgentPendingInteractionStatus::Responded
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_fails_when_turn_completes_without_agent_message() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_empty_completed_sse_response()]).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let start = start_agent(
+        &mut mcp,
+        start_params(
+            "this mock turn will complete without final output",
+            Some("missing-final-message".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+
+    let read = wait_for_agent_status(
+        &mut mcp,
+        start.agent.agent_id.as_str(),
+        AgentRunStatus::Failed,
+    )
+    .await?;
+    let agent = read.agent.expect("failed agent should be readable");
+    assert_eq!(agent.status, AgentRunStatus::Failed);
+    assert_eq!(
+        agent.status_reason.as_deref(),
+        Some("turn completed without an agent message")
+    );
+    let snapshot = read
+        .status_snapshot
+        .expect("failed agent should have a status snapshot");
+    assert_eq!(snapshot.status, AgentRunStatus::Failed);
+    assert_eq!(snapshot.summary.as_deref(), Some("Failed"));
+    assert_eq!(
+        snapshot.payload.pointer("/eventPayload/lastAgentMessage"),
+        Some(&JsonValue::Null)
     );
 
     Ok(())
@@ -3009,8 +3053,8 @@ async fn create_background_agent_git_worktree_lease(
                 run_id: agent_id.to_string(),
                 identity: format!("test:{lease_id}"),
                 mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: codex_home.to_string_lossy().to_string(),
-                worktree_path: worktree_path.to_string_lossy().to_string(),
+                base_repo_path: codex_home.to_path_buf(),
+                worktree_path: worktree_path.clone(),
                 branch: Some(branch),
                 head_sha: Some(base_sha),
                 status_snapshot_json: json!({"dirty": false, "source": "seed"}),

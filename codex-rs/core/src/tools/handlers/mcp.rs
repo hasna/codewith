@@ -32,12 +32,28 @@ const MCP_TOOL_NAME_DELIMITER: &str = "__";
 pub struct McpHandler {
     tool_info: ToolInfo,
     spec: ToolSpec,
+    force_serial: bool,
 }
 
 impl McpHandler {
     pub fn new(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
         let spec = create_tool_spec(&tool_info)?;
-        Ok(Self { tool_info, spec })
+        Ok(Self {
+            tool_info,
+            spec,
+            force_serial: false,
+        })
+    }
+
+    pub(crate) fn new_infinity_agent_serial(
+        tool_info: ToolInfo,
+    ) -> Result<Self, serde_json::Error> {
+        let spec = create_tool_spec(&tool_info)?;
+        Ok(Self {
+            tool_info,
+            spec,
+            force_serial: true,
+        })
     }
 
     fn hook_tool_name(&self) -> HookToolName {
@@ -75,6 +91,9 @@ impl ToolExecutor<ToolInvocation> for McpHandler {
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
+        if self.force_serial {
+            return false;
+        }
         // Correctly implemented MCP servers should tolerate parallel calls to
         // tools that advertise themselves as read-only.
         self.tool_info.supports_parallel_tool_calls
@@ -509,6 +528,19 @@ mod tests {
         server_opt_in_info.supports_parallel_tool_calls = true;
         assert!(
             McpHandler::new(server_opt_in_info)
+                .expect("MCP tool spec should build")
+                .supports_parallel_tool_calls()
+        );
+    }
+
+    #[test]
+    fn infinity_agent_policy_forces_mcp_tools_serial_despite_annotations() {
+        let mut annotated = tool_info("infinity", "mcp__infinity", "infinity_run_submit");
+        annotated.supports_parallel_tool_calls = true;
+        annotated.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+
+        assert!(
+            !McpHandler::new_infinity_agent_serial(annotated)
                 .expect("MCP tool spec should build")
                 .supports_parallel_tool_calls()
         );

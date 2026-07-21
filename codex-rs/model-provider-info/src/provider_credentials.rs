@@ -559,6 +559,10 @@ printf 'slow-token\n'
             Some("xai/api_key".to_string())
         );
         assert_eq!(
+            default_secret_name_for_provider_env_key("MOONSHOT_API_KEY"),
+            Some("moonshot/api_key".to_string())
+        );
+        assert_eq!(
             default_secret_name_for_provider_env_key("GOOGLE_VERTEX_ACCESS_TOKEN"),
             Some("google-vertex/access_token".to_string())
         );

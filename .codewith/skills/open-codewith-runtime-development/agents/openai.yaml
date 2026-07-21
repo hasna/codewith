@@ -1,0 +1,4 @@
+interface:
+  display_name: "Open Codewith Runtime Development"
+  short_description: "Route and verify cross-surface Codewith changes"
+  default_prompt: "Use $open-codewith-runtime-development to route and verify this cross-surface Codewith runtime change."

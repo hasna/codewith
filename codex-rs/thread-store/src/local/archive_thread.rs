@@ -4,6 +4,7 @@ use codex_rollout::find_thread_path_by_id_str;
 use super::LocalThreadStore;
 use super::helpers::matching_rollout_file_name;
 use super::helpers::scoped_rollout_path;
+use super::no_replace_rename::move_file_no_replace;
 use crate::ArchiveThreadParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -46,7 +47,7 @@ pub(super) async fn archive_thread(
         message: format!("failed to archive thread: {err}"),
     })?;
     let archived_path = archive_folder.join(&file_name);
-    std::fs::rename(&canonical_rollout_path, &archived_path).map_err(|err| {
+    move_file_no_replace(&canonical_rollout_path, &archived_path).map_err(|err| {
         ThreadStoreError::Internal {
             message: format!("failed to archive thread: {err}"),
         }
@@ -76,6 +77,7 @@ mod tests {
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
     use crate::local::test_support::test_config;
+    use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
 
     #[tokio::test]
@@ -120,6 +122,35 @@ mod tests {
         assert_eq!(
             archived.items[0].archived_at,
             Some(archived.items[0].updated_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_thread_preserves_both_rollouts_when_destination_exists() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(205);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T14-00-00", uuid).expect("session file");
+        let archived_path = write_archived_session_file(home.path(), "2025-01-03T14-00-00", uuid)
+            .expect("archived session file");
+        let active_contents = std::fs::read(&active_path).expect("active rollout contents");
+        let archived_contents = std::fs::read(&archived_path).expect("archived rollout contents");
+
+        let err = store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("existing archived rollout must not be overwritten");
+
+        assert!(matches!(err, ThreadStoreError::Internal { .. }));
+        assert_eq!(
+            std::fs::read(&active_path).expect("active rollout remains"),
+            active_contents
+        );
+        assert_eq!(
+            std::fs::read(&archived_path).expect("archived rollout remains"),
+            archived_contents
         );
     }
 
