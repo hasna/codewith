@@ -287,8 +287,7 @@ pub enum ThreadItem {
         tool: String,
         status: McpToolCallStatus,
         arguments: JsonValue,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         mcp_app_resource_uri: Option<String>,
         plugin_id: Option<String>,
         result: Option<Box<McpToolCallResult>>,
@@ -351,8 +350,7 @@ pub enum ThreadItem {
         status: String,
         revised_prompt: Option<String>,
         result: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         saved_path: Option<AbsolutePathBuf>,
     },
     #[serde(rename_all = "camelCase")]
@@ -1311,6 +1309,7 @@ impl CommandExecutionRequestApprovalParams {
         // We need a generic outbound compatibility design for stripping or
         // otherwise handling experimental server->client payloads.
         self.additional_permissions = None;
+        self.available_decisions = None;
     }
 }
 

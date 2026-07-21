@@ -117,16 +117,21 @@ pub struct FsReadDirectoryResponse {
 }
 
 /// Remove a file or directory tree from the host filesystem.
+///
+/// The target must resolve inside the session's authorized workspace scope; the
+/// server rejects paths (including symlink escapes) outside every workspace root.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsRemoveParams {
-    /// Absolute path to remove.
+    /// Absolute path to remove. Must be inside an authorized workspace root.
     pub path: AbsolutePathBuf,
-    /// Whether directory removal should recurse. Defaults to `true`.
+    /// Whether directory removal should recurse. Defaults to `false`; recursive
+    /// tree deletion must be requested explicitly.
     #[ts(optional = nullable)]
     pub recursive: Option<bool>,
-    /// Whether missing paths should be ignored. Defaults to `true`.
+    /// Whether missing paths should be ignored. Defaults to `false`; ignoring
+    /// missing targets must be requested explicitly.
     #[ts(optional = nullable)]
     pub force: Option<bool>,
 }

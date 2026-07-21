@@ -520,6 +520,10 @@ url = "{mcp_server_url}/mcp"
         duration_ms: None,
     })?;
     assert!(serialized_item.len() < DEFAULT_OUTPUT_BYTES_CAP * 2 + 2048);
+    assert!(
+        serialized_item.contains("\"mcpAppResourceUri\":null"),
+        "absent mcpAppResourceUri should serialize as explicit null"
+    );
 
     timeout(
         DEFAULT_READ_TIMEOUT,

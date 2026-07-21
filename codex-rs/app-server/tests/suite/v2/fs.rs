@@ -305,8 +305,8 @@ async fn fs_methods_cover_current_fs_utils_surface() -> Result<()> {
     let remove_request_id = mcp
         .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
             path: absolute_path(copied_dir.clone()),
-            recursive: None,
-            force: None,
+            recursive: Some(true),
+            force: Some(true),
         })
         .await?;
     timeout(
@@ -316,7 +316,7 @@ async fn fs_methods_cover_current_fs_utils_surface() -> Result<()> {
     .await??;
     assert!(
         !copied_dir.exists(),
-        "fs/remove should default to recursive+force for directory trees"
+        "fs/remove should recurse when recursive: true is requested"
     );
 
     Ok(())
@@ -841,6 +841,229 @@ async fn fs_watch_rejects_relative_paths() -> Result<()> {
         "Invalid request: AbsolutePathBuf deserialized without a base path",
     )
     .await?;
+
+    Ok(())
+}
+
+const OUT_OF_SCOPE_ERROR: &str = "path is outside the authorized workspace roots";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_methods_reject_paths_outside_workspace_roots() -> Result<()> {
+    // The app-server subprocess runs with `codex_home` as its cwd, so
+    // `codex_home` is the only authorized workspace root. A sibling temp dir is
+    // outside that scope and every fs/* method must refuse to touch it.
+    let codex_home = TempDir::new()?;
+    let outside = TempDir::new()?;
+    let outside_file = outside.path().join("secret.txt");
+    std::fs::write(&outside_file, "secret")?;
+    let inside_file = codex_home.path().join("inside.txt");
+    std::fs::write(&inside_file, "hello")?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+
+    let read_id = mcp
+        .send_fs_read_file_request(codex_app_server_protocol::FsReadFileParams {
+            path: absolute_path(outside_file.clone()),
+        })
+        .await?;
+    expect_error_message(&mut mcp, read_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let write_id = mcp
+        .send_fs_write_file_request(FsWriteFileParams {
+            path: absolute_path(outside.path().join("written.txt")),
+            data_base64: STANDARD.encode("nope"),
+        })
+        .await?;
+    expect_error_message(&mut mcp, write_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let mkdir_id = mcp
+        .send_fs_create_directory_request(codex_app_server_protocol::FsCreateDirectoryParams {
+            path: absolute_path(outside.path().join("newdir")),
+            recursive: None,
+        })
+        .await?;
+    expect_error_message(&mut mcp, mkdir_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let metadata_id = mcp
+        .send_fs_get_metadata_request(codex_app_server_protocol::FsGetMetadataParams {
+            path: absolute_path(outside_file.clone()),
+        })
+        .await?;
+    expect_error_message(&mut mcp, metadata_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let readdir_id = mcp
+        .send_fs_read_directory_request(codex_app_server_protocol::FsReadDirectoryParams {
+            path: absolute_path(outside.path().to_path_buf()),
+        })
+        .await?;
+    expect_error_message(&mut mcp, readdir_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let remove_id = mcp
+        .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
+            path: absolute_path(outside_file.clone()),
+            recursive: None,
+            force: None,
+        })
+        .await?;
+    expect_error_message(&mut mcp, remove_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let copy_source_id = mcp
+        .send_fs_copy_request(FsCopyParams {
+            source_path: absolute_path(outside_file.clone()),
+            destination_path: absolute_path(codex_home.path().join("copied.txt")),
+            recursive: false,
+        })
+        .await?;
+    expect_error_message(&mut mcp, copy_source_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let copy_destination_id = mcp
+        .send_fs_copy_request(FsCopyParams {
+            source_path: absolute_path(inside_file.clone()),
+            destination_path: absolute_path(outside.path().join("copied.txt")),
+            recursive: false,
+        })
+        .await?;
+    expect_error_message(&mut mcp, copy_destination_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let watch_id = mcp
+        .send_fs_watch_request(codex_app_server_protocol::FsWatchParams {
+            watch_id: "watch-outside".to_string(),
+            path: absolute_path(outside_file.clone()),
+        })
+        .await?;
+    expect_error_message(&mut mcp, watch_id, OUT_OF_SCOPE_ERROR).await?;
+
+    // None of the denied operations may have touched the out-of-scope tree.
+    assert_eq!(std::fs::read_to_string(&outside_file)?, "secret");
+    assert!(!outside.path().join("written.txt").exists());
+    assert!(!outside.path().join("newdir").exists());
+    assert!(!outside.path().join("copied.txt").exists());
+    assert!(!codex_home.path().join("copied.txt").exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_methods_allow_authorized_paths_inside_workspace_root() -> Result<()> {
+    // A positive control for the scope check: reads and writes inside the
+    // authorized workspace root continue to work through the scoped path.
+    let codex_home = TempDir::new()?;
+    let nested = codex_home.path().join("nested");
+    std::fs::create_dir_all(&nested)?;
+    let file_path = nested.join("note.txt");
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+    let write_id = mcp
+        .send_fs_write_file_request(FsWriteFileParams {
+            path: absolute_path(file_path.clone()),
+            data_base64: STANDARD.encode("scoped write"),
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(write_id)),
+    )
+    .await??;
+    assert_eq!(std::fs::read_to_string(&file_path)?, "scoped write");
+
+    let read_id = mcp
+        .send_fs_read_file_request(codex_app_server_protocol::FsReadFileParams {
+            path: absolute_path(file_path),
+        })
+        .await?;
+    let read_response: FsReadFileResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+        )
+        .await??,
+    )?;
+    assert_eq!(
+        read_response,
+        FsReadFileResponse {
+            data_base64: STANDARD.encode("scoped write"),
+        }
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_methods_reject_symlink_escape_from_workspace_root() -> Result<()> {
+    // A symlink that lives inside the workspace root but resolves outside of it
+    // must not become a read/remove escape hatch.
+    let codex_home = TempDir::new()?;
+    let outside = TempDir::new()?;
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "top secret")?;
+    let link = codex_home.path().join("escape");
+    symlink(outside.path(), &link)?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+
+    let read_id = mcp
+        .send_fs_read_file_request(codex_app_server_protocol::FsReadFileParams {
+            path: absolute_path(link.join("secret.txt")),
+        })
+        .await?;
+    expect_error_message(&mut mcp, read_id, OUT_OF_SCOPE_ERROR).await?;
+
+    let remove_id = mcp
+        .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
+            path: absolute_path(link.join("secret.txt")),
+            recursive: None,
+            force: None,
+        })
+        .await?;
+    expect_error_message(&mut mcp, remove_id, OUT_OF_SCOPE_ERROR).await?;
+
+    assert_eq!(std::fs::read_to_string(&secret)?, "top secret");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_remove_no_longer_defaults_to_recursive_force() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let dir = codex_home.path().join("keep");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("child.txt"), "data")?;
+
+    let mut mcp = initialized_mcp(&codex_home).await?;
+
+    // A non-empty directory must not be deleted unless recursive is requested.
+    let remove_dir_id = mcp
+        .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
+            path: absolute_path(dir.clone()),
+            recursive: None,
+            force: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(remove_dir_id)),
+    )
+    .await??;
+    assert!(
+        dir.join("child.txt").exists(),
+        "fs/remove must not recurse into directory trees by default"
+    );
+
+    // A missing path must error rather than being silently ignored, since force
+    // no longer defaults to true.
+    let remove_missing_id = mcp
+        .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
+            path: absolute_path(codex_home.path().join("missing.txt")),
+            recursive: None,
+            force: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(remove_missing_id)),
+    )
+    .await??;
 
     Ok(())
 }

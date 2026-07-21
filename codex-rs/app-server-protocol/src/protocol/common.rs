@@ -1286,6 +1286,12 @@ client_request_definitions! {
     },
     // File system requests are intentionally concurrent. Desktop already treats local
     // file system operations as concurrent, and app-server remote fs mirrors that model.
+    //
+    // Although these methods accept absolute host paths, the app-server does not trust
+    // the client's path choice: every fs/* request is authorized server-side against the
+    // session's workspace scope (active cwd plus configured workspace roots) with symlink
+    // escapes rejected, before any filesystem access. See app-server/src/fs_scope.rs and
+    // the "Filesystem" section of app-server/README.md for the trust and scope semantics.
     FsReadFile => "fs/readFile" {
         params: v2::FsReadFileParams,
         serialization: None,
