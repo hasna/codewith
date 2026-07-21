@@ -3,6 +3,7 @@ mod cli;
 pub(crate) mod env_detect;
 mod new_task;
 pub(crate) mod scrollable_diff;
+mod truncation;
 mod ui;
 pub(crate) mod util;
 pub use cli::Cli;
@@ -26,6 +27,7 @@ use supports_color::Stream as SupportStream;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use truncation::truncate_to_byte_limit;
 use util::append_error_log;
 use util::format_relative_time;
 use util::set_user_agent_suffix;
@@ -2108,7 +2110,7 @@ fn pretty_lines_from_error(raw: &str) -> Vec<String> {
     if lines.len() == 1 {
         // Parsing yielded nothing; include a trimmed, short raw message tail for context.
         let tail = if raw.len() > 320 {
-            format!("{}…", &raw[..320])
+            format!("{}…", truncate_to_byte_limit(raw, /*max_bytes*/ 320))
         } else {
             raw.to_string()
         };
@@ -2141,6 +2143,19 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    #[test]
+    fn error_fallback_handles_a_multibyte_character_crossing_the_byte_limit() {
+        let raw = format!("{}é", "a".repeat(319));
+
+        assert_eq!(
+            pretty_lines_from_error(&raw),
+            vec![
+                "Failed to load task details.".to_string(),
+                format!("{}…", "a".repeat(319)),
+            ],
+        );
+    }
 
     struct StubGitInfo {
         default_branch: Option<String>,

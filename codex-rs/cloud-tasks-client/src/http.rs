@@ -862,7 +862,11 @@ mod api {
         if s.len() <= max {
             s.to_string()
         } else {
-            s[s.len() - max..].to_string()
+            let mut start = s.len() - max;
+            while !s.is_char_boundary(start) {
+                start += 1;
+            }
+            s[start..].to_string()
         }
     }
 
@@ -885,13 +889,37 @@ mod api {
             .unwrap_or_else(|| "<unknown>".to_string());
         let head: String = patch.lines().take(20).collect::<Vec<&str>>().join("\n");
         let head_trunc = if head.len() > 800 {
-            format!("{}…", &head[..800])
+            let mut end = 800;
+            while !head.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &head[..end])
         } else {
             head
         };
         format!(
             "patch_summary: kind={kind} lines={lines} chars={chars} cwd={cwd} ; head=\n{head_trunc}"
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn tail_handles_a_multibyte_character_crossing_the_byte_limit() {
+            assert_eq!(tail("aé", /*max*/ 1), "");
+            assert_eq!(tail("aé", /*max*/ 2), "é");
+        }
+
+        #[test]
+        fn patch_summary_handles_a_multibyte_character_crossing_the_byte_limit() {
+            let patch = format!("{}é", "a".repeat(799));
+
+            let summary = summarize_patch_for_logging(&patch);
+
+            assert!(summary.ends_with(&format!("{}…", "a".repeat(799))));
+        }
     }
 }
 

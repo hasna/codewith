@@ -43,4 +43,5 @@ unicode-width = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+insta = { workspace = true }
 pretty_assertions = { workspace = true }
