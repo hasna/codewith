@@ -86,7 +86,7 @@ WHERE run_id = ?
         params: &BackgroundAgentExecutionSnapshotParams,
     ) -> anyhow::Result<BackgroundAgentExecutionSnapshot> {
         let now = Utc::now().timestamp();
-        let payload_json = serde_json::to_string(&params.payload_json)?;
+        let payload_json = redact_state_json_string(&params.payload_json)?;
         let mut tx = self.pool.begin().await?;
         let seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
@@ -202,7 +202,7 @@ pub(super) async fn upsert_background_agent_status_snapshot_in_tx(
     params: &BackgroundAgentStatusSnapshotParams,
     now: i64,
 ) -> anyhow::Result<()> {
-    let payload_json = serde_json::to_string(&params.payload_json)?;
+    let payload_json = redact_state_json_string(&params.payload_json)?;
     sqlx::query(
         r#"
 INSERT INTO background_agent_status_snapshots (
@@ -231,7 +231,7 @@ ON CONFLICT(run_id) DO UPDATE SET
     .bind(params.seq)
     .bind(params.status.as_str())
     .bind(params.desired_state.as_str())
-    .bind(params.summary.as_deref())
+    .bind(params.summary.as_deref().map(redact_state_string))
     .bind(params.pending_interaction_count)
     .bind(params.last_event_seq)
     .bind(payload_json)

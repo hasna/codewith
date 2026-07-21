@@ -32,6 +32,7 @@ pub use models_cache::write_mock_provider_models_cache_with_auth;
 pub use models_cache::write_models_cache;
 pub use models_cache::write_models_cache_with_models;
 pub use responses::create_apply_patch_sse_response;
+pub use responses::create_empty_completed_sse_response;
 pub use responses::create_exec_command_sse_response;
 pub use responses::create_final_assistant_message_sse_response;
 pub use responses::create_request_permissions_sse_response;

@@ -1407,30 +1407,46 @@ See the Codewith keymap documentation for supported actions and examples."
         tui: &mut tui::Tui,
         terminal_resize_reflow_enabled: bool,
     ) -> Result<Rect> {
-        let desired_height = self.chat_widget.desired_height(tui.terminal.size()?.width);
-        let mut rendered_area = Rect::default();
-        if terminal_resize_reflow_enabled {
-            tui.draw_with_resize_reflow(desired_height, |frame| {
-                let area = frame.area();
-                rendered_area = area;
-                self.chat_widget.render(area, frame.buffer);
-                if let Some((x, y)) = self.chat_widget.cursor_pos(area) {
-                    frame.set_cursor_style(self.chat_widget.cursor_style(area));
-                    frame.set_cursor_position((x, y));
-                }
-            })?;
-        } else {
-            tui.draw(desired_height, |frame| {
-                let area = frame.area();
-                rendered_area = area;
-                self.chat_widget.render(area, frame.buffer);
-                if let Some((x, y)) = self.chat_widget.cursor_pos(area) {
-                    frame.set_cursor_style(self.chat_widget.cursor_style(area));
-                    frame.set_cursor_position((x, y));
-                }
-            })?;
-        }
-        Ok(rendered_area)
+        let width = tui.terminal.size()?.width;
+        self.with_chat_widget_frame(width, |desired_height, chat_widget| {
+            let mut rendered_area = Rect::default();
+            if terminal_resize_reflow_enabled {
+                tui.draw_with_resize_reflow(desired_height, |frame| {
+                    let area = frame.area();
+                    rendered_area = area;
+                    chat_widget.render(area, frame.buffer);
+                    self.chat_widget.note_rendered_width(area.width);
+                    if let Some((x, y)) = chat_widget.cursor_pos(area) {
+                        frame.set_cursor_style(chat_widget.cursor_style(area));
+                        frame.set_cursor_position((x, y));
+                    }
+                })?;
+            } else {
+                tui.draw(desired_height, |frame| {
+                    let area = frame.area();
+                    rendered_area = area;
+                    chat_widget.render(area, frame.buffer);
+                    self.chat_widget.note_rendered_width(area.width);
+                    if let Some((x, y)) = chat_widget.cursor_pos(area) {
+                        frame.set_cursor_style(chat_widget.cursor_style(area));
+                        frame.set_cursor_position((x, y));
+                    }
+                })?;
+            }
+            Ok(rendered_area)
+        })
+    }
+
+    /// Build the chat widget's renderable tree once and hand it to `render` along with its desired
+    /// height. Reusing a single tree lets sizing, rendering, and cursor placement share the flex
+    /// height cache instead of re-measuring the transcript on every pass.
+    fn with_chat_widget_frame<T>(
+        &self,
+        width: u16,
+        render: impl FnOnce(u16, &dyn Renderable) -> T,
+    ) -> T {
+        let chat_widget = self.chat_widget.as_renderable();
+        render(chat_widget.desired_height(width), &chat_widget)
     }
 }
 

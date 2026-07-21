@@ -72,6 +72,7 @@ impl WebhookEventStore {
         let payload_json = serde_json::to_string(&redacted_payload)?;
         let redactions_json = serde_json::to_string(&redactions)?;
         let payload_preview = payload_preview(&redacted_payload);
+        let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
         let sql = webhook_event_returning(
             r#"
 INSERT OR IGNORE INTO app_webhook_events (
@@ -105,7 +106,7 @@ RETURNING
             .bind(params.subscription_id.as_deref())
             .bind(params.event_type.as_str())
             .bind(params.external_delivery_id.as_deref())
-            .bind(params.idempotency_key.as_deref())
+            .bind(idempotency_key.as_deref())
             .bind(target_thread_id.as_deref())
             .bind(payload_json)
             .bind(payload_sha256)

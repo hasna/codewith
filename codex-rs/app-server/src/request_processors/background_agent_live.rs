@@ -3715,13 +3715,15 @@ async fn handle_background_agent_event(
                 .await?;
         }
         EventMsg::TurnComplete(event) => {
+            let (status, status_reason, event_type, exit_code, lease_status_reason) =
+                background_agent_turn_complete_status(event.last_agent_message.as_deref());
             append_status(
                 context,
                 run_id,
                 generation,
-                BackgroundAgentRunStatus::Completed,
-                "turn completed",
-                "agent.completed",
+                status,
+                status_reason,
+                event_type,
                 json!({
                     "turnId": event.turn_id,
                     "lastAgentMessage": event.last_agent_message,
@@ -3735,9 +3737,9 @@ async fn handle_background_agent_event(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
-                    Some(0),
+                    Some(exit_code),
                     /*exit_signal*/ None,
-                    Some("completed"),
+                    Some(lease_status_reason),
                 )
             })
             .await?;
@@ -3822,6 +3824,33 @@ async fn handle_background_agent_event(
         }
     }
     Ok(false)
+}
+
+fn background_agent_turn_complete_status(
+    last_agent_message: Option<&str>,
+) -> (
+    BackgroundAgentRunStatus,
+    &'static str,
+    &'static str,
+    i64,
+    &'static str,
+) {
+    match last_agent_message {
+        Some(message) if !message.trim().is_empty() => (
+            BackgroundAgentRunStatus::Completed,
+            "turn completed",
+            "agent.completed",
+            0,
+            "completed",
+        ),
+        _ => (
+            BackgroundAgentRunStatus::Failed,
+            "turn completed without an agent message",
+            "agent.failed",
+            1,
+            "turn completed without an agent message",
+        ),
+    }
 }
 
 async fn create_pending_interaction(
