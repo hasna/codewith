@@ -87,6 +87,12 @@ pub(crate) struct FooterProps {
     /// When both this label and the configured status line are available, they are rendered on the
     /// same row separated by ` · `.
     pub(crate) active_agent_label: Option<String>,
+    /// Goal-pursuit status appended inline to the passive status-line flow.
+    ///
+    /// This is intentionally not a configurable `/statusline` item: whenever a goal status exists
+    /// it renders unconditionally, appended after the configured items and the active agent label
+    /// with a ` · ` separator, so it can never be toggled off from the `/statusline` picker.
+    pub(crate) goal_status_indicator: Option<GoalStatusIndicator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -619,12 +625,10 @@ pub(crate) fn goal_status_indicator_line(
 
 pub(crate) fn status_line_right_indicator_line(
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-    goal_status_indicator: Option<&GoalStatusIndicator>,
     ide_context_active: bool,
     show_cycle_hint: bool,
 ) -> Option<Line<'static>> {
-    let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint)
-        .or_else(|| goal_status_indicator_line(goal_status_indicator));
+    let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint);
     let ide_context_indicator =
         ide_context_active.then(|| Line::from(vec!["IDE context".fg(accent_color())]));
     let mut line: Option<Line<'static>> = None;
@@ -841,6 +845,18 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
             existing.spans.push(active_agent_label.clone().dim());
         } else {
             line = Some(Line::from(active_agent_label.clone()).dim());
+        }
+    }
+
+    // The goal-pursuit indicator is not a configurable `/statusline` item: append it last so it
+    // renders one-after-another in the inline ` · ` flow whenever a goal status exists, preserving
+    // the exact goal text/format and its magenta styling.
+    if let Some(goal_line) = goal_status_indicator_line(props.goal_status_indicator.as_ref()) {
+        if let Some(existing) = line.as_mut() {
+            existing.spans.push(" · ".dim());
+            existing.spans.extend(goal_line.spans);
+        } else {
+            line = Some(goal_line);
         }
     }
 
@@ -1514,7 +1530,6 @@ mod tests {
         height: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         context_line: Line<'static>,
     ) {
@@ -1577,13 +1592,11 @@ mod tests {
                 let right_line = if status_line_active {
                     let full = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        goal_status_indicator,
                         ide_context_active,
                         show_cycle_hint,
                     );
                     let compact = status_line_right_indicator_line(
                         collaboration_mode_indicator,
-                        goal_status_indicator,
                         ide_context_active,
                         /*show_cycle_hint*/ false,
                     );
@@ -1722,11 +1735,16 @@ mod tests {
         goal_status_indicator: Option<&GoalStatusIndicator>,
         context_line: Line<'static>,
     ) {
+        // The goal indicator now renders inline via the passive status line, so thread it through
+        // `FooterProps` rather than the right-aligned indicator.
+        let props = FooterProps {
+            goal_status_indicator: goal_status_indicator.cloned(),
+            ..props.clone()
+        };
         let height = footer_test_height(
             width,
-            props,
+            &props,
             collaboration_mode_indicator,
-            goal_status_indicator,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1734,9 +1752,8 @@ mod tests {
         draw_footer_frame(
             &mut terminal,
             height,
-            props,
+            &props,
             collaboration_mode_indicator,
-            goal_status_indicator,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1753,7 +1770,6 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             &context_line,
         );
@@ -1763,7 +1779,6 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             /*ide_context_active*/ false,
             context_line,
         );
@@ -1782,7 +1797,6 @@ mod tests {
             width,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             ide_context_active,
             &context_line,
         );
@@ -1792,7 +1806,6 @@ mod tests {
             height,
             props,
             collaboration_mode_indicator,
-            /*goal_status_indicator*/ None,
             ide_context_active,
             context_line,
         );
@@ -1803,7 +1816,6 @@ mod tests {
         width: u16,
         props: &FooterProps,
         collaboration_mode_indicator: Option<CollaborationModeIndicator>,
-        goal_status_indicator: Option<&GoalStatusIndicator>,
         ide_context_active: bool,
         _context_line: &Line<'static>,
     ) -> u16 {
@@ -1815,7 +1827,6 @@ mod tests {
         let area = Rect::new(0, 0, width, 2);
         let right_line = status_line_right_indicator_line(
             collaboration_mode_indicator,
-            goal_status_indicator,
             ide_context_active,
             show_cycle_hint,
         );
@@ -1863,6 +1874,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1884,6 +1896,7 @@ mod tests {
                     ..FooterKeyHints::default_bindings()
                 },
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1902,6 +1915,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1920,6 +1934,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1938,6 +1953,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1956,6 +1972,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1974,6 +1991,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -1992,6 +2010,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -2010,6 +2029,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
             Some(72),
             /*used_tokens*/ None,
@@ -2030,6 +2050,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
             /*percent*/ None,
             Some(123_456),
@@ -2050,6 +2071,7 @@ mod tests {
                 status_line_enabled: false,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
+                goal_status_indicator: None,
             },
         );
 
@@ -2066,6 +2088,7 @@ mod tests {
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -2095,6 +2118,7 @@ mod tests {
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -2117,6 +2141,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_shortcuts", props);
@@ -2134,6 +2159,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_yields_to_queue_hint", props);
@@ -2151,6 +2177,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_overrides_draft_idle", props);
@@ -2168,6 +2195,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2199,6 +2227,7 @@ mod tests {
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2222,6 +2251,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         // has status line and no collaboration mode
@@ -2248,6 +2278,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2279,6 +2310,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         snapshot_footer_with_mode_indicator_and_context(
@@ -2312,6 +2344,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
         let goal_status = GoalStatusIndicator::Complete {
             usage: Some("10h 12m".to_string()),
@@ -2338,6 +2371,7 @@ mod tests {
             status_line_enabled: false,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: Some("Robie [explorer]".to_string()),
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_active_agent_label", props);
@@ -2355,6 +2389,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: Some("Robie [explorer]".to_string()),
+            goal_status_indicator: None,
         };
 
         snapshot_footer("footer_status_line_with_active_agent_label", props);
@@ -2449,6 +2484,7 @@ mod tests {
             status_line_enabled: true,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
+            goal_status_indicator: None,
         };
 
         let screen = render_footer_with_mode_indicator_and_context(
