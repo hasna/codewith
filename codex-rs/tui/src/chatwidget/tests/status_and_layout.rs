@@ -1558,7 +1558,11 @@ async fn ordered_auto_switch_strategy_preserves_configured_order() {
 }
 
 #[tokio::test]
-async fn ordered_auto_switch_selects_first_unknown_before_later_healthy_profile() {
+async fn ordered_auto_switch_prefers_healthy_over_earlier_unknown_profile() {
+    // Ordered rotation respects configured order, but never optimistically switches
+    // onto an Unknown-health profile when a later candidate is known to be healthy:
+    // a confirmed-healthy profile is always the safer switch target. This mirrors the
+    // core-level `ordered_prefers_healthy_over_earlier_unknown` contract.
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");
     save_test_auth_profile(&chat, "personal");
@@ -1575,6 +1579,9 @@ async fn ordered_auto_switch_selects_first_unknown_before_later_healthy_profile(
     configure_test_session(&mut chat);
     drain_insert_history(&mut rx);
 
+    // "personal" has no observed usage (Unknown) while the later "backup" is known
+    // healthy at 25% used; Ordered must skip the unconfirmed "personal" in favor of the
+    // confirmed-healthy "backup".
     chat.on_auth_profile_rate_limit_snapshots(
         Some("backup".to_string()),
         vec![rate_limit_snapshot_for_window(
@@ -1587,7 +1594,7 @@ async fn ordered_auto_switch_selects_first_unknown_before_later_healthy_profile(
 
     match rx.try_recv() {
         Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
-            assert_eq!(profile, Some("personal".to_string()));
+            assert_eq!(profile, Some("backup".to_string()));
         }
         other => panic!("expected auth profile switch event, got {other:?}"),
     }
