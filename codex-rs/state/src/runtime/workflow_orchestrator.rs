@@ -873,7 +873,7 @@ FROM workflow_run_steps
 WHERE run_id = ?
   AND status = 'ready'
   AND background_agent_run_id IS NULL
-  AND approval_gate IS NULL
+  AND (approval_gate IS NULL OR approval_state = 'approved')
 ORDER BY sequence, step_id
         "#,
     )
@@ -3502,6 +3502,358 @@ WHERE run_id = ?
                 .verifiers
                 .iter()
                 .all(|verifier| verifier.status == crate::WorkflowRunStepVerifierStatus::Skipped)
+        );
+    }
+
+    fn gated_approval_workflow_yaml() -> String {
+        r#"schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_gated_approval"
+display_name: "Gated Approval Test"
+source_prompt: "gated source prompt should not enter workflow events"
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "openai"
+  model: "gpt-5.4"
+  reasoning: "high"
+limits:
+  max_parallel_steps: 2
+  max_agents: 2
+  max_worktrees: 2
+  max_runtime_seconds: 3600
+  max_step_runtime_seconds: 120
+  max_tokens: 6000
+  max_tool_calls: 50
+approvals:
+  required_before:
+    - "human-review"
+agents:
+  - id: "agent_open"
+    display_name: "Adversary-Hypatia"
+    role: "Attack the open branch."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+  - id: "agent_gated"
+    display_name: "Adversary-Cicero"
+    role: "Attack the gated branch."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+steps:
+  - id: "open_step"
+    title: "Open branch adversarial step"
+    agent: "agent_open"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "parallel"
+    depends_on: []
+    outputs:
+      - "open.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "open_artifact"
+          type: "artifact_contains"
+          artifact: "open.md"
+          must_contain:
+            - "done"
+  - id: "gated_step"
+    title: "Gated branch adversarial step"
+    agent: "agent_gated"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    workspace:
+      mode: "isolated_worktree"
+    parallel_group: "parallel"
+    approval_gate: "human-review"
+    depends_on: []
+    outputs:
+      - "gated.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "gated_artifact"
+          type: "artifact_contains"
+          artifact: "gated.md"
+          must_contain:
+            - "done"
+artifacts:
+  retention: "until_workflow_complete"
+  required: []
+cleanup:
+  on_cancel: []
+  on_complete: []
+"#
+        .to_string()
+    }
+
+    fn find_step<'a>(
+        snapshot: &'a crate::WorkflowRunSnapshot,
+        step_id: &str,
+    ) -> &'a crate::WorkflowRunStep {
+        snapshot
+            .steps
+            .iter()
+            .find(|step| step.step_id == step_id)
+            .unwrap_or_else(|| panic!("snapshot should contain step `{step_id}`"))
+    }
+
+    async fn claim_and_advance(runtime: &StateRuntime, run_id: &str, owner_id: &str) -> i64 {
+        let claim = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("run should claim");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("advance should succeed")
+            .expect("run should advance");
+        claim.generation
+    }
+
+    async fn admit_branches(
+        runtime: &StateRuntime,
+        run_id: &str,
+        owner_id: &str,
+        generation: i64,
+    ) -> WorkflowRunBranchAdmissionOutcome {
+        runtime
+            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(10),
+            })
+            .await
+            .expect("branch admission should succeed")
+            .expect("run should still be owned")
+    }
+
+    #[tokio::test]
+    async fn gated_step_requires_explicit_approval_before_branch_admission() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_gated_approval",
+            gated_approval_workflow_yaml(),
+        )
+        .await;
+        let run_id = run.run.run_id.clone();
+
+        // The gated step is persisted awaiting a decision; the open step has no gate.
+        assert_eq!(
+            Some("pending"),
+            find_step(&run, "gated_step").approval_state.as_deref()
+        );
+        assert_eq!(
+            Some("human-review"),
+            find_step(&run, "gated_step").approval_gate.as_deref()
+        );
+        assert_eq!(None, find_step(&run, "open_step").approval_state);
+
+        let owner = "approval-owner";
+        let generation = claim_and_advance(&runtime, run_id.as_str(), owner).await;
+
+        // Only the ungated step is admitted while the gate is unresolved.
+        let first = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert_eq!(
+            vec!["open_step".to_string()],
+            first
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            crate::WorkflowRunStepStatus::Ready,
+            find_step(&first.snapshot, "gated_step").status,
+            "gated step must stay ready until approved"
+        );
+
+        // A repeat admission changes nothing while the gate is still pending.
+        let stalled = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert!(stalled.admitted.is_empty());
+
+        // Explicit user approval clears the gate and records provenance.
+        let approval = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: Some("reviewed and safe".to_string()),
+                actor_id: Some("user-1".to_string()),
+            })
+            .await
+            .expect("approval should succeed")
+            .expect("run should exist");
+        assert!(approval.changed);
+        assert!(approval.gate_present);
+        assert_eq!(
+            Some("approved"),
+            find_step(&approval.snapshot, "gated_step")
+                .approval_state
+                .as_deref()
+        );
+        let approval_event = approval
+            .snapshot
+            .events
+            .iter()
+            .find(|event| event.event_type == "step_approval_granted")
+            .expect("approval event should be recorded");
+        assert_eq!("user", approval_event.actor_kind);
+        assert_eq!(Some("user-1".to_string()), approval_event.actor_id);
+        assert_eq!(
+            "gated_step",
+            approval_event.event_payload_json["data"]["stepId"]
+                .as_str()
+                .expect("stepId")
+        );
+        assert_eq!(
+            true,
+            approval_event.event_payload_json["data"]["reasonProvided"]
+        );
+
+        // Re-approving is idempotent.
+        let repeat = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("repeat approval should succeed")
+            .expect("run should exist");
+        assert!(!repeat.changed);
+
+        // The approved step is now admitted on the next tick.
+        let second = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert_eq!(
+            vec!["gated_step".to_string()],
+            second
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_gated_step_skips_it_and_ignores_ungated_steps() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_gated_approval",
+            gated_approval_workflow_yaml(),
+        )
+        .await;
+        let run_id = run.run.run_id.clone();
+
+        // Rejecting a gated step skips it and records a sanitized reason only.
+        let rejection = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "gated_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Reject,
+                reason: Some("commands:\n  - should-not-leak".to_string()),
+                actor_id: Some("user-1".to_string()),
+            })
+            .await
+            .expect("rejection should succeed")
+            .expect("run should exist");
+        assert!(rejection.changed);
+        let rejected = find_step(&rejection.snapshot, "gated_step");
+        assert_eq!(crate::WorkflowRunStepStatus::Skipped, rejected.status);
+        assert_eq!(Some("rejected"), rejected.approval_state.as_deref());
+        assert_eq!(
+            Some("user_rejected_approval"),
+            rejected.reason_code.as_deref()
+        );
+        assert!(!rejection.snapshot.events.iter().any(|event| {
+            serde_json::to_string(&event.event_payload_json)
+                .expect("payload should serialize")
+                .contains("should-not-leak")
+        }));
+
+        // Ungated steps are treated as no-ops and never fabricate a gate.
+        let ungated = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "open_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("ungated approval should succeed")
+            .expect("run should exist");
+        assert!(!ungated.changed);
+        assert!(!ungated.gate_present);
+        assert_eq!(
+            None,
+            find_step(&ungated.snapshot, "open_step").approval_state
+        );
+
+        // Unknown steps and runs resolve to None instead of erroring.
+        let unknown_step = runtime
+            .workflows()
+            .set_workflow_run_step_approval(crate::WorkflowRunStepApprovalParams {
+                run_id: run_id.clone(),
+                step_id: "missing_step".to_string(),
+                decision: crate::WorkflowRunStepApprovalDecision::Approve,
+                reason: None,
+                actor_id: None,
+            })
+            .await
+            .expect("unknown step should not error");
+        assert!(unknown_step.is_none());
+
+        // The rejected gated step is never admitted for execution.
+        let owner = "reject-owner";
+        let generation = claim_and_advance(&runtime, run_id.as_str(), owner).await;
+        let admission = admit_branches(&runtime, run_id.as_str(), owner, generation).await;
+        assert!(
+            !admission
+                .admitted
+                .iter()
+                .any(|branch| branch.step_id == "gated_step")
         );
     }
 }

@@ -17,6 +17,13 @@ pub const MAX_THREAD_WORKFLOW_LIST_LIMIT: u32 = 50;
 pub const DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT: u32 = 20;
 pub const MAX_THREAD_WORKFLOW_RUN_LIST_LIMIT: u32 = 50;
 
+/// A gated step is awaiting an explicit user approval decision.
+pub const WORKFLOW_STEP_APPROVAL_PENDING: &str = "pending";
+/// A gated step has been approved by the user and may be admitted for execution.
+pub const WORKFLOW_STEP_APPROVAL_APPROVED: &str = "approved";
+/// A gated step has been rejected by the user and will be skipped.
+pub const WORKFLOW_STEP_APPROVAL_REJECTED: &str = "rejected";
+
 #[derive(Clone)]
 pub struct WorkflowStore {
     pool: Arc<SqlitePool>,
@@ -74,6 +81,44 @@ pub struct WorkflowRunPauseParams {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunResumeParams {
     pub run_id: String,
+}
+
+/// Explicit user decision on a workflow run step guarded by an approval gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowRunStepApprovalDecision {
+    Approve,
+    Reject,
+}
+
+impl WorkflowRunStepApprovalDecision {
+    fn approval_state(self) -> &'static str {
+        match self {
+            Self::Approve => WORKFLOW_STEP_APPROVAL_APPROVED,
+            Self::Reject => WORKFLOW_STEP_APPROVAL_REJECTED,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunStepApprovalParams {
+    pub run_id: String,
+    pub step_id: String,
+    pub decision: WorkflowRunStepApprovalDecision,
+    /// Optional user-supplied justification. The raw value is never persisted; only
+    /// its presence is recorded so approval provenance stays free of injected data.
+    pub reason: Option<String>,
+    /// Optional actor id (for example the requesting agent or user handle).
+    pub actor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunStepApprovalOutcome {
+    pub snapshot: crate::WorkflowRunSnapshot,
+    /// True when the decision changed persisted state (idempotent re-decisions are false).
+    pub changed: bool,
+    /// True when the targeted step actually declares an approval gate.
+    pub gate_present: bool,
+    pub decision: WorkflowRunStepApprovalDecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -593,6 +638,125 @@ WHERE run_id = ?
         tx.commit().await?;
         Ok(Some(WorkflowRunStatusMutationOutcome { snapshot, changed }))
     }
+
+    /// Record an explicit user approval decision for a gated workflow run step.
+    ///
+    /// Approving a gated step clears it for automatic branch admission on the next
+    /// orchestrator tick; rejecting it marks the step `skipped` so downstream
+    /// dependents stall instead of running without consent. Steps that never
+    /// declared an approval gate, or that already left the pre-execution
+    /// (`pending`/`ready`) states, are treated as no-ops. The raw approval reason
+    /// is never persisted so approval provenance cannot smuggle injected content.
+    pub async fn set_workflow_run_step_approval(
+        &self,
+        params: WorkflowRunStepApprovalParams,
+    ) -> anyhow::Result<Option<WorkflowRunStepApprovalOutcome>> {
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+SELECT step_run_id, status, approval_gate, approval_state
+FROM workflow_run_steps
+WHERE run_id = ? AND step_id = ?
+            "#,
+        )
+        .bind(params.run_id.as_str())
+        .bind(params.step_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let step_run_id: String = row.try_get("step_run_id")?;
+        let status: String = row.try_get("status")?;
+        let approval_gate: Option<String> = row.try_get("approval_gate")?;
+        let approval_state: Option<String> = row.try_get("approval_state")?;
+        let gate_present = approval_gate.is_some();
+        let status = crate::WorkflowRunStepStatus::try_from(status.as_str())?;
+        let admittable = matches!(
+            status,
+            crate::WorkflowRunStepStatus::Pending | crate::WorkflowRunStepStatus::Ready
+        );
+        let target_state = params.decision.approval_state();
+        let mut changed = false;
+
+        if gate_present && admittable && approval_state.as_deref() != Some(target_state) {
+            changed = true;
+            match params.decision {
+                WorkflowRunStepApprovalDecision::Approve => {
+                    sqlx::query(
+                        r#"
+UPDATE workflow_run_steps
+SET approval_state = ?, updated_at_ms = ?
+WHERE run_id = ? AND step_id = ?
+                        "#,
+                    )
+                    .bind(WORKFLOW_STEP_APPROVAL_APPROVED)
+                    .bind(now_ms)
+                    .bind(params.run_id.as_str())
+                    .bind(params.step_id.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                WorkflowRunStepApprovalDecision::Reject => {
+                    sqlx::query(
+                        r#"
+UPDATE workflow_run_steps
+SET
+    approval_state = ?,
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    updated_at_ms = ?
+WHERE run_id = ? AND step_id = ?
+                        "#,
+                    )
+                    .bind(WORKFLOW_STEP_APPROVAL_REJECTED)
+                    .bind(crate::WorkflowRunStepStatus::Skipped.as_str())
+                    .bind(sanitized_workflow_step_rejection_reason())
+                    .bind("user_rejected_approval")
+                    .bind(now_ms)
+                    .bind(params.run_id.as_str())
+                    .bind(params.step_id.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+            let event_type = match params.decision {
+                WorkflowRunStepApprovalDecision::Approve => "step_approval_granted",
+                WorkflowRunStepApprovalDecision::Reject => "step_approval_rejected",
+            };
+            append_workflow_run_event_in_tx(
+                &mut tx,
+                params.run_id.as_str(),
+                WorkflowRunEventAppend {
+                    event_type,
+                    actor_kind: "user",
+                    actor_id: params.actor_id.clone(),
+                    step_run_id: Some(step_run_id),
+                    verifier_run_id: None,
+                    visibility: "internal",
+                    payload: json!({
+                        "stepId": params.step_id,
+                        "decision": target_state,
+                        "reasonProvided": params.reason.is_some(),
+                    }),
+                    now_ms,
+                },
+            )
+            .await?;
+        }
+
+        let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
+        tx.commit().await?;
+        Ok(Some(WorkflowRunStepApprovalOutcome {
+            snapshot,
+            changed,
+            gate_present,
+            decision: params.decision,
+        }))
+    }
 }
 
 struct InsertWorkflowRunParams<'a> {
@@ -633,6 +797,10 @@ fn resolve_run_source_thread_id(
 
 fn sanitized_workflow_pause_reason() -> &'static str {
     "workflow run paused"
+}
+
+fn sanitized_workflow_step_rejection_reason() -> &'static str {
+    "workflow step rejected during user approval"
 }
 
 async fn insert_workflow_run_in_tx(
@@ -744,12 +912,13 @@ INSERT INTO workflow_run_steps (
     status,
     parallel_group,
     approval_gate,
+    approval_state,
     model_route_json,
     workspace_json,
     completion_model_marked_state,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(Uuid::new_v4().to_string())
@@ -761,6 +930,11 @@ INSERT INTO workflow_run_steps (
         .bind(crate::WorkflowRunStepStatus::Pending.as_str())
         .bind(step.parallel_group.as_deref())
         .bind(step.approval_gate.as_deref())
+        .bind(
+            step.approval_gate
+                .as_ref()
+                .map(|_| WORKFLOW_STEP_APPROVAL_PENDING),
+        )
         .bind(optional_workflow_state_json_string(
             "workflow_run_step_model_route",
             step.model.as_ref(),
@@ -1033,6 +1207,7 @@ SELECT
     reason_code,
     parallel_group,
     approval_gate,
+    approval_state,
     model_route_json,
     workspace_json,
     background_agent_run_id,
