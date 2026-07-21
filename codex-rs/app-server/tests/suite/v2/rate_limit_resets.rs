@@ -37,29 +37,45 @@ const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const INTERNAL_ERROR_CODE: i64 = -32603;
 const RESET_TIMEOUT_ENV: &str = "CODEX_TEST_ACCOUNT_RATE_LIMIT_RESET_TIMEOUT_MS";
 
+/// Regression guard: banked resets must surface as available even when the
+/// inline usage summary reports zero. The inline `available_count` on the usage
+/// response can lag the dedicated reset-credit ledger, so `/usage` used to show
+/// "no usage limit resets available" while banked resets were still redeemable.
+/// The read path must always reconcile against the authoritative ledger.
 #[tokio::test]
-async fn rate_limit_read_skips_reset_details_when_summary_has_no_available_credits() -> Result<()> {
+async fn rate_limit_read_consults_reset_ledger_when_summary_reports_no_available_credits()
+-> Result<()> {
     let (codex_home, server) = rate_limit_test_server().await?;
     mount_usage_response(&server, Some(0)).await;
     Mock::given(method("GET"))
         .and(path("/api/codex/rate-limit-reset-credits"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "available_count": 1,
-            "credits": [],
+            "credits": [{
+                "id": "credit-1",
+                "reset_type": "codex_rate_limits",
+                "status": "available",
+                "granted_at": "2026-07-01T00:00:00Z",
+                "expires_at": "2026-08-01T00:00:00Z",
+                "title": "Weekly reset",
+                "description": null
+            }],
         })))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
 
     let response = read_rate_limits(codex_home.path()).await?;
 
-    assert_eq!(
-        response.rate_limit_reset_credits,
-        Some(RateLimitResetCreditsSummary {
-            available_count: 0,
-            credits: None,
-        })
-    );
+    let summary = response
+        .rate_limit_reset_credits
+        .expect("banked resets should surface even when the usage summary reports none");
+    assert_eq!(summary.available_count, 1);
+    let credits = summary.credits.expect("detail rows should be present");
+    assert_eq!(credits.len(), 1);
+    assert_eq!(credits[0].id, "credit-1");
+    assert_eq!(credits[0].reset_type, RateLimitResetType::CodexRateLimits);
+    assert_eq!(credits[0].status, RateLimitResetCreditStatus::Available);
     server.verify().await;
     Ok(())
 }
