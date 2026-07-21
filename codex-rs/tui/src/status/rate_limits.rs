@@ -357,25 +357,30 @@ pub(crate) fn format_status_limit_summary(percent_remaining: f64) -> String {
     format!("{percent_remaining:.0}% left")
 }
 
-/// Builds a single `StatusRateLimitRow` for credits when the snapshot indicates
+/// Renders the display value for the credits row when the snapshot indicates
 /// that the account has credit tracking enabled. When credits are unlimited we
-/// show that fact explicitly; otherwise we render the rounded balance in
-/// credits. Accounts with credits = 0 skip this section entirely.
-fn credit_status_row(credits: &CreditsSnapshotDisplay) -> Option<StatusRateLimitRow> {
+/// show that fact explicitly (`"Unlimited"`); otherwise we render the rounded
+/// balance in credits (`"25 credits"`). Accounts with credits = 0 (or without
+/// credit tracking) return `None` and skip the section entirely.
+pub(crate) fn credits_display_value(credits: &CreditsSnapshotDisplay) -> Option<String> {
     if !credits.has_credits {
         return None;
     }
     if credits.unlimited {
-        return Some(StatusRateLimitRow {
-            label: "Credits".to_string(),
-            value: StatusRateLimitValue::Text("Unlimited".to_string()),
-        });
+        return Some("Unlimited".to_string());
     }
     let balance = credits.balance.as_ref()?;
     let display_balance = format_credit_balance(balance)?;
+    Some(format!("{display_balance} credits"))
+}
+
+/// Builds a single `StatusRateLimitRow` for credits, reusing
+/// [`credits_display_value`] so status surfaces share one credit-formatting
+/// contract.
+fn credit_status_row(credits: &CreditsSnapshotDisplay) -> Option<StatusRateLimitRow> {
     Some(StatusRateLimitRow {
         label: "Credits".to_string(),
-        value: StatusRateLimitValue::Text(format!("{display_balance} credits")),
+        value: StatusRateLimitValue::Text(credits_display_value(credits)?),
     })
 }
 

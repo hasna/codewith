@@ -173,6 +173,8 @@ fn populate_merged_regular_fields_with_sources(
     // Destructure without `..` so every new requirements field must choose
     // whether it belongs in the regular TOML merge path or in a special merger.
     let ConfigRequirementsToml {
+        allowed_tool_policies,
+        infinity_agent_trust_key,
         allowed_approval_policies,
         allowed_approvals_reviewers,
         allowed_sandbox_modes,
@@ -196,6 +198,8 @@ fn populate_merged_regular_fields_with_sources(
         guardian_policy_config,
     } = requirements;
 
+    set_sourced!(allowed_tool_policies, &["allowed_tool_policies"]);
+    set_sourced!(infinity_agent_trust_key, &["infinity_agent_trust_key"]);
     set_sourced!(allowed_approval_policies, &["allowed_approval_policies"]);
     set_sourced!(
         allowed_approvals_reviewers,

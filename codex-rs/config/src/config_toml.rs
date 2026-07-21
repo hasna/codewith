@@ -745,28 +745,34 @@ pub struct RealtimeAudioToml {
 /// mode. This is a first-class configuration key so that a `--strict-config`
 /// launch accepts `-c tools.policy="infinity-agent"` (or `[tools] policy =
 /// "infinity-agent"`) instead of rejecting it as an unknown field.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub enum ToolsPolicy {
+pub enum ToolPolicy {
+    /// Default policy. Preserves the complete ordinary Codewith tool surface.
+    #[default]
+    Full,
     /// Infinity subscription AuthCapsule policy. Removes host filesystem tools,
     /// host shell tools, and auth-profile control from the model toolset and
     /// mediates every surviving tool call through the protected remote-tool
-    /// bridge. See `Config::tools_policy` and the tool planner for enforcement.
+    /// bridge. See `Config::infinity_agent_policy` and the tool planner for
+    /// enforcement.
     InfinityAgent,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ToolsToml {
+    /// Selects the tool-construction policy. The default preserves the complete
+    /// ordinary Codewith tool surface. `None`/`Some(ToolPolicy::Full)` preserve
+    /// default tool exposure; `Some(ToolPolicy::InfinityAgent)` selects the
+    /// Infinity AuthCapsule `infinity-agent` policy.
+    pub policy: Option<ToolPolicy>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_web_search_tool_config"
     )]
     pub web_search: Option<WebSearchToolConfig>,
     pub experimental_request_user_input: Option<ExperimentalRequestUserInput>,
-    /// Optional hardened tool-exposure policy (e.g. the Infinity AuthCapsule
-    /// `infinity-agent` policy). `None` preserves default tool exposure.
-    pub policy: Option<ToolsPolicy>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

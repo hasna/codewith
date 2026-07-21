@@ -5,6 +5,24 @@
 //! a subscription task — that this binary natively enforces the `infinity-agent`
 //! AuthCapsule policy. The lane refuses to launch unless the document matches the
 //! exact contract below.
+//!
+//! SECURITY INVARIANT — probe DERIVES from enforcement.
+//! The capability document is NOT a hand-maintained constant. The `config` crate
+//! only owns the wire *shape* ([`AuthCapsulePolicyCapabilities`] +
+//! [`AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION`]). The single source of
+//! truth for the *values* is the fail-closed enforcement layer
+//! (`codex_core::tools::policy::VerifiedToolPolicy` and its
+//! `INFINITY_AGENT_PUBLIC_TOOL_NAMES` / `INFINITY_AGENT_DENIED_CAPABILITIES`
+//! constants). `codex_core::tools::policy::infinity_agent_auth_capsule_capabilities`
+//! computes this document from those constants, and the
+//! `codewith debug auth-capsule-policy` probe emits exactly that computed
+//! document. Because the `config` crate cannot depend on `core` (that would form
+//! a dependency cycle), the derivation lives in `core` where both the probe and
+//! the enforcement can consume it. This guarantees the probe output cannot
+//! diverge from what the binary actually enforces: change the enforced allowlist
+//! or denied-capability set and the probe changes with it. The derivation
+//! equivalence is pinned by
+//! `infinity_agent_auth_capsule_capabilities_match_enforcement` in `codex-core`.
 
 use serde::Serialize;
 
@@ -22,21 +40,19 @@ pub const AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION: &str =
 /// - `host_filesystem_tools` / `host_shell_tools` / `auth_profile_control` — these
 ///   are `false` **security guarantees**: under `tools.policy = "infinity-agent"`
 ///   these tool families are removed from the model toolset entirely (see the
-///   tool planner in `codex-core`), so a task cannot touch the host filesystem,
-///   spawn host shell subprocesses, or read/switch auth profiles.
+///   verified tool policy in `codex-core`), so a task cannot touch the host
+///   filesystem, spawn host shell subprocesses, or read/switch auth profiles.
 /// - `protected_remote_tool_bridge` — under the policy the model toolset is
-///   reduced by a single allowlist choke point (`INFINITY_AGENT_TOOL_ALLOWLIST`
-///   in `codex-core`) to policy-safe tools with no direct host access; the binary
-///   exposes no in-binary host tool once the policy is active, so any
+///   reduced to the signed Infinity bridge allowlist with no direct host access;
+///   the binary exposes no in-binary host tool once the policy is active, so any
 ///   host-affecting effect must be brokered externally through the Infinity
 ///   protected remote-tool bridge.
 ///
-/// Never emit a value that is not backed by enforcement. The
-/// `infinity_agent_policy_removes_host_tools_from_plan` and
-/// `infinity_agent_allowlist_excludes_host_access` tests in `codex-core` verify
-/// the `false` guarantees against real tool planning, and
-/// `infinity_agent_capabilities_match_infinity_contract` (below) pins this
-/// document to the exact Infinity contract, so it cannot drift into dishonesty.
+/// This struct is the wire shape only. Never construct it with hand-copied
+/// booleans: the authoritative values are computed by
+/// `codex_core::tools::policy::infinity_agent_auth_capsule_capabilities` from the
+/// same constants the enforcement layer uses. See the module-level SECURITY
+/// INVARIANT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AuthCapsulePolicyCapabilities {
     pub schema_version: &'static str,
@@ -45,41 +61,4 @@ pub struct AuthCapsulePolicyCapabilities {
     pub host_shell_tools: bool,
     pub auth_profile_control: bool,
     pub protected_remote_tool_bridge: bool,
-}
-
-impl AuthCapsulePolicyCapabilities {
-    /// The capabilities the binary enforces when `tools.policy = "infinity-agent"`
-    /// is active. This is the exact document the Infinity lane requires.
-    pub const fn infinity_agent() -> Self {
-        Self {
-            schema_version: AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION,
-            native_policy_enforcement: true,
-            host_filesystem_tools: false,
-            host_shell_tools: false,
-            auth_profile_control: false,
-            protected_remote_tool_bridge: true,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn infinity_agent_capabilities_match_infinity_contract() {
-        let caps = AuthCapsulePolicyCapabilities::infinity_agent();
-        let value = serde_json::to_value(caps).expect("serialize capabilities");
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "schema_version": "codewith.auth-capsule-policy-capabilities/v1",
-                "native_policy_enforcement": true,
-                "host_filesystem_tools": false,
-                "host_shell_tools": false,
-                "auth_profile_control": false,
-                "protected_remote_tool_bridge": true,
-            })
-        );
-    }
 }

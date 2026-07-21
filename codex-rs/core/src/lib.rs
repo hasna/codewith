@@ -16,6 +16,7 @@ mod responses_retry;
 pub(crate) mod session;
 pub use session::SteerInputError;
 mod codex_thread;
+mod compact_model_fallback;
 mod compact_remote;
 mod compact_remote_v2;
 mod config_lock;
@@ -143,6 +144,10 @@ pub use state_db_bridge::StateDbHandle;
 pub use state_db_bridge::init_state_db;
 mod thread_rollout_truncation;
 mod tools;
+/// SECURITY: single source of truth for the `codewith debug auth-capsule-policy`
+/// capability document, derived from the fail-closed `VerifiedToolPolicy`
+/// enforcement layer so the probe cannot diverge from what is enforced.
+pub use tools::policy::infinity_agent_auth_capsule_capabilities;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;
 mod turn_timing;

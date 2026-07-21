@@ -107,6 +107,27 @@ test-fast-target target_dir *args:
 check-fast *args:
     cargo check "$@"
 
+# Tiered PR-drain validation (T0-T3) on a persistent per-lane target dir.
+# Auto-scopes `check`/`test` to the crates that own files changed vs a base ref
+# (default origin/main), so unrelated crates and their aggregate test binaries
+# are never compiled. Escalates to the whole workspace when a workspace-root
+# manifest/config changes. See `.codewith/CODEWITH.md` -> "Tiered validation".
+#   just validate fmt                     # T0 format gate
+#   just validate check                   # T1 compile boundary, changed crates
+#   just validate test                    # T2 scoped tests, changed crates
+#   just validate test --rdeps            # T2 + workspace dependents
+#   just validate full                    # T3 whole-workspace gate
+#
+# just validate <fmt|check|test|full> [--base R] [--rdeps] [--target-dir D] [-- ...]
+[no-cd]
+validate *args:
+    {{ python }} {{ justfile_directory() }}/scripts/validate.py {args}
+
+# Print the `-p <crate>` selection for crates changed vs a base ref (--rdeps for dependents).
+[no-cd]
+changed-crates *args:
+    {{ python }} {{ justfile_directory() }}/scripts/validate.py check --print-crates {args}
+
 # List nextest test binaries so large integration targets are visible.
 test-binaries *args:
     cargo nextest list --list-type binaries-only --message-format json "$@"
