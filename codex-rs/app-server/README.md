@@ -244,6 +244,7 @@ Example with notification opt-out:
 - `remoteControl/status/changed` — notification emitted when the remote-control status or client-visible environment id changes. `status` is one of `disabled`, `connecting`, `connected`, or `errored`; `serverName` is the local machine name used by this app-server process; `environmentId` is a string when the app-server has a current enrollment and `null` when that enrollment is cleared, invalidated, or remote control is disabled. Newly initialized app-server clients always receive the current status snapshot.
 
 Requests delivered through the remote-control websocket are origin-scoped. After `initialize`, remote-control-origin clients may call only the constrained remote surfaces: `missionControl/*` and `remoteDispatch/*`. Remote-control management methods (`remoteControl/*`) and the broader local app-server RPC surface remain available only to local transports such as stdio, the control socket, websocket, and in-process clients.
+
 - `skills/config/write` — write user-level skill config by name or absolute path.
 - `plugin/install` — install a plugin from a discovered marketplace entry, rejecting marketplace entries marked unavailable for install, install MCPs if any, and return the effective plugin auth policy plus any apps that still need auth (**under development; do not call from production clients yet**).
 - `plugin/uninstall` — uninstall a local plugin by `pluginId` in `<plugin>@<marketplace>` form by removing its cached files and clearing its user-level config entry, or uninstall a remote ChatGPT plugin by backend `pluginId` by forwarding the uninstall to the ChatGPT plugin backend and removing any downloaded remote-plugin cache (**under development; do not call from production clients yet**).
@@ -544,21 +545,29 @@ Plain payloads such as `{ "text": "..." }` remain queued for explicit `thread/ma
 When an eligible message is due, the dispatcher may claim it in the background, deliver it to a compatible local live thread, acknowledge it with a receipt, retry it, poison it after attempts are exhausted, or resume the target thread when the payload requests `resumeAndTrigger`. Manual-claim clients that opt a message into local dispatch must treat dispatcher receipts and lease owner `app-server-local-mailbox-dispatcher` as part of the same queue contract.
 
 ```json
-{ "method": "thread/mailbox/enqueue", "id": 23, "params": {
+{
+  "method": "thread/mailbox/enqueue",
+  "id": 23,
+  "params": {
     "targetThreadId": "thr_123",
     "idempotencyKey": "daily-thoughts-2026-06-18",
     "kind": "userInstruction",
     "message": { "text": "Decompose this into project goals" },
     "preview": "Decompose this into project goals"
-} }
+  }
+}
 ```
 
 ```json
-{ "method": "thread/mailbox/claim", "id": 24, "params": {
+{
+  "method": "thread/mailbox/claim",
+  "id": 24,
+  "params": {
     "targetThreadId": "thr_123",
     "leaseOwner": "local-dispatcher",
     "leaseSeconds": 600
-} }
+  }
+}
 ```
 
 ### Example: Mission control overview and instruction enqueue
@@ -566,24 +575,32 @@ When an eligible message is due, the dispatcher may claim it in the background, 
 `missionControl/overview` is a local operator facade over existing primitives. It pages local sessions and pending interactions together, and can include each session's current goal plus durable goal-plan summaries. The response advertises capabilities explicitly; in this phase `remoteDispatch`, `workflowMutation`, `shellExecution`, and `filesystemMutation` are always `false`.
 
 ```json
-{ "method": "missionControl/overview", "id": 31, "params": {
+{
+  "method": "missionControl/overview",
+  "id": 31,
+  "params": {
     "limit": 20,
     "includeGoalPlans": true,
     "pendingInteractionStatuses": ["pending"],
     "pendingInteractionLimit": 20
-} }
+  }
+}
 ```
 
 `missionControl/enqueueInstruction` stores a durable local mailbox instruction for a materialized target thread. Set `dryRun: true` to validate and preview the instruction without creating a mailbox row. Set `resume: true` to request `resumeAndTrigger` dispatcher policy; otherwise the instruction is `liveOnly`.
 
 ```json
-{ "method": "missionControl/enqueueInstruction", "id": 32, "params": {
+{
+  "method": "missionControl/enqueueInstruction",
+  "id": 32,
+  "params": {
     "targetThreadId": "thr_123",
     "senderLabel": "daily coordinator",
     "idempotencyKey": "daily-thoughts-2026-06-18",
     "message": "Decompose yesterday's notes into project goals.",
     "resume": true
-} }
+  }
+}
 ```
 
 Use `missionControl/mailboxReceipts` to read receipts for the created mailbox message, and `missionControl/respondInteraction` to answer pending questions or terminal waits. `missionControl/respondInteraction` supports `dryRun: true`, which validates the response shape and returns the current interaction without mutating it.
@@ -735,27 +752,33 @@ Non-goals for this phase:
 If the target is inactive or unloaded, app-server returns a typed response and does not resume or persist a message for that thread:
 
 ```json
-{ "id": 24, "result": {
+{
+  "id": 24,
+  "result": {
     "status": "notLoaded",
     "messageId": "018f...",
     "targetPeerId": "thr_missing",
     "targetThreadId": null,
     "senderThreadId": null,
     "reason": "target thread is not currently loaded; no offline delivery was attempted"
-} }
+  }
+}
 ```
 
 If the target is active but uses an owner that the local app-server cannot deliver through yet, app-server returns `unsupported` and does not fall back to local-thread injection:
 
 ```json
-{ "id": 25, "result": {
+{
+  "id": 25,
+  "result": {
     "status": "unsupported",
     "messageId": "018f...",
     "targetPeerId": "claude:session-1",
     "targetThreadId": null,
     "senderThreadId": null,
     "reason": "target peer is active but this app-server cannot deliver to its owner yet"
-} }
+  }
+}
 ```
 
 ### Example: Track thread status changes
@@ -842,12 +865,16 @@ Every returned `Turn` includes `itemsView`, which tells clients whether the `ite
 `thread/turns/items/list` is the planned hydration API for fetching full items for one turn:
 
 ```json
-{ "method": "thread/turns/items/list", "id": 25, "params": {
+{
+  "method": "thread/turns/items/list",
+  "id": 25,
+  "params": {
     "threadId": "thr_123",
     "turnId": "turn_456",
     "limit": 100,
     "sortDirection": "asc"
-} }
+  }
+}
 ```
 
 This method currently returns JSON-RPC `-32601` with message `thread/turns/items/list is not supported yet`.
@@ -2255,28 +2282,32 @@ For unmanaged hooks, `currentHash` and `trustStatus` describe whether the curren
 {
   "id": 28,
   "result": {
-    "data": [{
-      "cwd": "/Users/me/project",
-      "hooks": [{
-        "key": "/Users/me/.codewith/config.toml:pre_tool_use:0:0",
-        "eventName": "pre_tool_use",
-        "handlerType": "command",
-        "isManaged": false,
-        "matcher": "Bash",
-        "command": "python3 /Users/me/hook.py",
-        "timeoutSec": 5,
-        "statusMessage": "running hook",
-        "sourcePath": "/Users/me/.codewith/config.toml",
-        "source": "user",
-        "pluginId": null,
-        "displayOrder": 0,
-        "enabled": true,
-        "currentHash": "sha256:...",
-        "trustStatus": "untrusted"
-      }],
-      "warnings": [],
-      "errors": []
-    }]
+    "data": [
+      {
+        "cwd": "/Users/me/project",
+        "hooks": [
+          {
+            "key": "/Users/me/.codewith/config.toml:pre_tool_use:0:0",
+            "eventName": "pre_tool_use",
+            "handlerType": "command",
+            "isManaged": false,
+            "matcher": "Bash",
+            "command": "python3 /Users/me/hook.py",
+            "timeoutSec": 5,
+            "statusMessage": "running hook",
+            "sourcePath": "/Users/me/.codewith/config.toml",
+            "source": "user",
+            "pluginId": null,
+            "displayOrder": 0,
+            "enabled": true,
+            "currentHash": "sha256:...",
+            "trustStatus": "untrusted"
+          }
+        ],
+        "warnings": [],
+        "errors": []
+      }
+    ]
   }
 }
 ```
@@ -2288,21 +2319,24 @@ To disable a non-managed hook, upsert a state entry at `hooks.state` with `confi
   "method": "config/batchWrite",
   "id": 29,
   "params": {
-    "edits": [{
-      "keyPath": "hooks.state",
-      "value": {
-        "/Users/me/.codewith/config.toml:pre_tool_use:0:0": {
-          "enabled": false
-        }
-      },
-      "mergeStrategy": "upsert"
-    }],
+    "edits": [
+      {
+        "keyPath": "hooks.state",
+        "value": {
+          "/Users/me/.codewith/config.toml:pre_tool_use:0:0": {
+            "enabled": false
+          }
+        },
+        "mergeStrategy": "upsert"
+      }
+    ],
     "reloadUserConfig": true
   }
 }
 ```
 
 To re-enable it, upsert the same hook key with `"enabled": true`.
+
 ## Apps
 
 Use `app/list` to fetch available apps (connectors). Each entry includes metadata like the app `id`, display `name`, `installUrl`, `branding`, `appMetadata`, `labels`, whether it is currently accessible, and whether it is enabled in config.
@@ -2503,7 +2537,11 @@ Field notes:
 List saved profiles:
 
 ```json
-{ "method": "authProfile/list", "id": 6, "params": { "cursor": null, "limit": null } }
+{
+  "method": "authProfile/list",
+  "id": 6,
+  "params": { "cursor": null, "limit": null }
+}
 ```
 
 ```json
@@ -2664,7 +2702,7 @@ Use this checklist when introducing a field/method that should only be available
 
 At runtime, clients must send `initialize` with `capabilities.experimentalApi = true` to use experimental methods or fields.
 
-1. Annotate the field in the protocol type (usually `app-server-protocol/src/protocol/v2.rs`) with:
+1. Annotate the field in the owning protocol type under `app-server-protocol/src/protocol/v2/` (for example `thread.rs`, `config.rs`, or the relevant resource module) with:
    ```rust
    #[experimental("thread/start.myField")]
    pub my_field: Option<String>,
