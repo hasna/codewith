@@ -2508,6 +2508,54 @@ mod tests {
         );
     }
 
+    /// Always-on edge: even when the configurable status line is empty/disabled and there is no
+    /// active-agent label, a present goal status must still render inline via the standard footer
+    /// flow (the `passive_footer_status_line` short-circuit in `footer_from_props_lines`), mirroring
+    /// how `active_agent_label` renders. This guards the "renders whenever a goal status exists"
+    /// contract documented on `FooterProps::goal_status_indicator`.
+    #[test]
+    fn footer_renders_goal_inline_when_status_line_disabled() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: None,
+            status_line_enabled: false,
+            key_hints: FooterKeyHints::default_bindings(),
+            active_agent_label: None,
+            goal_status_indicator: Some(GoalStatusIndicator::Complete {
+                usage: Some("10h 12m".to_string()),
+            }),
+        };
+
+        // Direct chokepoint: the goal alone forces a passive footer line with the exact goal text.
+        let line =
+            passive_footer_status_line(&props).expect("a present goal must force a passive line");
+        assert_eq!(line_text(&line), "Goal achieved (10h 12m)");
+
+        // End-to-end render: the goal appears inline (left) and replaces the shortcuts hint.
+        let screen = render_footer_with_mode_indicator_and_context(
+            /*width*/ 80,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+        let collapsed = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains("Goal achieved (10h 12m)"),
+            "goal should render inline even when the status line is disabled; got: {collapsed:?}"
+        );
+        assert!(
+            !collapsed.contains("for shortcuts"),
+            "the goal-bearing passive line should replace the shortcuts hint; got: {collapsed:?}"
+        );
+    }
+
     #[test]
     fn paste_image_shortcut_prefers_ctrl_alt_v_under_wsl() {
         let descriptor = SHORTCUTS
