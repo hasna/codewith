@@ -479,6 +479,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
         status: None,
         call_id: "legacy-js-call".to_string(),
         name: "js_repl".to_string(),
+        namespace: None,
         input: "console.log('legacy image flow')".to_string(),
     };
     let legacy_image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
@@ -659,6 +660,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                 status: Some("completed".to_string()),
                 call_id: custom_call_id.to_string(),
                 name: "js_repl".to_string(),
+                namespace: None,
                 input: "console.log('image flow')".to_string(),
             }),
         },
@@ -2541,6 +2543,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         status: Some("completed".into()),
         call_id: "custom-tool-call-id".into(),
         name: "custom_tool".into(),
+        namespace: None,
         input: "{}".into(),
     });
     prompt.input.push(ResponseItem::CustomToolCallOutput {

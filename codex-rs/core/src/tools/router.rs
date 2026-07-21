@@ -27,7 +27,7 @@ pub use crate::tools::context::ToolCallSource;
 
 const MAX_INFINITY_AGENT_ARGUMENT_BYTES: usize = 1024 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
     pub tool_name: ToolName,
     pub call_id: String,
@@ -179,11 +179,12 @@ impl ToolRouter {
             ResponseItem::ToolSearchCall { .. } => Ok(None),
             ResponseItem::CustomToolCall {
                 name,
+                namespace,
                 input,
                 call_id,
                 ..
             } => Ok(Some(ToolCall {
-                tool_name: ToolName::plain(name),
+                tool_name: ToolName::new(namespace, name),
                 call_id,
                 payload: ToolPayload::Custom { input },
             })),

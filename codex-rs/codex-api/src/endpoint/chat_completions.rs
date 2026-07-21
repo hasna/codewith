@@ -1556,6 +1556,7 @@ mod tests {
                     status: Some("completed".to_string()),
                     call_id: "call_custom".to_string(),
                     name: "apply_patch".to_string(),
+                    namespace: None,
                     input: "*** Begin Patch\n*** End Patch\n".to_string(),
                 },
                 ResponseItem::CustomToolCallOutput {

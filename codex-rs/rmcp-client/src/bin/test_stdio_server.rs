@@ -65,6 +65,20 @@ impl TestToolServer {
         );
         sandbox_meta_tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
+        #[expect(clippy::expect_used)]
+        let encrypted_output_schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }))
+        .expect("encrypted_output tool schema should deserialize");
+        let mut encrypted_output_tool = Tool::new(
+            Cow::Borrowed("encrypted_output"),
+            Cow::Borrowed("Return mixed plaintext and encrypted content for integration tests."),
+            Arc::new(encrypted_output_schema),
+        );
+        encrypted_output_tool.annotations = Some(ToolAnnotations::new().read_only(true));
+
         let tools = vec![
             Self::echo_tool(),
             Self::echo_dash_tool(),
@@ -74,6 +88,7 @@ impl TestToolServer {
             Self::image_tool(),
             Self::image_scenario_tool(),
             sandbox_meta_tool,
+            encrypted_output_tool,
         ];
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
@@ -489,6 +504,22 @@ impl ServerHandler for TestToolServer {
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
                 Ok(Self::structured_result(json!({ "cwd": cwd })))
+            }
+            "encrypted_output" => {
+                let mut meta = rmcp::model::Meta::new();
+                meta.insert("codex/encryptedContent".to_string(), json!(true));
+                let mut result = CallToolResult::success(vec![
+                    rmcp::model::Content::text("Lookup completed"),
+                    rmcp::model::Annotated::new(
+                        rmcp::model::RawContent::Text(rmcp::model::RawTextContent {
+                            text: "gAAAA-test".to_string(),
+                            meta: Some(meta),
+                        }),
+                        None,
+                    ),
+                ]);
+                result.structured_content = Some(json!({"encrypted_output": "ignored"}));
+                Ok(result)
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
