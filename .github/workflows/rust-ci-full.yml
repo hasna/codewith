@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: just
       - name: cargo fmt
@@ -47,7 +47,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: cargo-shear@1.11.2
       - name: cargo shear
@@ -279,7 +279,7 @@ jobs:
       # Install and restore sccache cache
       - name: Install sccache
         if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: sccache@0.7.5
 
@@ -354,7 +354,7 @@ jobs:
 
       - name: Install cargo-chef
         if: ${{ matrix.profile == 'release' }}
-        uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: cargo-chef@0.1.71
 
