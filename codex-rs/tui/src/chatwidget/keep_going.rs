@@ -288,7 +288,10 @@ mod tests {
             KeepGoingCommand::parse("ENABLE"),
             Ok(KeepGoingCommand::Enable)
         );
-        assert_eq!(KeepGoingCommand::parse("off"), Ok(KeepGoingCommand::Disable));
+        assert_eq!(
+            KeepGoingCommand::parse("off"),
+            Ok(KeepGoingCommand::Disable)
+        );
         assert_eq!(
             KeepGoingCommand::parse("stop"),
             Ok(KeepGoingCommand::Disable)

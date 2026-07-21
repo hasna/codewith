@@ -55,11 +55,7 @@ pub enum SlashCommand {
     Plan,
     Goal,
     Teach,
-    #[strum(
-        to_string = "keep-going",
-        serialize = "keepgoing",
-        serialize = "kg"
-    )]
+    #[strum(to_string = "keep-going", serialize = "keepgoing", serialize = "kg")]
     KeepGoing,
     #[strum(
         to_string = "mission-control",

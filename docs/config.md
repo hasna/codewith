@@ -112,11 +112,11 @@ per user turn and never bypasses approvals, the sandbox, or any refusal: the
 continued turn is a normal turn where every tool call still passes all enforcement.
 The interactive `/keep-going` toggle overrides this default for the active session.
 
-| Key                 | Default | Behavior                                                                                                     |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `enabled`           | `false` | Enables keep-going / auto-resume by default (overridden per session by `/keep-going`).                       |
+| Key                 | Default | Behavior                                                                                                             |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `enabled`           | `false` | Enables keep-going / auto-resume by default (overridden per session by `/keep-going`).                               |
 | `max_continuations` | `25`    | Hard cap on automatic continuations per user turn so keep-going can never loop forever. Resets on each user message. |
-| `prompt`            | (unset) | Optional continuation prompt. When unset, a built-in neutral continuation template is used.                  |
+| `prompt`            | (unset) | Optional continuation prompt. When unset, a built-in neutral continuation template is used.                          |
 
 ```toml
 [keep_going]

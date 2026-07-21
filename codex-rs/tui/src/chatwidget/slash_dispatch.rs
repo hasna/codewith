@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::goal_validation::GoalObjectiveValidationSource;
+use super::keep_going::KeepGoingCommand;
 use super::loop_slash::LoopCreateRequest;
 use super::loop_slash::LoopIntervalUnit;
 use super::loop_slash::LoopManageCommand;
@@ -15,7 +16,6 @@ use super::loop_slash::LoopSlashCommand;
 use super::loop_slash::ScheduleTime;
 use super::loop_slash::parse_loop_slash_args;
 use super::loop_slash::parse_schedule_slash_args;
-use super::keep_going::KeepGoingCommand;
 use super::privacy_filter::PrivacyFilterCommand;
 use super::queued_messages::LocalQueuedMessageMoveDirection;
 use super::teaching_mode::TeachingModeCommand;
