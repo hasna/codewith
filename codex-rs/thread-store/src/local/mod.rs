@@ -3,6 +3,7 @@ mod create_thread;
 mod helpers;
 mod list_threads;
 mod live_writer;
+mod no_replace_rename;
 mod read_thread;
 mod search_threads;
 mod unarchive_thread;

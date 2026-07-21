@@ -1,0 +1,3 @@
+status: NO-GO review baseline
+source: /dev/shm/infinity-machine-plan-20260710/workstreams/codewith-integration-audit.md
+sha256: 1a034be4dc7eff89ccf83a579a58ff9ef400e03daa2d478a866c7ea051b02674

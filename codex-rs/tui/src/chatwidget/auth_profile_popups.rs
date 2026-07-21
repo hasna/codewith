@@ -441,11 +441,15 @@ impl ChatWidget {
                 .auth_profile_auto_switch
                 .heartbeat_freshness_secs,
         );
-        if self
-            .auth_profile_usage_snapshots(profile)
-            .is_some_and(|snapshots| {
-                auth_profile_usage_snapshots_are_fresh(snapshots, heartbeat_freshness)
-            })
+        let is_selected_profile = self.config.selected_auth_profile.as_deref() == profile;
+        // Current-profile heartbeats also refresh exact reset-credit metadata, so cached usage
+        // freshness may suppress only non-selected profiles.
+        if !is_selected_profile
+            && self
+                .auth_profile_usage_snapshots(profile)
+                .is_some_and(|snapshots| {
+                    auth_profile_usage_snapshots_are_fresh(snapshots, heartbeat_freshness)
+                })
         {
             return false;
         }

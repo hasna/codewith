@@ -10,6 +10,8 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use crate::AcpAgentAdapter;
+use crate::AcpReadinessProbe;
 use crate::ExternalAgentActionRequest;
 use crate::ExternalAgentActionResult;
 use crate::ExternalAgentError;
@@ -19,7 +21,6 @@ use crate::ExternalAgentHarnessKind;
 use crate::ExternalAgentHost;
 use crate::ExternalAgentLaunchIsolation;
 use crate::ExternalAgentLaunchSpec;
-use crate::ExternalAgentMode;
 use crate::ExternalAgentPermissionDecision;
 use crate::ExternalAgentPermissionOption;
 use crate::ExternalAgentPermissionRequest;
@@ -37,6 +38,7 @@ use crate::ExternalAgentSessionRequest;
 use crate::ExternalAgentSessionState;
 use crate::FileSystemCapability;
 use crate::TerminalCapability;
+use crate::builtin_acp_adapter;
 use crate::find_external_agent_runtime;
 use crate::platform_sandbox_external_agent_launch_with_writable_roots;
 use serde_json::Value as JsonValue;
@@ -54,11 +56,8 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 
 const SAFE_ENV_VARS: &[&str] = &["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TERM"];
-const CURSOR_AUTH_ENV_VARS: &[&str] = &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"];
-const GROK_BUILD_AUTH_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const ACP_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const ACP_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const ACP_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const ACP_STDERR_MAX_BYTES: usize = 64 * 1024;
 static ACP_ISOLATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -191,21 +190,49 @@ impl AcpProcessIsolation {
 }
 
 /// Common ACP stdio harness for external-agent adapters.
+///
+/// The harness owns every shared ACP protocol mechanic. Per-vendor differences
+/// are supplied by an [`AcpAgentAdapter`], which plugs in through
+/// [`AcpStdioHarness::with_adapter`]. [`AcpStdioHarness::new`] resolves the
+/// built-in adapter for a descriptor's runtime id.
 pub struct AcpStdioHarness {
     descriptor: &'static ExternalAgentRuntimeDescriptor,
     env_policy: AcpEnvironmentPolicy,
+    adapter: Box<dyn AcpAgentAdapter>,
 }
 
 impl AcpStdioHarness {
+    /// Build a harness using the built-in adapter registered for the
+    /// descriptor's runtime id (falling back to a generic adapter).
     pub fn new(descriptor: &'static ExternalAgentRuntimeDescriptor) -> Self {
+        Self::with_adapter(descriptor, builtin_acp_adapter(descriptor.id))
+    }
+
+    /// Build a harness with an explicit per-vendor [`AcpAgentAdapter`]. This is
+    /// the extension seam per-vendor adapter crates target.
+    pub fn with_adapter(
+        descriptor: &'static ExternalAgentRuntimeDescriptor,
+        adapter: Box<dyn AcpAgentAdapter>,
+    ) -> Self {
+        debug_assert_eq!(
+            adapter.runtime_id().as_str(),
+            descriptor.id,
+            "ACP adapter runtime id must match its descriptor id"
+        );
         Self {
             descriptor,
             env_policy: AcpEnvironmentPolicy::default(),
+            adapter,
         }
     }
 
     pub fn descriptor(&self) -> &'static ExternalAgentRuntimeDescriptor {
         self.descriptor
+    }
+
+    /// The per-vendor adapter plugged into this harness.
+    pub fn adapter(&self) -> &dyn AcpAgentAdapter {
+        self.adapter.as_ref()
     }
 
     pub fn launch_spec(
@@ -265,8 +292,8 @@ impl AcpStdioHarness {
             Ok(program) => program,
             Err(err) => return self.runtime_missing_readiness(err),
         };
-        if self.descriptor.id == ExternalAgentRuntimeId::CURSOR
-            && let Err(message) = self.probe_cursor_runtime(&program, source_env).await
+        if let Some(probe) = self.adapter.readiness_probe()
+            && let Err(message) = self.probe_runtime(&program, &probe, source_env).await
         {
             return self.runtime_missing_readiness(message);
         }
@@ -302,7 +329,7 @@ impl AcpStdioHarness {
             "CODEWITH_EXTERNAL_AGENT_RUNTIME".to_string(),
             request.runtime.as_str().to_string(),
         );
-        for name in acp_runtime_auth_env_vars(request.runtime.as_str()) {
+        for name in self.adapter.auth_env_vars() {
             if let Some(value) = source_env.get(*name) {
                 extra_env.insert((*name).to_string(), value.clone());
             }
@@ -338,8 +365,8 @@ impl AcpStdioHarness {
     ) -> Result<PathBuf, String> {
         let path = source_env.get("PATH").map(String::as_str);
         let mut last_error = None;
-        for program in acp_program_candidates(self.descriptor) {
-            match which::which_in(program, path, cwd) {
+        for program in self.adapter.program_candidates(self.descriptor) {
+            match which::which_in(program.as_str(), path, cwd) {
                 Ok(program) => return Ok(program),
                 Err(err) => last_error = Some(err.to_string()),
             }
@@ -352,9 +379,10 @@ impl AcpStdioHarness {
         }))
     }
 
-    async fn probe_cursor_runtime(
+    async fn probe_runtime(
         &self,
         program: &Path,
+        probe: &AcpReadinessProbe,
         source_env: &BTreeMap<String, String>,
     ) -> Result<(), String> {
         let env = self
@@ -363,17 +391,16 @@ impl AcpStdioHarness {
         let mut command = Command::new(program);
         command
             .args(self.descriptor.command.args)
-            .arg("--help")
+            .args(&probe.extra_args)
             .env_clear()
             .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let output = match tokio::time::timeout(ACP_READINESS_PROBE_TIMEOUT, command.output()).await
-        {
+        let output = match tokio::time::timeout(probe.timeout, command.output()).await {
             Ok(Ok(output)) => output,
-            Ok(Err(err)) => return Err(format!("Cursor ACP readiness probe failed: {err}")),
+            Ok(Err(err)) => return Err(format!("ACP readiness probe failed: {err}")),
             Err(_) => return Ok(()),
         };
         if output.status.success() {
@@ -382,7 +409,7 @@ impl AcpStdioHarness {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
         if detail.is_empty() {
-            Err("Cursor ACP readiness probe exited unsuccessfully".to_string())
+            Err("ACP readiness probe exited unsuccessfully".to_string())
         } else {
             Err(detail.to_string())
         }
@@ -458,7 +485,12 @@ impl AcpStdioHarness {
             )
             .await?;
         process
-            .authenticate_if_needed(&initialize_result, request, host)
+            .authenticate_if_needed(
+                &initialize_result,
+                request,
+                self.adapter.preferred_auth_methods(),
+                host,
+            )
             .await?;
 
         let session_result = process
@@ -478,7 +510,7 @@ impl AcpStdioHarness {
         })
         .await?;
 
-        if let Some(mode_id) = acp_mode_id(request.mode) {
+        if let Some(mode_id) = self.adapter.mode_id(request.mode) {
             process
                 .request(
                     "session/set_mode",
@@ -570,24 +602,15 @@ impl ExternalAgentHarness for AcpStdioHarness {
     }
 }
 
-fn acp_runtime_auth_env_vars(runtime_id: &str) -> &'static [&'static str] {
-    match runtime_id {
-        ExternalAgentRuntimeId::CURSOR => CURSOR_AUTH_ENV_VARS,
-        ExternalAgentRuntimeId::GROK_BUILD => GROK_BUILD_AUTH_ENV_VARS,
-        _ => &[],
-    }
-}
-
-fn acp_program_candidates(descriptor: &ExternalAgentRuntimeDescriptor) -> Vec<&'static str> {
-    if descriptor.id == ExternalAgentRuntimeId::CURSOR {
-        vec![descriptor.command.program, "cursor-agent"]
-    } else {
-        vec![descriptor.command.program]
-    }
-}
-
-fn acp_auth_method(
+/// Select an advertised ACP auth method, preferring `preferred_auth_methods` in
+/// order. Returns `Ok(None)` when the runtime advertises no auth methods, and an
+/// error when it advertises only methods the adapter does not support.
+///
+/// The `preferred_auth_methods` list is supplied by the per-vendor
+/// [`AcpAgentAdapter`], keeping vendor auth policy out of the shared protocol.
+fn select_acp_auth_method(
     runtime: &ExternalAgentRuntimeId,
+    preferred_auth_methods: &[&str],
     initialize_result: &JsonValue,
 ) -> Result<Option<String>, ExternalAgentError> {
     let Some(auth_methods) = initialize_result
@@ -603,12 +626,7 @@ fn acp_auth_method(
         .iter()
         .filter_map(|method| method.get("id").and_then(JsonValue::as_str))
         .collect::<Vec<_>>();
-    let preferred = match runtime.as_str() {
-        ExternalAgentRuntimeId::CURSOR => &["cursor_login", "cached_token"][..],
-        ExternalAgentRuntimeId::GROK_BUILD => &["cached_token", "xai.api_key"][..],
-        _ => &["cached_token"][..],
-    };
-    for method_id in preferred {
+    for method_id in preferred_auth_methods {
         if ids.contains(method_id) {
             return Ok(Some((*method_id).to_string()));
         }
@@ -731,12 +749,15 @@ impl AcpStdioProcess {
         &mut self,
         initialize_result: &JsonValue,
         request: &ExternalAgentRequest,
+        preferred_auth_methods: &[&str],
         host: &H,
     ) -> Result<(), ExternalAgentError>
     where
         H: ExternalAgentHost + Send + Sync,
     {
-        let Some(method_id) = acp_auth_method(&request.runtime, initialize_result)? else {
+        let Some(method_id) =
+            select_acp_auth_method(&request.runtime, preferred_auth_methods, initialize_result)?
+        else {
             return Ok(());
         };
         self.request(
@@ -1366,15 +1387,6 @@ fn session_state_from_result(
     })
 }
 
-fn acp_mode_id(mode: ExternalAgentMode) -> Option<&'static str> {
-    match mode {
-        ExternalAgentMode::Plan => Some("plan"),
-        ExternalAgentMode::Consult | ExternalAgentMode::Propose | ExternalAgentMode::Managed => {
-            None
-        }
-    }
-}
-
 fn is_response_for(message: &JsonValue, id: u64) -> bool {
     message.get("id").and_then(JsonValue::as_u64) == Some(id) && message.get("method").is_none()
 }
@@ -1602,6 +1614,7 @@ fn invalid_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExternalAgentMode;
     use crate::find_external_agent_runtime;
     use pretty_assertions::assert_eq;
     #[cfg(unix)]
@@ -1874,13 +1887,21 @@ sys.stderr.flush()
         });
 
         assert_eq!(
-            acp_auth_method(&ExternalAgentRuntimeId::from("cursor"), &cursor_init)
-                .expect("cursor auth"),
+            select_acp_auth_method(
+                &ExternalAgentRuntimeId::from("cursor"),
+                crate::CursorAcpAdapter.preferred_auth_methods(),
+                &cursor_init,
+            )
+            .expect("cursor auth"),
             Some("cursor_login".to_string())
         );
         assert_eq!(
-            acp_auth_method(&ExternalAgentRuntimeId::from("grok-build"), &grok_init)
-                .expect("grok auth"),
+            select_acp_auth_method(
+                &ExternalAgentRuntimeId::from("grok-build"),
+                crate::GrokBuildAcpAdapter.preferred_auth_methods(),
+                &grok_init,
+            )
+            .expect("grok auth"),
             Some("xai.api_key".to_string())
         );
     }
@@ -1893,8 +1914,12 @@ sys.stderr.flush()
             ],
         });
 
-        let err = acp_auth_method(&ExternalAgentRuntimeId::from("cursor"), &init)
-            .expect_err("unknown auth method should be rejected");
+        let err = select_acp_auth_method(
+            &ExternalAgentRuntimeId::from("cursor"),
+            crate::CursorAcpAdapter.preferred_auth_methods(),
+            &init,
+        )
+        .expect_err("unknown auth method should be rejected");
 
         assert_eq!(
             err.to_string(),
@@ -2577,6 +2602,44 @@ for line in sys.stdin:
             grok_build.descriptor().command.args,
             ["--no-auto-update", "agent", "stdio"]
         );
+    }
+
+    #[test]
+    fn with_adapter_lets_a_custom_vendor_plug_into_the_harness() {
+        #[derive(Debug)]
+        struct FancyAdapter;
+
+        impl AcpAgentAdapter for FancyAdapter {
+            fn runtime_id(&self) -> ExternalAgentRuntimeId {
+                ExternalAgentRuntimeId::from("grok-build")
+            }
+
+            fn program_candidates(
+                &self,
+                _descriptor: &ExternalAgentRuntimeDescriptor,
+            ) -> Vec<String> {
+                vec!["fancy-primary".to_string(), "fancy-fallback".to_string()]
+            }
+
+            fn auth_env_vars(&self) -> &'static [&'static str] {
+                &["FANCY_TOKEN"]
+            }
+
+            fn preferred_auth_methods(&self) -> &'static [&'static str] {
+                &["fancy_login"]
+            }
+        }
+
+        let descriptor =
+            find_external_agent_runtime("grok-build").unwrap_or_else(|| panic!("grok-build"));
+        let harness = AcpStdioHarness::with_adapter(descriptor, Box::new(FancyAdapter));
+
+        assert_eq!(
+            harness.adapter().program_candidates(descriptor),
+            vec!["fancy-primary".to_string(), "fancy-fallback".to_string()]
+        );
+        assert_eq!(harness.adapter().auth_env_vars(), &["FANCY_TOKEN"]);
+        assert_eq!(harness.adapter().preferred_auth_methods(), &["fancy_login"]);
     }
 
     #[cfg(unix)]
