@@ -89,13 +89,19 @@ test *args:
 test-github-scripts:
     {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
 
+# Analysis-only regression for the Windows-cross execution platform and LLVM
+# archive. This intentionally stays outside the lightweight Python unit tests.
+[no-cd]
+check-windows-bazel-host-tools:
+    {{ python }} {{ justfile_directory() }}/.github/scripts/check_windows_bazel_host_tools.py
+
 # Run nextest without the workspace benchmark smoke check.
 test-fast *args:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 # Run fast tests using an explicit persistent target directory.
 test-fast-target target_dir *args:
-    CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
+    shift; CARGO_TARGET_DIR='{{ target_dir }}' RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast "$@"
 
 # Run a scoped compile-only check.
 check-fast *args:

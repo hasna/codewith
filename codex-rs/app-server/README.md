@@ -165,6 +165,7 @@ Example with notification opt-out:
 - `thread/queuedMessage/list`, `thread/queuedMessage/update`, and `thread/queuedMessage/move` — inspect and manage in-memory active-session messages that have been delivered through `activeSession/send` while the target thread is busy and are waiting for the next turn. These calls require the thread to be loaded; they do not resume unloaded threads or mutate durable mailbox rows.
 - `missionControl/overview`, `missionControl/enqueueInstruction`, `missionControl/mailboxReceipts`, and `missionControl/respondInteraction` — experimental; local-first orchestration facade that combines local session inventory, durable mailbox enqueue/receipts, pending interactions, current goals, and goal-plan summaries. It does not mutate workflow definitions or expose shell, filesystem, or remote-machine control.
 - `worktree/list`, `worktree/read`, `worktree/create`, `worktree/reconcile`, `worktree/attach`, `worktree/detach`, `worktree/release`, `worktree/cleanup`, and `worktree/mergeCandidate/*` — experimental; manage Codewith-owned isolated worktrees and merge candidates for local background-agent and workflow orchestration. Worktree list/read/merge-candidate operations are scoped to the current repo unless `baseRepoPath` is accepted by that method.
+- `pullRequest/overview`, `pullRequest/list`, and `pullRequest/read` — experimental; read-only pull-request surfaces scoped to the current repo unless `baseRepoPath` is provided. The backing `PullRequestRequestProcessor` is not wired up yet, so these methods never fail the JSON-RPC call: every response carries a `queryState` (`ready`/`loading`/`unavailable`) and currently returns `queryState: "unavailable"` with an explanatory `message` and no data. Clients should render empty/loading/degraded states from `queryState` in-band rather than treating unavailability as an error.
 - `thread/schedule/create` — create a scheduled turn loop for a materialized thread; emits `thread/schedule/updated`.
 - `thread/schedule/list` — page through scheduled turn loops for a materialized thread.
 - `thread/schedule/get` — fetch one scheduled turn loop for a materialized thread.
@@ -1971,7 +1972,6 @@ There are additional item-specific events:
 #### fileChange
 
 - `item/fileChange/patchUpdated` - when `features.apply_patch_streaming_events` is enabled, streams structured file-change snapshots parsed from the model-generated patch before it is executed.
-- `item/fileChange/outputDelta` - deprecated legacy protocol entry for `apply_patch` text output; retained for compatibility but no longer emitted by the server.
 
 ### Errors
 
@@ -2447,6 +2447,7 @@ Codewith supports these authentication modes. The current mode is surfaced in `a
 - `authProfile/saveCurrent` — save current root auth credentials as a named auth profile, switch to it, and trigger `account/updated`.
 - `authProfile/switch` — switch the selected auth profile, refresh account-scoped app-server state, and trigger `account/updated`.
 - `account/rateLimits/read` — fetch ChatGPT rate limits for the selected auth profile, or pass `authProfile` to read root or a saved auth profile; updates arrive via `account/rateLimits/updated` (notify).
+- `account/rateLimitResetCredit/consume` — consume one available ChatGPT usage-limit reset credit for the selected auth profile, or pass `authProfile` to target root or a saved auth profile.
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `account/sendAddCreditsNudgeEmail` — ask ChatGPT to email the workspace owner about depleted credits or a reached usage limit.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, success, error? }`.
@@ -2589,23 +2590,45 @@ Both save and switch return `{ "profile": { ... } }` and emit `account/updated` 
 { "method": "account/rateLimits/read", "id": 10 }
 { "method": "account/rateLimits/read", "id": 11, "params": { "authProfile": "work" } }
 { "method": "account/rateLimits/read", "id": 12, "params": { "authProfile": null } }
-{ "id": 10, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
+{ "method": "account/rateLimits/read", "id": 13, "params": { "includeResetCreditDetails": true } }
+{ "id": 10, "result": { "accountIdentityFingerprint": "<opaque>", "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null, "rateLimitReachedType": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 
 Field notes:
 
 - `authProfile` may be omitted to use the app-server's selected auth profile, set to a profile name, or set to `null` for root auth.
+- `includeResetCreditDetails` forces a detailed reset-credit read even when the available count is zero; use it to reconcile the exact credit after an ambiguous consume response.
+- `accountIdentityFingerprint` is a process-scoped opaque equality-only correlation value. It is `null` when the ChatGPT credentials do not expose an account identifier; in that case reset-credit details are withheld and reset consumption is unavailable. Never display or log it.
 - `usedPercent` is current usage within the OpenAI quota window.
 - `windowDurationMins` is the quota window length.
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 
-### 9) Notify a workspace owner about a limit
+### 9) Consume a usage-limit reset credit
+
+Use this only after `account/rateLimits/read` reports available reset credits and the user has explicitly chosen to spend one, or after the local client has an opt-in auto-reset policy.
 
 ```json
-{ "method": "account/sendAddCreditsNudgeEmail", "id": 13, "params": { "creditType": "credits" } }
-{ "id": 13, "result": { "status": "sent" } }
+{ "method": "account/rateLimitResetCredit/consume", "id": 14, "params": { "idempotencyKey": "<uuid>", "authProfile": "work", "creditId": "optional-credit-id", "expectedAccountIdentityFingerprint": "<opaque-from-read>" } }
+{ "id": 14, "result": { "outcome": "reset", "accountIdentityFingerprint": "<opaque>" } }
+```
+
+Field notes:
+
+- `idempotencyKey` is required and must be non-empty; reuse it only when retrying the same logical reset attempt.
+- `authProfile` follows `account/rateLimits/read`: omit it for the selected auth profile, set a profile name, or set `null` for root auth.
+- `creditId` is optional; when omitted, the backend chooses an available reset credit.
+- `expectedAccountIdentityFingerprint` is required and binds the mutation to the account resolved by the preceding read. Omission is rejected; if it no longer matches, the app-server returns `accountChanged` without sending the consume request to the backend.
+- On a noncanonical ChatGPT backend, `account/rateLimits/read` still returns ordinary limits but suppresses reset-credit fields and the account fingerprint; reset consumption is rejected.
+- `accountIdentityFingerprint` is returned for equality checks only and must never be displayed or logged.
+- `outcome` is one of `reset`, `nothingToReset`, `noCredit`, `alreadyRedeemed`, `accountChanged`, or `unknown`.
+
+### 10) Notify a workspace owner about a limit
+
+```json
+{ "method": "account/sendAddCreditsNudgeEmail", "id": 15, "params": { "creditType": "credits" } }
+{ "id": 15, "result": { "status": "sent" } }
 ```
 
 Use `creditType: "credits"` when workspace credits are depleted, or `creditType: "usage_limit"` when the workspace usage limit has been reached. If the owner was already notified recently, the response status is `cooldown_active`.

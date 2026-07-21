@@ -289,8 +289,8 @@ fn background_agent_actions_params(agent: AgentRun) -> SelectionViewParams {
         "Delete",
         "Delete the run or mark it for deletion",
         agent.retention_state == AgentRetentionState::Deleted,
-        Some("Agent is already deleted".to_string())
-            .filter(|_| agent.retention_state == AgentRetentionState::Deleted),
+        (agent.retention_state == AgentRetentionState::Deleted)
+            .then_some("Agent is already deleted".to_string()),
         move || AppEvent::DeleteBackgroundAgent {
             agent_id: Some(delete_agent_id.clone()),
         },

@@ -86,12 +86,15 @@ impl ChatWidget {
         &mut self,
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
+        shell_escape_policy: ShellEscapePolicy,
     ) -> bool {
-        self.submit_user_message_with_history_record_at_position(
+        self.submit_user_message_with_history_and_shell_escape_policy(
             user_message,
             history_record,
+            shell_escape_policy,
             QueueInsertionPosition::Front,
         )
+        .0
     }
 
     fn submit_user_message_with_history_record_at_position(
@@ -132,9 +135,13 @@ impl ChatWidget {
     ) -> (bool, Option<AppCommand>) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
-            self.input_queue
-                .queued_user_messages
-                .push_front(QueuedUserMessage::from(user_message));
+            self.input_queue.queued_user_messages.push_front(
+                QueuedUserMessage::new_with_shell_escape_policy(
+                    user_message,
+                    QueuedInputAction::Plain,
+                    shell_escape_policy,
+                ),
+            );
             self.input_queue
                 .queued_user_message_history_records
                 .push_front(history_record);
@@ -165,6 +172,15 @@ impl ChatWidget {
                 remote_image_urls,
             );
             return (false, None);
+        }
+        if self.automatic_usage_limit_reset_owns_failed_turn() {
+            self.queue_user_message_at_position(
+                &user_message,
+                &history_record,
+                shell_escape_policy,
+                auth_switch_queue_position,
+            );
+            return (true, None);
         }
         let UserMessage {
             text,
@@ -197,6 +213,7 @@ impl ChatWidget {
         if self.maybe_auto_switch_auth_profile_before_user_turn(
             &user_message,
             &history_record,
+            shell_escape_policy,
             auth_switch_queue_position,
         ) {
             return (true, None);
@@ -419,6 +436,7 @@ impl ChatWidget {
                 mention_bindings: mention_bindings.clone(),
             },
             &history_record,
+            shell_escape_policy,
         );
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;

@@ -117,6 +117,9 @@ export type { ConfigWarningNotification } from "./ConfigWarningNotification";
 export type { ConfigWriteResponse } from "./ConfigWriteResponse";
 export type { ConfiguredHookHandler } from "./ConfiguredHookHandler";
 export type { ConfiguredHookMatcherGroup } from "./ConfiguredHookMatcherGroup";
+export type { ConsumeAccountRateLimitResetCreditOutcome } from "./ConsumeAccountRateLimitResetCreditOutcome";
+export type { ConsumeAccountRateLimitResetCreditParams } from "./ConsumeAccountRateLimitResetCreditParams";
+export type { ConsumeAccountRateLimitResetCreditResponse } from "./ConsumeAccountRateLimitResetCreditResponse";
 export type { ContextCompactedNotification } from "./ContextCompactedNotification";
 export type { CreditsSnapshot } from "./CreditsSnapshot";
 export type { DeprecationNoticeNotification } from "./DeprecationNoticeNotification";
@@ -143,7 +146,6 @@ export type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfig
 export type { FeedbackUploadParams } from "./FeedbackUploadParams";
 export type { FeedbackUploadResponse } from "./FeedbackUploadResponse";
 export type { FileChangeApprovalDecision } from "./FileChangeApprovalDecision";
-export type { FileChangeOutputDeltaNotification } from "./FileChangeOutputDeltaNotification";
 export type { FileChangePatchUpdatedNotification } from "./FileChangePatchUpdatedNotification";
 export type { FileChangeRequestApprovalParams } from "./FileChangeRequestApprovalParams";
 export type { FileChangeRequestApprovalResponse } from "./FileChangeRequestApprovalResponse";
@@ -374,6 +376,10 @@ export type { ProcessOutputDeltaNotification } from "./ProcessOutputDeltaNotific
 export type { ProcessOutputStream } from "./ProcessOutputStream";
 export type { ProcessTerminalSize } from "./ProcessTerminalSize";
 export type { RateLimitReachedType } from "./RateLimitReachedType";
+export type { RateLimitResetCredit } from "./RateLimitResetCredit";
+export type { RateLimitResetCreditStatus } from "./RateLimitResetCreditStatus";
+export type { RateLimitResetCreditsSummary } from "./RateLimitResetCreditsSummary";
+export type { RateLimitResetType } from "./RateLimitResetType";
 export type { RateLimitSnapshot } from "./RateLimitSnapshot";
 export type { RateLimitWindow } from "./RateLimitWindow";
 export type { RawResponseItemCompletedNotification } from "./RawResponseItemCompletedNotification";
@@ -434,6 +440,7 @@ export type { ThreadExternalAgentEventNotification } from "./ThreadExternalAgent
 export type { ThreadExternalAgentMode } from "./ThreadExternalAgentMode";
 export type { ThreadExternalAgentPermissionOption } from "./ThreadExternalAgentPermissionOption";
 export type { ThreadExternalAgentPermissionRequest } from "./ThreadExternalAgentPermissionRequest";
+export type { ThreadExternalAgentPermissionResolution } from "./ThreadExternalAgentPermissionResolution";
 export type { ThreadExternalAgentStartStatus } from "./ThreadExternalAgentStartStatus";
 export type { ThreadForkParams } from "./ThreadForkParams";
 export type { ThreadForkResponse } from "./ThreadForkResponse";

@@ -73,6 +73,10 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::PullRequestListResponse;
+use codex_app_server_protocol::PullRequestOverviewResponse;
+use codex_app_server_protocol::PullRequestQueryState;
+use codex_app_server_protocol::PullRequestReadResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
@@ -102,6 +106,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// In-band message returned for `pullRequest/*` queries until the backing
+/// `PullRequestRequestProcessor` is implemented (todos task 1ca04ab4).
+const PULL_REQUEST_UNAVAILABLE_MESSAGE: &str = "pull request data source is not available yet";
 
 #[derive(Clone)]
 struct ExternalAuthRefreshBridge {
@@ -423,6 +431,8 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            cfg!(debug_assertions)
+                && matches!(plugin_startup_tasks, crate::PluginStartupTasks::Skip),
         );
         let active_session_processor = ActiveSessionRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -1153,7 +1163,7 @@ impl MessageProcessor {
             ClientRequest::RemoteDispatchReceiptRead { params, .. } => {
                 self.remote_dispatch_processor.receipt_read(params).await
             }
-            ClientRequest::ConfigRequirementsRead { params: _, .. } => self
+            ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor
                 .config_requirements_read()
                 .await
@@ -1206,7 +1216,7 @@ impl MessageProcessor {
                 .unwatch(connection_id, params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ModelProviderCapabilitiesRead { params: _, .. } => self
+            ClientRequest::ModelProviderCapabilitiesRead { .. } => self
                 .config_processor
                 .model_provider_capabilities_read()
                 .await
@@ -1534,6 +1544,36 @@ impl MessageProcessor {
                     .worktree_merge_candidate_dismiss(params)
                     .await
             }
+            ClientRequest::PullRequestOverview { .. } => {
+                // The pull-request data source (PullRequestRequestProcessor) is
+                // not wired up yet, so report the outcome in-band rather than
+                // failing the JSON-RPC request.
+                Ok(Some(
+                    PullRequestOverviewResponse {
+                        query_state: PullRequestQueryState::Unavailable,
+                        overview: None,
+                        message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                    }
+                    .into(),
+                ))
+            }
+            ClientRequest::PullRequestList { .. } => Ok(Some(
+                PullRequestListResponse {
+                    query_state: PullRequestQueryState::Unavailable,
+                    data: Vec::new(),
+                    next_cursor: None,
+                    message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                }
+                .into(),
+            )),
+            ClientRequest::PullRequestRead { .. } => Ok(Some(
+                PullRequestReadResponse {
+                    query_state: PullRequestQueryState::Unavailable,
+                    pull_request: None,
+                    message: Some(PULL_REQUEST_UNAVAILABLE_MESSAGE.to_string()),
+                }
+                .into(),
+            )),
             ClientRequest::MachineRegistryList { params, .. } => {
                 self.machine_registry_processor.list(params).await
             }
@@ -1664,6 +1704,11 @@ impl MessageProcessor {
             ClientRequest::ThreadExternalAgentCancel { params, .. } => {
                 self.thread_processor
                     .thread_external_agent_cancel(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ThreadExternalAgentPermissionRespond { params, .. } => {
+                self.thread_processor
+                    .thread_external_agent_permission_respond(request_id.clone(), params)
                     .await
             }
             ClientRequest::ThreadApproveGuardianDeniedAction { params, .. } => {
@@ -1799,7 +1844,7 @@ impl MessageProcessor {
                     .thread_realtime_stop(&request_id, params)
                     .await
             }
-            ClientRequest::ThreadRealtimeListVoices { params: _, .. } => {
+            ClientRequest::ThreadRealtimeListVoices { .. } => {
                 self.turn_processor.thread_realtime_list_voices().await
             }
             ClientRequest::ReviewStart { params, .. } => {
@@ -1863,6 +1908,11 @@ impl MessageProcessor {
             }
             ClientRequest::GetAccountRateLimits { params, .. } => {
                 self.account_processor.get_account_rate_limits(params).await
+            }
+            ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
+                self.account_processor
+                    .consume_account_rate_limit_reset_credit(params)
+                    .await
             }
             ClientRequest::GetAccountTokenUsage { .. } => {
                 self.account_processor.get_account_token_usage().await

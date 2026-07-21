@@ -505,6 +505,31 @@ mod tests {
     }
 
     #[test]
+    fn usage_tab_shows_corrected_api_context_window() {
+        let mut data = sample_data();
+        data.context_used_percent = Some(0);
+        data.context_window = Some(997_500);
+        data.tokens_in_context = Some(16_300);
+
+        let params = build_status_panel_params(&data);
+        let usage = &params.tabs[1].items;
+        let context = usage
+            .iter()
+            .find(|item| item.name == "Context")
+            .and_then(|item| item.description.clone())
+            .unwrap_or_default();
+
+        assert!(
+            context.contains("0% used · 16.3K / 998K"),
+            "expected corrected API context denominator, got {context:?}"
+        );
+        assert!(
+            !context.contains("258K"),
+            "stale API context denominator should not render, got {context:?}"
+        );
+    }
+
+    #[test]
     fn session_tab_shows_remote_connection_when_present() {
         let mut data = sample_data();
         data.remote_connection = Some("wss://host (v1.2.3)".to_string());

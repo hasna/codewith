@@ -2,8 +2,11 @@ use super::*;
 use crate::ModelsManagerConfig;
 use pretty_assertions::assert_eq;
 
+const GPT_5_6_CONTEXT_WINDOW: i64 = 1_050_000;
 const GPT_5_5_MODEL_ID: &str = "gpt-5.5";
-const GPT_5_5_CONTEXT_WINDOW: i64 = 272_000;
+const GPT_5_5_CONTEXT_WINDOW: i64 = 1_050_000;
+const GPT_5_4_MODEL_ID: &str = "gpt-5.4";
+const GPT_5_4_CONTEXT_WINDOW: i64 = 1_050_000;
 
 fn assert_effort_estimate_guidance(text: &str, label: &str) {
     for expected in [
@@ -90,6 +93,65 @@ fn codex_spark_uses_text_only_local_metadata() {
 }
 
 #[test]
+fn openai_gpt_4_1_family_falls_back_to_documented_context_window() {
+    // GPT-4.1-class models are not in the bundled catalog, so they resolve via the
+    // local fallback. Regression guard: they must report the documented
+    // 1,047,576-token window, not the generic 272k default.
+    for (slug, display_name) in [
+        ("gpt-4.1", "GPT-4.1"),
+        ("gpt-4.1-mini", "GPT-4.1 mini"),
+        ("gpt-4.1-nano", "GPT-4.1 nano"),
+    ] {
+        for provider_id in [None, Some("openai")] {
+            let model = model_info_from_slug_for_provider(slug, provider_id);
+            assert_eq!(model.slug, slug);
+            assert_eq!(model.display_name, display_name);
+            assert_eq!(
+                model.context_window,
+                Some(1_047_576),
+                "{slug} (provider {provider_id:?}) should use the documented context window"
+            );
+            assert_eq!(model.max_context_window, Some(1_047_576));
+            assert!(
+                !model.used_fallback_model_metadata,
+                "{slug} is a known OpenAI API model, not a generic fallback"
+            );
+        }
+    }
+}
+
+#[test]
+fn openai_gpt_5_x_falls_back_to_documented_context_window() {
+    // Even when a current GPT-5.x model is missing from the live catalog, the
+    // known-model fallback must not pin it to the stale 272k window.
+    for slug in [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ] {
+        let model = model_info_from_slug_for_provider(slug, Some("openai"));
+        assert_eq!(
+            model.context_window,
+            Some(1_050_000),
+            "{slug} should use the documented GPT-5.x context window"
+        );
+        assert_eq!(model.max_context_window, Some(1_050_000));
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
+fn unknown_openai_slug_uses_conservative_generic_fallback() {
+    let model = model_info_from_slug_for_provider("gpt-does-not-exist", Some("openai"));
+
+    assert_eq!(model.context_window, Some(272_000));
+    assert_eq!(model.max_context_window, Some(272_000));
+    assert!(model.used_fallback_model_metadata);
+}
+
+#[test]
 fn known_provider_glm_model_uses_local_metadata() {
     let model = model_info_from_slug("zai-glm-4.7");
 
@@ -109,16 +171,16 @@ fn known_nvidia_deepseek_model_uses_local_metadata() {
     assert_eq!(model.display_name, "DeepSeek V4 Flash");
     assert_eq!(model.context_window, Some(1_048_576));
     assert_eq!(model.max_context_window, Some(1_048_576));
-    assert_eq!(model.experimental_supported_tools, Vec::<String>::new());
+    assert_eq!(model.experimental_supported_tools, vec!["tools"]);
     assert!(!model.supports_parallel_tool_calls);
     assert!(!model.used_fallback_model_metadata);
 }
 
 #[test]
 fn known_nvidia_glm_model_uses_local_metadata() {
-    let model = model_info_from_slug_for_provider("z-ai/glm-5.1", Some("nvidia"));
+    let model = model_info_from_slug_for_provider("z-ai/glm-5.2", Some("nvidia"));
 
-    assert_eq!(model.display_name, "Z.ai GLM 5.1");
+    assert_eq!(model.display_name, "Z.ai GLM 5.2");
     assert_eq!(model.context_window, Some(131_072));
     assert_eq!(model.max_context_window, Some(131_072));
     assert_eq!(model.experimental_supported_tools, vec!["tools"]);
@@ -457,6 +519,63 @@ fn bundled_openai_gpt_5_5_uses_upstream_context_window() {
 }
 
 #[test]
+fn bundled_openai_gpt_5_6_preview_models_use_current_metadata() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+    let visible_slugs = response
+        .models
+        .iter()
+        .filter(|model| {
+            model.slug.starts_with("gpt-5.6") && model.visibility == ModelVisibility::List
+        })
+        .map(|model| model.slug.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        visible_slugs,
+        vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+    );
+
+    for (slug, display_name, default_reasoning_level) in [
+        ("gpt-5.6-sol", "GPT-5.6 Sol", ReasoningEffort::High),
+        ("gpt-5.6-terra", "GPT-5.6 Terra", ReasoningEffort::Medium),
+        ("gpt-5.6-luna", "GPT-5.6 Luna", ReasoningEffort::Medium),
+    ] {
+        let model = response
+            .models
+            .iter()
+            .find(|model| model.slug == slug)
+            .unwrap_or_else(|| panic!("bundled catalog should include {slug}"));
+
+        assert_eq!(model.display_name, display_name);
+        assert_eq!(model.context_window, Some(GPT_5_6_CONTEXT_WINDOW));
+        assert_eq!(model.max_context_window, Some(GPT_5_6_CONTEXT_WINDOW));
+        assert_eq!(model.default_reasoning_level, Some(default_reasoning_level));
+        assert!(model.supported_in_api);
+        assert_eq!(model.visibility, ModelVisibility::List);
+        assert!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .any(|preset| preset.effort == ReasoningEffort::Custom("max".to_string())),
+            "{slug} should advertise max reasoning"
+        );
+    }
+}
+
+#[test]
+fn bundled_openai_gpt_5_4_uses_upstream_context_window() {
+    let response = crate::bundled_models_response().expect("bundled catalog should parse");
+    let model = response
+        .models
+        .into_iter()
+        .find(|model| model.slug == GPT_5_4_MODEL_ID)
+        .expect("bundled catalog should include GPT-5.4");
+
+    assert_eq!(model.context_window, Some(GPT_5_4_CONTEXT_WINDOW));
+    assert_eq!(model.max_context_window, Some(GPT_5_4_CONTEXT_WINDOW));
+}
+
+#[test]
 fn reasoning_summaries_override_false_does_not_disable_support() {
     let mut model = model_info_from_slug("unknown-model");
     model.supports_reasoning_summaries = true;
@@ -524,7 +643,7 @@ fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
     model.max_context_window = Some(GPT_5_5_CONTEXT_WINDOW);
     let config = ModelsManagerConfig {
         model_provider_id: Some("openai".to_string()),
-        model_context_window: Some(500_000),
+        model_context_window: Some(GPT_5_5_CONTEXT_WINDOW + 1),
         ..Default::default()
     };
 
@@ -532,6 +651,24 @@ fn openai_gpt_5_5_context_window_override_clamps_to_model_max() {
 
     assert_eq!(updated.context_window, Some(GPT_5_5_CONTEXT_WINDOW));
     assert_eq!(updated.max_context_window, Some(GPT_5_5_CONTEXT_WINDOW));
+}
+
+#[test]
+fn openai_gpt_5_4_context_window_override_clamps_to_model_max() {
+    let mut model = model_info_from_slug("unknown-model");
+    model.slug = GPT_5_4_MODEL_ID.to_string();
+    model.context_window = Some(GPT_5_4_CONTEXT_WINDOW);
+    model.max_context_window = Some(GPT_5_4_CONTEXT_WINDOW);
+    let config = ModelsManagerConfig {
+        model_provider_id: Some("openai".to_string()),
+        model_context_window: Some(GPT_5_4_CONTEXT_WINDOW + 1),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.context_window, Some(GPT_5_4_CONTEXT_WINDOW));
+    assert_eq!(updated.max_context_window, Some(GPT_5_4_CONTEXT_WINDOW));
 }
 
 #[test]

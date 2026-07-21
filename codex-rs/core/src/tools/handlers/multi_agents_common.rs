@@ -234,17 +234,40 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     Ok(config)
 }
 
-pub(crate) fn reject_full_fork_spawn_overrides(
+/// A full-history fork inherits the parent agent's type, model, and reasoning effort, so any
+/// caller-supplied override for those fields cannot be honored.
+///
+/// Historically this combination was rejected outright, but that failed routed workers that fork
+/// with full history while still passing `agent_type`/`model`/`reasoning_effort` (fields the model
+/// naturally fills in). Because the fork path already ignores those overrides — the child config is
+/// built from the parent — the reject was the *only* thing turning an otherwise-valid spawn into a
+/// runtime failure. We now normalize instead: the inapplicable overrides are dropped and the fork
+/// proceeds with the inherited values.
+///
+/// Returns a human-readable notice naming the ignored fields (for logging/telemetry), or `None`
+/// when no inapplicable override was supplied.
+pub(crate) fn full_fork_ignored_overrides_notice(
     agent_type: Option<&str>,
     model: Option<&str>,
-    reasoning_effort: Option<ReasoningEffort>,
-) -> Result<(), FunctionCallError> {
-    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() {
-        return Err(FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
-        ));
+    reasoning_effort: Option<&ReasoningEffort>,
+) -> Option<String> {
+    let mut ignored: Vec<&str> = Vec::new();
+    if agent_type.is_some() {
+        ignored.push("agent_type");
     }
-    Ok(())
+    if model.is_some() {
+        ignored.push("model");
+    }
+    if reasoning_effort.is_some() {
+        ignored.push("reasoning_effort");
+    }
+    if ignored.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; ignoring the supplied {} override(s). Spawn without a full-history fork to choose a different agent type, model, or reasoning effort.",
+        ignored.join(", ")
+    ))
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -288,16 +311,26 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     }
 
     if let Some(requested_model) = requested_model {
+        let models_manager_config = config.to_models_manager_config();
+        let resolved_model = session
+            .services
+            .models_manager
+            .resolve_model_for_auth(requested_model, &models_manager_config);
         let available_models = session
             .services
             .models_manager
             .list_models(RefreshStrategy::Offline)
             .await;
-        let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
+        let selected_model_name =
+            if requested_model == "gpt-5.6" && config.model_provider_id == "openai" {
+                resolved_model
+            } else {
+                find_spawn_agent_model_name(&available_models, &resolved_model)?
+            };
         let selected_model_info = session
             .services
             .models_manager
-            .get_model_info(&selected_model_name, &config.to_models_manager_config())
+            .get_model_info(&selected_model_name, &models_manager_config)
             .await;
 
         config.model = Some(selected_model_name.clone());

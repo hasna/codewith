@@ -1,7 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
+use crate::catalog::SkillPackageId;
 use crate::catalog::SkillProviderError;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillSearchResult;
@@ -72,6 +74,84 @@ pub struct SkillProviders {
     sources: Vec<SkillProviderSource>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct SkillProviderRoutes {
+    routes: Vec<SkillProviderRoute>,
+}
+
+impl fmt::Debug for SkillProviderRoutes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SkillProviderRoutes")
+            .field("route_count", &self.routes.len())
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct SkillProviderRoute {
+    authority: SkillAuthority,
+    package: SkillPackageId,
+    provider: Arc<dyn SkillProvider>,
+}
+
+impl SkillProviderRoutes {
+    fn push(
+        &mut self,
+        authority: SkillAuthority,
+        package: SkillPackageId,
+        provider: Arc<dyn SkillProvider>,
+    ) {
+        if self
+            .routes
+            .iter()
+            .any(|route| route.authority == authority && route.package == package)
+        {
+            return;
+        }
+        self.routes.push(SkillProviderRoute {
+            authority,
+            package,
+            provider,
+        });
+    }
+
+    fn provider(
+        &self,
+        authority: &SkillAuthority,
+        package: &SkillPackageId,
+    ) -> Option<Arc<dyn SkillProvider>> {
+        self.routes
+            .iter()
+            .find(|route| &route.authority == authority && &route.package == package)
+            .map(|route| Arc::clone(&route.provider))
+    }
+
+    pub(crate) async fn read(
+        &self,
+        request: SkillReadRequest,
+    ) -> Result<SkillReadResult, SkillProviderError> {
+        let Some(provider) = self.provider(&request.authority, &request.package) else {
+            return Err(SkillProviderError::new(
+                "skill package is not available from the requested authority",
+            ));
+        };
+        provider.read(request).await
+    }
+
+    pub(crate) async fn search(
+        &self,
+        request: SkillSearchRequest,
+    ) -> Result<SkillSearchResult, SkillProviderError> {
+        let Some(provider) = self.provider(&request.authority, &request.package) else {
+            return Err(SkillProviderError::new(
+                "skill package is not available from the requested authority",
+            ));
+        };
+        provider.search(request).await
+    }
+}
+
 impl SkillProviders {
     pub fn new() -> Self {
         Self::default()
@@ -100,47 +180,43 @@ impl SkillProviders {
         self
     }
 
-    pub(crate) async fn list_for_turn(&self, query: SkillListQuery) -> SkillCatalog {
+    pub(crate) async fn list_for_turn_with_routes(
+        &self,
+        query: SkillListQuery,
+    ) -> (SkillCatalog, SkillProviderRoutes) {
         let mut catalog = SkillCatalog::default();
+        let mut routes = SkillProviderRoutes::default();
 
         for source in self
             .sources
             .iter()
             .filter(|source| source.should_list(&query))
         {
-            extend_catalog(
-                &mut catalog,
-                source.provider.list(query.clone()).await,
-                source.label.as_str(),
-            );
-        }
-
-        catalog
-    }
-
-    pub(crate) async fn read(
-        &self,
-        request: SkillReadRequest,
-    ) -> Result<SkillReadResult, SkillProviderError> {
-        let mut last_error = None;
-        for source in self
-            .sources
-            .iter()
-            .filter(|source| source.owns_kind(&request.authority.kind))
-        {
-            match source.provider.read(request.clone()).await {
-                Ok(result) => return Ok(result),
-                Err(err) => last_error = Some(err),
+            match source.provider.list(query.clone()).await {
+                Ok(source_catalog) => {
+                    for entry in source_catalog.entries {
+                        let entry_is_new = !catalog.entries.iter().any(|existing| {
+                            existing.authority == entry.authority && existing.id == entry.id
+                        });
+                        if entry_is_new {
+                            routes.push(
+                                entry.authority.clone(),
+                                entry.id.clone(),
+                                Arc::clone(&source.provider),
+                            );
+                            catalog.push_entry(entry);
+                        }
+                    }
+                    catalog.warnings.extend(source_catalog.warnings);
+                }
+                Err(err) => catalog.warnings.push(format!(
+                    "{} skills unavailable: {}",
+                    source.label, err.message
+                )),
             }
         }
 
-        match last_error {
-            Some(err) => Err(err),
-            None => Err(SkillProviderError::new(format!(
-                "{} skill provider is not configured",
-                request.authority.kind
-            ))),
-        }
+        (catalog, routes)
     }
 
     pub async fn search(
@@ -166,18 +242,5 @@ impl SkillProviders {
                 request.authority.kind
             ))),
         }
-    }
-}
-
-fn extend_catalog(
-    catalog: &mut SkillCatalog,
-    result: Result<SkillCatalog, SkillProviderError>,
-    label: &str,
-) {
-    match result {
-        Ok(source_catalog) => catalog.extend(source_catalog),
-        Err(err) => catalog
-            .warnings
-            .push(format!("{label} skills unavailable: {}", err.message)),
     }
 }

@@ -81,7 +81,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ],
             )
 
-    def test_windows_cross_ci_configuration_follows_remote_configuration(self) -> None:
+    def test_windows_cross_ci_uses_cache_without_remote_execution(self) -> None:
         env = {"BUILDBUDDY_API_KEY": "fork-token"}
 
         self.assertEqual(
@@ -91,11 +91,19 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ),
             [
                 "build",
-                "--config=buildbuddy-generic-rbe",
+                "--config=buildbuddy-generic",
                 "--remote_header=x-buildbuddy-api-key=fork-token",
                 "--config=ci-windows-cross",
                 "//codex-rs/cli:codex",
             ],
+        )
+
+    def test_keyless_windows_cross_keeps_local_cross_configuration(self) -> None:
+        args = ["build", "--config=ci-windows-cross", "//codex-rs/cli:codex"]
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, {}),
+            args,
         )
 
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
@@ -116,7 +124,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ),
                     [
                         command,
-                        "--config=buildbuddy-generic-rbe",
+                        "--config=buildbuddy-generic",
                         "--remote_header=x-buildbuddy-api-key=fork-token",
                         "--config=ci-windows-cross",
                         "--output=label",
@@ -141,7 +149,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
 
     def test_run_in_fork_repository_cannot_select_openai_host(self) -> None:
@@ -152,8 +160,26 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
+
+    def test_generic_keyed_linux_uses_keyless_local_config_with_cache(self) -> None:
+        env = {"BUILDBUDDY_API_KEY": "fork-token"}
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["build", "--config=ci-linux", "--", "//codex-rs/cli:codex"],
+                env,
+            ),
+            [
+                "build",
+                "--config=buildbuddy-generic",
+                "--remote_header=x-buildbuddy-api-key=fork-token",
+                "--config=ci-keyless",
+                "--",
+                "//codex-rs/cli:codex",
+            ],
+        )
 
     def test_pull_request_without_readable_event_payload_fails_closed(self) -> None:
         for event_path in (None, "missing-event.json"):

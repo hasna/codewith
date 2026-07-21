@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ResourceContent": {
       "anyOf": [
         {
@@ -21,8 +20,8 @@
             }
           },
           "required": [
-            "text",
-            "uri"
+            "uri",
+            "text"
           ],
           "type": "object"
         },
@@ -44,8 +43,8 @@
             }
           },
           "required": [
-            "blob",
-            "uri"
+            "uri",
+            "blob"
           ],
           "type": "object"
         }
@@ -53,10 +52,11 @@
       "description": "Contents returned when reading a resource from an MCP server."
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "contents": {
       "items": {
-        "$ref": "#/definitions/ResourceContent"
+        "$ref": "#/$defs/ResourceContent"
       },
       "type": "array"
     }

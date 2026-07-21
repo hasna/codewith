@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -49,12 +48,93 @@
       ],
       "type": "string"
     },
+    "RateLimitResetCredit": {
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grantedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "resetType": {
+          "$ref": "#/$defs/RateLimitResetType"
+        },
+        "status": {
+          "$ref": "#/$defs/RateLimitResetCreditStatus"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "resetType",
+        "status",
+        "grantedAt"
+      ],
+      "type": "object"
+    },
+    "RateLimitResetCreditStatus": {
+      "enum": [
+        "available",
+        "redeeming",
+        "redeemed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "RateLimitResetCreditsSummary": {
+      "properties": {
+        "availableCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "credits": {
+          "description": "Detail rows for available reset credits, when the backend provides them.\n\n`null` means only `availableCount` is known.",
+          "items": {
+            "$ref": "#/$defs/RateLimitResetCredit"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "availableCount"
+      ],
+      "type": "object"
+    },
+    "RateLimitResetType": {
+      "enum": [
+        "codexRateLimits",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "RateLimitSnapshot": {
       "properties": {
         "credits": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CreditsSnapshot"
+              "$ref": "#/$defs/CreditsSnapshot"
             },
             {
               "type": "null"
@@ -64,7 +144,7 @@
         "individualLimit": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SpendControlLimitSnapshot"
+              "$ref": "#/$defs/SpendControlLimitSnapshot"
             },
             {
               "type": "null"
@@ -86,7 +166,7 @@
         "planType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/PlanType"
+              "$ref": "#/$defs/PlanType"
             },
             {
               "type": "null"
@@ -96,7 +176,7 @@
         "primary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -106,7 +186,7 @@
         "rateLimitReachedType": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitReachedType"
+              "$ref": "#/$defs/RateLimitReachedType"
             },
             {
               "type": "null"
@@ -116,7 +196,7 @@
         "secondary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/RateLimitWindow"
+              "$ref": "#/$defs/RateLimitWindow"
             },
             {
               "type": "null"
@@ -171,25 +251,39 @@
       },
       "required": [
         "limit",
+        "used",
         "remainingPercent",
-        "resetsAt",
-        "used"
+        "resetsAt"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "rateLimits": {
-      "allOf": [
+    "accountIdentityFingerprint": {
+      "description": "Process-scoped opaque fingerprint of the authenticated account.\n\n`null` means the current ChatGPT credentials do not expose an account identifier. Clients\nmust not display or log this value and must treat its representation as opaque.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rateLimitResetCredits": {
+      "anyOf": [
         {
-          "$ref": "#/definitions/RateLimitSnapshot"
+          "$ref": "#/$defs/RateLimitResetCreditsSummary"
+        },
+        {
+          "type": "null"
         }
-      ],
+      ]
+    },
+    "rateLimits": {
+      "$ref": "#/$defs/RateLimitSnapshot",
       "description": "Backward-compatible single-bucket view; mirrors the historical payload."
     },
     "rateLimitsByLimitId": {
       "additionalProperties": {
-        "$ref": "#/definitions/RateLimitSnapshot"
+        "$ref": "#/$defs/RateLimitSnapshot"
       },
       "description": "Multi-bucket view keyed by metered `limit_id` (for example, `codex`).",
       "type": [

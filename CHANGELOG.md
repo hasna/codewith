@@ -31,16 +31,285 @@ Known evidence gaps:
   `npm view @hasna/codewith versions` currently starts at `0.1.2`.
 - `0.1.27`, `0.1.28`, and `0.1.46` live on release branches, not
   `origin/main`; `0.1.46` was cut from `fix/loops-runtime-0.1.46`.
-- `origin/main` remains at Codewith `0.1.45` until the `0.1.46` hotfix branch
-  is merged, cherry-picked, or superseded by a later release.
+- `origin/main` now carries the `rust-v0.1.66` release tag. Earlier notes about
+  `origin/main` lagging at `0.1.45` were superseded by later release trains.
 - The `rust-v0.1.46` GitHub Release is metadata-only and is not marked latest;
-  use `rust-v0.1.45` for the latest asset-bearing platform binary release until
-  a later full asset release supersedes it.
+  use a later full asset-bearing release once platform assets are available for
+  that tag.
 - This file intentionally excludes pre-fork alpha tags
   `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
   SDK tags, and `rusty-v8-v*` dependency artifact tags.
 
 ## [Unreleased]
+
+## [0.1.70] - 2026-07-20
+
+Tag: `rust-v0.1.70`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.70>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.69...rust-v0.1.70>
+
+Feature release delivering the unified Infinity Agent tool-policy and
+attestation layer.
+
+### Added
+
+- Policy: unified the Infinity Agent tool policy and attestation onto a single
+  fail-closed enforcement path. A signed (ed25519) `VerifiedToolPolicy`
+  envelope is now the single source of truth for the `infinity-agent` tool
+  policy: the tool router plans only the exact signed allowlist,
+  dispatch-time rechecks reject any tool not authorized by the verified process
+  policy, and construction fails closed when no policy is bound or the system
+  trust key is missing. Consolidates the previous duplicate `ToolsPolicy` enum
+  onto the single `ToolPolicy` enum (`ConfigRequirements` gains
+  `allowed_tool_policies` + `infinity_agent_trust_key`), derives the
+  auth-capsule capability document from the enforced allowlist, and — under the
+  Infinity Agent policy — disables auth-profile auto-switch, usage self-heal,
+  session recap, optional features, external instructions, history, and
+  telemetry, forbids named auth profiles, and constrains MCP bridges to signed,
+  credential-free HTTPS sources. (#307)
+
+## [0.1.69] - 2026-07-20
+
+Tag: `rust-v0.1.69`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.69>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.68...rust-v0.1.69>
+
+Release rolling up the features, fixes, and test/CI work merged since 0.1.68:
+a Kimi (Moonshot) subscription provider, an external-agent ACP adapter seam,
+documented OpenAI context windows, mailbox-dispatcher hardening, a read-only
+auth-profile crash fix, goal-plan resume, and assorted protocol/state fixes,
+plus a clean rustfmt pass to keep CI green.
+
+### Added
+
+- Model providers: added a Kimi (Moonshot) subscription login provider. (#297)
+- External agents: a common ACP (Agent Client Protocol) adapter seam so
+  external-agent vendors share a single integration surface. (#285)
+- State: backfill managed worktree path keys. (#266)
+
+### Fixed
+
+- App server: the mailbox dispatcher now acknowledges mailbox claims before
+  waking and hardens dispatcher ownership, preventing duplicate or lost claim
+  handling. (#280)
+- Models: OpenAI API models now report their documented context windows instead
+  of a stale fallback (for example the GPT-4.1 family's 1,047,576 window and the
+  current GPT-5.x windows). (#281)
+- Login: auth-profile directory setup now tolerates a read-only `CODEWITH_HOME`
+  by classifying read-only and permission-denied filesystem errors, so
+  preflight/health runners no longer crash on immutable homes. (#284)
+- Goal plans: deferred goal-plan nodes now resume after an independent node
+  completes instead of stalling. (#289)
+- Protocol: preserve the originating HTTP status for `UnexpectedStatus` turn
+  errors. (#276)
+- Schedules: derive a schedule's `last_completed_at` from completed runs only.
+  (#277)
+- merge-pr: made preflight checks robust across `gh` CLI versions. (#275)
+- Core: repaired a broken `feedback_tags` doctest in `util.rs`. (#292)
+- Formatting: reapplied `cargo fmt` (`imports_granularity=Item`) across code
+  merged since 0.1.68 so the `cargo fmt --check` and `just fmt-check` CI gates
+  pass. (#308)
+
+### Tests
+
+- Model providers: added cross-provider integration coverage. (#293)
+- SDK/CI: added bun and npm install smoke tests for the TypeScript SDK. (#287)
+
+### CI / Docs
+
+- CI: added a PR-drain sandbox template for E2B. (#270)
+- CI: pin the workspace root in the apply_patch move-traversal test for the
+  Bazel sandbox. (#282)
+- CI: removed unsupported v8 rust-toolchain inputs. (#240)
+- Docs: documented building codex-rs on remote sandboxes (Blacksmith) instead of
+  locally. (#305)
+- Docs: added an open-codewith runtime development skill. (#269)
+
+## [0.1.68] - 2026-07-20
+
+Tag: `rust-v0.1.68`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.68>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.67...rust-v0.1.68>
+
+Hotfix release fixing a standalone image-generation runtime 400 and restoring a
+clean workspace compile.
+
+### Fixed
+
+- Image generation: moved the standalone imagegen tool off the Responses-API
+  reserved `image_gen` namespace to the non-reserved `images` namespace (new
+  wire name `images.imagegen`, code-mode name `images__imagegen`). This fixes a
+  runtime `400 Function 'image_gen.imagegen' is reserved for use by this model`
+  error while keeping `image_gen` in the reserved-namespace allowlists.
+- thread-manager-sample: added the missing `tools_policy` field to `Config`,
+  restoring a clean workspace compile.
+
+## [0.1.67] - 2026-07-16
+
+Tag: `rust-v0.1.67`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.67>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.66...rust-v0.1.67>
+
+Hotfix release for ChatGPT subscription GPT-5.6 model compatibility. This
+release carries forward the banked usage-reset controls and remote-compaction
+history preservation shipped in `0.1.66`.
+
+### Fixed
+
+- Model selection: removed the unsupported bare `gpt-5.6` entry from ChatGPT
+  model catalogs and defaults, and normalized exact legacy ChatGPT/OpenAI
+  selections to `gpt-5.6-sol` across startup, resume, per-turn switching, and
+  spawned agents. OpenAI API-key profiles and custom-provider model semantics
+  remain unchanged.
+
+## [0.1.66] - 2026-07-16
+
+Tag: `rust-v0.1.66`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.66>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.65...rust-v0.1.66>
+
+Hotfix release for banked usage-limit resets and remote-compaction history
+preservation.
+
+### Added
+
+- Usage limits: `/usage` can now redeem an available banked reset, and a new
+  default-off `/config` toggle can automatically redeem an exact weekly reset
+  after Codewith revalidates the account, profile, credit, exhaustion window,
+  and reset generation immediately before consumption.
+
+### Fixed
+
+- Compaction: V1 and V2 remote compaction now stop when the provider rejects
+  the request for context overflow, preserving the complete unsummarized
+  semantic history and leaving live history unchanged instead of deleting an
+  older prefix before retrying.
+
+## [0.1.65] - 2026-07-14
+
+Tag: `rust-v0.1.65`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.65>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.64...rust-v0.1.65>
+
+Hotfix release for GPT-5.6 Sol backend version gating.
+
+### Fixed
+
+- Model selection: Codewith now advertises upstream Codex API compatibility
+  `0.144.4` instead of the fork's low `0.1.x` package version, so
+  `gpt-5.6-sol` requests do not fail with the backend "requires a newer version
+  of Codex" gate.
+- Model discovery: ChatGPT model catalog refreshes now use the same advertised
+  Codex API compatibility version for model-list cache/version checks, keeping
+  model availability aligned with request headers.
+
+## [0.1.64] - 2026-07-13
+
+Tag: `rust-v0.1.64`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.64>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.63...rust-v0.1.64>
+
+Hotfix release for ChatGPT subscription context-window compaction.
+
+### Fixed
+
+- Compaction: ChatGPT-authenticated OpenAI GPT-5.4, GPT-5.5, and GPT-5.6
+  model metadata now clamps API-sized fallback or stale remote context windows
+  to the subscription-sized 272K raw window by default, so auto-compaction uses
+  the 244.8K default compact threshold and the 258.4K effective full-window cap
+  instead of waiting for a 1M-class API budget.
+- Status: ChatGPT profile switches and resumed/forked token-count replay now
+  refresh or clamp stale API-sized context-window denominators while preserving
+  smaller backend-reported ChatGPT replay windows.
+
+## [0.1.61] - 2026-07-09
+
+Tag: `rust-v0.1.61`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.61>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.60...rust-v0.1.61>
+
+Hotfix release for auth-profile switch status context windows.
+
+### Fixed
+
+- Status: sessions opened under a non-API/ChatGPT profile now refresh
+  token-count context windows immediately after switching to an OpenAI API-key
+  profile, so `/status` stops showing the prior 258K denominator and reflects
+  the API model's 1M-class window without waiting for a new session.
+
+### Security
+
+- Dependencies: updated `crossbeam-epoch` to `0.9.20` to resolve
+  `RUSTSEC-2026-0204` from the release gate.
+
+## [0.1.60] - 2026-07-08
+
+Tag: `rust-v0.1.60`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.60>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.59...rust-v0.1.60>
+
+Hotfix release for restored OpenAI API-key profile status context windows.
+
+### Fixed
+
+- Status: resumed and forked sessions now refresh restored token-usage context
+  windows from the active model metadata for API-key profiles, so `/status`
+  does not continue displaying an old 258K denominator after a GPT model is
+  configured with a 1M-class context window. ChatGPT login profiles preserve
+  their replayed ChatGPT-catalog context behavior.
+
+## [0.1.59] - 2026-07-08
+
+Tag: `rust-v0.1.59`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.59>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.58...rust-v0.1.59>
+
+Hotfix release for OpenAI API-key profile context-window metadata.
+
+### Fixed
+
+- Provider model metadata: OpenAI API-key and provider-auth profiles now keep
+  the bundled GPT-5.5 and GPT-5.4 1.05M context-window values when stale
+  remote or cached OpenAI model metadata reports a smaller window. This fixes
+  `/status` showing an effective 258K context denominator for API profiles
+  instead of the effective 998K window after the configured 95% cap. ChatGPT
+  login profiles continue to use the remote ChatGPT model catalog as the
+  authoritative source.
+
+## [0.1.57] - 2026-07-05
+
+Tag: `rust-v0.1.57`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.57>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.56...rust-v0.1.57>
+
+Hotfix release for the loop-worker fork-conflict failure class, plus a
+user-facing agent max-threads control and the CI npm publish repair
+(#121, #123).
+
+### Fixed
+
+- Core: a full-history subagent fork (`fork_context=true` on stable v1,
+  `fork_turns=all` on multi_agent_v2) combined with `agent_type`, `model`, or
+  `reasoning_effort` no longer hard-rejects the spawn. Those overrides were
+  already ignored on the full-fork path (the child config is built from the
+  parent), so the reject was converted into a notice of the ignored fields
+  (logged via `tracing::warn`) and the fork proceeds with inherited values.
+  This removes the conflict-class errors that were failing routed loop
+  workers in production; tool-schema descriptions now state the fields are
+  inherited on a full-history fork. (#121)
+- Release: the `publish-npm` job now authenticates with the
+  `NODE_AUTH_TOKEN` repository secret. npm trusted publishing (OIDC) was
+  never configured for the `@hasna/codewith*` packages, so no fork release
+  had ever published from CI; every prior npm release was published by hand.
+  (#123)
+
+### Added
+
+- TUI: `/config` gains an agent max-threads control for the existing
+  `[agents] max_threads` cap (preset choices, persisted to `config.toml`,
+  live-applied to the session), replacing hand-editing of
+  `~/.codewith/config.toml`. Hidden while `multi_agent_v2` governs threads.
+  (#121)
 
 ## [0.1.56] - 2026-07-04
 

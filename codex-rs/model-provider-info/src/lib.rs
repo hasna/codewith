@@ -6,7 +6,8 @@
 //!      key. These override or extend the defaults at runtime.
 //!
 //! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA,
-//! OpenRouter, xAI, Xiaomi, DeepSeek, Alibaba Qwen, Google Gemini, Z.ai, and MiniMax.
+//! OpenRouter, xAI, Xiaomi, DeepSeek, Alibaba Qwen, Google Gemini, Kimi (Moonshot), Z.ai,
+//! and MiniMax.
 
 mod provider_credentials;
 
@@ -44,42 +45,48 @@ pub const OPENAI_API_BASE_URL: &str = "https://api.openai.com/v1";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const HASNA_GATEWAY_ID: &str = "hasna";
 pub const HASNA_GATEWAY_NAME: &str = "Hasna";
+// Provider IDs and base URLs for the shared known providers are owned by
+// `codex_protocol::provider_identity` so this registry and
+// `codex-known-provider-models` consume a single maintained boundary. Re-export
+// them here to keep the historical public const names stable for consumers.
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
-pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
-pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+pub use codex_protocol::provider_identity::ANTHROPIC_BASE_URL;
+pub use codex_protocol::provider_identity::ANTHROPIC_PROVIDER_ID;
 const CEREBRAS_PROVIDER_NAME: &str = "Cerebras";
-pub const CEREBRAS_PROVIDER_ID: &str = "cerebras";
-pub const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
+pub use codex_protocol::provider_identity::CEREBRAS_BASE_URL;
+pub use codex_protocol::provider_identity::CEREBRAS_PROVIDER_ID;
 const NVIDIA_PROVIDER_NAME: &str = "NVIDIA";
-pub const NVIDIA_PROVIDER_ID: &str = "nvidia";
-pub const NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub use codex_protocol::provider_identity::NVIDIA_BASE_URL;
+pub use codex_protocol::provider_identity::NVIDIA_PROVIDER_ID;
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
-pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
-pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub use codex_protocol::provider_identity::OPENROUTER_BASE_URL;
+pub use codex_protocol::provider_identity::OPENROUTER_PROVIDER_ID;
 pub const OPENROUTER_GATEWAY_ID: &str = OPENROUTER_PROVIDER_ID;
 pub const OPENROUTER_GATEWAY_NAME: &str = OPENROUTER_PROVIDER_NAME;
 const XAI_PROVIDER_NAME: &str = "xAI";
-pub const XAI_PROVIDER_ID: &str = "xai";
-pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";
+pub use codex_protocol::provider_identity::XAI_BASE_URL;
+pub use codex_protocol::provider_identity::XAI_PROVIDER_ID;
 const XIAOMI_PROVIDER_NAME: &str = "Xiaomi MiMo";
-pub const XIAOMI_PROVIDER_ID: &str = "xiaomi";
-pub const XIAOMI_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
+pub use codex_protocol::provider_identity::XIAOMI_BASE_URL;
+pub use codex_protocol::provider_identity::XIAOMI_PROVIDER_ID;
 const DEEPSEEK_PROVIDER_NAME: &str = "DeepSeek";
-pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
-pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+pub use codex_protocol::provider_identity::DEEPSEEK_BASE_URL;
+pub use codex_protocol::provider_identity::DEEPSEEK_PROVIDER_ID;
 const QWEN_PROVIDER_NAME: &str = "Alibaba Qwen";
-pub const QWEN_PROVIDER_ID: &str = "qwen";
-pub const QWEN_BASE_URL: &str =
-    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+pub use codex_protocol::provider_identity::QWEN_BASE_URL;
+pub use codex_protocol::provider_identity::QWEN_PROVIDER_ID;
 const GOOGLE_PROVIDER_NAME: &str = "Google Gemini";
-pub const GOOGLE_PROVIDER_ID: &str = "google";
-pub const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+pub use codex_protocol::provider_identity::GOOGLE_BASE_URL;
+pub use codex_protocol::provider_identity::GOOGLE_PROVIDER_ID;
+const KIMI_PROVIDER_NAME: &str = "Kimi (Moonshot)";
+pub use codex_protocol::provider_identity::KIMI_BASE_URL;
+pub use codex_protocol::provider_identity::KIMI_PROVIDER_ID;
 const ZAI_PROVIDER_NAME: &str = "Z.ai";
-pub const ZAI_PROVIDER_ID: &str = "zai";
-pub const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+pub use codex_protocol::provider_identity::ZAI_BASE_URL;
+pub use codex_protocol::provider_identity::ZAI_PROVIDER_ID;
 const MINIMAX_PROVIDER_NAME: &str = "MiniMax";
-pub const MINIMAX_PROVIDER_ID: &str = "minimax";
-pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
+pub use codex_protocol::provider_identity::MINIMAX_BASE_URL;
+pub use codex_protocol::provider_identity::MINIMAX_PROVIDER_ID;
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -208,6 +215,7 @@ fn trusted_secret_backend_base_url_for_env_key(env_key: &str) -> Option<&'static
         "mimo" => Some(XIAOMI_BASE_URL),
         "deepseek" => Some(DEEPSEEK_BASE_URL),
         "dashscope" => Some(QWEN_BASE_URL),
+        "moonshot" => Some(KIMI_BASE_URL),
         "gemini" => Some(GOOGLE_BASE_URL),
         "zai" => Some(ZAI_BASE_URL),
         "minimax" => Some(MINIMAX_BASE_URL),
@@ -731,6 +739,32 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_kimi_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: KIMI_PROVIDER_NAME.into(),
+            base_url: Some(KIMI_BASE_URL.into()),
+            env_key: Some("MOONSHOT_API_KEY".into()),
+            env_key_instructions: Some(
+                "Set MOONSHOT_API_KEY to a Kimi (Moonshot) API key from your Kimi Code \
+subscription."
+                    .into(),
+            ),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_zai_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: ZAI_PROVIDER_NAME.into(),
@@ -921,6 +955,12 @@ const BUILT_IN_MODEL_PROVIDER_SPECS: &[BuiltInModelProviderSpec] = &[
     BuiltInModelProviderSpec {
         id: GOOGLE_PROVIDER_ID,
         factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_google_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: KIMI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_kimi_provider),
         allows_partial_override: true,
         default_override_wire_api: WireApi::Chat,
     },

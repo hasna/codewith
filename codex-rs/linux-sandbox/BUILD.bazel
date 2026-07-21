@@ -3,7 +3,12 @@ load("//:defs.bzl", "codex_rust_crate")
 codex_rust_crate(
     name = "linux-sandbox",
     crate_name = "codex_linux_sandbox",
+    integration_test_args = ["--test-threads=1"],
     extra_binaries = [
         "//codex-rs/bwrap:bwrap",
+    ],
+    test_tags = [
+        "exclusive",
+        "no-sandbox",
     ],
 )

@@ -115,8 +115,11 @@ impl MailboxMessageStore {
             .unwrap_or(now_ms);
         let expires_at_ms = params.expires_at.map(datetime_to_epoch_millis);
         let message_id = Uuid::new_v4().to_string();
-        let payload_json = serde_json::to_string(&params.payload_json)?;
+        let payload_json = redact_state_json_string(&params.payload_json)?;
         let payload_sha256 = payload_sha256(payload_json.as_bytes());
+        let sender_label = params.sender_label.as_deref().map(redact_state_string);
+        let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
+        let payload_preview = redact_state_string(params.payload_preview.as_str());
         let mut tx = self.pool.begin().await?;
         let sql = mailbox_message_returning(
             r#"
@@ -149,13 +152,13 @@ RETURNING
                     .sender_thread_id
                     .map(|thread_id| thread_id.to_string()),
             )
-            .bind(params.sender_label)
-            .bind(params.idempotency_key.as_deref())
+            .bind(sender_label)
+            .bind(idempotency_key.as_deref())
             .bind(params.kind.as_str())
             .bind(crate::MailboxMessageStatus::Queued.as_str())
             .bind(payload_json)
             .bind(payload_sha256)
-            .bind(params.payload_preview)
+            .bind(payload_preview)
             .bind(params.priority)
             .bind(params.max_attempts)
             .bind(next_attempt_at_ms)
@@ -177,7 +180,7 @@ RETURNING
             )
             .await?;
             (message, true)
-        } else if let Some(idempotency_key) = params.idempotency_key {
+        } else if let Some(idempotency_key) = idempotency_key {
             let message = select_message_by_target_idempotency_in_tx(
                 &mut tx,
                 params.target_thread_id,
@@ -454,7 +457,7 @@ RETURNING
         let now_ms = datetime_to_epoch_millis(params.now);
         let receipt_payload_json = params
             .receipt_payload_json
-            .map(|payload| serde_json::to_string(&payload))
+            .map(|payload| redact_state_json_string(&payload))
             .transpose()?;
         let mut tx = self.pool.begin().await?;
         let Some(attempt) = select_attempt_for_lease_in_tx(
@@ -571,6 +574,7 @@ RETURNING
             }
         }
 
+        let error = redact_state_string(params.error.as_str());
         sqlx::query(
             r#"
 UPDATE thread_mailbox_delivery_attempts
@@ -580,7 +584,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
         )
         .bind(crate::MailboxDeliveryAttemptStatus::Failed.as_str())
         .bind(now_ms)
-        .bind(params.error.as_str())
+        .bind(error.as_str())
         .bind(params.attempt_id.as_str())
         .bind(params.message_id.as_str())
         .bind(params.lease_id.as_str())
@@ -594,7 +598,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
                     &mut tx,
                     &params.message_id,
                     &params.lease_id,
-                    &params.error,
+                    &error,
                     datetime_to_epoch_millis(next_attempt_at),
                     now_ms,
                 )
@@ -605,7 +609,7 @@ WHERE attempt_id = ? AND message_id = ? AND lease_id = ? AND status = ?
                     &mut tx,
                     &params.message_id,
                     &params.lease_id,
-                    &params.error,
+                    &error,
                     now_ms,
                 )
                 .await?

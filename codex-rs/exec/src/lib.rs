@@ -260,6 +260,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let Cli {
         command,
         strict_config,
+        approval_policy: approval_policy_cli_arg,
         shared,
         skip_git_repo_check,
         ephemeral,
@@ -452,9 +453,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let overrides = ConfigOverrides {
         model,
         review_model: None,
-        // Default to never ask for approvals in headless mode. Rebuild below if
-        // the fully resolved reviewer is AutoReview.
-        approval_policy: Some(AskForApproval::Never),
+        // Default to never ask for approvals in headless mode; honor an explicit
+        // `--ask-for-approval`/`-a` when provided. Rebuild below if the fully
+        // resolved reviewer is AutoReview.
+        approval_policy: Some(match approval_policy_cli_arg {
+            Some(arg) => arg.into(),
+            None => AskForApproval::Never,
+        }),
         approvals_reviewer: None,
         sandbox_mode,
         permission_profile: None,

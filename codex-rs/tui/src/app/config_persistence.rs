@@ -460,6 +460,13 @@ impl App {
             return Err(format!("{label} was saved but not applied: {message}"));
         }
 
+        if key_path == "agents.max_threads" {
+            self.config.agent_max_threads = value.as_u64().map(|threads| threads as usize);
+            self.chat_widget.apply_config_popup_value(&key_path, &value);
+            self.refresh_status_line();
+            return Ok(());
+        }
+
         if key_path == "goals.auto_execute" {
             apply_goal_auto_execute_value(&mut self.config, &value);
             self.chat_widget.apply_config_popup_value(&key_path, &value);

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
+use app_test_support::create_empty_completed_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
@@ -555,6 +556,7 @@ exclude_slash_tmp = true
         Some("validated-managed-worktree-permissions".to_string()),
         codex_home.path(),
     );
+    params.execution_context = None;
     params.cwd = Some(created_worktree_path.clone());
 
     let start = start_agent(&mut mcp, params).await?;
@@ -595,6 +597,13 @@ async fn agent_start_rejects_shared_repository_managed_worktree_cwd() -> Result<
         codex_state::ManagedWorktreeMode::SharedRepository,
     )
     .await?;
+    std::fs::create_dir_all(
+        codex_home
+            .path()
+            .join(".codewith")
+            .join("worktrees")
+            .join("wt-shared-agent-start"),
+    )?;
 
     let mut params = start_params(
         "run inside a shared-repository worktree",
@@ -1171,6 +1180,49 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_fails_when_turn_completes_without_agent_message() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_empty_completed_sse_response()]).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let start = start_agent(
+        &mut mcp,
+        start_params(
+            "this mock turn will complete without final output",
+            Some("missing-final-message".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+
+    let read = wait_for_agent_status(
+        &mut mcp,
+        start.agent.agent_id.as_str(),
+        AgentRunStatus::Failed,
+    )
+    .await?;
+    let agent = read.agent.expect("failed agent should be readable");
+    assert_eq!(agent.status, AgentRunStatus::Failed);
+    assert_eq!(
+        agent.status_reason.as_deref(),
+        Some("turn completed without an agent message")
+    );
+    let snapshot = read
+        .status_snapshot
+        .expect("failed agent should have a status snapshot");
+    assert_eq!(snapshot.status, AgentRunStatus::Failed);
+    assert_eq!(snapshot.summary.as_deref(), Some("Failed"));
+    assert_eq!(
+        snapshot.payload.pointer("/eventPayload/lastAgentMessage"),
+        Some(&JsonValue::Null)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server =
@@ -1560,6 +1612,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
             "HEAD",
         ],
     )?;
+    let manual_protocol_path = protocol_path(std::fs::canonicalize(&manual_path)?.as_path());
     let reconcile_request_id = mcp
         .send_raw_request("worktree/reconcile", Some(json!({})))
         .await?;
@@ -1568,7 +1621,7 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
     assert_eq!(1, reconciled.discovered);
     assert!(reconciled.updated >= 1);
     assert!(reconciled.data.iter().any(|worktree| {
-        worktree.worktree_path == protocol_path(&manual_path)
+        worktree.worktree_path == manual_protocol_path
             && worktree
                 .identity
                 .as_deref()
@@ -2461,13 +2514,8 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "later work\n",
-        std::fs::read_to_string(repo_path.join("later.txt"))?.replace("\r\n", "\n")
+        std::fs::read_to_string(repo_path.join("later.txt"))?
     );
-    assert_eq!(
-        "later work\n",
-        std::fs::read_to_string(codex_home.path().join("later.txt"))?
-    );
-
     let race_create_request_id = mcp
         .send_raw_request(
             "worktree/create",
@@ -2501,12 +2549,12 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
         WorktreeMergeCandidateStatus::Open,
         race_refreshed.candidate.status
     );
-    std::fs::write(
-        codex_home.path().join("main-advanced.txt"),
-        "main advanced\n",
+    std::fs::write(repo_path.join("main-advanced.txt"), "main advanced\n")?;
+    git(repo_path.as_path(), &["add", "main-advanced.txt"])?;
+    git(
+        repo_path.as_path(),
+        &["commit", "-m", "advance merge target"],
     )?;
-    git(codex_home.path(), &["add", "main-advanced.txt"])?;
-    git(codex_home.path(), &["commit", "-m", "advance merge target"])?;
     let target_changed_apply_error = raw_request_error(
         &mut mcp,
         "worktree/mergeCandidate/apply",
@@ -2542,7 +2590,7 @@ async fn worktree_merge_candidate_refresh_and_apply_use_real_git_merge() -> Resu
     );
     assert_eq!(
         "main advanced\n",
-        std::fs::read_to_string(codex_home.path().join("main-advanced.txt"))?
+        std::fs::read_to_string(repo_path.join("main-advanced.txt"))?
     );
 
     let dismiss_applied_error = raw_request_error(
@@ -2858,6 +2906,7 @@ async fn init_state_db(codex_home: &Path) -> Result<Arc<codex_state::StateRuntim
 
 fn init_git_repo(repo_path: &Path) -> Result<()> {
     git(repo_path, &["init"])?;
+    git(repo_path, &["config", "core.autocrlf", "false"])?;
     git(repo_path, &["config", "user.email", "codewith@example.com"])?;
     git(repo_path, &["config", "user.name", "Codewith Test"])?;
     std::fs::write(repo_path.join("README.md"), "worktree test\n")?;
@@ -3004,8 +3053,8 @@ async fn create_background_agent_git_worktree_lease(
                 run_id: agent_id.to_string(),
                 identity: format!("test:{lease_id}"),
                 mode: codex_state::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: codex_home.to_string_lossy().to_string(),
-                worktree_path: worktree_path.to_string_lossy().to_string(),
+                base_repo_path: codex_home.to_path_buf(),
+                worktree_path: worktree_path.clone(),
                 branch: Some(branch),
                 head_sha: Some(base_sha),
                 status_snapshot_json: json!({"dirty": false, "source": "seed"}),

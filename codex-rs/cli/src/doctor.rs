@@ -32,6 +32,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use clap::Parser;
+use clap::ValueEnum;
 use codex_api::ApiError;
 use codex_api::ResponsesWebsocketClient;
 use codex_api::is_azure_responses_provider;
@@ -153,6 +154,10 @@ const NARROW_TERMINAL_ROWS: u16 = 24;
 /// detailed diagnostics by default; --summary keeps the terminal output compact.
 #[derive(Debug, Parser)]
 pub struct DoctorCommand {
+    /// Run a specific doctor check instead of the full diagnostic report.
+    #[arg(value_enum)]
+    check: Option<DoctorCheckSelector>,
+
     /// Emit a redacted machine-readable report.
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -193,6 +198,16 @@ pub struct DoctorCommand {
         requires = "self_heal_apply"
     )]
     yes: bool,
+
+    /// Apply repairs for a targeted doctor check that supports repair.
+    #[arg(long, default_value_t = false, requires = "check")]
+    repair: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum DoctorCheckSelector {
+    #[value(name = "secrets-local-state")]
+    SecretsLocalState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
@@ -335,6 +350,16 @@ pub async fn run_doctor(
     interactive: &TuiCli,
     arg0_paths: &Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
+    if command.check == Some(DoctorCheckSelector::SecretsLocalState) {
+        return run_secrets_local_state_doctor(
+            command,
+            root_config_overrides,
+            interactive,
+            arg0_paths,
+        )
+        .await;
+    }
+
     if command.self_heal && command.json {
         anyhow::bail!("`codewith doctor --self-heal` does not support --json");
     }
@@ -380,6 +405,120 @@ pub async fn run_doctor(
     }
 
     Ok(())
+}
+
+async fn run_secrets_local_state_doctor(
+    command: DoctorCommand,
+    root_config_overrides: CliConfigOverrides,
+    interactive: &TuiCli,
+    arg0_paths: &Arg0DispatchPaths,
+) -> anyhow::Result<()> {
+    if command.self_heal {
+        anyhow::bail!("`codewith doctor secrets-local-state` does not support --self-heal");
+    }
+    let codex_home = match load_config(root_config_overrides, interactive, arg0_paths).await {
+        Ok(config) => config.codex_home.as_path().to_path_buf(),
+        Err(_) => find_codex_home()?.as_path().to_path_buf(),
+    };
+    let sqlite_home = env::var_os(codex_state::SQLITE_HOME_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| codex_home.clone());
+    let report =
+        codex_state::run_local_state_secrets_doctor(codex_state::LocalStateSecretsDoctorOptions {
+            codex_home,
+            sqlite_home,
+            repair: command.repair,
+        })
+        .await?;
+
+    if command.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!(
+            "{}",
+            render_secrets_local_state_report(&report, command.all)
+        );
+    }
+
+    if (!report.repair && report.has_findings()) || !report.warnings.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn render_secrets_local_state_report(
+    report: &codex_state::LocalStateSecretsDoctorReport,
+    show_all: bool,
+) -> String {
+    let mut out = String::new();
+    let status = if report.warnings.is_empty() && (!report.has_findings() || report.repair) {
+        "ok"
+    } else {
+        "fail"
+    };
+    out.push_str(&format!("secrets-local-state: {status}\n"));
+    out.push_str(&format!(
+        "scanned: {} files, {} sqlite rows\n",
+        report.scanned_files, report.scanned_sqlite_rows
+    ));
+    out.push_str(&format!(
+        "changed: {} files, {} sqlite cells, {} permission modes\n",
+        report.redacted_files, report.redacted_sqlite_cells, report.permission_fixes
+    ));
+    if report.findings.is_empty() {
+        out.push_str("findings: none\n");
+    } else {
+        out.push_str(&format!("findings: {}\n", report.findings.len()));
+        let limit = if show_all { usize::MAX } else { 50 };
+        for finding in report.findings.iter().take(limit) {
+            out.push_str("  - ");
+            out.push_str(render_secrets_local_state_finding(finding).as_str());
+            out.push('\n');
+        }
+        if !show_all && report.findings.len() > limit {
+            out.push_str(&format!(
+                "  ... {} more; rerun with --all to list every row/file id\n",
+                report.findings.len() - limit
+            ));
+        }
+    }
+    if !report.warnings.is_empty() {
+        out.push_str("warnings:\n");
+        for warning in &report.warnings {
+            out.push_str("  - ");
+            out.push_str(redact_detail(warning).as_str());
+            out.push('\n');
+        }
+    }
+    if !report.repair && report.has_findings() {
+        out.push_str("remediation: rerun with `codewith doctor secrets-local-state --repair`.\n");
+    }
+    out
+}
+
+fn render_secrets_local_state_finding(finding: &codex_state::LocalStateSecretFinding) -> String {
+    let action = match finding.action {
+        codex_state::LocalStateSecretAction::WouldRedact => "would redact",
+        codex_state::LocalStateSecretAction::Redacted => "redacted",
+        codex_state::LocalStateSecretAction::WouldRestrictMode => "would restrict mode",
+        codex_state::LocalStateSecretAction::RestrictedMode => "restricted mode",
+    };
+    match &finding.location {
+        codex_state::LocalStateSecretLocation::File { path } => {
+            format!("{action} file {path}")
+        }
+        codex_state::LocalStateSecretLocation::SqliteCell {
+            db,
+            table,
+            rowid,
+            column,
+        } => {
+            format!("{action} {db}.{table} rowid={rowid} column={column}")
+        }
+        codex_state::LocalStateSecretLocation::Permission { path } => {
+            format!("{action} {path}")
+        }
+    }
 }
 
 async fn build_report(
@@ -3083,6 +3222,18 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn secrets_local_state_doctor_flags_parse() {
+        let command =
+            DoctorCommand::try_parse_from(["doctor", "secrets-local-state", "--repair", "--json"])
+                .expect("targeted doctor command should parse");
+
+        assert_eq!(command.check, Some(DoctorCheckSelector::SecretsLocalState));
+        assert!(command.repair);
+        assert!(command.json);
+        assert!(DoctorCommand::try_parse_from(["doctor", "--repair"]).is_err());
+    }
 
     #[derive(Default)]
     struct RecordingProgress {

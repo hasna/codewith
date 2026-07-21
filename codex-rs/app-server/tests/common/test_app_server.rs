@@ -35,6 +35,7 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigReadParams;
 use codex_app_server_protocol::ConfigValueWriteParams;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
 use codex_app_server_protocol::ExperimentalFeatureListParams;
 use codex_app_server_protocol::FeedbackUploadParams;
 use codex_app_server_protocol::FsCopyParams;
@@ -100,6 +101,7 @@ use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadExternalAgentCancelParams;
+use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
@@ -445,6 +447,28 @@ impl TestAppServer {
         self.send_request("account/rateLimits/read", params).await
     }
 
+    /// Send an `account/rateLimitResetCredit/consume` JSON-RPC request.
+    pub async fn send_consume_account_rate_limit_reset_credit_request(
+        &mut self,
+        params: ConsumeAccountRateLimitResetCreditParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("account/rateLimitResetCredit/consume", params)
+            .await
+    }
+
+    /// Sends a reset-credit request that intentionally omits the mandatory account binding.
+    pub async fn send_consume_account_rate_limit_reset_credit_request_without_account_binding(
+        &mut self,
+        idempotency_key: &str,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "account/rateLimitResetCredit/consume",
+            Some(serde_json::json!({ "idempotencyKey": idempotency_key })),
+        )
+        .await
+    }
+
     /// Send an `account/sendAddCreditsNudgeEmail` JSON-RPC request.
     pub async fn send_add_credits_nudge_email_request(
         &mut self,
@@ -605,6 +629,16 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/externalAgent/cancel", params)
+            .await
+    }
+
+    /// Send a `thread/externalAgent/permission/respond` JSON-RPC request.
+    pub async fn send_thread_external_agent_permission_respond_request(
+        &mut self,
+        params: ThreadExternalAgentPermissionRespondParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/externalAgent/permission/respond", params)
             .await
     }
 

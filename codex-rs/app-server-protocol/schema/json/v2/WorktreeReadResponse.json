@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AgentDesiredState": {
       "enum": [
         "running",
@@ -81,7 +80,7 @@
           ]
         },
         "desiredState": {
-          "$ref": "#/definitions/AgentDesiredState"
+          "$ref": "#/$defs/AgentDesiredState"
         },
         "exitCode": {
           "format": "int64",
@@ -170,7 +169,7 @@
           ]
         },
         "retentionState": {
-          "$ref": "#/definitions/AgentRetentionState"
+          "$ref": "#/$defs/AgentRetentionState"
         },
         "rolloutPath": {
           "type": [
@@ -190,7 +189,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/AgentRunStatus"
+          "$ref": "#/$defs/AgentRunStatus"
         },
         "statusReason": {
           "type": [
@@ -238,16 +237,16 @@
       },
       "required": [
         "agentId",
-        "createdAt",
+        "source",
+        "promptSnapshotRef",
+        "threadStoreKind",
         "desiredState",
+        "status",
+        "retentionState",
         "generation",
         "lastEventSeq",
         "lastSnapshotSeq",
-        "promptSnapshotRef",
-        "retentionState",
-        "source",
-        "status",
-        "threadStoreKind",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -272,7 +271,7 @@
         "agent": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AgentRun"
+              "$ref": "#/$defs/AgentRun"
             },
             {
               "type": "null"
@@ -308,7 +307,7 @@
           ]
         },
         "cleanupPolicy": {
-          "$ref": "#/definitions/WorktreeCleanupPolicy"
+          "$ref": "#/$defs/WorktreeCleanupPolicy"
         },
         "createdAt": {
           "format": "int64",
@@ -340,10 +339,10 @@
           ]
         },
         "lifecycleStatus": {
-          "$ref": "#/definitions/WorktreeLifecycleStatus"
+          "$ref": "#/$defs/WorktreeLifecycleStatus"
         },
         "mode": {
-          "$ref": "#/definitions/WorktreeMode"
+          "$ref": "#/$defs/WorktreeMode"
         },
         "ownerAgentRunId": {
           "type": [
@@ -352,7 +351,7 @@
           ]
         },
         "ownerKind": {
-          "$ref": "#/definitions/WorktreeOwnerKind"
+          "$ref": "#/$defs/WorktreeOwnerKind"
         },
         "ownerThreadId": {
           "type": [
@@ -380,18 +379,18 @@
         }
       },
       "required": [
-        "baseRepoPath",
-        "cleanupPolicy",
-        "createdAt",
-        "dirty",
-        "forceDeleteRequested",
-        "lifecycleStatus",
-        "mode",
-        "ownerKind",
-        "statusSnapshot",
-        "updatedAt",
         "worktreeId",
-        "worktreePath"
+        "mode",
+        "lifecycleStatus",
+        "baseRepoPath",
+        "worktreePath",
+        "statusSnapshot",
+        "dirty",
+        "cleanupPolicy",
+        "forceDeleteRequested",
+        "ownerKind",
+        "createdAt",
+        "updatedAt"
       ],
       "type": "object"
     },
@@ -431,7 +430,7 @@
     "WorktreePolicy": {
       "properties": {
         "cleanupDefault": {
-          "$ref": "#/definitions/WorktreeCleanupPolicy"
+          "$ref": "#/$defs/WorktreeCleanupPolicy"
         },
         "currentBaseRepoPath": {
           "type": [
@@ -443,7 +442,7 @@
           "type": "boolean"
         },
         "mainSessions": {
-          "$ref": "#/definitions/WorktreeSessionMode"
+          "$ref": "#/$defs/WorktreeSessionMode"
         },
         "root": {
           "type": [
@@ -452,12 +451,12 @@
           ]
         },
         "subSessions": {
-          "$ref": "#/definitions/WorktreeSessionMode"
+          "$ref": "#/$defs/WorktreeSessionMode"
         }
       },
       "required": [
-        "cleanupDefault",
         "enabled",
+        "cleanupDefault",
         "mainSessions",
         "subSessions"
       ],
@@ -472,14 +471,15 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "policy": {
-      "$ref": "#/definitions/WorktreePolicy"
+      "$ref": "#/$defs/WorktreePolicy"
     },
     "worktree": {
       "anyOf": [
         {
-          "$ref": "#/definitions/Worktree"
+          "$ref": "#/$defs/Worktree"
         },
         {
           "type": "null"

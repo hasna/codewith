@@ -1,0 +1,26 @@
+{
+  "pr_view": {
+    "baseRefName": "main",
+    "headRefName": "feature",
+    "headRefOid": "5555555555555555555555555555555555555555",
+    "headRepositoryOwner": {
+      "login": "hasna"
+    },
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "number": 215,
+    "reviewDecision": "APPROVED",
+    "reviews": [
+      {
+        "author": {
+          "login": "reviewer-a"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "state": "OPEN",
+    "url": "https://github.com/hasna/codewith/pull/215"
+  },
+  "checks": []
+}

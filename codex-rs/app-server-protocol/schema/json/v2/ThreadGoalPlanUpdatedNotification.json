@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadGoalPlan": {
       "properties": {
         "activeNodeCount": {
@@ -8,7 +7,7 @@
           "type": "integer"
         },
         "autoExecute": {
-          "$ref": "#/definitions/ThreadGoalPlanAutoExecute"
+          "$ref": "#/$defs/ThreadGoalPlanAutoExecute"
         },
         "blockedNodeCount": {
           "format": "int64",
@@ -47,7 +46,7 @@
         },
         "nodes": {
           "items": {
-            "$ref": "#/definitions/ThreadGoalPlanNode"
+            "$ref": "#/$defs/ThreadGoalPlanNode"
           },
           "type": "array"
         },
@@ -74,7 +73,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalPlanStatus"
+          "$ref": "#/$defs/ThreadGoalPlanStatus"
         },
         "threadId": {
           "type": "string"
@@ -97,26 +96,26 @@
         }
       },
       "required": [
-        "activeNodeCount",
-        "autoExecute",
-        "blockedNodeCount",
-        "budgetLimitedNodeCount",
-        "cancelledNodeCount",
-        "completedNodeCount",
-        "createdAt",
-        "deferredNodeCount",
-        "nodeCount",
-        "nodes",
-        "pausedNodeCount",
-        "pendingNodeCount",
         "planId",
-        "readyNodeCount",
-        "status",
         "threadId",
-        "totalTimeUsedSeconds",
+        "status",
+        "autoExecute",
         "totalTokensUsed",
+        "totalTimeUsedSeconds",
+        "nodeCount",
+        "completedNodeCount",
+        "readyNodeCount",
+        "activeNodeCount",
+        "pendingNodeCount",
+        "pausedNodeCount",
+        "blockedNodeCount",
+        "usageLimitedNodeCount",
+        "budgetLimitedNodeCount",
+        "deferredNodeCount",
+        "cancelledNodeCount",
+        "createdAt",
         "updatedAt",
-        "usageLimitedNodeCount"
+        "nodes"
       ],
       "type": "object"
     },
@@ -173,7 +172,7 @@
           "type": "integer"
         },
         "status": {
-          "$ref": "#/definitions/ThreadGoalPlanNodeStatus"
+          "$ref": "#/$defs/ThreadGoalPlanNodeStatus"
         },
         "threadId": {
           "type": "string"
@@ -205,20 +204,20 @@
         }
       },
       "required": [
-        "assignedThreadId",
-        "createdAt",
-        "dependsOn",
-        "key",
         "nodeId",
-        "objective",
         "planId",
-        "priority",
-        "ready",
-        "sequence",
-        "status",
         "threadId",
-        "timeUsedSeconds",
+        "assignedThreadId",
+        "key",
+        "sequence",
+        "priority",
+        "objective",
+        "status",
+        "ready",
         "tokensUsed",
+        "timeUsedSeconds",
+        "dependsOn",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -249,9 +248,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "plan": {
-      "$ref": "#/definitions/ThreadGoalPlan"
+      "$ref": "#/$defs/ThreadGoalPlan"
     },
     "threadId": {
       "type": "string"
@@ -264,8 +264,8 @@
     }
   },
   "required": [
-    "plan",
-    "threadId"
+    "threadId",
+    "plan"
   ],
   "title": "ThreadGoalPlanUpdatedNotification",
   "type": "object"

@@ -20,11 +20,66 @@ fn yaml_key<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yam
 }
 
 fn workflow_with_execution_defaults_routing(routing_yaml: &str) -> String {
-    DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replacen(
+    insert_execution_defaults_routing(DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML, routing_yaml)
+}
+
+fn normalize_yaml_line_endings(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' {
+            while chars.peek() == Some(&'\r') {
+                chars.next();
+            }
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
+}
+
+fn insert_execution_defaults_routing(workflow_yaml: &str, routing_yaml: &str) -> String {
+    let workflow_yaml = normalize_yaml_line_endings(workflow_yaml);
+    let routing_yaml = normalize_yaml_line_endings(routing_yaml);
+    let with_routing = workflow_yaml.replacen(
         "  permission_profile: \"workspace-write\"\nlimits:",
         &format!("  permission_profile: \"workspace-write\"\n{routing_yaml}limits:"),
         1,
-    )
+    );
+    if with_routing == workflow_yaml {
+        panic!("workflow fixture must include execution_defaults.permission_profile before limits");
+    }
+    with_routing
+}
+
+#[test]
+fn injects_execution_defaults_routing_from_crlf_fixture() {
+    let workflow_yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replace('\n', "\r\n");
+    let routing_yaml = r#"  routing:
+    contract_version: "open-router.codewith/v0"
+    router: "open_router"
+    request:
+      requested_capability: "planning"
+"#
+    .replace('\n', "\r\n");
+
+    let yaml = insert_execution_defaults_routing(&workflow_yaml, &routing_yaml);
+    let spec = parse_workflow_yaml(&yaml).expect("CRLF fixture routing contract should parse");
+
+    let routing = spec
+        .execution_defaults
+        .routing
+        .expect("execution defaults should include injected routing contract");
+    assert_eq!("open-router.codewith/v0", routing.contract_version);
+    assert_eq!(WorkflowModelRouter::OpenRouter, routing.router);
+    assert_eq!(
+        WorkflowModelRoutingCapability::Planning,
+        routing.request.requested_capability
+    );
 }
 
 #[test]

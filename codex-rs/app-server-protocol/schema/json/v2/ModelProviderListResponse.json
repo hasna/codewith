@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ModelGatewayKind": {
       "enum": [
         "direct",
@@ -22,7 +21,7 @@
     "ModelProviderSummary": {
       "properties": {
         "authKind": {
-          "$ref": "#/definitions/ModelProviderAuthKind"
+          "$ref": "#/$defs/ModelProviderAuthKind"
         },
         "id": {
           "type": "string"
@@ -34,7 +33,7 @@
           "type": "string"
         },
         "modelGatewayKind": {
-          "$ref": "#/definitions/ModelGatewayKind"
+          "$ref": "#/$defs/ModelGatewayKind"
         },
         "modelGatewayName": {
           "type": "string"
@@ -47,22 +46,23 @@
         }
       },
       "required": [
-        "authKind",
         "id",
-        "isCurrent",
-        "modelGateway",
-        "modelGatewayKind",
-        "modelGatewayName",
         "name",
-        "requiresOpenaiAuth"
+        "modelGateway",
+        "modelGatewayName",
+        "modelGatewayKind",
+        "authKind",
+        "requiresOpenaiAuth",
+        "isCurrent"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ModelProviderSummary"
+        "$ref": "#/$defs/ModelProviderSummary"
       },
       "type": "array"
     }

@@ -2,7 +2,7 @@
 // Unified entry point for the Codewith CLI.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, chmodSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "path";
@@ -210,12 +210,30 @@ function resolveCodewithHome() {
   return env.CODEWITH_HOME || env.CODEX_HOME || defaultCodewithHome();
 }
 
+function secureCodewithHome(codewithHome) {
+  mkdirSync(codewithHome, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32") {
+    return;
+  }
+
+  try {
+    chmodSync(codewithHome, 0o700);
+  } catch (err) {
+    const codewithHomeStat = statSync(codewithHome);
+    if (
+      err?.code === "EROFS" &&
+      codewithHomeStat.isDirectory() &&
+      (codewithHomeStat.mode & 0o077) === 0
+    ) {
+      return;
+    }
+    throw err;
+  }
+}
+
 env.CODEX_HOME = resolveCodewithHome();
 env.CODEWITH_HOME = env.CODEX_HOME;
-mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
-if (process.platform !== "win32") {
-  chmodSync(env.CODEX_HOME, 0o700);
-}
+secureCodewithHome(env.CODEX_HOME);
 
 const packageManagerEnvVar =
   detectPackageManager() === "bun"

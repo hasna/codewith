@@ -331,6 +331,7 @@ use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
+use codex_app_server_protocol::AuthMode;
 use codex_core_plugins::PluginsManager;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
@@ -563,8 +564,9 @@ impl Codex {
         {
             let _ = models_manager.list_models(refresh_strategy).await;
         }
+        let models_manager_config = config.to_models_manager_config();
         let model = models_manager
-            .get_default_model(&config.model, refresh_strategy)
+            .get_default_model(&config.model, &models_manager_config, refresh_strategy)
             .await;
 
         // Resolve base instructions for the session. Priority order:
@@ -572,7 +574,7 @@ impl Codex {
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
         let model_info = models_manager
-            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .get_model_info(model.as_str(), &models_manager_config)
             .await;
         let multi_agent_version =
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);
@@ -1437,6 +1439,11 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                    let info = Self::token_info_for_current_model(
+                        info,
+                        &turn_context,
+                        /*preserve_chatgpt_replay_window*/ true,
+                    );
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1455,6 +1462,11 @@ impl Session {
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
                 if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+                    let info = Self::token_info_for_current_model(
+                        info,
+                        &turn_context,
+                        /*preserve_chatgpt_replay_window*/ true,
+                    );
                     let mut state = self.state.lock().await;
                     state.set_token_info(Some(info));
                 }
@@ -1537,6 +1549,54 @@ impl Session {
             RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
             _ => None,
         })
+    }
+
+    fn token_info_for_current_model(
+        mut info: TokenUsageInfo,
+        turn_context: &TurnContext,
+        preserve_chatgpt_replay_window: bool,
+    ) -> TokenUsageInfo {
+        if preserve_chatgpt_replay_window
+            && turn_context
+                .auth_manager
+                .as_deref()
+                .and_then(AuthManager::auth_mode)
+                .is_some_and(AuthMode::has_chatgpt_account)
+        {
+            if let Some(current_model_context_window) = turn_context.model_context_window() {
+                info.model_context_window = Some(info.model_context_window.map_or(
+                    current_model_context_window,
+                    |recorded_context_window| {
+                        recorded_context_window.min(current_model_context_window)
+                    },
+                ));
+            }
+            return info;
+        }
+
+        info.model_context_window = turn_context.model_context_window();
+        info
+    }
+
+    pub(crate) async fn refresh_token_context_window_for_profile_switch(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        {
+            let mut state = self.state.lock().await;
+            let info = state.token_info().unwrap_or(TokenUsageInfo {
+                total_token_usage: TokenUsage::default(),
+                last_token_usage: TokenUsage::default(),
+                model_context_window: None,
+            });
+            let info = Self::token_info_for_current_model(
+                info,
+                turn_context,
+                /*preserve_chatgpt_replay_window*/ false,
+            );
+            state.set_token_info(Some(info));
+        }
+        self.send_token_count_event(turn_context).await;
     }
 
     async fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -3387,10 +3447,12 @@ impl Session {
         token_usage: Option<&TokenUsage>,
     ) {
         if let Some(token_usage) = token_usage {
+            let model_context_window = self
+                .token_usage_context_window_for_current_profile(turn_context)
+                .await;
             let token_info = {
                 let mut state = self.state.lock().await;
-                state
-                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+                state.update_token_info_from_usage(token_usage, model_context_window);
                 if matches!(
                     turn_context.config.model_auto_compact_token_limit_scope,
                     AutoCompactTokenLimitScope::BodyAfterPrefix
@@ -3412,6 +3474,21 @@ impl Session {
                 }
             }
         }
+    }
+
+    async fn token_usage_context_window_for_current_profile(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Option<i64> {
+        let selected_auth_profile = self.selected_auth_profile().await;
+        if selected_auth_profile == turn_context.config.selected_auth_profile {
+            return turn_context.model_context_window();
+        }
+
+        let current_turn_context = self
+            .new_default_turn_with_sub_id(turn_context.sub_id.clone())
+            .await;
+        current_turn_context.model_context_window()
     }
 
     pub(crate) async fn recompute_token_usage(&self, turn_context: &TurnContext) {
