@@ -85,14 +85,20 @@ pub(super) async fn consume_credit(
 pub(super) async fn enrich_summary(
     client: &BackendClient,
     summary: Option<BackendRateLimitResetCreditsSummary>,
-    include_details: bool,
 ) -> Option<RateLimitResetCreditsSummary> {
-    if (include_details
-        || summary
-            .as_ref()
-            .is_some_and(|summary| summary.available_count > 0))
-        && let Some(details) = detailed_credits(client).await
-    {
+    // Banked usage-limit resets live in the dedicated reset-credit ledger
+    // (`/rate-limit-reset-credits`), which is the source of truth for how many
+    // resets are available. The inline `available_count` returned by the usage
+    // endpoint can lag that ledger and report 0 while banked resets still exist,
+    // so we must always reconcile against the authoritative ledger for accounts
+    // that reach this path (only the canonical ChatGPT backend does). Trusting
+    // the inline count is exactly what made `/usage` show "no usage limit resets
+    // available" while banked resets were still redeemable.
+    //
+    // Fall back to the count-only summary only when the ledger fetch fails, so a
+    // transient ledger error still surfaces the coarse count instead of hiding
+    // resets entirely.
+    if let Some(details) = detailed_credits(client).await {
         return Some(details);
     }
 

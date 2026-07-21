@@ -20,6 +20,28 @@ enabled = true
 # Cap concurrent subagent threads per agent run (default: 6, minimum: 1).
 [agents]
 max_threads = 4
+
+# Consume one banked reset credit after the weekly usage limit is exhausted.
+[usage_limit]
+auto_reset_enabled = false
+
+# Automatic retry for recoverable usage-limit and transient availability errors.
+[usage_self_heal]
+enabled = false
+max_retries = 3
+initial_backoff_secs = 30
+max_backoff_secs = 300
+reset_retry_buffer_secs = 60
+max_reset_retry_delay_secs = 86400
+
+# Switch to another saved auth profile when rate-limit windows are exhausted.
+[auth_profile_auto_switch]
+enabled = false
+on_5h_limit = true
+on_weekly_limit = true
+strategy = "highest_available"
+heartbeat_interval_secs = 60
+heartbeat_freshness_secs = 120
 ```
 
 Use `/config` in the TUI to edit common settings interactively.
