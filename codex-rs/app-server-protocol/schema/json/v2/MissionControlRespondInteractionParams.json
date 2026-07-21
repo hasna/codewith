@@ -1,15 +1,14 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/definitions/FileSystemSandboxEntry"
+            "$ref": "#/$defs/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -18,7 +17,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1.0,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -27,7 +26,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -37,7 +36,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/definitions/AbsolutePathBuf"
+            "$ref": "#/$defs/AbsolutePathBuf"
           },
           "type": [
             "array",
@@ -61,22 +60,18 @@
     "CommandExecutionApprovalDecision": {
       "oneOf": [
         {
+          "const": "accept",
           "description": "User approved the command.",
-          "enum": [
-            "accept"
-          ],
           "type": "string"
         },
         {
-          "description": "User approved the command and future prompts in the same session-scoped approval cache should run without prompting.",
-          "enum": [
-            "acceptForSession"
-          ],
+          "const": "acceptForSession",
+          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
           "type": "string"
         },
         {
           "additionalProperties": false,
-          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future matching commands can run without prompting.",
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
           "properties": {
             "acceptWithExecpolicyAmendment": {
               "properties": {
@@ -106,7 +101,7 @@
             "applyNetworkPolicyAmendment": {
               "properties": {
                 "network_policy_amendment": {
-                  "$ref": "#/definitions/NetworkPolicyAmendment"
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
                 }
               },
               "required": [
@@ -122,17 +117,13 @@
           "type": "object"
         },
         {
+          "const": "decline",
           "description": "User denied the command. The agent will continue the turn.",
-          "enum": [
-            "decline"
-          ],
           "type": "string"
         },
         {
+          "const": "cancel",
           "description": "User denied the command. The turn will also be immediately interrupted.",
-          "enum": [
-            "cancel"
-          ],
           "type": "string"
         }
       ]
@@ -145,16 +136,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "inputText"
-              ],
+              "const": "inputText",
               "title": "InputTextDynamicToolCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "text",
-            "type"
+            "type",
+            "text"
           ],
           "title": "InputTextDynamicToolCallOutputContentItem",
           "type": "object"
@@ -165,16 +154,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "inputImage"
-              ],
+              "const": "inputImage",
               "title": "InputImageDynamicToolCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "imageUrl",
-            "type"
+            "type",
+            "imageUrl"
           ],
           "title": "InputImageDynamicToolCallOutputContentItem",
           "type": "object"
@@ -184,31 +171,23 @@
     "FileChangeApprovalDecision": {
       "oneOf": [
         {
+          "const": "accept",
           "description": "User approved the file changes.",
-          "enum": [
-            "accept"
-          ],
           "type": "string"
         },
         {
+          "const": "acceptForSession",
           "description": "User approved the file changes and future changes to the same files should run without prompting.",
-          "enum": [
-            "acceptForSession"
-          ],
           "type": "string"
         },
         {
+          "const": "decline",
           "description": "User denied the file changes. The agent will continue the turn.",
-          "enum": [
-            "decline"
-          ],
           "type": "string"
         },
         {
+          "const": "cancel",
           "description": "User denied the file changes. The turn will also be immediately interrupted.",
-          "enum": [
-            "cancel"
-          ],
           "type": "string"
         }
       ]
@@ -226,19 +205,17 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/$defs/AbsolutePathBuf"
             },
             "type": {
-              "enum": [
-                "path"
-              ],
+              "const": "path",
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -249,16 +226,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "glob_pattern"
-              ],
+              "const": "glob_pattern",
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "pattern",
-            "type"
+            "type",
+            "pattern"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -266,14 +241,12 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "special"
-              ],
+              "const": "special",
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/definitions/FileSystemSpecialPath"
+              "$ref": "#/$defs/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -288,15 +261,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/definitions/FileSystemAccessMode"
+          "$ref": "#/$defs/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/definitions/FileSystemPath"
+          "$ref": "#/$defs/FileSystemPath"
         }
       },
       "required": [
-        "access",
-        "path"
+        "path",
+        "access"
       ],
       "type": "object"
     },
@@ -305,9 +278,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "root"
-              ],
+              "const": "root",
               "type": "string"
             }
           },
@@ -320,9 +291,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "minimal"
-              ],
+              "const": "minimal",
               "type": "string"
             }
           },
@@ -335,9 +304,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "project_roots"
-              ],
+              "const": "project_roots",
               "type": "string"
             },
             "subpath": {
@@ -356,9 +323,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "tmpdir"
-              ],
+              "const": "tmpdir",
               "type": "string"
             }
           },
@@ -371,9 +336,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "slash_tmp"
-              ],
+              "const": "slash_tmp",
               "type": "string"
             }
           },
@@ -386,9 +349,7 @@
         {
           "properties": {
             "kind": {
-              "enum": [
-                "unknown"
-              ],
+              "const": "unknown",
               "type": "string"
             },
             "path": {
@@ -414,7 +375,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalFileSystemPermissions"
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -424,7 +385,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AdditionalNetworkPermissions"
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -445,15 +406,15 @@
     "NetworkPolicyAmendment": {
       "properties": {
         "action": {
-          "$ref": "#/definitions/NetworkPolicyRuleAction"
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
         },
         "host": {
           "type": "string"
         }
       },
       "required": [
-        "action",
-        "host"
+        "host",
+        "action"
       ],
       "type": "object"
     },
@@ -476,19 +437,17 @@
         {
           "properties": {
             "decision": {
-              "$ref": "#/definitions/CommandExecutionApprovalDecision"
+              "$ref": "#/$defs/CommandExecutionApprovalDecision"
             },
             "type": {
-              "enum": [
-                "commandApproval"
-              ],
+              "const": "commandApproval",
               "title": "CommandApprovalThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
-            "decision",
-            "type"
+            "type",
+            "decision"
           ],
           "title": "CommandApprovalThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -496,19 +455,17 @@
         {
           "properties": {
             "decision": {
-              "$ref": "#/definitions/FileChangeApprovalDecision"
+              "$ref": "#/$defs/FileChangeApprovalDecision"
             },
             "type": {
-              "enum": [
-                "fileChangeApproval"
-              ],
+              "const": "fileChangeApproval",
               "title": "FileChangeApprovalThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
-            "decision",
-            "type"
+            "type",
+            "decision"
           ],
           "title": "FileChangeApprovalThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -517,21 +474,19 @@
           "properties": {
             "answers": {
               "additionalProperties": {
-                "$ref": "#/definitions/ToolRequestUserInputAnswer"
+                "$ref": "#/$defs/ToolRequestUserInputAnswer"
               },
               "type": "object"
             },
             "type": {
-              "enum": [
-                "requestUserInput"
-              ],
+              "const": "requestUserInput",
               "title": "RequestUserInputThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
-            "answers",
-            "type"
+            "type",
+            "answers"
           ],
           "title": "RequestUserInputThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -539,21 +494,19 @@
         {
           "properties": {
             "action": {
-              "$ref": "#/definitions/McpServerElicitationAction"
+              "$ref": "#/$defs/McpServerElicitationAction"
             },
             "content": true,
             "meta": true,
             "type": {
-              "enum": [
-                "mcpElicitation"
-              ],
+              "const": "mcpElicitation",
               "title": "McpElicitationThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
-            "action",
-            "type"
+            "type",
+            "action"
           ],
           "title": "McpElicitationThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -561,10 +514,10 @@
         {
           "properties": {
             "permissions": {
-              "$ref": "#/definitions/GrantedPermissionProfile"
+              "$ref": "#/$defs/GrantedPermissionProfile"
             },
             "scope": {
-              "$ref": "#/definitions/PermissionGrantScope"
+              "$ref": "#/$defs/PermissionGrantScope"
             },
             "strictAutoReview": {
               "type": [
@@ -573,17 +526,15 @@
               ]
             },
             "type": {
-              "enum": [
-                "permissionsApproval"
-              ],
+              "const": "permissionsApproval",
               "title": "PermissionsApprovalThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "permissions",
-            "scope",
-            "type"
+            "scope"
           ],
           "title": "PermissionsApprovalThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -592,7 +543,7 @@
           "properties": {
             "contentItems": {
               "items": {
-                "$ref": "#/definitions/DynamicToolCallOutputContentItem"
+                "$ref": "#/$defs/DynamicToolCallOutputContentItem"
               },
               "type": "array"
             },
@@ -600,17 +551,15 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "dynamicTool"
-              ],
+              "const": "dynamicTool",
               "title": "DynamicToolThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
+            "type",
             "contentItems",
-            "success",
-            "type"
+            "success"
           ],
           "title": "DynamicToolThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -621,16 +570,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "terminal"
-              ],
+              "const": "terminal",
               "title": "TerminalThreadPendingInteractionResponsePayloadType",
               "type": "string"
             }
           },
           "required": [
-            "reason",
-            "type"
+            "type",
+            "reason"
           ],
           "title": "TerminalThreadPendingInteractionResponsePayload",
           "type": "object"
@@ -663,6 +610,7 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "dryRun": {
       "type": "boolean"
@@ -671,10 +619,10 @@
       "type": "string"
     },
     "response": {
-      "$ref": "#/definitions/ThreadPendingInteractionResponsePayload"
+      "$ref": "#/$defs/ThreadPendingInteractionResponsePayload"
     },
     "terminalStatus": {
-      "$ref": "#/definitions/ThreadPendingInteractionTerminalStatus"
+      "$ref": "#/$defs/ThreadPendingInteractionTerminalStatus"
     },
     "threadId": {
       "type": [
@@ -685,8 +633,8 @@
   },
   "required": [
     "interactionId",
-    "response",
-    "terminalStatus"
+    "terminalStatus",
+    "response"
   ],
   "title": "MissionControlRespondInteractionParams",
   "type": "object"

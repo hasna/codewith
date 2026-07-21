@@ -48,15 +48,15 @@
     }
   },
   "required": [
+    "session_id",
+    "turn_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
-    "last_assistant_message",
     "model",
     "permission_mode",
-    "session_id",
     "stop_hook_active",
-    "transcript_path",
-    "turn_id"
+    "last_assistant_message"
   ],
   "title": "stop.command.input",
   "type": "object"

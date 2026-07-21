@@ -3,6 +3,7 @@ use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -406,7 +407,9 @@ async fn setup_turn_one_with_custom_spawned_child(
         mount_response_once_match(
             server,
             |req: &wiremock::Request| {
-                body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+                body_contains(req, CHILD_PROMPT)
+                    && !body_contains(req, TURN_1_PROMPT)
+                    && !body_contains(req, SPAWN_CALL_ID)
             },
             sse_response(child_sse).set_delay(delay),
         )
@@ -415,7 +418,9 @@ async fn setup_turn_one_with_custom_spawned_child(
         mount_sse_once_match(
             server,
             |req: &wiremock::Request| {
-                body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+                body_contains(req, CHILD_PROMPT)
+                    && !body_contains(req, TURN_1_PROMPT)
+                    && !body_contains(req, SPAWN_CALL_ID)
             },
             child_sse,
         )
@@ -974,6 +979,83 @@ async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_w
     assert_eq!(
         child_snapshot.reasoning_effort,
         Some(REQUESTED_REASONING_EFFORT)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_agent_legacy_bare_gpt_5_6_override_is_resolved_for_chatgpt_only() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let chatgpt_server = start_mock_server().await;
+    let (chatgpt_test, chatgpt_child_id, chatgpt_child_requests) =
+        setup_turn_one_with_custom_spawned_child(
+            &chatgpt_server,
+            json!({
+                "message": CHILD_PROMPT,
+                "model": "gpt-5.6",
+            }),
+            /*child_response_delay*/ None,
+            /*wait_for_parent_notification*/ false,
+            |builder| builder.with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        )
+        .await?;
+    let chatgpt_child_snapshot = chatgpt_test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&chatgpt_child_id)?)
+        .await?
+        .config_snapshot()
+        .await;
+    let chatgpt_child_request =
+        wait_for_matching_request(&chatgpt_child_requests, "ChatGPT child prompt", |request| {
+            request
+                .message_input_texts("user")
+                .iter()
+                .any(|text| text == CHILD_PROMPT)
+        })
+        .await?;
+
+    let api_server = start_mock_server().await;
+    let (api_test, api_child_id, api_child_requests) = setup_turn_one_with_custom_spawned_child(
+        &api_server,
+        json!({
+            "message": CHILD_PROMPT,
+            "model": "gpt-5.6",
+        }),
+        /*child_response_delay*/ None,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder,
+    )
+    .await?;
+    let api_child_snapshot = api_test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&api_child_id)?)
+        .await?
+        .config_snapshot()
+        .await;
+    let api_child_request =
+        wait_for_matching_request(&api_child_requests, "API-key child prompt", |request| {
+            request
+                .message_input_texts("user")
+                .iter()
+                .any(|text| text == CHILD_PROMPT)
+        })
+        .await?;
+
+    assert_eq!(
+        (
+            chatgpt_child_snapshot.model.as_str(),
+            chatgpt_child_request.body_json()["model"].as_str(),
+            api_child_snapshot.model.as_str(),
+            api_child_request.body_json()["model"].as_str(),
+        ),
+        (
+            "gpt-5.6-sol",
+            Some("gpt-5.6-sol"),
+            "gpt-5.6",
+            Some("gpt-5.6"),
+        )
     );
 
     Ok(())

@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadQueuedMessage": {
       "properties": {
         "author": {
@@ -12,7 +11,7 @@
         "position": {
           "description": "1-based position in the pending agent-message mailbox.",
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "recipient": {
@@ -29,12 +28,12 @@
         }
       },
       "required": [
-        "author",
         "messageId",
+        "threadId",
         "position",
+        "author",
         "recipient",
         "text",
-        "threadId",
         "triggerTurn"
       ],
       "type": "object"
@@ -43,12 +42,12 @@
       "properties": {
         "total": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "triggerTurn": {
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         }
       },
@@ -59,10 +58,11 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ThreadQueuedMessage"
+        "$ref": "#/$defs/ThreadQueuedMessage"
       },
       "type": "array"
     },
@@ -73,7 +73,7 @@
       ]
     },
     "stats": {
-      "$ref": "#/definitions/ThreadQueuedMessageStats"
+      "$ref": "#/$defs/ThreadQueuedMessageStats"
     }
   },
   "required": [

@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadScheduleRun": {
       "properties": {
         "completedAt": {
@@ -37,7 +36,7 @@
           "type": "integer"
         },
         "status": {
-          "$ref": "#/definitions/ThreadScheduleRunStatus"
+          "$ref": "#/$defs/ThreadScheduleRunStatus"
         },
         "threadId": {
           "type": "string"
@@ -50,12 +49,12 @@
         }
       },
       "required": [
-        "leaseId",
-        "runId",
+        "threadId",
         "scheduleId",
-        "startedAt",
+        "runId",
         "status",
-        "threadId"
+        "leaseId",
+        "startedAt"
       ],
       "type": "object"
     },
@@ -70,9 +69,10 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "run": {
-      "$ref": "#/definitions/ThreadScheduleRun"
+      "$ref": "#/$defs/ThreadScheduleRun"
     }
   },
   "required": [

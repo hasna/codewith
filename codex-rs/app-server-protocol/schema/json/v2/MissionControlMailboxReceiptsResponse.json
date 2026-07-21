@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadMailboxMessageStatus": {
       "enum": [
         "queued",
@@ -26,7 +25,7 @@
           "type": "integer"
         },
         "kind": {
-          "$ref": "#/definitions/ThreadMailboxReceiptKind"
+          "$ref": "#/$defs/ThreadMailboxReceiptKind"
         },
         "messageId": {
           "type": "string"
@@ -36,19 +35,19 @@
           "type": "string"
         },
         "statusAfter": {
-          "$ref": "#/definitions/ThreadMailboxMessageStatus"
+          "$ref": "#/$defs/ThreadMailboxMessageStatus"
         },
         "threadId": {
           "type": "string"
         }
       },
       "required": [
-        "createdAt",
-        "kind",
-        "messageId",
         "receiptId",
+        "messageId",
+        "threadId",
+        "kind",
         "statusAfter",
-        "threadId"
+        "createdAt"
       ],
       "type": "object"
     },
@@ -66,10 +65,11 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ThreadMailboxReceipt"
+        "$ref": "#/$defs/ThreadMailboxReceipt"
       },
       "type": "array"
     }

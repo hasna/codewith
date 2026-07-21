@@ -339,7 +339,10 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn build_api_turns_filters_reconstructed_command_executions() {
+    fn build_api_turns_includes_reconstructed_command_executions() {
+        // Regression: resumed/replayed threads must render reconstructed command
+        // executions (tool calls + output) just like a live session. Stripping
+        // them here made resume show only assistant text messages.
         let items = vec![
             RolloutItem::EventMsg(EventMsg::UserMessage(
                 codex_protocol::protocol::UserMessageEvent {
@@ -370,13 +373,23 @@ mod thread_processor_behavior_tests {
         let turns = build_api_turns_from_rollout_items(&items);
 
         assert_eq!(turns.len(), 1);
-        assert!(
-            turns[0]
-                .items
-                .iter()
-                .all(|item| !matches!(item, ThreadItem::CommandExecution { .. })),
-            "history APIs should not include command execution items"
-        );
+        let command_execution = turns[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ThreadItem::CommandExecution {
+                    id,
+                    command,
+                    aggregated_output,
+                    ..
+                } => Some((id.clone(), command.clone(), aggregated_output.clone())),
+                _ => None,
+            })
+            .expect("history APIs should include reconstructed command execution items");
+        let (id, command, aggregated_output) = command_execution;
+        assert_eq!(id, "call-1");
+        assert_eq!(command, "echo hi");
+        assert_eq!(aggregated_output.as_deref(), Some("hi\n"));
     }
 
     #[test]
@@ -1090,7 +1103,7 @@ mod thread_processor_behavior_tests {
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();
         let persisted_metadata =
-            test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
+            test_thread_metadata(Some("gpt-5.6"), Some(ReasoningEffort::High))?;
 
         merge_persisted_resume_metadata(
             &mut request_overrides,
@@ -1098,10 +1111,7 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(
-            typesafe_overrides.model,
-            Some("gpt-5.1-codex-max".to_string())
-        );
+        assert_eq!(typesafe_overrides.model, Some("gpt-5.6".to_string()));
         assert_eq!(
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())

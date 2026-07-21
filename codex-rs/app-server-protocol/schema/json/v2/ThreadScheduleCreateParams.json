@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadScheduleIntervalUnit": {
       "enum": [
         "minutes",
@@ -21,9 +20,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "once"
-              ],
+              "const": "once",
               "title": "OnceThreadScheduleSpecType",
               "type": "string"
             }
@@ -37,9 +34,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "dynamic"
-              ],
+              "const": "dynamic",
               "title": "DynamicThreadScheduleSpecType",
               "type": "string"
             }
@@ -57,19 +52,17 @@
               "type": "integer"
             },
             "type": {
-              "enum": [
-                "interval"
-              ],
+              "const": "interval",
               "title": "IntervalThreadScheduleSpecType",
               "type": "string"
             },
             "unit": {
-              "$ref": "#/definitions/ThreadScheduleIntervalUnit"
+              "$ref": "#/$defs/ThreadScheduleIntervalUnit"
             }
           },
           "required": [
-            "amount",
             "type",
+            "amount",
             "unit"
           ],
           "title": "IntervalThreadScheduleSpec",
@@ -81,16 +74,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "cron"
-              ],
+              "const": "cron",
               "title": "CronThreadScheduleSpecType",
               "type": "string"
             }
           },
           "required": [
-            "expression",
-            "type"
+            "type",
+            "expression"
           ],
           "title": "CronThreadScheduleSpec",
           "type": "object"
@@ -98,6 +89,7 @@
       ]
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "expiresAt": {
       "format": "int64",
@@ -125,7 +117,7 @@
     "promptSource": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSchedulePromptSource"
+          "$ref": "#/$defs/ThreadSchedulePromptSource"
         },
         {
           "type": "null"
@@ -133,7 +125,7 @@
       ]
     },
     "schedule": {
-      "$ref": "#/definitions/ThreadScheduleSpec"
+      "$ref": "#/$defs/ThreadScheduleSpec"
     },
     "threadId": {
       "type": "string"
@@ -146,9 +138,9 @@
     }
   },
   "required": [
+    "threadId",
     "prompt",
-    "schedule",
-    "threadId"
+    "schedule"
   ],
   "title": "ThreadScheduleCreateParams",
   "type": "object"

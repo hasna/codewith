@@ -281,6 +281,7 @@ impl BackgroundAgentRequestProcessor {
                     "cwd": cwd,
                     "prompt": prompt,
                     "promptSnapshotRef": run.prompt_snapshot_ref.as_str(),
+                    "initialGoalObjective": initial_goal_objective.as_deref(),
                 }),
             )
             .await

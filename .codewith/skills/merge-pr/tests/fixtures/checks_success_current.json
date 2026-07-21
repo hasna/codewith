@@ -1,0 +1,45 @@
+{
+  "pr_view": {
+    "baseRefName": "main",
+    "headRefName": "feature",
+    "headRefOid": "1111111111111111111111111111111111111111",
+    "headRepositoryOwner": {
+      "login": "hasna"
+    },
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "number": 215,
+    "reviewDecision": "APPROVED",
+    "reviews": [
+      {
+        "author": {
+          "login": "reviewer-a"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "state": "OPEN",
+    "url": "https://github.com/hasna/codewith/pull/215"
+  },
+  "checks": [
+    {
+      "bucket": "pass",
+      "completedAt": "2026-07-12T05:00:00Z",
+      "link": "https://github.com/hasna/codewith/actions/runs/1/job/1",
+      "name": "CI results (required)",
+      "startedAt": "2026-07-12T04:59:00Z",
+      "state": "SUCCESS",
+      "workflow": "rust-ci"
+    },
+    {
+      "bucket": "skipping",
+      "completedAt": "2026-07-12T05:00:00Z",
+      "link": "https://github.com/hasna/codewith/actions/runs/1/job/2",
+      "name": "optional skipped check",
+      "startedAt": "2026-07-12T04:59:00Z",
+      "state": "SKIPPED",
+      "workflow": "rust-ci"
+    }
+  ]
+}

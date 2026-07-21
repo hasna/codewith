@@ -54,6 +54,46 @@ fn map_api_error_maps_cyber_policy_from_400_body() {
 }
 
 #[test]
+fn map_api_error_maps_context_window_exceeded_from_400_body() {
+    let body = serde_json::json!({
+        "error": {
+            "message": "Your input exceeds the context window of this model.",
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses/compact".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    assert!(matches!(err, CodexErr::ContextWindowExceeded));
+}
+
+#[test]
+fn map_api_error_maps_invalid_image_from_json_400_body() {
+    let body = serde_json::json!({
+        "error": {
+            "message": "The image data you provided does not represent a valid image. Please check your input and try again.",
+            "type": "invalid_request_error",
+            "code": "invalid_value"
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    assert!(matches!(err, CodexErr::InvalidImageRequest()));
+}
+
+#[test]
 fn map_api_error_maps_wrapped_websocket_cyber_policy_from_400_body() {
     let body = serde_json::json!({
         "type": "error",

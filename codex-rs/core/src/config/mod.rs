@@ -34,6 +34,7 @@ use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::ThreadStoreToml;
+use codex_config::config_toml::ToolPolicy;
 use codex_config::config_toml::WorktreeCleanupToml;
 use codex_config::config_toml::WorktreeSessionModeToml;
 use codex_config::config_toml::WorktreesConfigToml;
@@ -64,6 +65,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
+use codex_config::types::UsageLimitToml;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginsConfigInput;
@@ -130,6 +132,7 @@ use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
@@ -138,6 +141,21 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+// Infinity Agent fail-closed tool policy wiring.
+use crate::tools::policy::EffectiveSafetyState;
+use crate::tools::policy::InfinityAgentSafetyAttestation;
+use crate::tools::policy::PolicyMode;
+use crate::tools::policy::VerifiedToolPolicy;
+use crate::tools::policy::load_process_policy;
+use crate::tools::policy::read_secure_system_requirements;
+use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
+use codex_config::RequirementSource;
+use codex_config::types::HistoryPersistence;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::McpCredentialPolicy;
+use codex_mcp::is_credential_forbidden_mcp_url;
+use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 
 use crate::config::permissions::BUILT_IN_READ_ONLY_PROFILE;
 use crate::config::permissions::BUILT_IN_WORKSPACE_PROFILE;
@@ -251,7 +269,7 @@ impl Default for AuthProfileAutoSwitchConfig {
 
 pub const DEFAULT_USAGE_SELF_HEAL_INITIAL_BACKOFF_SECS: u64 = 30;
 pub const DEFAULT_USAGE_SELF_HEAL_MAX_BACKOFF_SECS: u64 = 5 * 60;
-pub const DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS: u64 = 30;
+pub const DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS: u64 = 60;
 pub const DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_USAGE_SELF_HEAL_MAX_RETRIES: u64 = 3;
 
@@ -276,6 +294,11 @@ impl Default for UsageSelfHealConfig {
             max_reset_retry_delay_secs: DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UsageLimitConfig {
+    pub auto_reset_enabled: bool,
 }
 
 pub const DEFAULT_SESSION_RECAP_MODEL: &str = "zai-org/GLM-5.1";
@@ -615,6 +638,15 @@ fn resolve_usage_self_heal_config(config: Option<UsageSelfHealToml>) -> UsageSel
         max_reset_retry_delay_secs: config
             .max_reset_retry_delay_secs
             .unwrap_or(defaults.max_reset_retry_delay_secs),
+    }
+}
+
+fn resolve_usage_limit_config(config: Option<UsageLimitToml>) -> UsageLimitConfig {
+    let Some(config) = config else {
+        return UsageLimitConfig::default();
+    };
+    UsageLimitConfig {
+        auto_reset_enabled: config.auto_reset_enabled.unwrap_or(false),
     }
 }
 
@@ -1073,6 +1105,18 @@ pub struct Config {
     /// Effective permission configuration for shell tool execution.
     pub permissions: Permissions,
 
+    /// Active hardened tool-exposure policy (`tools.policy`). When
+    /// `Some(ToolPolicy::InfinityAgent)` the tool planner removes host
+    /// filesystem tools, host shell tools, and auth-profile control from the
+    /// model toolset and routes surviving tool calls through the protected
+    /// remote-tool bridge.
+    pub tools_policy: Option<ToolPolicy>,
+
+    /// Immutable verified process policy. Present exactly when `tools_policy`
+    /// is `Some(ToolPolicy::InfinityAgent)`; the tool planner and dispatch
+    /// router enforce every tool call against it (see `crate::tools::policy`).
+    pub infinity_agent_policy: Option<Arc<VerifiedToolPolicy>>,
+
     /// Whether config explicitly selected named permissions profiles instead
     /// of the legacy `sandbox_mode` syntax.
     pub explicit_permission_profile_mode: bool,
@@ -1253,6 +1297,9 @@ pub struct Config {
 
     /// Automatic retry behavior for recoverable usage-limit and availability failures.
     pub usage_self_heal: UsageSelfHealConfig,
+
+    /// Usage-limit reset behavior.
+    pub usage_limit: UsageLimitConfig,
 
     /// Lightweight recap behavior for returning to interactive TUI sessions.
     pub session_recap: SessionRecapConfig,
@@ -1798,6 +1845,77 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    pub(crate) fn is_infinity_agent(&self) -> bool {
+        self.tools_policy == Some(ToolPolicy::InfinityAgent)
+    }
+
+    pub fn mcp_credential_policy(&self) -> McpCredentialPolicy {
+        if self.is_infinity_agent() {
+            McpCredentialPolicy::Forbid
+        } else {
+            McpCredentialPolicy::AllowConfigured
+        }
+    }
+
+    /// Produce a fail-closed, machine-readable proof of the effective
+    /// Infinity Agent boundary. Calling this for ordinary Codewith profiles or
+    /// for a drifted restricted configuration is an error.
+    pub fn infinity_agent_safety_attestation(
+        &self,
+    ) -> std::io::Result<InfinityAgentSafetyAttestation> {
+        if !self.is_infinity_agent() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the effective tool policy is not infinity-agent",
+            ));
+        }
+        let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the Infinity Agent policy has no verified process manifest",
+            )
+        })?;
+        let actual_mcp_sources = self
+            .mcp_servers
+            .get()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let bridge_config_matches = match policy.mode() {
+            PolicyMode::DynamicCliOnly => actual_mcp_sources.is_empty(),
+            PolicyMode::McpOnly => actual_mcp_sources == policy.mcp_source_ids(),
+        };
+        if !bridge_config_matches {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the effective bridge configuration does not match the verified policy",
+            ));
+        }
+
+        let external_instructions_disabled = self.user_instructions.is_none()
+            && self.base_instructions.is_none()
+            && self.developer_instructions.is_none()
+            && self.compact_prompt.is_none()
+            && !self.include_permissions_instructions
+            && !self.include_apps_instructions
+            && !self.include_collaboration_mode_instructions
+            && !self.include_skill_instructions
+            && !self.include_environment_context
+            && self.notify.as_ref().is_none_or(Vec::is_empty);
+        policy
+            .safety_attestation(EffectiveSafetyState {
+                all_optional_features_disabled: self.features.get().is_empty(),
+                ephemeral_session: self.ephemeral,
+                named_auth_profile_absent: self.selected_auth_profile.is_none(),
+                external_instructions_disabled,
+                mcp_credentials_forbidden: self.mcp_credential_policy()
+                    == McpCredentialPolicy::Forbid,
+            })
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            })
+    }
+
     pub(crate) fn multi_agent_version_from_features(&self) -> MultiAgentVersion {
         if self.features.enabled(Feature::MultiAgentV2) {
             MultiAgentVersion::V2
@@ -2260,6 +2378,177 @@ fn filter_plugin_mcp_servers_by_requirements(
             });
         }
     }
+}
+
+fn require_canonical_system_requirements_source(source: &RequirementSource) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let expected = Path::new("/etc/codewith/requirements.toml");
+        if matches!(
+            source,
+            RequirementSource::SystemRequirementsToml { file }
+                if file.as_path() == expected
+        ) {
+            return Ok(());
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Infinity Agent security requirements must come from /etc/codewith/requirements.toml",
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = source;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Infinity Agent policy requires the canonical Unix system requirements path",
+        ))
+    }
+}
+
+fn validate_canonical_system_requirements_material(
+    config_layer_stack: &ConfigLayerStack,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let path = Path::new("/etc/codewith/requirements.toml");
+        let bytes = read_secure_system_requirements(path).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+        })?;
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("system requirements are not UTF-8: {error}"),
+            )
+        })?;
+        let on_disk: ConfigRequirementsToml = toml::from_str(text).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("system requirements cannot be reparsed securely: {error}"),
+            )
+        })?;
+        let effective = config_layer_stack.requirements_toml();
+        if on_disk.allowed_tool_policies != effective.allowed_tool_policies
+            || on_disk.infinity_agent_trust_key != effective.infinity_agent_trust_key
+            || on_disk.mcp_servers != effective.mcp_servers
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "security-critical system requirements changed or do not equal the securely reopened material",
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config_layer_stack;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Infinity Agent secure requirements validation requires Unix",
+        ))
+    }
+}
+
+fn constrain_infinity_agent_mcp_servers(
+    servers: Constrained<HashMap<String, McpServerConfig>>,
+    requirements: Option<&Sourced<BTreeMap<String, McpServerRequirement>>>,
+    policy: &VerifiedToolPolicy,
+) -> std::io::Result<Constrained<HashMap<String, McpServerConfig>>> {
+    if policy.mode() == PolicyMode::DynamicCliOnly {
+        return Ok(Constrained::allow_any(HashMap::new()));
+    }
+
+    let requirements = requirements.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MCP-only Infinity Agent policy requires a system-pinned MCP bridge",
+        )
+    })?;
+    require_canonical_system_requirements_source(&requirements.source)?;
+    let expected_sources = policy.mcp_source_ids();
+    if expected_sources.len() != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MCP-only Infinity Agent policy must have exactly one protected bridge source",
+        ));
+    }
+
+    let mut filtered = HashMap::new();
+    for source_id in &expected_sources {
+        if source_id == CODEX_APPS_MCP_SERVER_NAME {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "MCP bridge `{source_id}` uses the reserved host-authenticated Codewith apps source id"
+                ),
+            ));
+        }
+        let requirement = requirements.value.get(source_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("MCP bridge `{source_id}` is not pinned by system requirements"),
+            )
+        })?;
+        let server = servers.get().get(source_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("required MCP bridge `{source_id}` is not configured"),
+            )
+        })?;
+        let expected_raw_tools = policy.mcp_raw_tool_names(source_id);
+        let configured_raw_tools = server
+            .enabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<BTreeSet<_>>());
+        if !server.enabled
+            || !server.required
+            || server.supports_parallel_tool_calls
+            || server.environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID
+            || !mcp_server_matches_requirement(requirement, server)
+            || configured_raw_tools.as_ref() != Some(&expected_raw_tools)
+            || server.disabled_tools.is_some()
+            || server.default_tools_approval_mode.is_some()
+            || !server.tools.is_empty()
+            || server.scopes.is_some()
+            || server.oauth.is_some()
+            || server.oauth_resource.is_some()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "MCP bridge `{source_id}` is not a required serial system-pinned bridge with the exact signed raw-tool allowlist"
+                ),
+            ));
+        }
+        match &server.transport {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+                ..
+            } if is_credential_forbidden_mcp_url(url)
+                && bearer_token_env_var.is_none()
+                && http_headers.is_none()
+                && env_http_headers.is_none() => {}
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "MCP bridge `{source_id}` must be HTTP with no bearer, header, environment, OAuth, or child-process credential"
+                    ),
+                ));
+            }
+        }
+        filtered.insert(source_id.clone(), server.clone());
+    }
+    if filtered.len() != expected_sources.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "effective MCP bridges do not equal the signed policy sources",
+        ));
+    }
+    Ok(Constrained::allow_any(filtered))
 }
 
 fn constrain_mcp_servers(
@@ -2768,6 +3057,44 @@ fn apply_managed_filesystem_constraints(
     }
 }
 
+/// Deny the model's file/shell tools from reading Codewith's on-disk
+/// auth-profile credential store while the `infinity-agent` policy is active.
+///
+/// This is defense-in-depth: `infinity-agent` already removes host filesystem
+/// and host shell tools entirely, but any surviving or future path-bearing tool
+/// is still blocked from the credential directory. Codewith's own authentication
+/// reads these files directly in the host process (see
+/// `login/src/auth/profile.rs`), outside the tool/sandbox layer, so it keeps
+/// working; only model-driven tools are denied.
+fn apply_infinity_agent_credential_deny(
+    file_system_sandbox_policy: &mut FileSystemSandboxPolicy,
+    codex_home: &AbsolutePathBuf,
+) {
+    // Matches `AUTH_PROFILES_DIR` in `login/src/auth/profile.rs`.
+    let auth_profiles = codex_home.join("auth_profiles");
+    let deny_entry = codex_protocol::permissions::FileSystemSandboxEntry {
+        path: codex_protocol::permissions::FileSystemPath::Path {
+            path: auth_profiles,
+        },
+        access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+    };
+    if !file_system_sandbox_policy
+        .entries
+        .iter()
+        .any(|existing| existing == &deny_entry)
+    {
+        file_system_sandbox_policy.entries.push(deny_entry);
+    }
+    // deny_read is only honored on a Restricted policy (`has_denied_read_restrictions`
+    // requires `Restricted`). Guarantee the effective policy is Restricted so an
+    // unrestricted sandbox (e.g. `--sandbox danger-full-access`) cannot silently
+    // void the credential deny. `preserve_deny_read_restrictions_from` upgrades an
+    // Unrestricted policy to Restricted when deny entries are present, and is a
+    // no-op when the policy is already Restricted.
+    let reference = file_system_sandbox_policy.clone();
+    file_system_sandbox_policy.preserve_deny_read_restrictions_from(&reference);
+}
+
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
@@ -3129,6 +3456,8 @@ impl Config {
         // Ensure that every field of ConfigRequirements is applied to the final
         // Config.
         let ConfigRequirements {
+            tool_policy: mut constrained_tool_policy,
+            infinity_agent_trust_key,
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
             permission_profile: mut constrained_permission_profile,
@@ -3152,12 +3481,54 @@ impl Config {
             .startup_warnings()
             .unwrap_or_default()
             .to_vec();
-        let user_instructions = AgentsMdManager::load_global_instructions(
-            LOCAL_FS.as_ref(),
-            Some(&codex_home),
+
+        // --- Infinity Agent fail-closed tool policy resolution ---
+        // Resolve the effective tool-construction policy early so every
+        // subsequent construction step can gate on it. The policy is
+        // requirement-constrained (a system `allowed_tool_policies` requirement
+        // can restrict it). When `infinity-agent` is effective, load and verify
+        // the immutable signed process policy from the system trust key.
+        let configured_tool_policy = cfg
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.policy)
+            .unwrap_or_default();
+        apply_requirement_constrained_value(
+            "tools.policy",
+            configured_tool_policy,
+            &mut constrained_tool_policy,
             &mut startup_warnings,
-        )
-        .await;
+        )?;
+        let tool_policy = constrained_tool_policy.value();
+        // Preserve `Config::tools_policy`'s `Option` semantics: `None` == default
+        // (`Full`) tool surface, `Some(InfinityAgent)` == restricted.
+        let tools_policy = (tool_policy != ToolPolicy::Full).then_some(tool_policy);
+        let infinity_agent_policy = if tool_policy == ToolPolicy::InfinityAgent {
+            let trust_key = infinity_agent_trust_key.as_ref().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "`tools.policy = \"infinity-agent\"` requires a system trust key",
+                )
+            })?;
+            require_canonical_system_requirements_source(&trust_key.source)?;
+            validate_canonical_system_requirements_material(&config_layer_stack)?;
+            Some(load_process_policy(trust_key.value.as_path()).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })?)
+        } else {
+            None
+        };
+
+        let user_instructions = if tool_policy == ToolPolicy::InfinityAgent {
+            None
+        } else {
+            AgentsMdManager::load_global_instructions(
+                LOCAL_FS.as_ref(),
+                Some(&codex_home),
+                &mut startup_warnings,
+            )
+            .await
+        };
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
@@ -3194,6 +3565,12 @@ impl Config {
                 .transpose()?,
             None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
         };
+        if tool_policy == ToolPolicy::InfinityAgent && selected_auth_profile.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Infinity Agent policy forbids named Codewith auth profiles",
+            ));
+        }
         let runtime_permission_overrides_present = sandbox_mode.is_some()
             || permission_profile.is_some()
             || default_permissions_override.is_some()
@@ -3206,10 +3583,18 @@ impl Config {
                 .as_deref()
                 .and_then(|profile| load_auth_profile_permission_settings(&codex_home, profile))
         };
-        let auth_profile_auto_switch =
+        // Infinity Agent policy hard-disables auth-profile auto-switch, usage
+        // self-heal, and session recap (take att's fail-closed behavior).
+        let mut auth_profile_auto_switch =
             resolve_auth_profile_auto_switch_config(cfg.auth_profile_auto_switch.clone())?;
-        let usage_self_heal = resolve_usage_self_heal_config(cfg.usage_self_heal.clone());
-        let session_recap = resolve_session_recap_config(cfg.session_recap.clone());
+        let mut usage_self_heal = resolve_usage_self_heal_config(cfg.usage_self_heal.clone());
+        let usage_limit = resolve_usage_limit_config(cfg.usage_limit.clone());
+        let mut session_recap = resolve_session_recap_config(cfg.session_recap.clone());
+        if tool_policy == ToolPolicy::InfinityAgent {
+            auth_profile_auto_switch.enabled = false;
+            usage_self_heal.enabled = false;
+            session_recap.enabled = false;
+        }
         let goals = resolve_goals_config(cfg.goals.clone());
         let worktrees = resolve_worktrees_config(cfg.worktrees.clone());
 
@@ -3262,11 +3647,24 @@ impl Config {
             },
             feature_overrides,
         );
-        let features = ManagedFeatures::from_configured_with_warnings(
+        let mut features = ManagedFeatures::from_configured_with_warnings(
             configured_features,
             feature_requirements,
             &mut startup_warnings,
         )?;
+        if tool_policy == ToolPolicy::InfinityAgent {
+            let mut restricted = features.get().clone();
+            restricted.disable_all();
+            features.set(restricted).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })?;
+            if !features.get().is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Infinity Agent policy requires every optional feature to be disabled",
+                ));
+            }
+        }
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
         // Keep the configured mode separate so a requirement-constrained mode
@@ -3631,6 +4029,8 @@ impl Config {
         let web_search_config = resolve_web_search_config(&cfg);
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
+        // `tools_policy` / `infinity_agent_policy` are resolved earlier so the
+        // fail-closed gating below can depend on them.
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let apps_mcp_path_override = if features.enabled(Feature::AppsMcpPathOverride) {
@@ -3688,10 +4088,29 @@ impl Config {
             ));
         }
 
-        let shell_environment_policy = cfg.shell_environment_policy.into();
-        let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
+        let shell_environment_policy = if tool_policy == ToolPolicy::InfinityAgent {
+            ShellEnvironmentPolicy {
+                inherit: ShellEnvironmentPolicyInherit::None,
+                ignore_default_excludes: false,
+                exclude: Vec::new(),
+                r#set: HashMap::new(),
+                include_only: Vec::new(),
+                use_profile: false,
+            }
+        } else {
+            cfg.shell_environment_policy.into()
+        };
+        let allow_login_shell =
+            tool_policy != ToolPolicy::InfinityAgent && cfg.allow_login_shell.unwrap_or(true);
 
-        let history = cfg.history.unwrap_or_default();
+        let history = if tool_policy == ToolPolicy::InfinityAgent {
+            History {
+                persistence: HistoryPersistence::None,
+                max_bytes: None,
+            }
+        } else {
+            cfg.history.unwrap_or_default()
+        };
 
         if multi_agent_v2.max_concurrent_threads_per_session == 0 {
             return Err(std::io::Error::new(
@@ -3984,8 +4403,18 @@ impl Config {
             &mut startup_warnings,
         )?;
 
-        let mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
+        let mut effective_mcp_servers =
+            constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref()).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}"))
+            })?;
+        if let Some(policy) = infinity_agent_policy.as_deref() {
+            effective_mcp_servers = constrain_infinity_agent_mcp_servers(
+                effective_mcp_servers,
+                mcp_servers.as_ref(),
+                policy,
+            )?;
+        }
+        let mcp_servers = effective_mcp_servers;
 
         let network_permission_profile = constrained_permission_profile.get().clone();
         let network = build_network_proxy_spec(
@@ -4018,6 +4447,12 @@ impl Config {
                 filesystem_requirements,
             );
         }
+        if tools_policy == Some(ToolPolicy::InfinityAgent) {
+            apply_infinity_agent_credential_deny(
+                &mut effective_file_system_sandbox_policy,
+                &codex_home,
+            );
+        }
         let effective_file_system_sandbox_policy = effective_file_system_sandbox_policy
             .with_additional_readable_roots(resolved_cwd.as_path(), &helper_readable_roots);
         let effective_permission_profile = PermissionProfile::from_runtime_permissions_with_enforcement(
@@ -4035,7 +4470,11 @@ impl Config {
             profile_workspace_roots,
         )
         .map_err(std::io::Error::from)?;
-        let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
+        let otel = if tool_policy == ToolPolicy::InfinityAgent {
+            otel::infinity_agent_disabled_config()
+        } else {
+            otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings)
+        };
         let config = Self {
             model,
             service_tier,
@@ -4062,6 +4501,8 @@ impl Config {
                 windows_sandbox_mode,
                 windows_sandbox_private_desktop,
             },
+            tools_policy,
+            infinity_agent_policy,
             explicit_permission_profile_mode,
             custom_permission_profiles,
             approvals_reviewer: constrained_approvals_reviewer.value(),
@@ -4086,6 +4527,7 @@ impl Config {
             selected_auth_profile,
             auth_profile_auto_switch,
             usage_self_heal,
+            usage_limit,
             session_recap,
             mcp_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"

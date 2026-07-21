@@ -1,22 +1,21 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
     "ActivePermissionProfile": {
       "properties": {
         "extends": {
           "default": null,
-          "description": "Parent profile identifier from the selected permissions profile's `extends` setting, when present.",
+          "description": "Parent profile identifier from the selected permissions profile's\n`extends` setting, when present.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Identifier from `default_permissions` or the implicit built-in default, such as `:workspace` or a user-defined `[permissions.<id>]` profile.",
+          "description": "Identifier from `default_permissions` or the implicit built-in default,\nsuch as `:workspace` or a user-defined `[permissions.<id>]` profile.",
           "type": "string"
         }
       },
@@ -69,9 +68,9 @@
                 }
               },
               "required": [
-                "mcp_elicitations",
+                "sandbox_approval",
                 "rules",
-                "sandbox_approval"
+                "mcp_elicitations"
               ],
               "type": "object"
             }
@@ -88,10 +87,10 @@
       "description": "Collaboration mode for a Codewith session.",
       "properties": {
         "mode": {
-          "$ref": "#/definitions/ModeKind"
+          "$ref": "#/$defs/ModeKind"
         },
         "settings": {
-          "$ref": "#/definitions/Settings"
+          "$ref": "#/$defs/Settings"
         }
       },
       "required": [
@@ -129,7 +128,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -140,10 +139,8 @@
           "type": "string"
         },
         {
+          "const": "none",
           "description": "Option to disable reasoning summaries.",
-          "enum": [
-            "none"
-          ],
           "type": "string"
         }
       ]
@@ -153,9 +150,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "dangerFullAccess"
-              ],
+              "const": "dangerFullAccess",
               "title": "DangerFullAccessSandboxPolicyType",
               "type": "string"
             }
@@ -173,9 +168,7 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "readOnly"
-              ],
+              "const": "readOnly",
               "title": "ReadOnlySandboxPolicyType",
               "type": "string"
             }
@@ -189,17 +182,11 @@
         {
           "properties": {
             "networkAccess": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/NetworkAccess"
-                }
-              ],
+              "$ref": "#/$defs/NetworkAccess",
               "default": "restricted"
             },
             "type": {
-              "enum": [
-                "externalSandbox"
-              ],
+              "const": "externalSandbox",
               "title": "ExternalSandboxSandboxPolicyType",
               "type": "string"
             }
@@ -225,16 +212,14 @@
               "type": "boolean"
             },
             "type": {
-              "enum": [
-                "workspaceWrite"
-              ],
+              "const": "workspaceWrite",
               "title": "WorkspaceWriteSandboxPolicyType",
               "type": "string"
             },
             "writableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/definitions/AbsolutePathBuf"
+                "$ref": "#/$defs/AbsolutePathBuf"
               },
               "type": "array"
             }
@@ -251,24 +236,18 @@
       "description": "Session-level managed worktree behavior.",
       "oneOf": [
         {
-          "description": "Use the current shared checkout and disallow session-managed worktree create/attach operations for this thread.",
-          "enum": [
-            "shared"
-          ],
+          "const": "shared",
+          "description": "Use the current shared checkout and disallow session-managed worktree\ncreate/attach operations for this thread.",
           "type": "string"
         },
         {
+          "const": "manual",
           "description": "Allow this session to manually create or attach managed worktrees.",
-          "enum": [
-            "manual"
-          ],
           "type": "string"
         },
         {
-          "description": "Pull-request mode. The session must work inside an attached isolated managed worktree before model turns can continue.",
-          "enum": [
-            "pullRequest"
-          ],
+          "const": "pullRequest",
+          "description": "Pull-request mode. The session must work inside an attached isolated\nmanaged worktree before model turns can continue.",
           "type": "string"
         }
       ]
@@ -288,7 +267,7 @@
         "reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
@@ -306,7 +285,7 @@
         "activePermissionProfile": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ActivePermissionProfile"
+              "$ref": "#/$defs/ActivePermissionProfile"
             },
             {
               "type": "null"
@@ -314,10 +293,10 @@
           ]
         },
         "approvalPolicy": {
-          "$ref": "#/definitions/AskForApproval"
+          "$ref": "#/$defs/AskForApproval"
         },
         "approvalsReviewer": {
-          "$ref": "#/definitions/ApprovalsReviewer"
+          "$ref": "#/$defs/ApprovalsReviewer"
         },
         "authProfile": {
           "type": [
@@ -326,15 +305,15 @@
           ]
         },
         "collaborationMode": {
-          "$ref": "#/definitions/CollaborationMode"
+          "$ref": "#/$defs/CollaborationMode"
         },
         "cwd": {
-          "$ref": "#/definitions/AbsolutePathBuf"
+          "$ref": "#/$defs/AbsolutePathBuf"
         },
         "effort": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningEffort"
+              "$ref": "#/$defs/ReasoningEffort"
             },
             {
               "type": "null"
@@ -350,7 +329,7 @@
         "personality": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Personality"
+              "$ref": "#/$defs/Personality"
             },
             {
               "type": "null"
@@ -358,7 +337,7 @@
           ]
         },
         "sandboxPolicy": {
-          "$ref": "#/definitions/SandboxPolicy"
+          "$ref": "#/$defs/SandboxPolicy"
         },
         "serviceTier": {
           "type": [
@@ -375,7 +354,7 @@
         "summary": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReasoningSummary"
+              "$ref": "#/$defs/ReasoningSummary"
             },
             {
               "type": "null"
@@ -383,28 +362,29 @@
           ]
         },
         "worktreeMode": {
-          "$ref": "#/definitions/SessionWorktreeMode"
+          "$ref": "#/$defs/SessionWorktreeMode"
         }
       },
       "required": [
+        "cwd",
         "approvalPolicy",
         "approvalsReviewer",
-        "collaborationMode",
-        "cwd",
+        "sandboxPolicy",
         "model",
         "modelProvider",
-        "sandboxPolicy",
+        "collaborationMode",
         "worktreeMode"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "threadId": {
       "type": "string"
     },
     "threadSettings": {
-      "$ref": "#/definitions/ThreadSettings"
+      "$ref": "#/$defs/ThreadSettings"
     }
   },
   "required": [

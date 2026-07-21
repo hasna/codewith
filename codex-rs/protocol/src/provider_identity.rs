@@ -24,6 +24,9 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GOOGLE_PROVIDER_ID: &str = "google";
 pub const GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
+pub const KIMI_PROVIDER_ID: &str = "kimi";
+pub const KIMI_BASE_URL: &str = "https://api.moonshot.ai/v1";
+
 pub const MINIMAX_PROVIDER_ID: &str = "minimax";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/v1";
 
@@ -34,8 +37,7 @@ pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub const QWEN_PROVIDER_ID: &str = "qwen";
-pub const QWEN_BASE_URL: &str =
-    "https://dashscope-intl.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1";
+pub const QWEN_BASE_URL: &str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 
 pub const XAI_PROVIDER_ID: &str = "xai";
 pub const XAI_BASE_URL: &str = "https://api.x.ai/v1";

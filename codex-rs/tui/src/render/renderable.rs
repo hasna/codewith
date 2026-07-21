@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::Arc;
 
 use crossterm::cursor::SetCursorStyle;
@@ -247,6 +248,23 @@ impl<'a> ColumnRenderable<'a> {
 pub struct FlexChild<'a> {
     flex: i32,
     child: RenderableItem<'a>,
+    /// Caches the child's desired height by width for the lifetime of this tree, so that sizing,
+    /// rendering, and cursor placement do not re-measure the same child multiple times per frame.
+    cached_height: Cell<Option<(u16, u16)>>,
+}
+
+impl FlexChild<'_> {
+    /// Desired height at `width`, reusing the cached value when the width is unchanged.
+    fn desired_height(&self, width: u16) -> u16 {
+        if let Some((cached_width, height)) = self.cached_height.get()
+            && cached_width == width
+        {
+            return height;
+        }
+        let height = self.child.desired_height(width);
+        self.cached_height.set(Some((width, height)));
+        height
+    }
 }
 
 pub struct FlexRenderable<'a> {
@@ -266,6 +284,7 @@ impl<'a> FlexRenderable<'a> {
         self.children.push(FlexChild {
             flex,
             child: child.into(),
+            cached_height: Cell::new(None),
         });
     }
 
@@ -281,9 +300,9 @@ impl<'a> FlexRenderable<'a> {
         // 1. Allocate space to non-flex children.
         let max_size = area.height;
         let mut last_flex_child_idx = 0;
-        for (i, FlexChild { flex, child }) in self.children.iter().enumerate() {
-            if *flex > 0 {
-                total_flex += flex;
+        for (i, child) in self.children.iter().enumerate() {
+            if child.flex > 0 {
+                total_flex += child.flex;
                 last_flex_child_idx = i;
             } else {
                 child_sizes[i] = child
@@ -297,14 +316,14 @@ impl<'a> FlexRenderable<'a> {
         let mut allocated_flex_space = 0;
         if total_flex > 0 {
             let space_per_flex = free_space / total_flex as u16;
-            for (i, FlexChild { flex, child }) in self.children.iter().enumerate() {
-                if *flex > 0 {
+            for (i, child) in self.children.iter().enumerate() {
+                if child.flex > 0 {
                     // Last flex child gets all the remaining space, to prevent a rounding error
                     // from not allocating all the space.
                     let max_child_extent = if i == last_flex_child_idx {
                         free_space - allocated_flex_space
                     } else {
-                        space_per_flex * *flex as u16
+                        space_per_flex * child.flex as u16
                     };
                     let child_size = child.desired_height(area.width).min(max_child_extent);
                     child_sizes[i] = child_size;
@@ -482,3 +501,7 @@ where
         RenderableItem::Owned(Box::new(InsetRenderable { child, insets }))
     }
 }
+
+#[cfg(test)]
+#[path = "renderable_tests.rs"]
+mod tests;

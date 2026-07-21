@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "WebhookEventStatus": {
       "enum": [
         "unread",
@@ -43,7 +42,7 @@
         },
         "redactions": {
           "items": {
-            "$ref": "#/definitions/WebhookPayloadRedaction"
+            "$ref": "#/$defs/WebhookPayloadRedaction"
           },
           "type": "array"
         },
@@ -57,7 +56,7 @@
           ]
         },
         "status": {
-          "$ref": "#/definitions/WebhookEventStatus"
+          "$ref": "#/$defs/WebhookEventStatus"
         },
         "subscriptionId": {
           "type": [
@@ -78,13 +77,13 @@
       },
       "required": [
         "eventId",
-        "eventType",
-        "payloadPreview",
-        "payloadSha256",
-        "receivedAt",
-        "redactions",
         "sourceAppId",
+        "eventType",
         "status",
+        "payloadSha256",
+        "payloadPreview",
+        "redactions",
+        "receivedAt",
         "updatedAt"
       ],
       "type": "object"
@@ -105,11 +104,12 @@
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "event": {
       "anyOf": [
         {
-          "$ref": "#/definitions/WebhookEventSummary"
+          "$ref": "#/$defs/WebhookEventSummary"
         },
         {
           "type": "null"

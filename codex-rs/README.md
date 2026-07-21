@@ -51,7 +51,7 @@ You can enable notifications by configuring a script that is run whenever the ag
 ### `codewith exec` to run Codewith programmatically/non-interactively
 
 To run Codewith non-interactively, run `codewith exec PROMPT` (you can also pass the prompt via `stdin`) and Codewith will work on your task until it decides that it is done and exits. If you provide both a prompt argument and piped stdin, Codewith appends stdin as a `<stdin>` block after the prompt so patterns like `echo "my output" | codewith exec "Summarize this concisely"` work naturally. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
-Use `codewith exec --ephemeral ...` to run without persisting session rollout files to disk.
+Headless `codewith exec` runs persist session rollout files by default so long-running automation can resume or inspect the thread later. Use `--durable` or `--persist` when a workflow needs to state that contract explicitly, and use `codewith exec --ephemeral ...` only for intentional one-off runs that should not be materialized on disk.
 
 ### Compact output defaults
 

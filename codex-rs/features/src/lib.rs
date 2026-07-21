@@ -368,6 +368,17 @@ impl Features {
         self
     }
 
+    /// Disables every optional feature. Security-sensitive construction modes
+    /// use this as an allowlist baseline instead of chasing newly added flags.
+    pub fn disable_all(&mut self) -> &mut Self {
+        self.enabled.clear();
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_empty()
+    }
+
     pub fn set_enabled(&mut self, f: Feature, enabled: bool) -> &mut Self {
         if enabled {
             self.enable(f)

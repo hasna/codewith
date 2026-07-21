@@ -7,6 +7,7 @@ use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::permissions::ReadDenyMatcher;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::io;
@@ -97,6 +98,27 @@ impl FileSystemSandboxContext {
         let file_system_policy = self.permissions.file_system_sandbox_policy();
         matches!(file_system_policy.kind, FileSystemSandboxKind::Restricted)
             && !file_system_policy.has_full_disk_write_access()
+    }
+
+    /// Whether the model's file/shell tools are denied read access to `path`
+    /// under this context's policy.
+    ///
+    /// This is the fail-closed, defense-in-depth read guard the tool
+    /// file-access layer consults before every read/metadata/list, independent
+    /// of whether the platform sandbox is engaged (see the `LocalFileSystem`
+    /// guard in `exec-server`). The underlying [`ReadDenyMatcher`] canonicalizes
+    /// candidate paths, so symlinks, `..`, and `/proc/self/root` spellings that
+    /// resolve into a denied root are all caught. Codewith's own credential
+    /// loading uses `std::fs` directly and never flows through this path, so
+    /// authentication keeps working while model-driven tools are blocked.
+    pub fn is_read_denied(&self, path: &Path) -> bool {
+        let file_system_policy = self.permissions.file_system_sandbox_policy();
+        let cwd = self
+            .cwd
+            .as_ref()
+            .map_or_else(|| Path::new("/"), AbsolutePathBuf::as_path);
+        ReadDenyMatcher::new(&file_system_policy, cwd)
+            .is_some_and(|matcher| matcher.is_read_denied(path))
     }
 
     pub fn has_cwd_dependent_permissions(&self) -> bool {

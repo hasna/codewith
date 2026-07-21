@@ -76,6 +76,8 @@ use codex_app_server_protocol::CommandExecResizeParams;
 use codex_app_server_protocol::CommandExecTerminateParams;
 use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::ConversationGitInfo;
 use codex_app_server_protocol::ConversationSummary;
 use codex_app_server_protocol::DynamicToolSpec as ApiDynamicToolSpec;
@@ -181,6 +183,7 @@ use codex_app_server_protocol::PluginSource;
 use codex_app_server_protocol::PluginSummary;
 use codex_app_server_protocol::PluginUninstallParams;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RateLimitResetCreditsSummary;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery as ApiReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
@@ -632,6 +635,7 @@ fn infer_model_provider_from_model<'a>(
 }
 
 mod account_processor;
+mod account_rate_limit_resets;
 mod active_session_processor;
 mod apps_processor;
 mod background_agent_live;
@@ -769,14 +773,9 @@ pub(crate) fn build_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<T
             builder.handle_rollout_item(item);
         }
     }
-    let mut turns = builder.finish();
-    strip_command_execution_items(&mut turns);
-    turns
-}
-
-fn strip_command_execution_items(turns: &mut [Turn]) {
-    for turn in turns {
-        turn.items
-            .retain(|item| !matches!(item, ThreadItem::CommandExecution { .. }));
-    }
+    // Include reconstructed command-execution items so resumed/replayed threads
+    // render tool calls and their output exactly like a live session. Command
+    // executions are keyed by call id and deduped during reconstruction, so
+    // returning them here does not duplicate live-streamed items.
+    builder.finish()
 }

@@ -100,6 +100,12 @@ impl ToolExecutor<ToolInvocation> for ManageAuthProfilesHandler {
                 })
                 .await
                 .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+            let turn_context = session
+                .new_default_turn_with_sub_id(turn.sub_id.clone())
+                .await;
+            session
+                .refresh_token_context_window_for_profile_switch(&turn_context)
+                .await;
             current_profile = profile.clone();
             switched_to = profile;
         }

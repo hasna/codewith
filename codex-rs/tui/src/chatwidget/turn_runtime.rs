@@ -70,6 +70,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     pub(super) fn on_task_started(&mut self) {
+        self.collab_wait_status.clear_active_waits();
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.start(Instant::now());
         self.transcript.reset_turn_flags();
@@ -186,6 +187,7 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.status_state.pending_status_indicator_restore = false;
         self.status_state.agent_statusline = None;
+        self.collab_wait_status.clear_active_waits();
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
         self.update_task_running_state();
@@ -344,6 +346,7 @@ impl ChatWidget {
         self.plan_stream_controller = None;
         self.status_state.pending_status_indicator_restore = false;
         self.status_state.agent_statusline = None;
+        self.collab_wait_status.clear_active_waits();
         self.clear_cancel_edit();
         self.request_status_line_branch_refresh();
         self.request_status_line_git_summary_refresh();
@@ -352,8 +355,10 @@ impl ChatWidget {
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        let retry_delay = self
-            .maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::TransientAvailability);
+        let retry_delay = self.maybe_schedule_usage_self_heal_retry(
+            UsageSelfHealErrorKind::TransientAvailability,
+            /*error_message*/ None,
+        );
         self.finalize_turn();
 
         let message = if message.trim().is_empty() {
@@ -440,9 +445,43 @@ impl ChatWidget {
                     | Some(RateLimitReachedType::RateLimitReached)
                     | None
             );
-        let retry_delay = should_retry
-            .then(|| self.maybe_schedule_usage_self_heal_retry(UsageSelfHealErrorKind::UsageLimit))
+        let auto_reset_check = if should_retry {
+            self.request_usage_limit_auto_reset_check()
+        } else {
+            UsageLimitAutoResetCheckOutcome::Unavailable
+        };
+        let reset_owns_failed_turn = matches!(
+            auto_reset_check,
+            UsageLimitAutoResetCheckOutcome::Started
+                | UsageLimitAutoResetCheckOutcome::AlreadyInProgress
+        );
+        let reset_recovery_was_opted_out =
+            matches!(auto_reset_check, UsageLimitAutoResetCheckOutcome::OptedOut);
+        let profile_fallback_owns_failed_turn = should_retry
+            && matches!(
+                auto_reset_check,
+                UsageLimitAutoResetCheckOutcome::Unavailable
+            )
+            && self.manual_usage_limit_reset_is_active()
+            && self.try_auth_profile_switch_after_reset_unavailable();
+        if profile_fallback_owns_failed_turn {
+            self.resume_after_usage_limit_reset();
+        }
+        let retry_delay = (should_retry
+            && !reset_owns_failed_turn
+            && !reset_recovery_was_opted_out
+            && !profile_fallback_owns_failed_turn)
+            .then(|| {
+                self.maybe_schedule_usage_self_heal_retry(
+                    UsageSelfHealErrorKind::UsageLimit,
+                    Some(message.as_str()),
+                )
+            })
             .flatten();
+        let drain_queue = retry_delay.is_none()
+            && !reset_owns_failed_turn
+            && !reset_recovery_was_opted_out
+            && !profile_fallback_owns_failed_turn;
 
         match rate_limit_reached_type {
             Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
@@ -455,7 +494,7 @@ impl ChatWidget {
                 self.on_error_with_queue_drain(
                     "Usage limit reached. You've reached your usage limit. Increase your limits to continue using Codewith."
                         .to_string(),
-                    retry_delay.is_none(),
+                    drain_queue,
                 );
                 self.add_usage_self_heal_retry_message(retry_delay);
             }
@@ -464,12 +503,12 @@ impl ChatWidget {
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::Credits);
             }
             Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) => {
-                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.on_error_with_queue_drain(message, drain_queue);
                 self.add_usage_self_heal_retry_message(retry_delay);
                 self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::UsageLimit);
             }
             Some(RateLimitReachedType::RateLimitReached) | None => {
-                self.on_error_with_queue_drain(message, retry_delay.is_none());
+                self.on_error_with_queue_drain(message, drain_queue);
                 self.add_usage_self_heal_retry_message(retry_delay);
             }
         }

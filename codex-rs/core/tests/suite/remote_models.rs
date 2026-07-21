@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
+use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
@@ -1064,7 +1065,14 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
     let start = Instant::now();
     let model = timeout(
         Duration::from_secs(7),
-        manager.get_default_model(&None, RefreshStrategy::OnlineIfUncached),
+        manager.get_default_model(
+            &None,
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::OnlineIfUncached,
+        ),
     )
     .await;
     let elapsed = start.elapsed();
@@ -1132,7 +1140,14 @@ async fn remote_models_hide_picker_only_models() -> Result<()> {
     );
 
     let selected = manager
-        .get_default_model(&None, RefreshStrategy::OnlineIfUncached)
+        .get_default_model(
+            &None,
+            &ModelsManagerConfig {
+                model_provider_id: Some("openai".to_string()),
+                ..Default::default()
+            },
+            RefreshStrategy::OnlineIfUncached,
+        )
         .await;
     assert_eq!(selected, bundled_default_model_slug());
 
