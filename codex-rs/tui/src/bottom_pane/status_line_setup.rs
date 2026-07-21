@@ -528,6 +528,19 @@ mod tests {
     }
 
     #[test]
+    fn active_agent_is_canonical_and_accepts_alias() {
+        assert_eq!(StatusLineItem::ActiveAgent.to_string(), "active-agent");
+        assert_eq!(
+            "active-agent".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ActiveAgent)
+        );
+        assert_eq!(
+            "active-agent-label".parse::<StatusLineItem>(),
+            Ok(StatusLineItem::ActiveAgent)
+        );
+    }
+
+    #[test]
     fn git_summary_items_are_selectable_ids() {
         assert_eq!(
             "pull-request-number".parse::<StatusLineItem>(),
