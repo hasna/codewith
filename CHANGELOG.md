@@ -42,6 +42,52 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.73] - 2026-07-22
+
+Tag: `rust-v0.1.73`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.73>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.72...rust-v0.1.73>
+
+Release headlined by an opt-in keep-going / auto-resume mode: a new
+`/keep-going` slash command and a `[keep_going]` config section let a turn keep
+working toward the active goal and auto-resume instead of stopping early. It
+ships alongside a `/privacy-filter` readiness check, a cluster of app-server,
+TUI, and usage correctness fixes, and ten Dependabot dependency bumps
+(including the rust-toolchain 1.97.0 to 1.97.1 update).
+
+### Added
+
+- Keep-going: added an opt-in keep-going / auto-resume mode — a `/keep-going`
+  slash command and a `[keep_going]` config section that let a turn keep
+  working toward the active goal and auto-resume instead of stopping early.
+  (#353)
+- Privacy filter: added a `/privacy-filter` readiness check and an opt-in
+  config toggle. (#138)
+
+### Fixed
+
+- App server: hardened `additionalContext` boundaries. (#178)
+- Diagnostics: made diagnostic truncation UTF-8 safe. (#228)
+- App server: backported app-server/protocol nullability and legacy-client
+  fixes, and refreshed the schema fixtures. (#279)
+- TUI: repaired the thread-routing stack. (#211)
+- Usage: recorded prompt cache-write tokens and exact per-response usage.
+  (#330)
+
+### Dependencies
+
+- Rust toolchain: bumped from 1.97.0 to 1.97.1, keeping the release workflow in
+  sync. (#343)
+- CI: bumped `actions/setup-node` from 6.3.0 to 7.0.0. (#344)
+- CI: bumped `astral-sh/setup-uv` from 8.3.1 to 8.3.2. (#345)
+- CI: bumped `taiki-e/install-action` from 2.82.10 to 2.83.2. (#346)
+- CI: bumped `softprops/action-gh-release` from 3.0.1 to 3.0.2. (#347)
+- Rust: bumped `regex` from 1.12.3 to 1.13.0. (#348)
+- Rust: bumped `age` from 0.11.2 to 0.12.1. (#349)
+- Rust: bumped `cpal` from 0.15.3 to 0.18.1. (#350)
+- Rust: bumped `axum` from 0.8.8 to 0.8.9. (#351)
+- Rust: bumped `ctor` from 1.0.7 to 1.0.10. (#352)
+
 ## [0.1.72] - 2026-07-21
 
 Tag: `rust-v0.1.72`
