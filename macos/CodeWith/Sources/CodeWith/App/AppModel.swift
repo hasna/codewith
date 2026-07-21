@@ -102,6 +102,13 @@ struct PendingMcpElicitationOption: Identifiable {
     var id: String { label }
 }
 
+/// A user decision on a durable agent pending interaction.
+enum AgentInteractionDecision {
+    case approve
+    case deny
+    case dismiss
+}
+
 // MARK: - App state, backed by the live app-server
 
 @MainActor
@@ -2973,6 +2980,168 @@ final class AppModel {
             agentRuns[index] = agent
         } else {
             agentRuns.append(agent)
+        }
+    }
+
+    /// The durable agent currently surfaced in the chat, if any.
+    var activeAgentId: String? { activeAgentAttachment?.agent?.agentId }
+
+    /// Drop the client's subscription to the durable agent without stopping it.
+    func detachActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                if let updated = try await client.detachAgentRun(agentId: agentId) {
+                    upsertAgentRun(updated)
+                }
+                if activeAgentAttachment?.agent?.agentId == agentId {
+                    activeAgentAttachment = nil
+                }
+                appendAgentToolMessage("Detached from agent.", icon: "rectangle.portrait.and.arrow.right")
+            } catch {
+                appendAgentError("Agent detach failed", error)
+            }
+        }
+    }
+
+    /// Request the durable agent stop running, keeping the attachment for status.
+    func stopActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                if let updated = try await client.stopAgentRun(agentId: agentId) {
+                    upsertAgentRun(updated)
+                }
+                await refreshAgentAttachment(agentId: agentId)
+                appendAgentToolMessage("Requested agent stop.", icon: "stop.circle")
+            } catch {
+                appendAgentError("Agent stop failed", error)
+            }
+        }
+    }
+
+    /// Delete the durable agent and remove it from local state.
+    func deleteActiveAgent() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                let deleted = try await client.deleteAgentRun(agentId: agentId)
+                if deleted {
+                    agentRuns.removeAll { $0.agentId == agentId }
+                    if activeAgentAttachment?.agent?.agentId == agentId {
+                        activeAgentAttachment = nil
+                    }
+                    appendAgentToolMessage("Deleted agent.", icon: "trash")
+                } else {
+                    appendAgentToolMessage("Agent could not be deleted.", icon: "exclamationmark.triangle")
+                }
+            } catch {
+                appendAgentError("Agent delete failed", error)
+            }
+        }
+    }
+
+    /// Report the durable agent's recorded event count via `agent/events/list`.
+    func refreshActiveAgentEvents() {
+        guard let agentId = activeAgentId else { return }
+        Task {
+            do {
+                let (data, _) = try await client.listAgentEvents(agentId: agentId)
+                appendAgentToolMessage(
+                    "Agent has \(data.count) recorded event\(data.count == 1 ? "" : "s").",
+                    icon: "list.bullet.rectangle")
+            } catch {
+                appendAgentError("Agent events failed", error)
+            }
+        }
+    }
+
+    /// Respond to a durable agent pending interaction and refresh the attachment.
+    func respondToAgentPendingInteraction(
+        _ interaction: AgentPendingInteractionInfo,
+        decision: AgentInteractionDecision
+    ) {
+        guard let payload = Self.agentPendingInteractionResponse(kind: interaction.kind, decision: decision) else {
+            return
+        }
+        let agentId = interaction.agentId.isEmpty
+            ? (activeAgentAttachment?.agent?.agentId ?? "")
+            : interaction.agentId
+        guard !agentId.isEmpty else { return }
+        Task {
+            do {
+                let updated = try await client.respondToAgentPendingInteraction(
+                    agentId: agentId,
+                    interactionId: interaction.interactionId,
+                    response: payload.response,
+                    terminalStatus: payload.terminalStatus)
+                await refreshAgentAttachment(agentId: agentId)
+                if updated {
+                    appendAgentToolMessage("Responded to agent interaction.", icon: "checkmark.circle")
+                } else {
+                    appendAgentToolMessage("Agent interaction was no longer pending.", icon: "info.circle")
+                }
+            } catch {
+                appendAgentError("Agent interaction response failed", error)
+            }
+        }
+    }
+
+    /// Re-read the durable agent so status/pending rows reflect the latest state.
+    private func refreshAgentAttachment(agentId: String) async {
+        guard let refreshed = try? await client.readAgentRun(agentId: agentId) else { return }
+        if let agent = refreshed.agent {
+            upsertAgentRun(agent)
+        }
+        if activeAgentAttachment?.agent?.agentId == agentId {
+            activeAgentAttachment = refreshed
+        }
+    }
+
+    private func appendAgentToolMessage(_ text: String, icon: String) {
+        activeMessages.append(ChatMessage(role: .tool, text: text, toolIcon: icon))
+    }
+
+    private func appendAgentError(_ prefix: String, _ error: Error) {
+        activeMessages.append(ChatMessage(
+            role: .tool,
+            text: "\(prefix): \(error.localizedDescription)",
+            toolIcon: "exclamationmark.triangle"))
+    }
+
+    /// Build the `agent/pendingInteraction/respond` payload for a UI decision.
+    ///
+    /// Returns `nil` when the decision cannot be expressed for the interaction
+    /// kind (e.g. approving a `userInput`/`permissionGrant` that needs answers
+    /// the compact banner cannot collect); the caller should offer a dismiss
+    /// action instead. `responded` payloads mirror the server's per-kind
+    /// validation (`ReviewDecision`/`ElicitationAction`); non-responded terminal
+    /// statuses carry a human-readable reason and skip validation.
+    static func agentPendingInteractionResponse(
+        kind: String,
+        decision: AgentInteractionDecision
+    ) -> (response: JSONValue, terminalStatus: String)? {
+        switch decision {
+        case .approve:
+            switch kind {
+            case "approval":
+                return (.object(["decision": .string("approved")]), "responded")
+            case "mcpElicitation":
+                return (.object(["decision": .string("accept")]), "responded")
+            default:
+                return nil
+            }
+        case .deny:
+            switch kind {
+            case "approval":
+                return (.object(["decision": .string("denied")]), "denied")
+            case "mcpElicitation":
+                return (.object(["decision": .string("decline")]), "denied")
+            default:
+                return nil
+            }
+        case .dismiss:
+            return (.object(["reason": .string("Dismissed from CodeWith.app")]), "cancelled")
         }
     }
 
