@@ -157,14 +157,38 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
+    pub(super) fn on_collab_agent_tool_call(
+        &mut self,
+        item: ThreadItem,
+        started_at_ms: Option<i64>,
+    ) {
         self.record_visible_turn_activity();
         let ThreadItem::CollabAgentToolCall {
-            id, tool, status, ..
+            id,
+            tool,
+            status,
+            receiver_thread_ids,
+            prompt,
+            ..
         } = &item
         else {
             return;
         };
+        if matches!(
+            tool,
+            CollabAgentTool::SpawnAgent | CollabAgentTool::SendInput
+        ) && matches!(status, CollabAgentToolCallStatus::Completed)
+            && let Some(prompt) = prompt
+        {
+            self.record_collab_agent_activity(receiver_thread_ids, prompt);
+        }
+        if matches!(tool, CollabAgentTool::Wait) {
+            if matches!(status, CollabAgentToolCallStatus::InProgress) {
+                self.begin_collab_wait(id.clone(), receiver_thread_ids, started_at_ms);
+            } else {
+                self.finish_collab_wait(id);
+            }
+        }
         if matches!(tool, CollabAgentTool::SpawnAgent)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {

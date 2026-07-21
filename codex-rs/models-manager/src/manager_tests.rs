@@ -974,7 +974,15 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    // The ChatGPT remote catalog is authoritative, so a bundled slug absent from
+    // it is resolved via a fallback rather than the bundled catalog's own entry.
+    // Authoritative catalog entries carry a `List`/`Hide` visibility; both the
+    // generic and the known-provider (e.g. OpenAI GPT-5.x) fallbacks yield
+    // `None`, which is the reliable signal that the bundled entry was not used.
+    assert_eq!(
+        model_info.visibility,
+        codex_protocol::openai_models::ModelVisibility::None,
+    );
 }
 
 #[tokio::test]
@@ -1256,6 +1264,39 @@ async fn refresh_available_models_refetches_when_cache_stale() {
         endpoint.fetch_count(),
         2,
         "stale cache refresh should fetch models again"
+    );
+}
+
+#[tokio::test]
+async fn refresh_available_models_refetches_when_cache_timestamp_is_in_the_future() {
+    let initial_models = vec![remote_model("future", "Future", /*priority*/ 1)];
+    let codex_home = tempdir().expect("temp dir");
+    let updated_models = vec![remote_model("refetched", "Refetched", /*priority*/ 9)];
+    let endpoint = TestModelsEndpoint::new(vec![initial_models.clone(), updated_models.clone()]);
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint.clone());
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    manager
+        .cache_manager
+        .manipulate_cache_for_test(|fetched_at| {
+            *fetched_at = Utc::now() + chrono::Duration::hours(1);
+        })
+        .await
+        .expect("cache manipulation succeeds");
+
+    manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("second refresh succeeds");
+    assert_models_contain(&manager.get_remote_models().await, &updated_models);
+    assert_eq!(
+        endpoint.fetch_count(),
+        2,
+        "future-dated cache should fetch models again"
     );
 }
 

@@ -685,9 +685,45 @@ fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        ensure_private_dir_mode(path)?;
     }
     Ok(())
+}
+
+/// Locks a config directory down to `0o700`, tolerating a read-only
+/// `CODEWITH_HOME` (e.g. a sandboxed/bind-mounted config directory) when the
+/// directory is already private.
+///
+/// The chmod is skipped entirely when the permission bits already match, so a
+/// read-only filesystem never sees a needless write. When the bits differ but
+/// the filesystem rejects the write as read-only, the failure is tolerated only
+/// if the directory is already private (no group/other access); otherwise it is
+/// surfaced so credentials are never silently left world-accessible.
+#[cfg(unix)]
+fn ensure_private_dir_mode(path: &Path) -> std::io::Result<()> {
+    const PRIVATE_DIR_MODE: u32 = 0o700;
+
+    let current_mode = fs::metadata(path)?.permissions().mode() & 0o777;
+    if current_mode == PRIVATE_DIR_MODE {
+        return Ok(());
+    }
+
+    match fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIR_MODE)) {
+        Ok(()) => Ok(()),
+        Err(err) if is_read_only_fs_error(&err) && (current_mode & 0o077) == 0 => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Returns true when the error indicates the filesystem cannot be written to,
+/// which is expected for read-only `CODEWITH_HOME` mounts used by sandboxed
+/// preflight/health runners.
+#[cfg(unix)]
+fn is_read_only_fs_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::ReadOnlyFilesystem | ErrorKind::PermissionDenied
+    )
 }
 
 fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {

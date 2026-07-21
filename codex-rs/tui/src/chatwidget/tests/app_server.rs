@@ -736,6 +736,178 @@ async fn live_app_server_collab_wait_items_render_history() {
 }
 
 #[tokio::test]
+async fn live_app_server_collab_wait_updates_and_restores_top_status() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b90000000001").expect("valid thread id");
+    let receiver_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread id");
+    let other_receiver_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b96db334332d").expect("valid thread id");
+    chat.on_task_started();
+    chat.set_collab_agent_metadata(
+        receiver_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+    );
+    chat.set_collab_agent_metadata(
+        other_receiver_thread_id,
+        Some("Ada".to_string()),
+        Some("reviewer".to_string()),
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-1".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("Inspect status rendering".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "wait-1".to_string(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "wait-2".to_string(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![other_receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(
+        chat.status_state.current_status,
+        StatusIndicatorState {
+            header: "Waiting for 2 agents".to_string(),
+            details: Some(
+                "• Robie — Inspect status rendering · 0s\n• Ada — reviewer · 0s".to_string()
+            ),
+            details_max_lines: 4,
+        }
+    );
+
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12))
+        .expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw aggregated wait status");
+    assert_chatwidget_snapshot!(
+        "live_app_server_collab_wait_renders_aggregated_top_status",
+        normalized_backend_snapshot(terminal.backend())
+    );
+
+    chat.refresh_collab_wait_status_at(Instant::now() + Duration::from_secs(65));
+    assert!(
+        chat.status_state
+            .current_status
+            .details
+            .as_deref()
+            .is_some_and(|details| details.contains("1m")),
+        "elapsed status should advance while waits remain active"
+    );
+    chat.set_status(
+        "Waiting for approval".to_string(),
+        Some("Reviewing command".to_string()),
+        StatusDetailsCapitalization::Preserve,
+        1,
+    );
+    assert_eq!(
+        chat.status_state.current_status.header,
+        "Waiting for 2 agents"
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "wait-1".to_string(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(chat.status_state.current_status.header, "Waiting for Ada");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "wait-2".to_string(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![other_receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert_eq!(
+        chat.status_state.current_status,
+        StatusIndicatorState {
+            header: "Waiting for approval".to_string(),
+            details: Some("Reviewing command".to_string()),
+            details_max_lines: 1,
+        }
+    );
+}
+
+#[tokio::test]
 async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effort() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =

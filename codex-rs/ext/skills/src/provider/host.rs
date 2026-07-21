@@ -125,9 +125,8 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
 
     if !enabled {
         entry = entry.disabled();
-    }
-    if !skill.allows_implicit_invocation() {
-        entry = entry.hidden_from_prompt();
+    } else if !skill.allows_implicit_invocation() {
+        entry = entry.deferred();
     }
 
     entry

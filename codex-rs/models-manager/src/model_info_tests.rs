@@ -93,6 +93,65 @@ fn codex_spark_uses_text_only_local_metadata() {
 }
 
 #[test]
+fn openai_gpt_4_1_family_falls_back_to_documented_context_window() {
+    // GPT-4.1-class models are not in the bundled catalog, so they resolve via the
+    // local fallback. Regression guard: they must report the documented
+    // 1,047,576-token window, not the generic 272k default.
+    for (slug, display_name) in [
+        ("gpt-4.1", "GPT-4.1"),
+        ("gpt-4.1-mini", "GPT-4.1 mini"),
+        ("gpt-4.1-nano", "GPT-4.1 nano"),
+    ] {
+        for provider_id in [None, Some("openai")] {
+            let model = model_info_from_slug_for_provider(slug, provider_id);
+            assert_eq!(model.slug, slug);
+            assert_eq!(model.display_name, display_name);
+            assert_eq!(
+                model.context_window,
+                Some(1_047_576),
+                "{slug} (provider {provider_id:?}) should use the documented context window"
+            );
+            assert_eq!(model.max_context_window, Some(1_047_576));
+            assert!(
+                !model.used_fallback_model_metadata,
+                "{slug} is a known OpenAI API model, not a generic fallback"
+            );
+        }
+    }
+}
+
+#[test]
+fn openai_gpt_5_x_falls_back_to_documented_context_window() {
+    // Even when a current GPT-5.x model is missing from the live catalog, the
+    // known-model fallback must not pin it to the stale 272k window.
+    for slug in [
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ] {
+        let model = model_info_from_slug_for_provider(slug, Some("openai"));
+        assert_eq!(
+            model.context_window,
+            Some(1_050_000),
+            "{slug} should use the documented GPT-5.x context window"
+        );
+        assert_eq!(model.max_context_window, Some(1_050_000));
+        assert!(!model.used_fallback_model_metadata);
+    }
+}
+
+#[test]
+fn unknown_openai_slug_uses_conservative_generic_fallback() {
+    let model = model_info_from_slug_for_provider("gpt-does-not-exist", Some("openai"));
+
+    assert_eq!(model.context_window, Some(272_000));
+    assert_eq!(model.max_context_window, Some(272_000));
+    assert!(model.used_fallback_model_metadata);
+}
+
+#[test]
 fn known_provider_glm_model_uses_local_metadata() {
     let model = model_info_from_slug("zai-glm-4.7");
 

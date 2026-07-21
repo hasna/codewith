@@ -361,6 +361,23 @@ fn test_built_in_model_providers_include_xai() {
 }
 
 #[test]
+fn test_built_in_model_providers_include_kimi() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    let kimi = providers
+        .get(KIMI_PROVIDER_ID)
+        .expect("kimi should be a built-in provider");
+    assert_eq!(kimi, &ModelProviderInfo::create_kimi_provider());
+    assert_eq!(kimi.base_url.as_deref(), Some(KIMI_BASE_URL));
+    assert_eq!(kimi.env_key.as_deref(), Some("MOONSHOT_API_KEY"));
+    // Kimi authenticates with a subscription API key rather than the OpenAI
+    // login flow, so it must not trigger the OpenAI auth screen.
+    assert!(!kimi.requires_openai_auth);
+    assert_eq!(kimi.wire_api, WireApi::Chat);
+    assert!(allows_partial_builtin_provider_override(KIMI_PROVIDER_ID));
+}
+
+#[test]
 fn test_merge_configured_model_providers_allows_anthropic_override() {
     let anthropic_provider = ModelProviderInfo {
         name: "Anthropic Dedicated".to_string(),

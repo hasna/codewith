@@ -981,7 +981,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
 }
 
 #[tokio::test]
-async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
+async fn sparse_rolling_rate_limit_snapshot_preserves_omitted_snapshot_data() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let mut usage_limits = snapshot(/*percent*/ 10.0);
     usage_limits.individual_limit = Some(SpendControlLimitSnapshot {
@@ -991,6 +991,20 @@ async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
         resets_at: 1_800_000_000,
     });
     chat.on_rate_limit_snapshot(Some(usage_limits));
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: Some("codex_model".to_string()),
+        limit_name: Some("codex_model".to_string()),
+        primary: Some(RateLimitWindow {
+            used_percent: 7,
+            window_duration_mins: Some(60),
+            resets_at: Some(1_800_000_100),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }));
 
     chat.on_rolling_rate_limit_snapshot(snapshot(/*percent*/ 20.0));
 
@@ -1005,6 +1019,16 @@ async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
     assert_eq!(individual_limit.used, "8,000");
     assert_eq!(individual_limit.limit, "25,000");
     assert_eq!(individual_limit.percent_remaining, 68.0);
+    assert_eq!(
+        chat.rate_limit_snapshots_by_limit_id
+            .iter()
+            .map(|(limit_id, display)| (
+                limit_id.as_str(),
+                display.primary.as_ref().map(|window| window.used_percent),
+            ))
+            .collect::<Vec<_>>(),
+        vec![("codex", Some(20.0)), ("codex_model", Some(7.0))]
+    );
 
     chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 30.0)));
     let display = chat
@@ -1528,6 +1552,42 @@ async fn ordered_auto_switch_strategy_preserves_configured_order() {
     match rx.try_recv() {
         Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
             assert_eq!(profile.as_deref(), Some("personal"));
+        }
+        other => panic!("expected auth profile switch event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ordered_auto_switch_selects_first_unknown_before_later_healthy_profile() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.strategy =
+        crate::legacy_core::config::AuthProfileAutoSwitchStrategy::Ordered;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("backup".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 25, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+        )],
+    );
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile { profile, .. }) => {
+            assert_eq!(profile, Some("personal".to_string()));
         }
         other => panic!("expected auth profile switch event, got {other:?}"),
     }

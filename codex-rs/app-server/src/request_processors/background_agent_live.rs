@@ -3715,13 +3715,15 @@ async fn handle_background_agent_event(
                 .await?;
         }
         EventMsg::TurnComplete(event) => {
+            let (status, status_reason, event_type, exit_code, lease_status_reason) =
+                background_agent_turn_complete_status(event.last_agent_message.as_deref());
             append_status(
                 context,
                 run_id,
                 generation,
-                BackgroundAgentRunStatus::Completed,
-                "turn completed",
-                "agent.completed",
+                status,
+                status_reason,
+                event_type,
                 json!({
                     "turnId": event.turn_id,
                     "lastAgentMessage": event.last_agent_message,
@@ -3735,9 +3737,9 @@ async fn handle_background_agent_event(
                     run_id,
                     context.supervisor_id.as_str(),
                     generation,
-                    Some(0),
+                    Some(exit_code),
                     /*exit_signal*/ None,
-                    Some("completed"),
+                    Some(lease_status_reason),
                 )
             })
             .await?;
@@ -3822,6 +3824,33 @@ async fn handle_background_agent_event(
         }
     }
     Ok(false)
+}
+
+fn background_agent_turn_complete_status(
+    last_agent_message: Option<&str>,
+) -> (
+    BackgroundAgentRunStatus,
+    &'static str,
+    &'static str,
+    i64,
+    &'static str,
+) {
+    match last_agent_message {
+        Some(message) if !message.trim().is_empty() => (
+            BackgroundAgentRunStatus::Completed,
+            "turn completed",
+            "agent.completed",
+            0,
+            "completed",
+        ),
+        _ => (
+            BackgroundAgentRunStatus::Failed,
+            "turn completed without an agent message",
+            "agent.failed",
+            1,
+            "turn completed without an agent message",
+        ),
+    }
 }
 
 async fn create_pending_interaction(
@@ -4873,6 +4902,22 @@ done
         }
     }
 
+    /// Waits until the worker's process group has fully drained.
+    ///
+    /// Every caller confirms the worker leader (whose `pid == pgid`) is already
+    /// `Missing` before invoking this, so a still-present group can only mean one
+    /// of two things:
+    ///
+    /// 1. a descendant of the original worker is still draining (its `pid`
+    ///    differs from `pgid` but it shares the group), or
+    /// 2. the kernel recycled the numeric `pgid`: an unrelated process obtained
+    ///    `pid == pgid` and became the leader of a fresh group with the same id.
+    ///
+    /// A bare `kill -0 -{pgid}` probe cannot tell these apart and spins until the
+    /// deadline in case 2, which flakes on busy CI hosts that churn PIDs quickly
+    /// (e.g. the Bazel sandbox). Guard against that reuse by treating a live
+    /// *group leader* re-materializing on `pgid` as proof that our original group
+    /// is gone.
     async fn wait_for_worker_process_group_reap(
         handle: &WorkerProcessHandle,
     ) -> anyhow::Result<()> {
@@ -4882,6 +4927,11 @@ done
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             if !worker_process_group_exists(pgid)? {
+                return Ok(());
+            }
+            // PID/PGID reuse: a live process now leads group `pgid`. Our leader
+            // was already reaped, so this must be a recycled id, not our group.
+            if worker_process_group_id(pgid)? == Some(pgid) {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -4897,6 +4947,22 @@ done
             .stderr(std::process::Stdio::null())
             .status()?
             .success())
+    }
+
+    /// Returns the process-group id of the live process `pid`, or `None` when no
+    /// such process exists. Used to detect PID/PGID reuse in the group-reap wait.
+    fn worker_process_group_id(pid: u32) -> std::io::Result<Option<u32>> {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "pgid=", "-p", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u32>()
+            .ok())
     }
 
     fn worker_process_exists(pid: u32) -> std::io::Result<bool> {
@@ -4920,6 +4986,60 @@ done
         fixture.release()?;
 
         wait_for_worker_process_exit(&controller, &handle).await
+    }
+
+    #[tokio::test]
+    async fn wait_for_worker_process_group_reap_tolerates_pid_reuse() -> anyhow::Result<()> {
+        // Regression guard for a Bazel-CI flake: after the worker leader is
+        // reaped, the kernel can recycle the numeric pgid for an unrelated new
+        // group leader, so a bare `kill -0 -{pgid}` probe reports the group as
+        // alive until the deadline. Model that reuse with a *live* group leader
+        // occupying the pgid and assert the reap wait returns promptly instead
+        // of burning its full 5s budget and failing the test.
+        //
+        // We rely only on the `ps`-based `worker_process_group_id` primitive for
+        // assertions; the `kill -0 -{pgid}` group probe is environment-dependent
+        // (some hosts false-negative for a live group), so asserting on it would
+        // make this test itself flaky.
+        let fixture = TestWorkerFixture::create()?;
+        let controller = WorkerProcessController::default();
+        let live = fixture
+            .spawn_worker(&controller, "reuse-live.stderr.log")
+            .await?;
+        fixture.wait_until_ready().await?;
+        let recycled_pgid = live.pgid.expect("worker handle should carry a pgid");
+
+        // Reuse-detection primitive and the reap wait are both evaluated while
+        // the live leader owns `recycled_pgid`. `handle.pid` is unused by the
+        // reap wait (only `pgid` matters); the caller contract (leader already
+        // reaped) is what makes a live leader on `pgid` unambiguously a recycled
+        // id rather than our original group.
+        let observed_group_id = worker_process_group_id(recycled_pgid)?;
+        let stale_handle = WorkerProcessHandle {
+            pid: live.pid,
+            pgid: Some(recycled_pgid),
+            start_token: None,
+            stderr_log_path: live.stderr_log_path.clone(),
+        };
+        let reap = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_worker_process_group_reap(&stale_handle),
+        )
+        .await;
+
+        // Release and reap the live worker before asserting, so a failed
+        // assertion never leaves an unreleased worker for Drop to fight during
+        // runtime teardown.
+        fixture.release()?;
+        wait_for_worker_process_exit(&controller, &live).await?;
+
+        assert_eq!(
+            observed_group_id,
+            Some(recycled_pgid),
+            "a live worker must lead its own process group"
+        );
+        reap.expect("reuse guard must return before the 5s reap deadline")?;
+        Ok(())
     }
 
     #[tokio::test]
