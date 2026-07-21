@@ -1380,6 +1380,7 @@
               "type": "string"
             },
             "mcpAppResourceUri": {
+              "default": null,
               "type": [
                 "string",
                 "null"
@@ -1635,7 +1636,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "status": {
               "type": "string"
