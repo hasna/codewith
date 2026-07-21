@@ -31,17 +31,10 @@ use ts_rs::TS;
 
 // Schemars' `required` attribute otherwise emits the inner string schema for
 // `Option<String>`, so keep the required field nullable in generated fixtures.
-fn required_nullable_string_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    schemars::schema::SchemaObject {
-        instance_type: Some(schemars::schema::SingleOrVec::Vec(vec![
-            schemars::schema::InstanceType::String,
-            schemars::schema::InstanceType::Null,
-        ])),
-        ..Default::default()
-    }
-    .into()
+fn required_nullable_string_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["string", "null"]
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]

@@ -8,7 +8,7 @@ pub(in crate::runtime) async fn append_background_agent_event_in_tx(
     payload_json: &serde_json::Value,
     now: i64,
 ) -> anyhow::Result<BackgroundAgentEvent> {
-    let event_payload_json = payload_json.clone();
+    let event_payload_json = crate::redacted_local_state_json(payload_json);
     let payload_json = serde_json::to_string(&event_payload_json)?;
     let seq: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_events WHERE run_id = ?",

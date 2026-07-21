@@ -48,15 +48,15 @@
     }
   },
   "required": [
-    "agent_id",
-    "agent_type",
+    "session_id",
+    "turn_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
     "model",
     "permission_mode",
-    "session_id",
-    "transcript_path",
-    "turn_id"
+    "agent_id",
+    "agent_type"
   ],
   "title": "subagent-start.command.input",
   "type": "object"

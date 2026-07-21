@@ -19,6 +19,7 @@ mod codex_thread;
 mod compact_remote;
 mod compact_remote_v2;
 mod config_lock;
+mod remote_compaction_budget;
 pub use codex_thread::CodexThread;
 pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
@@ -142,6 +143,10 @@ pub use state_db_bridge::StateDbHandle;
 pub use state_db_bridge::init_state_db;
 mod thread_rollout_truncation;
 mod tools;
+/// SECURITY: single source of truth for the `codewith debug auth-capsule-policy`
+/// capability document, derived from the fail-closed `VerifiedToolPolicy`
+/// enforcement layer so the probe cannot diverge from what is enforced.
+pub use tools::policy::infinity_agent_auth_capsule_capabilities;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;
 mod turn_timing;

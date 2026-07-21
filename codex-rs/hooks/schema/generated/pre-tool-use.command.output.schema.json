@@ -14,23 +14,32 @@
       "properties": {
         "additionalContext": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "hookEventName": {
           "const": "PreToolUse",
           "type": "string"
         },
         "permissionDecision": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/PreToolUsePermissionDecisionWire"
+            },
+            {
+              "type": "null"
             }
           ],
           "default": null
         },
         "permissionDecisionReason": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "updatedInput": {
           "default": null
@@ -56,28 +65,40 @@
       "type": "boolean"
     },
     "decision": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/PreToolUseDecisionWire"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null
     },
     "hookSpecificOutput": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/PreToolUseHookSpecificOutputWire"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null
     },
     "reason": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "stopReason": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "suppressOutput": {
       "default": false,
@@ -85,7 +106,10 @@
     },
     "systemMessage": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "pre-tool-use.command.output",

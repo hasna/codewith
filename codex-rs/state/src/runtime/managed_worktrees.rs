@@ -6,6 +6,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+pub(crate) mod path_backfill;
+mod path_keys;
+pub(crate) use path_keys::managed_worktree_path_key;
+
 pub const DEFAULT_MANAGED_WORKTREE_LIST_LIMIT: u32 = 50;
 pub const MAX_MANAGED_WORKTREE_LIST_LIMIT: u32 = 200;
 
@@ -161,7 +165,13 @@ WHERE owner_thread_id = ?
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
         let cleanup_after_ms = params.cleanup_after.map(datetime_to_epoch_millis);
-        let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
+        let base_repo_path_key = path_keys::managed_worktree_path_key(&params.base_repo_path);
+        let worktree_path_key = path_keys::managed_worktree_path_key(&params.worktree_path);
+        let base_repo_path = normalize_path_for_db(&params.base_repo_path);
+        let worktree_path = normalize_path_for_db(&params.worktree_path);
+        let base_repo_path = path_to_string(&base_repo_path);
+        let worktree_path = path_to_string(&worktree_path);
         let sql = format!(
             r#"
 INSERT INTO managed_worktrees (
@@ -170,6 +180,8 @@ INSERT INTO managed_worktrees (
     mode,
     base_repo_path,
     worktree_path,
+    base_repo_path_key,
+    worktree_path_key,
     branch,
     base_sha,
     head_sha,
@@ -186,7 +198,7 @@ INSERT INTO managed_worktrees (
     released_at_ms,
     cleanup_after_ms,
     deleted_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
 {}
             "#,
@@ -196,8 +208,10 @@ RETURNING
             .bind(worktree_id)
             .bind(params.identity)
             .bind(params.mode.as_str())
-            .bind(path_to_db_string(&params.base_repo_path))
-            .bind(path_to_db_string(&params.worktree_path))
+            .bind(base_repo_path)
+            .bind(worktree_path)
+            .bind(base_repo_path_key)
+            .bind(worktree_path_key)
             .bind(params.branch)
             .bind(params.base_sha)
             .bind(params.head_sha)
@@ -737,7 +751,7 @@ WHERE worktree_id = ?
     ) -> anyhow::Result<Option<crate::ManagedWorktree>> {
         validate_status_update_params(&params)?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
-        let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
         let sql = format!(
             r#"
 UPDATE managed_worktrees
@@ -775,7 +789,7 @@ RETURNING
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let force_delete_requested = params.force_delete
             || params.cleanup_policy == crate::ManagedWorktreeCleanupPolicy::ForceDelete;
-        let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
         let mode: Option<(String, Option<i64>)> = sqlx::query_as(
             r#"
@@ -1226,7 +1240,7 @@ WHERE run_id = ?
         let now_seconds = datetime_to_epoch_seconds(now);
         let retry_after_ms = params.retry_after.map(datetime_to_epoch_millis);
         let retry_after_seconds = params.retry_after.map(datetime_to_epoch_seconds);
-        let status_snapshot_json = serde_json::to_string(&params.status_snapshot_json)?;
+        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
         let sql = format!(
             r#"
@@ -1309,11 +1323,11 @@ ON CONFLICT(run_id) DO UPDATE SET
                 "#,
             )
             .bind(run_id)
-            .bind(params.reason.as_str())
+            .bind(redact_state_string(params.reason.as_str()))
             .bind(path_to_db_string(&worktree.worktree_path))
             .bind(if params.dirty { 1 } else { 0 })
             .bind(retry_after_seconds)
-            .bind(serde_json::to_string(&payload_json)?)
+            .bind(redact_state_json_string(&payload_json)?)
             .bind(now_seconds)
             .execute(&mut *tx)
             .await?;
@@ -1677,6 +1691,41 @@ mod tests {
             owner_agent_run_id: None,
             cleanup_after: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keys_native_paths_before_display_normalization() -> anyhow::Result<()> {
+        let through_link_parent_runtime = test_runtime().await;
+        let through_link_parent_store = through_link_parent_runtime.managed_worktrees();
+        let mut through_link_parent = create_params("through-link-parent", "/repo");
+        through_link_parent.worktree_path = PathBuf::from("/repo/link/../wt");
+        through_link_parent_store
+            .create_managed_worktree(through_link_parent)
+            .await?;
+        let through_link_parent =
+            sqlx::query("SELECT worktree_path, worktree_path_key FROM managed_worktrees")
+                .fetch_one(through_link_parent_runtime.pool.as_ref())
+                .await?;
+
+        let direct_runtime = test_runtime().await;
+        let direct_store = direct_runtime.managed_worktrees();
+        let mut direct = create_params("direct", "/repo");
+        direct.worktree_path = PathBuf::from("/repo/wt");
+        direct_store.create_managed_worktree(direct).await?;
+        let direct = sqlx::query(
+            "SELECT worktree_path, worktree_path_key FROM managed_worktrees ORDER BY worktree_id",
+        )
+        .fetch_one(direct_runtime.pool.as_ref())
+        .await?;
+        assert_eq!("/repo/wt", through_link_parent.get::<String, _>(0));
+        assert_eq!("/repo/wt", direct.get::<String, _>(0));
+        assert_ne!(
+            through_link_parent.get::<Vec<u8>, _>(1),
+            direct.get::<Vec<u8>, _>(1)
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -2147,8 +2196,8 @@ WHERE worktree_id = ?
                     run_id: "run-1".to_string(),
                     identity: "bg-run-1".to_string(),
                     mode: crate::BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                    base_repo_path: path_to_db_string(&repo),
-                    worktree_path: path_to_db_string(&worktree),
+                    base_repo_path: repo,
+                    worktree_path: worktree,
                     branch: Some("codewith/bg-run-1".to_string()),
                     head_sha: Some("abc123".to_string()),
                     status_snapshot_json: json!({"dirty": false}),

@@ -313,16 +313,26 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     }
 
     if let Some(requested_model) = requested_model {
+        let models_manager_config = config.to_models_manager_config();
+        let resolved_model = session
+            .services
+            .models_manager
+            .resolve_model_for_auth(requested_model, &models_manager_config);
         let available_models = session
             .services
             .models_manager
             .list_models(RefreshStrategy::Offline)
             .await;
-        let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
+        let selected_model_name =
+            if requested_model == "gpt-5.6" && config.model_provider_id == "openai" {
+                resolved_model
+            } else {
+                find_spawn_agent_model_name(&available_models, &resolved_model)?
+            };
         let selected_model_info = session
             .services
             .models_manager
-            .get_model_info(&selected_model_name, &config.to_models_manager_config())
+            .get_model_info(&selected_model_name, &models_manager_config)
             .await;
 
         config.model = Some(selected_model_name.clone());

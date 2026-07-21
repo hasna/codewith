@@ -67,9 +67,15 @@ impl StateRuntime {
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
         let timeout_at_ms = params.timeout_at.map(datetime_to_epoch_millis);
-        let request_payload_json = serde_json::to_string(&params.request_payload_json)?;
+        let request_payload_json = redact_state_json_string(&params.request_payload_json)?;
         let request_payload_sha256 = payload_sha256(request_payload_json.as_bytes());
-        let request_redactions_json = serde_json::to_string(&params.request_redactions_json)?;
+        let request_redactions_json = redact_state_json_string(&params.request_redactions_json)?;
+        let server_request_id_json = params
+            .server_request_id_json
+            .as_ref()
+            .map(redact_state_json_string)
+            .transpose()?;
+        let request_payload_preview = redact_state_string(params.request_payload_preview.as_str());
         let thread_id = params.thread_id.to_string();
         let insert_sql = match mode {
             PendingInteractionInsertMode::Insert => {
@@ -127,18 +133,12 @@ INSERT OR IGNORE INTO thread_pending_interactions (
             .bind(params.source_id.as_deref())
             .bind(params.turn_id.as_deref())
             .bind(params.worker_request_id.as_deref())
-            .bind(
-                params
-                    .server_request_id_json
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()?,
-            )
+            .bind(server_request_id_json)
             .bind(params.kind.as_str())
             .bind(PendingInteractionStatus::Pending.as_str())
             .bind(request_payload_json)
             .bind(request_payload_sha256)
-            .bind(params.request_payload_preview.as_str())
+            .bind(request_payload_preview.as_str())
             .bind(request_redactions_json)
             .bind(params.no_client_policy.as_str())
             .bind(timeout_at_ms)
@@ -155,7 +155,7 @@ INSERT OR IGNORE INTO thread_pending_interactions (
                     event_kind: PendingInteractionEventKind::Created,
                     status: PendingInteractionStatus::Pending,
                     payload_json: &params.request_payload_json,
-                    payload_preview: params.request_payload_preview.as_str(),
+                    payload_preview: request_payload_preview.as_str(),
                     redactions_json: &params.request_redactions_json,
                     created_at_ms: now_ms,
                 },
@@ -406,7 +406,7 @@ SELECT
     created_at_ms
 FROM thread_pending_interaction_events
 WHERE interaction_id = ?
-ORDER BY created_at_ms ASC, event_id ASC
+ORDER BY created_at_ms ASC, insertion_seq ASC
             "#,
         )
         .bind(interaction_id)
@@ -483,9 +483,11 @@ WHERE interaction_id = ? AND status = ?
             anyhow::bail!("pending interaction response status must be terminal");
         }
         let now_ms = datetime_to_epoch_millis(Utc::now());
-        let response_payload_json = serde_json::to_string(&params.response_payload_json)?;
+        let response_payload_json = redact_state_json_string(&params.response_payload_json)?;
         let response_payload_sha256 = payload_sha256(response_payload_json.as_bytes());
-        let response_redactions_json = serde_json::to_string(&params.response_redactions_json)?;
+        let response_redactions_json = redact_state_json_string(&params.response_redactions_json)?;
+        let response_payload_preview =
+            redact_state_string(params.response_payload_preview.as_str());
         let mut tx = self.pool.begin().await?;
         let thread_id: Option<String> = sqlx::query_scalar(
             r#"
@@ -515,7 +517,7 @@ WHERE interaction_id = ? AND status IN (?, ?)
         .bind(params.terminal_status.as_str())
         .bind(response_payload_json)
         .bind(response_payload_sha256)
-        .bind(params.response_payload_preview.as_str())
+        .bind(response_payload_preview.as_str())
         .bind(response_redactions_json)
         .bind(now_ms)
         .bind(now_ms)
@@ -539,7 +541,7 @@ WHERE interaction_id = ? AND status IN (?, ?)
                     )?,
                     status: params.terminal_status,
                     payload_json: &params.response_payload_json,
-                    payload_preview: params.response_payload_preview.as_str(),
+                    payload_preview: response_payload_preview.as_str(),
                     redactions_json: &params.response_redactions_json,
                     created_at_ms: now_ms,
                 },
@@ -610,10 +612,10 @@ WHERE thread_id =
         let response_payload = serde_json::json!({
             "reason": "timeout",
         });
-        let response_payload_json = serde_json::to_string(&response_payload)?;
+        let response_payload_json = redact_state_json_string(&response_payload)?;
         let response_payload_sha256 = payload_sha256(response_payload_json.as_bytes());
         let response_redactions = serde_json::json!([]);
-        let response_redactions_json = serde_json::to_string(&response_redactions)?;
+        let response_redactions_json = redact_state_json_string(&response_redactions)?;
         let mut tx = self.pool.begin().await?;
         let expiring_rows = sqlx::query(
             r#"
@@ -697,9 +699,10 @@ async fn insert_pending_interaction_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     event: PendingInteractionEventInsert<'_>,
 ) -> anyhow::Result<()> {
-    let payload_json = serde_json::to_string(event.payload_json)?;
+    let payload_json = redact_state_json_string(event.payload_json)?;
     let payload_sha256 = payload_sha256(payload_json.as_bytes());
-    let redactions_json = serde_json::to_string(event.redactions_json)?;
+    let redactions_json = redact_state_json_string(event.redactions_json)?;
+    let payload_preview = redact_state_string(event.payload_preview);
     sqlx::query(
         r#"
 INSERT INTO thread_pending_interaction_events (
@@ -723,7 +726,7 @@ INSERT INTO thread_pending_interaction_events (
     .bind(event.status.as_str())
     .bind(payload_json)
     .bind(payload_sha256)
-    .bind(event.payload_preview)
+    .bind(payload_preview)
     .bind(redactions_json)
     .bind(event.created_at_ms)
     .execute(&mut **tx)
@@ -903,6 +906,75 @@ mod tests {
                     terminal_status: PendingInteractionStatus::Denied,
                 })
                 .await?
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn events_with_equal_timestamps_preserve_insertion_order() -> anyhow::Result<()> {
+        let runtime = test_runtime_with_thread().await?;
+        let thread_id = test_thread_id();
+        let interaction = create_test_interaction(
+            runtime.as_ref(),
+            "interaction-event-order",
+            thread_id,
+            PendingInteractionKind::PermissionGrant,
+            "turn-1",
+            "request-1",
+        )
+        .await?;
+        let payload_json = serde_json::to_string(&json!({"status": "pending"}))?;
+        let payload_sha256 = payload_sha256(payload_json.as_bytes());
+        let created_at_ms = 1_700_000_000_000_i64;
+
+        sqlx::query("DELETE FROM thread_pending_interaction_events WHERE interaction_id = ?")
+            .bind(interaction.interaction_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await?;
+        for (event_id, event_kind, status) in [
+            ("event-z-first", "created", "pending"),
+            ("event-a-second", "delivered", "delivered"),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(event_id)
+            .bind(interaction.interaction_id.as_str())
+            .bind(thread_id.to_string())
+            .bind(event_kind)
+            .bind(status)
+            .bind(payload_json.as_str())
+            .bind(payload_sha256.as_str())
+            .bind("pending")
+            .bind("[]")
+            .bind(created_at_ms)
+            .execute(runtime.pool.as_ref())
+            .await?;
+        }
+
+        let events = runtime
+            .list_thread_pending_interaction_events(interaction.interaction_id.as_str())
+            .await?;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-z-first", "event-a-second"]
         );
 
         Ok(())

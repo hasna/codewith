@@ -14,6 +14,19 @@ platform(
     parents = ["@platforms//host"],
 )
 
+# Architecture-fixed Linux control for the Windows-cross host-tool analysis
+# probe. GitHub's Windows runners and their Linux RBE peers are x86_64, while
+# contributors may run the probe from an Arm64 workstation.
+platform(
+    name = "linux_x86_64_ci_analysis",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+        "@bazel_tools//tools/cpp:clang",
+        "@llvm//constraints/libc:gnu.2.28",
+    ],
+)
+
 platform(
     name = "local_windows",
     constraint_values = [

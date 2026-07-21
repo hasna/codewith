@@ -560,7 +560,7 @@ struct NormalizedHookIdentity {
     group: MatcherGroup,
 }
 
-fn command_hook_hash(
+pub(crate) fn command_hook_hash(
     event_name: codex_protocol::protocol::HookEventName,
     matcher: Option<&str>,
     group: &MatcherGroup,

@@ -66,13 +66,23 @@ pub(super) enum ShellEscapePolicy {
 pub(super) struct QueuedUserMessage {
     pub(super) user_message: UserMessage,
     pub(super) action: QueuedInputAction,
+    pub(super) shell_escape_policy: ShellEscapePolicy,
 }
 
 impl QueuedUserMessage {
     pub(super) fn new(user_message: UserMessage, action: QueuedInputAction) -> Self {
+        Self::new_with_shell_escape_policy(user_message, action, ShellEscapePolicy::Allow)
+    }
+
+    pub(super) fn new_with_shell_escape_policy(
+        user_message: UserMessage,
+        action: QueuedInputAction,
+        shell_escape_policy: ShellEscapePolicy,
+    ) -> Self {
         Self {
             user_message,
             action,
+            shell_escape_policy,
         }
     }
 

@@ -13,6 +13,39 @@ fn test_utf8_shell_output() {
 }
 
 #[test]
+fn test_ascii_iso_2022_designations_remain_terminal_output() {
+    for bytes in [b"\x1b(Bterminal".as_slice(), b"\x1b(Jterminal".as_slice()] {
+        assert_eq!(decode_shell_output(bytes).as_bytes(), bytes);
+    }
+}
+
+#[test]
+fn test_csi_terminal_output_remains_unchanged() {
+    let bytes = b"\x1b[31merror\x1b[0m";
+
+    assert_eq!(decode_shell_output(bytes).as_bytes(), bytes);
+}
+
+#[test]
+fn test_osc_terminal_output_remains_unchanged() {
+    let bytes = b"\x1b]0;Codewith\x07ready";
+
+    assert_eq!(decode_shell_output(bytes).as_bytes(), bytes);
+}
+
+#[test]
+fn test_utf8_with_ansi_terminal_output_remains_unchanged() {
+    let bytes = "\x1b[32mготово ✓\x1b[0m".as_bytes();
+
+    assert_eq!(decode_shell_output(bytes).as_bytes(), bytes);
+}
+
+#[test]
+fn test_malformed_binary_after_terminal_designation_is_not_iso_2022_jp() {
+    assert_eq!(decode_shell_output(b"\x1b(B\xFF"), "\x1b(Bÿ");
+}
+
+#[test]
 fn test_cp1251_shell_output() {
     // VS Code shells on Windows frequently surface CP1251 bytes for Cyrillic text.
     assert_eq!(decode_shell_output(b"\xEF\xF0\xE8\xEC\xE5\xF0"), "пример");

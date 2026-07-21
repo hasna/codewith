@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "LocalSessionStatus": {
       "enum": [
         "active",
@@ -52,6 +51,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cursor": {
       "type": [
@@ -62,7 +62,7 @@
     "cwd": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadListCwdFilter"
+          "$ref": "#/$defs/ThreadListCwdFilter"
         },
         {
           "type": "null"
@@ -74,7 +74,7 @@
     },
     "limit": {
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -88,7 +88,7 @@
     },
     "pendingInteractionLimit": {
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -96,7 +96,7 @@
     },
     "pendingInteractionStatuses": {
       "items": {
-        "$ref": "#/definitions/ThreadPendingInteractionStatus"
+        "$ref": "#/$defs/ThreadPendingInteractionStatus"
       },
       "type": [
         "array",
@@ -111,7 +111,7 @@
     },
     "sessionStatuses": {
       "items": {
-        "$ref": "#/definitions/LocalSessionStatus"
+        "$ref": "#/$defs/LocalSessionStatus"
       },
       "type": [
         "array",
@@ -121,7 +121,7 @@
     "sortDirection": {
       "anyOf": [
         {
-          "$ref": "#/definitions/SortDirection"
+          "$ref": "#/$defs/SortDirection"
         },
         {
           "type": "null"
@@ -131,7 +131,7 @@
     "sortKey": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadSortKey"
+          "$ref": "#/$defs/ThreadSortKey"
         },
         {
           "type": "null"

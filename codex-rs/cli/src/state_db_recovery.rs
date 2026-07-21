@@ -23,6 +23,8 @@ pub(crate) fn is_locked(detail: &str) -> bool {
     let detail = detail.to_ascii_lowercase();
     detail.contains("database is locked")
         || detail.contains("database is busy")
+        || detail.contains("database table is locked")
+        || detail.contains("database schema is locked")
         || detail.contains("timed out waiting for codewith state startup lock")
 }
 
@@ -538,6 +540,8 @@ mod tests {
     fn lock_failures_skip_repair() {
         assert!(is_locked("database is locked"));
         assert!(is_locked("database is busy"));
+        assert!(is_locked("database table is locked"));
+        assert!(is_locked("database schema is locked"));
         assert!(is_locked(
             "failed to acquire state runtime startup lock at /tmp/home: timed out waiting for Codewith state startup lock at /tmp/home/.state-runtime-startup.lock after 60s"
         ));

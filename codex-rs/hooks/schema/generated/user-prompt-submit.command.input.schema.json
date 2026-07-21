@@ -11,10 +11,16 @@
   },
   "properties": {
     "agent_id": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "agent_type": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "cwd": {
       "type": "string"
@@ -51,14 +57,14 @@
     }
   },
   "required": [
+    "session_id",
+    "turn_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
     "model",
     "permission_mode",
-    "prompt",
-    "session_id",
-    "transcript_path",
-    "turn_id"
+    "prompt"
   ],
   "title": "user-prompt-submit.command.input",
   "type": "object"

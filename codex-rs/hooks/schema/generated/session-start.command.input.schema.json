@@ -47,13 +47,13 @@
     }
   },
   "required": [
+    "session_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
     "model",
     "permission_mode",
-    "session_id",
-    "source",
-    "transcript_path"
+    "source"
   ],
   "title": "session-start.command.input",
   "type": "object"

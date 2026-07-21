@@ -205,9 +205,11 @@ impl TurnContext {
             config.model_provider_id = model_provider_id;
             config.model_provider = provider;
         }
+        let models_manager_config = config.to_models_manager_config();
+        let model = models_manager.resolve_model_for_auth(&model, &models_manager_config);
         config.model = Some(model.clone());
         let model_info = models_manager
-            .get_model_info(model.as_str(), &config.to_models_manager_config())
+            .get_model_info(model.as_str(), &models_manager_config)
             .await;
         let tool_mode = model_info.tool_mode.unwrap_or_else(|| {
             if config.features.enabled(Feature::CodeModeOnly) {

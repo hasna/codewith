@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ModelGatewayKind": {
       "enum": [
         "direct",
@@ -17,7 +16,7 @@
           "type": "boolean"
         },
         "kind": {
-          "$ref": "#/definitions/ModelGatewayKind"
+          "$ref": "#/$defs/ModelGatewayKind"
         },
         "name": {
           "type": "string"
@@ -25,17 +24,18 @@
       },
       "required": [
         "id",
-        "isCurrent",
+        "name",
         "kind",
-        "name"
+        "isCurrent"
       ],
       "type": "object"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/definitions/ModelGatewaySummary"
+        "$ref": "#/$defs/ModelGatewaySummary"
       },
       "type": "array"
     }

@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: normalized_backend_snapshot(terminal.backend())
+---
+"                                                                                "
+"• Waiting for 2 agents (0s • esc to interrupt)                                  "
+"  └ • Robie — Inspect status rendering · 0s                                     "
+"    • Ada — reviewer · 0s                                                       "
+"                                                                                "
+"                                                                                "
+"› Ask Codewith to do anything                                                   "
+"                                                                                "
+"  gpt-5.6-sol default · /tmp/project                                            "
+"                                                                                "
+"                                                                                "
+"                                                                                "

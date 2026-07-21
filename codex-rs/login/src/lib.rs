@@ -72,3 +72,44 @@ pub use auth::validate_auth_profile_name;
 pub use auth_env_telemetry::AuthEnvTelemetry;
 pub use auth_env_telemetry::collect_auth_env_telemetry;
 pub use token_data::TokenData;
+
+/// Returns an opaque equality-only fingerprint for a backend account identifier.
+///
+/// The fingerprint is salted once per process, so it is stable only for the lifetime of the
+/// current CLI/app-server process and cannot be correlated across sessions. Callers must not
+/// display or log it. Its representation is intentionally opaque and may change.
+pub fn account_identity_fingerprint(account_id: &str) -> String {
+    use rand::RngCore as _;
+    use sha2::Digest as _;
+    use std::sync::LazyLock;
+
+    static PROCESS_SALT: LazyLock<[u8; 32]> = LazyLock::new(|| {
+        let mut salt = [0_u8; 32];
+        rand::rng().fill_bytes(&mut salt);
+        salt
+    });
+
+    let mut digest = sha2::Sha256::new();
+    digest.update(*PROCESS_SALT);
+    digest.update(account_id.as_bytes());
+    let digest = digest.finalize();
+    format!("opaque:{digest:x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account_identity_fingerprint;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn account_identity_fingerprint_is_stable_opaque_and_account_specific() {
+        let raw_account_id = "private-account-id";
+        let fingerprint = account_identity_fingerprint(raw_account_id);
+
+        assert_eq!(fingerprint, account_identity_fingerprint(raw_account_id));
+        assert_eq!(fingerprint.len(), "opaque:".len() + 64);
+        assert!(fingerprint.starts_with("opaque:"));
+        assert!(!fingerprint.contains(raw_account_id));
+        assert_ne!(fingerprint, account_identity_fingerprint("other-account"));
+    }
+}

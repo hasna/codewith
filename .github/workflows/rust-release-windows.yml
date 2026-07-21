@@ -82,7 +82,7 @@ jobs:
             runs_on: windows-11-arm
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Print runner specs (Windows)
@@ -101,7 +101,7 @@ jobs:
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize Name, @{Name='Size(GB)';Expression={[math]::Round(($_.Used + $_.Free) / 1GB, 1)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free / 1GB, 1)}}
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # action pinned; toolchain must match codex-rs/rust-toolchain.toml
         with:
-          toolchain: "1.96.1"
+          toolchain: "1.97.0"
           targets: ${{ matrix.target }}
           # Match the components pinned in codex-rs/rust-toolchain.toml so the
           # first `cargo build` inside codex-rs does not trigger a fresh
@@ -195,7 +195,7 @@ jobs:
             runs_on: windows-latest
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 

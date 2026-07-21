@@ -19,7 +19,12 @@ codex-core = { workspace = true }
 codex-core-skills = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
+codex-tools = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+codex-utils-output-truncation = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

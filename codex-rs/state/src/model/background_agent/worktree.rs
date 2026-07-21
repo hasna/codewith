@@ -3,6 +3,7 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use serde_json::Value;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundAgentWorkspaceMode {
@@ -62,8 +63,8 @@ pub struct BackgroundAgentWorktreeLeaseCreateParams {
     pub run_id: String,
     pub identity: String,
     pub mode: BackgroundAgentWorkspaceMode,
-    pub base_repo_path: String,
-    pub worktree_path: String,
+    pub base_repo_path: PathBuf,
+    pub worktree_path: PathBuf,
     pub branch: Option<String>,
     pub head_sha: Option<String>,
     pub status_snapshot_json: Value,

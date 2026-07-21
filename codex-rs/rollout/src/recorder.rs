@@ -736,17 +736,12 @@ impl RolloutRecorder {
             }
             RolloutRecorderParams::Resume { path } => {
                 let path = compression::materialize_rollout_for_append(path.as_path()).await?;
-                (
-                    Some(
-                        tokio::fs::OpenOptions::new()
-                            .append(true)
-                            .open(&path)
-                            .await?,
-                    ),
-                    None,
-                    path,
-                    None,
-                )
+                let file = tokio::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .await?;
+                codex_state::set_owner_only_file(path.as_path()).map_err(IoError::other)?;
+                (Some(file), None, path, None)
             }
         };
 
@@ -1417,10 +1412,13 @@ fn open_log_file(path: &Path) -> std::io::Result<File> {
         )));
     };
     fs::create_dir_all(parent)?;
-    std::fs::OpenOptions::new()
+    codex_state::set_owner_only_dir(parent).map_err(IoError::other)?;
+    let file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
-        .open(path)
+        .open(&path)?;
+    codex_state::set_owner_only_file(path.as_path()).map_err(IoError::other)?;
+    Ok(file)
 }
 
 /// Mutable state owned by the background rollout writer.
@@ -1672,8 +1670,9 @@ pub async fn append_rollout_item_to_path(
     let rollout_path = compression::materialize_rollout_for_append(rollout_path).await?;
     let file = tokio::fs::OpenOptions::new()
         .append(true)
-        .open(rollout_path)
+        .open(&rollout_path)
         .await?;
+    codex_state::set_owner_only_file(rollout_path.as_path()).map_err(IoError::other)?;
     let mut writer = JsonlWriter { file };
     writer.write_rollout_item(item).await
 }
@@ -1705,7 +1704,8 @@ impl JsonlWriter {
         self.write_line(&line).await
     }
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
-        let mut json = serde_json::to_string(item)?;
+        let mut json = codex_state::redacted_local_state_serialized_json_string(item)
+            .map_err(IoError::other)?;
         json.push('\n');
         self.file.write_all(json.as_bytes()).await?;
         self.file.flush().await?;
