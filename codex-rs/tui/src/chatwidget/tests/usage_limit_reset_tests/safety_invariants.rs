@@ -422,3 +422,82 @@ async fn reset_response_for_a_different_account_fails_closed() {
             .contains("Usage limit reset stopped because the authenticated account changed.")
     );
 }
+
+/// Regression: a background rate-limit refresh whose authoritative reset-credit
+/// ledger fetch failed (so the app-server fell back to the coarse inline usage
+/// count of 0) must not overwrite a banked reset count the panel already
+/// surfaced. Otherwise `/usage` flips back to "no usage limit resets available"
+/// while banked resets are still redeemable and the "You have N usage limit
+/// resets available" banner still stands.
+#[tokio::test]
+async fn coarse_zero_refresh_does_not_clobber_banked_reset_count() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    // Authoritative, detail-backed ledger reports one banked reset.
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    assert_eq!(
+        chat.rate_limit_reset_credits
+            .as_ref()
+            .map(|summary| summary.available_count),
+        Some(1)
+    );
+
+    // A coarse fallback (detail rows absent) reporting zero must not downgrade
+    // the count the user already saw.
+    chat.on_rate_limit_reset_credits(Some(RateLimitResetCreditsSummary {
+        available_count: 0,
+        credits: None,
+    }));
+
+    assert_eq!(
+        chat.rate_limit_reset_credits
+            .as_ref()
+            .map(|summary| summary.available_count),
+        Some(1),
+        "a coarse fallback 0 must not clobber a known banked reset count"
+    );
+}
+
+/// The guard distrusts only *coarse* zeros: an authoritative, detail-backed
+/// summary reporting zero (e.g. right after the last reset is consumed) must
+/// still clear the count so `/usage` stops advertising a spent reset.
+#[tokio::test]
+async fn authoritative_zero_clears_banked_reset_count() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.on_rate_limit_reset_credits(Some(RateLimitResetCreditsSummary {
+        available_count: 0,
+        credits: Some(Vec::new()),
+    }));
+
+    assert_eq!(
+        chat.rate_limit_reset_credits
+            .as_ref()
+            .map(|summary| summary.available_count),
+        Some(0),
+        "an authoritative detail-backed 0 must clear the reset count"
+    );
+}
+
+/// A coarse fallback is only distrusted when it would *downgrade* to zero; a
+/// coarse count that raises the available total is still applied so newly
+/// banked resets surface promptly even if the ledger detail fetch lagged.
+#[tokio::test]
+async fn coarse_refresh_may_raise_banked_reset_count() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    chat.on_rate_limit_reset_credits(Some(RateLimitResetCreditsSummary {
+        available_count: 3,
+        credits: None,
+    }));
+
+    assert_eq!(
+        chat.rate_limit_reset_credits
+            .as_ref()
+            .map(|summary| summary.available_count),
+        Some(3),
+        "a coarse fallback that raises the count is still trusted"
+    );
+}

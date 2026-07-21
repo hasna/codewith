@@ -595,6 +595,44 @@ final class AppModelTests: XCTestCase {
         ]))
     }
 
+    func testAgentPendingInteractionResponseApprovalDecision() {
+        let approve = AppModel.agentPendingInteractionResponse(kind: "approval", decision: .approve)
+        XCTAssertEqual(approve?.response, obj(["decision": .string("approved")]))
+        XCTAssertEqual(approve?.terminalStatus, "responded")
+
+        let deny = AppModel.agentPendingInteractionResponse(kind: "approval", decision: .deny)
+        XCTAssertEqual(deny?.response, obj(["decision": .string("denied")]))
+        XCTAssertEqual(deny?.terminalStatus, "denied")
+    }
+
+    func testAgentPendingInteractionResponseMcpElicitationDecision() {
+        let accept = AppModel.agentPendingInteractionResponse(kind: "mcpElicitation", decision: .approve)
+        XCTAssertEqual(accept?.response, obj(["decision": .string("accept")]))
+        XCTAssertEqual(accept?.terminalStatus, "responded")
+
+        let decline = AppModel.agentPendingInteractionResponse(kind: "mcpElicitation", decision: .deny)
+        XCTAssertEqual(decline?.response, obj(["decision": .string("decline")]))
+        XCTAssertEqual(decline?.terminalStatus, "denied")
+    }
+
+    func testAgentPendingInteractionResponseUnsupportedKindsDismissOnly() {
+        // userInput/permissionGrant cannot be answered from the compact banner,
+        // so approve/deny are unavailable and only a cancelled dismiss is built.
+        for kind in ["userInput", "permissionGrant"] {
+            XCTAssertNil(AppModel.agentPendingInteractionResponse(kind: kind, decision: .approve))
+            XCTAssertNil(AppModel.agentPendingInteractionResponse(kind: kind, decision: .deny))
+            let dismiss = AppModel.agentPendingInteractionResponse(kind: kind, decision: .dismiss)
+            XCTAssertEqual(dismiss?.terminalStatus, "cancelled")
+            XCTAssertEqual(dismiss?.response["reason"]?.string, "Dismissed from CodeWith.app")
+        }
+    }
+
+    func testAgentPendingInteractionResponseDismissIsCancelled() {
+        let dismiss = AppModel.agentPendingInteractionResponse(kind: "approval", decision: .dismiss)
+        XCTAssertEqual(dismiss?.terminalStatus, "cancelled")
+        XCTAssertEqual(dismiss?.response, obj(["reason": .string("Dismissed from CodeWith.app")]))
+    }
+
     func testMcpElicitationUrlQueuedAndResolved() {
         let m = AppModel()
         m.activeThreadId = "thread-a"

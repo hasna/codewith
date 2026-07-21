@@ -10,6 +10,8 @@ use tokio::sync::oneshot;
 use tracing::error;
 use tracing::warn;
 
+use crate::image_url::REMOTE_IMAGE_URL_ERROR;
+use crate::image_url::is_remote_image_url;
 use crate::outgoing_message::ClientRequestResult;
 use crate::server_request_error::is_turn_transition_server_request_error;
 
@@ -123,6 +125,21 @@ async fn terminalize_dynamic_tool_pending_interaction(
 
 fn decode_response(value: serde_json::Value) -> (DynamicToolCallResponse, Option<String>) {
     match serde_json::from_value::<DynamicToolCallResponse>(value) {
+        Ok(response)
+            if response.content_items.iter().any(|item| {
+                matches!(
+                    item,
+                    DynamicToolCallOutputContentItem::InputImage { image_url }
+                        if is_remote_image_url(image_url)
+                )
+            }) =>
+        {
+            error!(
+                message = REMOTE_IMAGE_URL_ERROR,
+                "dynamic tool response was invalid"
+            );
+            fallback_response(REMOTE_IMAGE_URL_ERROR)
+        }
         Ok(response) => (response, None),
         Err(err) => {
             error!("failed to deserialize DynamicToolCallResponse: {err}");

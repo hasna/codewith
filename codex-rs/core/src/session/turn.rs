@@ -309,6 +309,7 @@ pub(crate) async fn run_turn(
                     if let Err(err) = run_auto_compact(
                         &sess,
                         &turn_context,
+                        /*fallback_turn_context*/ None,
                         &mut client_session,
                         InitialContextInjection::BeforeLastUserMessage,
                         CompactionReason::ContextLimit,
@@ -407,6 +408,7 @@ pub(crate) async fn run_turn(
                 if let Err(err) = run_auto_compact(
                     &sess,
                     &turn_context,
+                    /*fallback_turn_context*/ None,
                     &mut client_session,
                     InitialContextInjection::BeforeLastUserMessage,
                     CompactionReason::ContextLimit,
@@ -952,6 +954,7 @@ async fn run_pre_sampling_compact(
         run_auto_compact(
             sess,
             turn_context,
+            /*fallback_turn_context*/ None,
             client_session,
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
@@ -1027,9 +1030,17 @@ async fn maybe_run_previous_model_inline_compact(
         && previous_model_turn_context.model_info.slug != turn_context.model_info.slug
         && old_context_window > new_context_window;
     if should_run {
+        // Previous-model compaction can be rejected when a resumed thread references a model slug
+        // that has since been retired. Capture the currently selected model's context so the
+        // remote compaction path can retry with it before failing the turn.
+        let fallback_turn_context = capture_current_model_fallback_turn_context(
+            turn_context,
+            previous_model_turn_context.model_info.slug.as_str(),
+        );
         run_auto_compact(
             sess,
             &previous_model_turn_context,
+            fallback_turn_context,
             client_session,
             InitialContextInjection::DoNotInject,
             CompactionReason::ModelDownshift,
@@ -1040,9 +1051,33 @@ async fn maybe_run_previous_model_inline_compact(
     Ok(())
 }
 
+/// Captures the currently selected model's turn context for retrying previous-model compaction.
+///
+/// Returns `None` when the active authentication does not use the Codex backend, the provider is
+/// not OpenAI, or the previous and current model are the same. This keeps the fallback scoped to
+/// resumed ChatGPT threads whose previous model slug may have been retired, leaving API-key
+/// authentication and custom providers on their existing paths.
+fn capture_current_model_fallback_turn_context(
+    turn_context: &Arc<TurnContext>,
+    previous_model: &str,
+) -> Option<Arc<TurnContext>> {
+    let uses_codex_backend = turn_context
+        .auth_manager
+        .as_deref()
+        .is_some_and(codex_login::AuthManager::current_auth_uses_codex_backend);
+    if !uses_codex_backend
+        || !turn_context.provider.info().is_openai()
+        || previous_model == turn_context.model_info.slug.as_str()
+    {
+        return None;
+    }
+    Some(Arc::clone(turn_context))
+}
+
 async fn run_auto_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    fallback_turn_context: Option<Arc<TurnContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
@@ -1058,6 +1093,7 @@ async fn run_auto_compact(
             run_inline_remote_auto_compact_task_v2(
                 Arc::clone(sess),
                 Arc::clone(turn_context),
+                fallback_turn_context,
                 client_session,
                 initial_context_injection,
                 reason,
@@ -1074,6 +1110,7 @@ async fn run_auto_compact(
         run_inline_remote_auto_compact_task(
             Arc::clone(sess),
             Arc::clone(turn_context),
+            fallback_turn_context,
             initial_context_injection,
             reason,
             phase,

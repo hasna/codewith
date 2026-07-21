@@ -965,6 +965,132 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
 }
 
 #[tokio::test]
+async fn spawn_agent_full_history_fork_from_ephemeral_parent_reconstructs_in_memory_history() {
+    // Regression: a full-history fork whose parent runs `codex exec --ephemeral` used to fail with
+    // `ThreadNotFound` ("no thread with id") because ephemeral parents never persist a rollout to
+    // the thread store. The fork now reconstructs history from the parent's live in-memory session.
+    let harness = AgentControlHarness::new().await;
+    let mut parent_config = harness.config.clone();
+    parent_config.ephemeral = true;
+    let child_config = harness.config.clone();
+
+    let new_thread = harness
+        .manager
+        .start_thread(parent_config)
+        .await
+        .expect("start ephemeral parent thread");
+    let parent_thread_id = new_thread.thread_id;
+    let parent_thread = new_thread.thread;
+
+    // Ephemeral parents keep history only in memory; there is no durable rollout to fork from.
+    assert!(
+        parent_thread.rollout_path().is_none(),
+        "ephemeral parent should not have a persisted rollout"
+    );
+
+    parent_thread
+        .inject_user_message_without_turn("parent seed context".to_string())
+        .await;
+    let turn_context = parent_thread.codex.session.new_default_turn().await;
+    // Establish the parent diff baseline that a full-history fork should inherit.
+    parent_thread
+        .codex
+        .session
+        .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+        .await;
+    let parent_reference_context_item = parent_thread
+        .codex
+        .session
+        .reference_context_item()
+        .await
+        .expect("parent should have a reference context item");
+    let parent_spawn_call_id = "spawn-call-ephemeral".to_string();
+    parent_thread
+        .codex
+        .session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[
+                assistant_message("parent commentary", Some(MessagePhase::Commentary)),
+                assistant_message("parent final answer", Some(MessagePhase::FinalAnswer)),
+                ResponseItem::Reasoning {
+                    id: "parent-reasoning".to_string(),
+                    summary: Vec::new(),
+                    content: None,
+                    encrypted_content: None,
+                },
+                spawn_agent_call(&parent_spawn_call_id),
+            ],
+        )
+        .await;
+
+    let child_thread_id = harness
+        .control
+        .spawn_agent_with_metadata(
+            child_config,
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
+                fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("ephemeral full-history fork should succeed")
+        .thread_id;
+
+    assert_ne!(child_thread_id, parent_thread_id);
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be registered");
+    let history_items = child_thread
+        .codex
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert!(
+        history_contains_text(&history_items, "parent seed context"),
+        "child should inherit the parent's user turn from the in-memory fork"
+    );
+    assert!(
+        history_contains_text(&history_items, "parent final answer"),
+        "child should inherit the parent's final answer from the in-memory fork"
+    );
+    assert!(
+        !history_contains_text(&history_items, "parent commentary"),
+        "non-final assistant chatter should be filtered out of the fork"
+    );
+    assert_eq!(
+        serde_json::to_value(child_thread.codex.session.reference_context_item().await)
+            .expect("serialize child reference context item"),
+        serde_json::to_value(Some(parent_reference_context_item))
+            .expect("serialize expected reference context item"),
+        "ephemeral full-history fork should preserve the parent diff baseline"
+    );
+
+    let _ = harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child shutdown should submit");
+    let _ = parent_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
+}
+
+#[tokio::test]
 async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
     let harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();

@@ -80,9 +80,18 @@ struct ChatView: View {
             }
 
             if let attachment = model.activeAgentAttachment {
-                AgentAttachmentPanel(attachment: attachment)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 6)
+                AgentAttachmentPanel(
+                    attachment: attachment,
+                    onEvents: { model.refreshActiveAgentEvents() },
+                    onStop: { model.stopActiveAgent() },
+                    onDetach: { model.detachActiveAgent() },
+                    onDelete: { model.deleteActiveAgent() },
+                    onRespond: { interaction, decision in
+                        model.respondToAgentPendingInteraction(interaction, decision: decision)
+                    }
+                )
+                .padding(.horizontal, 24)
+                .padding(.top, 6)
             }
 
             if !model.activeGoalPlans.isEmpty {
@@ -143,6 +152,12 @@ struct ChatView: View {
 
 struct AgentAttachmentPanel: View {
     var attachment: AgentAttachmentInfo
+    var onEvents: () -> Void
+    var onStop: () -> Void
+    var onDetach: () -> Void
+    var onDelete: () -> Void
+    var onRespond: (AgentPendingInteractionInfo, AgentInteractionDecision) -> Void
+    @State private var confirmingDelete = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -161,20 +176,9 @@ struct AgentAttachmentPanel: View {
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(2)
                 ForEach(attachment.pendingInteractions.prefix(3)) { interaction in
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Theme.warning)
-                            .frame(width: 6, height: 6)
-                        Text(interaction.summary)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.textSecondary)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(interaction.status)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
+                    pendingRow(interaction)
                 }
+                controlRow
             }
             Spacer(minLength: 8)
         }
@@ -185,6 +189,88 @@ struct AgentAttachmentPanel: View {
                 .fill(Theme.fieldFill)
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.cardStroke, lineWidth: 1))
         )
+        .confirmationDialog("Delete agent?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) { confirmingDelete = false }
+        } message: {
+            Text("This deletes the durable agent run.")
+        }
+    }
+
+    @ViewBuilder
+    private func pendingRow(_ interaction: AgentPendingInteractionInfo) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.warning)
+                .frame(width: 6, height: 6)
+            Text(interaction.summary)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if canRespond(interaction) {
+                pillButton("Approve", tint: Theme.accent, filled: true) {
+                    onRespond(interaction, .approve)
+                }
+                pillButton("Decline", tint: Theme.textSecondary, filled: false) {
+                    onRespond(interaction, .deny)
+                }
+            } else {
+                pillButton("Dismiss", tint: Theme.textSecondary, filled: false) {
+                    onRespond(interaction, .dismiss)
+                }
+            }
+        }
+    }
+
+    private var controlRow: some View {
+        HStack(spacing: 6) {
+            if attachment.eventCount > 0 {
+                pillButton("Events", tint: Theme.textSecondary, filled: false, action: onEvents)
+            }
+            Spacer(minLength: 4)
+            if canStop {
+                pillButton("Stop", tint: Theme.textSecondary, filled: false, action: onStop)
+            }
+            pillButton("Detach", tint: Theme.textSecondary, filled: false, action: onDetach)
+            pillButton("Delete", tint: Theme.danger, filled: false) {
+                confirmingDelete = true
+            }
+        }
+    }
+
+    private func pillButton(
+        _ label: String,
+        tint: Color,
+        filled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(label, action: action)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(filled ? .white : tint)
+            .buttonStyle(.plain)
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(
+                Capsule().fill(filled ? tint : Theme.fieldFill)
+                    .overlay(Capsule().strokeBorder(filled ? Color.clear : Theme.cardStroke, lineWidth: 1))
+            )
+    }
+
+    /// Approve/Decline are only meaningful for interaction kinds whose response
+    /// the compact banner can synthesize; others fall back to Dismiss.
+    private func canRespond(_ interaction: AgentPendingInteractionInfo) -> Bool {
+        AppModel.agentPendingInteractionResponse(kind: interaction.kind, decision: .approve) != nil
+    }
+
+    /// A stopped/completed agent should not offer another Stop.
+    private var canStop: Bool {
+        switch attachment.agent?.status {
+        case "completed", "failed", "cancelled", "stopping", "orphaned":
+            return false
+        default:
+            return true
+        }
     }
 
     private var title: String {
