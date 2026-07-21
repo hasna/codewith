@@ -908,8 +908,8 @@ mod api {
 
         #[test]
         fn tail_handles_a_multibyte_character_crossing_the_byte_limit() {
-            assert_eq!(tail("aé", 1), "");
-            assert_eq!(tail("aé", 2), "é");
+            assert_eq!(tail("aé", /*max*/ 1), "");
+            assert_eq!(tail("aé", /*max*/ 2), "é");
         }
 
         #[test]

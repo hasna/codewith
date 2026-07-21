@@ -2110,7 +2110,7 @@ fn pretty_lines_from_error(raw: &str) -> Vec<String> {
     if lines.len() == 1 {
         // Parsing yielded nothing; include a trimmed, short raw message tail for context.
         let tail = if raw.len() > 320 {
-            format!("{}…", truncate_to_byte_limit(raw, 320))
+            format!("{}…", truncate_to_byte_limit(raw, /*max_bytes*/ 320))
         } else {
             raw.to_string()
         };

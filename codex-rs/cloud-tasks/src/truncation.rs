@@ -13,6 +13,6 @@ mod tests {
 
     #[test]
     fn truncates_at_a_utf8_character_boundary() {
-        assert_eq!(truncate_to_byte_limit("aaaaéz", 5), "aaaa");
+        assert_eq!(truncate_to_byte_limit("aaaaéz", /*max_bytes*/ 5), "aaaa");
     }
 }
