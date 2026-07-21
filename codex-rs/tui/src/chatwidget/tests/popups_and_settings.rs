@@ -3248,19 +3248,44 @@ async fn profile_popup_requests_usage_heartbeat_when_selected_usage_is_missing()
 }
 
 #[tokio::test]
-async fn profile_popup_skips_usage_heartbeat_when_selected_usage_is_fresh() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+async fn usage_heartbeat_preserves_selected_refresh_throttle_and_non_selected_expiry() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
     chat.config.selected_auth_profile = Some("work".to_string());
     set_chatgpt_auth(&mut chat);
     save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "personal@example.com");
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+        )],
+    );
     chat.on_rate_limit_snapshot(Some(profile_usage_snapshot(
-        /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+        /*secondary_used_percent*/ 100, /*primary_used_percent*/ 100,
     )));
-    while rx.try_recv().is_ok() {}
 
-    chat.open_profile_popup();
-    assert_no_rate_limit_refresh_event(&mut rx);
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+    assert_eq!(chat.auth_profile_usage_refresh_targets(), Vec::new());
+
+    let freshness_secs = i64::try_from(
+        chat.config
+            .auth_profile_auto_switch
+            .heartbeat_freshness_secs,
+    )
+    .unwrap_or(i64::MAX - 1);
+    chat.auth_profile_rate_limit_snapshots_by_profile
+        .get_mut(&Some("personal".to_string()))
+        .and_then(|snapshots| snapshots.get_mut("codex"))
+        .expect("personal usage snapshot")
+        .captured_at = Local::now() - chrono::Duration::seconds(freshness_secs.saturating_add(1));
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("personal".to_string())]
+    );
 }
 
 #[tokio::test]

@@ -31,19 +31,16 @@ pub(crate) async fn load_session_transcript(
         .thread_read(thread_id, /*include_turns*/ true)
         .await
         .map_err(std::io::Error::other)?;
-    Ok(thread_to_transcript_cells(
-        &thread,
-        raw_reasoning_visibility,
-    ))
+    Ok(thread_to_transcript_cells(thread, raw_reasoning_visibility))
 }
 
 pub(crate) fn thread_to_transcript_cells(
-    thread: &Thread,
+    thread: Thread,
     raw_reasoning_visibility: RawReasoningVisibility,
 ) -> TranscriptCells {
-    let cwd = thread.cwd.as_path();
+    let cwd = thread.cwd;
     let mut cells: TranscriptCells = Vec::new();
-    for item in thread.turns.iter().flat_map(|turn| turn.items.iter()) {
+    for item in thread.turns.into_iter().flat_map(|turn| turn.items) {
         match item {
             ThreadItem::UserMessage {
                 id,
@@ -51,11 +48,10 @@ pub(crate) fn thread_to_transcript_cells(
                 content,
             } => {
                 let item = UserMessageItem {
-                    id: id.clone(),
-                    client_id: client_id.clone(),
+                    id,
+                    client_id,
                     content: content
-                        .iter()
-                        .cloned()
+                        .into_iter()
                         .map(codex_app_server_protocol::UserInput::into_core)
                         .collect(),
                 };
@@ -67,19 +63,19 @@ pub(crate) fn thread_to_transcript_cells(
                 }));
             }
             ThreadItem::AgentMessage { text, .. } => {
-                let parsed = parse_assistant_markdown(text, cwd);
+                let parsed = parse_assistant_markdown(&text, cwd.as_path());
                 if !parsed.visible_markdown.trim().is_empty() {
                     cells.push(Arc::new(AgentMarkdownCell::new(
                         parsed.visible_markdown,
-                        cwd,
+                        cwd.as_path(),
                     )));
                 }
             }
             ThreadItem::Plan { text, .. } => {
                 if !text.trim().is_empty() {
                     cells.push(Arc::new(crate::history_cell::new_proposed_plan(
-                        text.clone(),
-                        cwd,
+                        text,
+                        cwd.as_path(),
                     )));
                 }
             }
@@ -97,13 +93,13 @@ pub(crate) fn thread_to_transcript_cells(
                     cells.push(Arc::new(ReasoningSummaryCell::new(
                         "Reasoning".to_string(),
                         text,
-                        cwd,
+                        cwd.as_path(),
                         /*transcript_only*/ false,
                     )));
                 }
             }
             other => {
-                if let Some(cell) = fallback_transcript_cell(other) {
+                if let Some(cell) = fallback_transcript_cell(&other) {
                     cells.push(Arc::new(cell));
                 }
             }

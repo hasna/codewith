@@ -57,7 +57,7 @@ pub(crate) fn collect_explicit_skill_mentions(
             if let Some(entry) = catalog
                 .entries
                 .iter()
-                .find(|entry| entry.enabled && entry.name == name)
+                .find(|entry| entry.is_explicitly_loadable() && entry.name == name)
             {
                 push_selected(entry, &mut seen, &mut selected);
             }
@@ -74,7 +74,11 @@ fn select_by_path(
     selected: &mut Vec<SkillCatalogEntry>,
 ) {
     let normalized_path = normalize_skill_path(path);
-    for entry in catalog.entries.iter().filter(|entry| entry.enabled) {
+    for entry in catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.is_explicitly_loadable())
+    {
         if entry_matches_path(entry, normalized_path) {
             push_selected(entry, seen, selected);
         }

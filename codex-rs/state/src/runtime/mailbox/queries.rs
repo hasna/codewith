@@ -1,6 +1,9 @@
 use crate::model::MailboxDeliveryAttemptRow;
 use crate::model::MailboxMessageRow;
 use crate::model::MailboxReceiptRow;
+use crate::runtime::redact_state_json_string;
+use crate::runtime::redact_state_optional_string;
+use crate::runtime::redact_state_string;
 use codex_protocol::ThreadId;
 use serde_json::Value;
 use sha2::Digest;
@@ -46,7 +49,7 @@ RETURNING
     .bind(attempt_id)
     .bind(message.message_id.as_str())
     .bind(lease_id)
-    .bind(lease_owner)
+    .bind(redact_state_string(lease_owner))
     .bind(message.attempt_count)
     .bind(crate::MailboxDeliveryAttemptStatus::Claimed.as_str())
     .bind(claimed_at_ms)
@@ -65,7 +68,7 @@ pub(crate) async fn insert_mailbox_receipt(
     created_at_ms: i64,
 ) -> anyhow::Result<()> {
     let payload_json = payload_json
-        .map(|payload| serde_json::to_string(&payload))
+        .map(|payload| redact_state_json_string(&payload))
         .transpose()?;
     insert_mailbox_receipt_raw_payload(tx, message, attempt_id, kind, payload_json, created_at_ms)
         .await
@@ -99,7 +102,7 @@ INSERT INTO thread_mailbox_receipts (
     .bind(message.target_thread_id.to_string())
     .bind(kind.as_str())
     .bind(message.status.as_str())
-    .bind(payload_json)
+    .bind(redact_state_optional_string(payload_json))
     .bind(created_at_ms)
     .execute(&mut **tx)
     .await?;
@@ -125,7 +128,7 @@ INSERT OR REPLACE INTO thread_mailbox_dead_letters (
     )
     .bind(message_id)
     .bind(attempt_id)
-    .bind(reason)
+    .bind(redact_state_string(reason))
     .bind(created_at_ms)
     .execute(&mut **tx)
     .await?;
@@ -192,7 +195,7 @@ RETURNING
         .bind(crate::MailboxMessageStatus::Poisoned.as_str())
         .bind(crate::MailboxMessageStatus::Queued.as_str())
         .bind(next_attempt_at_ms)
-        .bind(error)
+        .bind(redact_state_string(error))
         .bind(now_ms)
         .bind(now_ms)
         .bind(message_id)
@@ -227,7 +230,7 @@ RETURNING
     );
     let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(crate::MailboxMessageStatus::Failed.as_str())
-        .bind(error)
+        .bind(redact_state_string(error))
         .bind(now_ms)
         .bind(now_ms)
         .bind(message_id)

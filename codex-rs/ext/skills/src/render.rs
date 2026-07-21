@@ -39,13 +39,13 @@ pub(crate) fn available_skills_fragment(catalog: &SkillCatalog) -> Option<Availa
     for entry in catalog
         .entries
         .iter()
-        .filter(|entry| entry.enabled && entry.prompt_visible)
+        .filter(|entry| entry.is_prompt_visible())
     {
         let description = entry
             .short_description
             .as_deref()
             .unwrap_or(entry.description.as_str());
-        let line = render_skill_line(entry.name.as_str(), description, entry.rendered_path());
+        let line = render_skill_line(entry, description);
         let next_chars = total_chars.saturating_add(line.chars().count());
         if next_chars > MAX_AVAILABLE_SKILLS_CHARS {
             omitted = omitted.saturating_add(1);
@@ -70,11 +70,15 @@ pub(crate) fn available_skills_fragment(catalog: &SkillCatalog) -> Option<Availa
     })
 }
 
-fn render_skill_line(name: &str, description: &str, path: &str) -> String {
+fn render_skill_line(entry: &crate::catalog::SkillCatalogEntry, description: &str) -> String {
+    let file = format!("file: {}", entry.rendered_path());
+    let handles = crate::tools::catalog_tool_handles(entry).map_or(file.clone(), |tool_handles| {
+        format!("{file}; {tool_handles}")
+    });
     if description.is_empty() {
-        format!("- {name}: (file: {path})")
+        format!("- {}: ({handles})", entry.name)
     } else {
-        format!("- {name}: {description} (file: {path})")
+        format!("- {}: {description} ({handles})", entry.name)
     }
 }
 

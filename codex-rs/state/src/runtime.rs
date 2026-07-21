@@ -158,6 +158,18 @@ const WRITER_MAX_CONNECTIONS: u32 = 1;
 /// the database layer instead of silently re-introducing multi-writer 517.
 const READER_MAX_CONNECTIONS: u32 = 5;
 
+pub(crate) fn redact_state_string(input: impl AsRef<str>) -> String {
+    crate::redact_local_state_string(input)
+}
+
+pub(crate) fn redact_state_optional_string(input: Option<String>) -> Option<String> {
+    input.map(redact_state_string)
+}
+
+pub(crate) fn redact_state_json_string(value: &Value) -> anyhow::Result<String> {
+    crate::redacted_local_state_json_string(value)
+}
+
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::ThreadGoalPlanAddOutcome;
@@ -478,6 +490,7 @@ impl StateRuntime {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(&codex_home).await?;
+        crate::set_owner_only_dir(codex_home.as_path())?;
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let goals_migrator = runtime_goals_migrator();
@@ -598,6 +611,14 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
+        if let Err(err) =
+            managed_worktrees::path_backfill::backfill_legacy_managed_worktree_path_keys(
+                runtime.pool.as_ref(),
+            )
+            .await
+        {
+            warn!("managed worktree path-key startup backfill failed: {err}");
+        }
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!(
                 "failed to run startup maintenance for logs db at {}: {err}",
@@ -866,7 +887,23 @@ async fn open_sqlite(
         &migrate_result,
     );
     migrate_result?;
+    enforce_sqlite_owner_only_paths(path)?;
     Ok(pool)
+}
+
+fn enforce_sqlite_owner_only_paths(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        crate::set_owner_only_file(path)?;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            crate::set_owner_only_file(sidecar.as_path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Connect options for a read-only reader pool.

@@ -75,6 +75,9 @@ fn with_border_internal(
 /// Return the emoji followed by a hair space (U+200A).
 /// Using only the hair space avoids excessive padding after the emoji while
 /// still providing a small visual gap across terminals.
+// Only reached through trait-object rendering paths, which rustc's dead_code
+// analysis cannot trace; keep it despite the false-positive warning.
+#[allow(dead_code)]
 pub(crate) fn padded_emoji(emoji: &str) -> String {
     format!("{emoji}\u{200A}")
 }

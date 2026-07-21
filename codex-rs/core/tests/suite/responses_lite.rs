@@ -96,7 +96,7 @@ async fn responses_lite_uses_standalone_web_search_and_hides_unavailable_image_g
     request
         .tool_by_name("web", "run")
         .context("Responses Lite should expose standalone web search")?;
-    assert!(request.tool_by_name("image_gen", "imagegen").is_none());
+    assert!(request.tool_by_name("images", "imagegen").is_none());
     let tools = body["tools"]
         .as_array()
         .context("Responses request tools should be an array")?;
@@ -220,7 +220,7 @@ async fn non_lite_uses_hosted_tools_when_standalone_features_are_disabled() -> R
     let request = response_mock.single_request();
     assert_eq!(request.header(RESPONSES_LITE_HEADER), None);
     assert!(request.tool_by_name("web", "run").is_none());
-    assert!(request.tool_by_name("image_gen", "imagegen").is_none());
+    assert!(request.tool_by_name("images", "imagegen").is_none());
     let body = request.body_json();
     let tools = body["tools"]
         .as_array()

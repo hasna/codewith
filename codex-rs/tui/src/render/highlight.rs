@@ -2,12 +2,13 @@
 //!
 //! Wraps [syntect] with the [two_face] grammar and theme bundles to provide
 //! ~250-language syntax highlighting and 32 bundled color themes.  The module
-//! owns four process-global singletons:
+//! owns five process-global singletons:
 //!
 //! | Singleton | Type | Purpose |
 //! |---|---|---|
 //! | `SYNTAX_SET` | `OnceLock<SyntaxSet>` | Grammar database, immutable after init |
 //! | `THEME` | `OnceLock<RwLock<Theme>>` | Active color theme, swappable at runtime |
+//! | `THEME_REVISION` | `AtomicU64` | Invalidates rendered-content caches after theme swaps |
 //! | `THEME_OVERRIDE` | `OnceLock<Option<String>>` | Persisted user preference (write-once) |
 //! | `CODEX_HOME` | `OnceLock<Option<PathBuf>>` | Root for custom `.tmTheme` discovery |
 //!
@@ -30,6 +31,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Color as SyntectColor;
 use syntect::highlighting::FontStyle;
@@ -47,6 +50,7 @@ use two_face::theme::EmbeddedThemeName;
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME: OnceLock<RwLock<Theme>> = OnceLock::new();
+static THEME_REVISION: AtomicU64 = AtomicU64::new(0);
 static THEME_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
 static CODEX_HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
 
@@ -244,6 +248,12 @@ pub(crate) fn set_syntax_theme(theme: Theme) {
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = theme;
+    THEME_REVISION.fetch_add(1, Ordering::Release);
+}
+
+/// Return the revision of the active syntax theme for rendered-content caches.
+pub(crate) fn syntax_theme_revision() -> u64 {
+    THEME_REVISION.load(Ordering::Acquire)
 }
 
 /// Clone the current syntax theme (e.g. to save for cancel-restore).
@@ -535,8 +545,12 @@ fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     let ss = syntax_set();
 
     // Aliases that two-face does not resolve on its own.
-    let patched = match lang {
+    let normalized = lang.to_ascii_lowercase();
+    let patched = match normalized.as_str() {
         "csharp" | "c-sharp" => "c#",
+        // C++ module interface files (`.cppm`, `.ixx`, `.cxxm`) share the bundled cpp syntax,
+        // which two-face does not resolve from those extensions on its own.
+        "cppm" | "cxxm" | "ixx" => "cpp",
         "golang" => "go",
         "python3" => "python",
         "shell" => "bash",
@@ -1212,7 +1226,10 @@ mod tests {
             );
         }
         // Patched aliases that two-face cannot resolve on its own.
-        for alias in ["csharp", "c-sharp", "golang", "python3", "shell"] {
+        for alias in [
+            "csharp", "c-sharp", "cppm", "CPPM", "cxxm", "CxXm", "ixx", "IXX", "golang", "python3",
+            "shell",
+        ] {
             assert!(
                 find_syntax(alias).is_some(),
                 "find_syntax({alias:?}) returned None — patched alias broken"

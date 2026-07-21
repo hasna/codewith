@@ -12,8 +12,15 @@ use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
+use codex_extension_api::ToolCall;
+use codex_extension_api::ToolContributor;
+use codex_extension_api::ToolExecutor;
+use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
+use codex_extension_api::TurnLifecycleContributor;
+use codex_extension_api::TurnStopInput;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
@@ -32,6 +39,7 @@ use crate::sources::SkillProviders;
 use crate::state::SkillsExtensionConfig;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsTurnState;
+use crate::tools::skill_tools;
 
 #[derive(Clone)]
 struct SkillsExtension {
@@ -67,6 +75,35 @@ impl ConfigContributor<Config> for SkillsExtension {
     }
 }
 
+impl ToolContributor for SkillsExtension {
+    fn tools(
+        &self,
+        _session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+        let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
+            return Vec::new();
+        };
+
+        skill_tools(thread_state)
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnLifecycleContributor for SkillsExtension {
+    async fn on_turn_stop(&self, input: TurnStopInput<'_>) {
+        clear_tool_snapshot(input.thread_store, input.turn_store.level_id());
+    }
+
+    async fn on_turn_abort(&self, input: TurnAbortInput<'_>) {
+        clear_tool_snapshot(input.thread_store, input.turn_store.level_id());
+    }
+
+    async fn on_turn_error(&self, input: TurnErrorInput<'_>) {
+        clear_tool_snapshot(input.thread_store, input.turn_id);
+    }
+}
+
 #[async_trait::async_trait]
 impl TurnInputContributor for SkillsExtension {
     async fn contribute(
@@ -99,10 +136,16 @@ impl TurnInputContributor for SkillsExtension {
             include_bundled_skills: config.bundled_skills_enabled,
             include_remote_skills: true,
         };
-        let catalog = self.providers.list_for_turn(query).await;
+        let (catalog, routes) = self.providers.list_for_turn_with_routes(query).await;
         for warning in &catalog.warnings {
             self.emit_warning(&input.turn_id, warning.clone());
         }
+        thread_state.set_tool_snapshot(
+            input.turn_id.clone(),
+            catalog.clone(),
+            host_loaded_skills.clone(),
+            routes.clone(),
+        );
 
         let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
         let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
@@ -117,7 +160,7 @@ impl TurnInputContributor for SkillsExtension {
         let mut injected_host_skill_prompts = InjectedHostSkillPrompts::default();
         for entry in &selected_entries {
             match self
-                .read_main_prompt(entry, host_loaded_skills.clone())
+                .read_main_prompt(entry, host_loaded_skills.clone(), &routes)
                 .await
             {
                 Ok(read_result) => {
@@ -169,8 +212,9 @@ impl SkillsExtension {
         &self,
         entry: &SkillCatalogEntry,
         host_loaded_skills: Option<Arc<HostLoadedSkills>>,
+        routes: &crate::sources::SkillProviderRoutes,
     ) -> Result<SkillReadResult, String> {
-        self.providers
+        routes
             .read(SkillReadRequest {
                 authority: entry.authority.clone(),
                 package: entry.id.clone(),
@@ -186,6 +230,12 @@ impl SkillsExtension {
             id: turn_id.to_string(),
             msg: EventMsg::Warning(WarningEvent { message }),
         });
+    }
+}
+
+fn clear_tool_snapshot(thread_store: &ExtensionData, turn_id: &str) {
+    if let Some(thread_state) = thread_store.get::<SkillsThreadState>() {
+        thread_state.clear_tool_snapshot(turn_id);
     }
 }
 
@@ -205,6 +255,8 @@ pub fn install_with_providers(
         event_sink: registry.event_sink(),
     });
     registry.thread_lifecycle_contributor(extension.clone());
+    registry.turn_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
-    registry.turn_input_contributor(extension);
+    registry.turn_input_contributor(extension.clone());
+    registry.tool_contributor(extension);
 }

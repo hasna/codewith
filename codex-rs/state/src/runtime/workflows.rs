@@ -497,7 +497,7 @@ WHERE run_id = ?
                 "#,
             )
             .bind(crate::WorkflowRunStatus::CancelRequested.as_str())
-            .bind(status_reason)
+            .bind(redact_state_string(status_reason))
             .bind("user_cancel_requested")
             .bind(now_ms)
             .bind(params.run_id.as_str())
@@ -558,7 +558,7 @@ WHERE run_id = ?
                 "#,
             )
             .bind(crate::WorkflowRunStatus::Paused.as_str())
-            .bind(sanitized_workflow_pause_reason())
+            .bind(redact_state_string(sanitized_workflow_pause_reason()))
             .bind("user_pause_requested")
             .bind(now_ms)
             .bind(params.run_id.as_str())
@@ -783,7 +783,7 @@ RETURNING run_id
             .source_thread_id
             .map(|thread_id| thread_id.to_string()),
     )
-    .bind(params.idempotency_key)
+    .bind(params.idempotency_key.map(redact_state_string))
     .bind(params.spec_record.spec_workflow_id.as_str())
     .bind(params.spec_record.schema_version.as_str())
     .bind(params.spec_record.source_yaml_sha256.as_str())
@@ -865,7 +865,7 @@ INSERT INTO workflow_run_steps (
         .bind(run_id)
         .bind(step.id.as_str())
         .bind(i64::try_from(sequence)?)
-        .bind(step.title.as_str())
+        .bind(redact_state_string(step.title.as_str()))
         .bind(step.agent.as_str())
         .bind(crate::WorkflowRunStepStatus::Pending.as_str())
         .bind(step.parallel_group.as_deref())
@@ -984,7 +984,7 @@ INSERT INTO workflow_run_timers (
         .bind(Uuid::new_v4().to_string())
         .bind(run_id)
         .bind(workflow_loop.id.as_str())
-        .bind(workflow_loop.title.as_str())
+        .bind(redact_state_string(workflow_loop.title.as_str()))
         .bind(workflow_state_json_string(
             "workflow_run_loop_schedule",
             json!(workflow_loop.schedule),
@@ -1025,7 +1025,7 @@ INSERT INTO workflow_run_monitor_links (
         .bind(Uuid::new_v4().to_string())
         .bind(run_id)
         .bind(monitor.id.as_str())
-        .bind(monitor.title.as_str())
+        .bind(redact_state_string(monitor.title.as_str()))
         .bind(monitor.source.as_str())
         .bind(monitor.monitor_ref.as_deref())
         .bind(monitor.trigger_step.as_deref())
@@ -1354,12 +1354,12 @@ fn workflow_run_select_by(prefix: &'static str, predicate: &'static str) -> Stri
 }
 
 pub(super) fn workflow_state_json_string(kind: &str, data: Value) -> anyhow::Result<String> {
-    Ok(serde_json::to_string(&json!({
+    redact_state_json_string(&json!({
         "schemaVersion": "workflow.run_state/v0",
         "redactionVersion": 1,
         "kind": kind,
         "data": data,
-    }))?)
+    }))
 }
 
 fn optional_workflow_state_json_string<T>(
