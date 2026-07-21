@@ -42,6 +42,63 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.72] - 2026-07-21
+
+Tag: `rust-v0.1.72`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.72>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.71...rust-v0.1.72>
+
+Release headlined by a fix that restores the model's ability to spawn
+subagents: the upstream #23144 deferral is reverted for this fork so the
+multi-agent spawn tools are visible to the model again. It is paired with two
+statusline improvements — the goal-pursuit indicator now renders inline (locked
+on) and a toggleable active-agent (`Main [default]`) segment — plus an upstream
+hardening and correctness cluster and four feature merges (subagent auth
+profiles, OpenRouter preflight, rollout alias cleanup, and macOS remote
+control).
+
+### Added
+
+- Statusline: added a toggleable active-agent (`Main [default]`) statusline
+  segment. (#341)
+- MCP: preserve encrypted content and custom-tool namespaces in tool outputs.
+  (#316)
+- Unified exec: bound output collection and parallelize `write_stdin`. (#327)
+- Models: respect per-model reasoning-summary parameter support. (#331)
+- Workflows: added explicit user approval for gated workflow steps. (#296)
+- Workflows: added a thread workflow delete RPC and wired `/workflow delete`.
+  (#300)
+- Core: select an auth profile for subagent spawn. (#126)
+- OpenRouter: preflight the workflow branch auth before running. (#130)
+- macOS: wire remote-control status and machine registry management. (#181)
+
+### Fixed
+
+- Multi-agent: restored the model's ability to spawn subagents by reverting the
+  upstream #23144 deferral for this fork; the spawn tools are visible to the
+  model again. (#339)
+- Statusline: render the goal-pursuit indicator inline in the statusline (locked
+  on). (#340)
+- TUI: ported upstream streaming, status, and reasoning UX correctness fixes.
+  (#328)
+- MCP: retry transient streamable-HTTP init and tools-list, and enforce a
+  startup timeout. (#321)
+- Compact: retry previous-model remote compaction with the selected model.
+  (#329)
+- Core: fork full-history subagents from ephemeral parents. (#298)
+- Rollout: removed deprecated conversation-list aliases. (#160)
+
+### Security
+
+- Exec server: bound untrusted JSON-RPC input (DoS hardening). (#319)
+- Network proxy: keep the MITM CA private signer in memory only. (#324)
+- Exec policy: harden forced-`rm` detection and migrate legacy allow rules.
+  (#325)
+
+### Performance
+
+- Build: added a tiered validation harness to cut PR-drain wall time. (#288)
+
 ## [0.1.71] - 2026-07-21
 
 Tag: `rust-v0.1.71`
