@@ -983,12 +983,18 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let exposure =
-                if search_tool_enabled(turn_context) && namespace_tools_enabled(turn_context) {
-                    ToolExposure::Deferred
-                } else {
-                    ToolExposure::Direct
-                };
+            // Codewith fork override (revert of upstream #23144 / b3ae3de40 for
+            // the V1 multi-agent path only): keep subagent spawning first-class
+            // and model-visible. Upstream defers these tools behind tool-search
+            // whenever the model supports search AND the provider supports
+            // namespaced tools -- which is the *default* combination (V1 +
+            // modern model + Responses provider). That hid `spawn_agent`,
+            // `wait_agent`, `close_agent`, `send_input`, and `resume_agent` from
+            // the initial model-visible tool list, silently breaking subagent
+            // spawning for skills/agents that never probe the tool registry.
+            // Advertise them directly instead of deferring. (V2 exposure above
+            // is intentionally untouched.)
+            let exposure = ToolExposure::Direct;
             planned_tools.add_with_exposure(
                 SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
