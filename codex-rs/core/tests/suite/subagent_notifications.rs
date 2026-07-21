@@ -21,10 +21,9 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::ev_tool_search_call;
 use core_test_support::responses::mount_response_once_match;
+use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
-use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
@@ -1336,27 +1335,13 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let call_id = "tool-search-spawn-agent";
-    let resp_mock = mount_sse_sequence(
+    let resp_mock = mount_sse_once(
         &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-turn1-1"),
-                ev_tool_search_call(
-                    call_id,
-                    &json!({
-                        "query": "spawn agent custom role",
-                        "limit": 1,
-                    }),
-                ),
-                ev_completed("resp-turn1-1"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-turn1-2"),
-                ev_assistant_message("msg-turn1-2", "done"),
-                ev_completed("resp-turn1-2"),
-            ]),
-        ],
+        sse(vec![
+            ev_response_created("resp-turn1-1"),
+            ev_assistant_message("msg-turn1-1", "done"),
+            ev_completed("resp-turn1-1"),
+        ]),
     )
     .await;
 
@@ -1387,12 +1372,16 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
-    let requests = resp_mock.requests();
-    assert_eq!(requests.len(), 2);
-    let output = requests[1].tool_search_output(call_id);
-    let spawn_agent = namespace_child_tool(&output, "multi_agent_v1", "spawn_agent")
+    // In this fork the V1 multi-agent tools are model-visible from the first
+    // request (revert of upstream #23144 / b3ae3de40), so `spawn_agent` is a
+    // direct child of the `multi_agent_v1` namespace in the initial tool list
+    // rather than something only reachable via a tool_search follow-up.
+    let request_body = resp_mock.single_request().body_json();
+    let spawn_agent = namespace_child_tool(&request_body, "multi_agent_v1", "spawn_agent")
         .unwrap_or_else(|| {
-            panic!("expected tool_search to return multi_agent_v1.spawn_agent: {output:?}")
+            panic!(
+                "expected multi_agent_v1.spawn_agent to be directly visible in the initial tool list: {request_body:?}"
+            )
         });
     let agent_type_description = tool_parameter_description(spawn_agent, "agent_type")
         .expect("spawn_agent agent_type description");

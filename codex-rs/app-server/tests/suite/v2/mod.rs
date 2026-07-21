@@ -52,6 +52,7 @@ mod remote_dispatch;
 mod remote_thread_store;
 mod request_permissions;
 mod request_user_input;
+mod request_validation;
 mod review;
 mod safety_check_downgrade;
 mod skills_list;

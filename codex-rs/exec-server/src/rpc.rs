@@ -12,8 +12,16 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de;
 use serde::de::DeserializeOwned;
+use serde::de::DeserializeSeed;
+use serde::de::MapAccess;
+use serde::de::SeqAccess;
+use serde::de::Visitor;
+use serde_json::Map;
+use serde_json::Number;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
@@ -449,6 +457,154 @@ pub(crate) fn internal_error(message: String) -> JSONRPCErrorError {
     }
 }
 
+// A maximum-size fs/read_directory response has at most 50,000 entries and needs
+// roughly 200,000 JSON values. Keep ample headroom for legitimate protocol
+// messages while preventing compact arrays from expanding into millions of heap
+// values during decoding.
+const MAX_JSONRPC_VALUE_NODES: usize = 256 * 1024;
+
+/// Decode an untrusted JSON-RPC message from UTF-8 text while bounding decoding
+/// complexity: at most [`MAX_JSONRPC_VALUE_NODES`] JSON values and no duplicate
+/// object keys. This applies the same per-message ceiling used by the other
+/// exec-server transports so a hostile peer cannot expand a compact array into
+/// millions of heap values or send an ambiguous message with repeated keys.
+pub(crate) fn decode_jsonrpc_message(input: &str) -> Result<JSONRPCMessage, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(input);
+    let value = decode_bounded_value(&mut deserializer)?;
+    deserializer.end()?;
+    serde_json::from_value(value)
+}
+
+/// Byte-slice counterpart to [`decode_jsonrpc_message`] for binary transports.
+pub(crate) fn decode_jsonrpc_message_from_slice(
+    input: &[u8],
+) -> Result<JSONRPCMessage, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_slice(input);
+    let value = decode_bounded_value(&mut deserializer)?;
+    deserializer.end()?;
+    serde_json::from_value(value)
+}
+
+fn decode_bounded_value<'de, D>(deserializer: D) -> Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut remaining = MAX_JSONRPC_VALUE_NODES;
+    BoundedValueSeed {
+        remaining: &mut remaining,
+    }
+    .deserialize(deserializer)
+}
+
+struct BoundedValueSeed<'a> {
+    remaining: &'a mut usize,
+}
+
+impl<'de> DeserializeSeed<'de> for BoundedValueSeed<'_> {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(remaining) = self.remaining.checked_sub(1) else {
+            return Err(de::Error::custom(format!(
+                "JSON-RPC message exceeds the limit of {MAX_JSONRPC_VALUE_NODES} JSON values"
+            )));
+        };
+        *self.remaining = remaining;
+        deserializer.deserialize_any(BoundedValueVisitor {
+            remaining: self.remaining,
+        })
+    }
+}
+
+struct BoundedValueVisitor<'a> {
+    remaining: &'a mut usize,
+}
+
+impl<'de> Visitor<'de> for BoundedValueVisitor<'_> {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a JSON value within the exec-server complexity limit")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(Number::from_f64(value).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        BoundedValueSeed {
+            remaining: self.remaining,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(BoundedValueSeed {
+            remaining: &mut *self.remaining,
+        })? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut values = Map::new();
+        while let Some(key) = object.next_key::<String>()? {
+            if values.contains_key(&key) {
+                return Err(de::Error::custom(format!(
+                    "duplicate JSON object key `{key}`"
+                )));
+            }
+            let value = object.next_value_seed(BoundedValueSeed {
+                remaining: &mut *self.remaining,
+            })?;
+            values.insert(key, value);
+        }
+        Ok(Value::Object(values))
+    }
+}
+
 fn decode_request_params<P>(params: Option<Value>) -> Result<P, JSONRPCErrorError>
 where
     P: DeserializeOwned,
@@ -468,10 +624,11 @@ where
     P: DeserializeOwned,
 {
     let params = params.unwrap_or(Value::Null);
-    match serde_json::from_value(params.clone()) {
+    let retry_as_null = matches!(&params, Value::Object(map) if map.is_empty());
+    match serde_json::from_value(params) {
         Ok(params) => Ok(params),
         Err(err) => {
-            if matches!(params, Value::Object(ref map) if map.is_empty()) {
+            if retry_as_null {
                 serde_json::from_value(Value::Null).map_err(|_| err)
             } else {
                 Err(err)
@@ -529,16 +686,110 @@ async fn drain_pending(pending: &Mutex<HashMap<RequestId, PendingRequest>>) {
 mod tests {
     use std::time::Duration;
 
+    use codex_app_server_protocol::JSONRPCError;
+    use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::JSONRPCMessage;
+    use codex_app_server_protocol::JSONRPCNotification;
+    use codex_app_server_protocol::JSONRPCRequest;
     use codex_app_server_protocol::JSONRPCResponse;
+    use codex_app_server_protocol::RequestId;
     use pretty_assertions::assert_eq;
     use tokio::io::AsyncBufReadExt;
     use tokio::io::AsyncWriteExt;
     use tokio::io::BufReader;
     use tokio::time::timeout;
 
+    use super::MAX_JSONRPC_VALUE_NODES;
     use super::RpcClient;
+    use super::decode_jsonrpc_message;
     use crate::connection::JsonRpcConnection;
+
+    #[test]
+    fn decode_jsonrpc_message_round_trips_every_variant() {
+        let messages = [
+            JSONRPCMessage::Request(JSONRPCRequest {
+                id: RequestId::Integer(1),
+                method: "request".to_string(),
+                params: Some(serde_json::json!({"items": [1, 2, 3]})),
+                trace: None,
+            }),
+            JSONRPCMessage::Notification(JSONRPCNotification {
+                method: "notification".to_string(),
+                params: Some(serde_json::json!({"enabled": true})),
+            }),
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::String("response".to_string()),
+                result: serde_json::json!({"value": "ok"}),
+            }),
+            JSONRPCMessage::Error(JSONRPCError {
+                id: RequestId::Integer(2),
+                error: JSONRPCErrorError {
+                    code: -32603,
+                    data: Some(serde_json::json!({"retryable": false})),
+                    message: "failed".to_string(),
+                },
+            }),
+        ];
+
+        for expected in messages {
+            let encoded = serde_json::to_string(&expected).expect("encode message");
+            let actual = decode_jsonrpc_message(&encoded).expect("decode message");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn decode_jsonrpc_message_accepts_large_scalar_payload() {
+        let expected = JSONRPCMessage::Notification(JSONRPCNotification {
+            method: "large".to_string(),
+            params: Some(serde_json::json!({
+                "data": "x".repeat(MAX_JSONRPC_VALUE_NODES + 1)
+            })),
+        });
+
+        let encoded = serde_json::to_string(&expected).expect("encode message");
+        let actual = decode_jsonrpc_message(&encoded).expect("decode message");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn decode_jsonrpc_message_rejects_duplicate_object_keys() {
+        let error = decode_jsonrpc_message(r#"{"method":"safe","method":"dangerous"}"#)
+            .expect_err("duplicate JSON object keys should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate JSON object key `method`"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn decode_jsonrpc_message_rejects_compact_array_heap_amplification() {
+        const REPRO_VALUE_COUNT: usize = 2_097_137;
+        const REPRO_MESSAGE_BYTES: usize = 4_194_303;
+
+        let mut encoded = String::with_capacity(REPRO_MESSAGE_BYTES);
+        encoded.push_str(r#"{"method":"probe","params":["#);
+        for index in 0..REPRO_VALUE_COUNT {
+            if index != 0 {
+                encoded.push(',');
+            }
+            encoded.push('0');
+        }
+        encoded.push_str("]}");
+        assert_eq!(encoded.len(), REPRO_MESSAGE_BYTES);
+
+        let error = decode_jsonrpc_message(&encoded)
+            .expect_err("amplification payload should exceed the JSON value limit");
+        let expected_error = format!("exceeds the limit of {MAX_JSONRPC_VALUE_NODES} JSON values");
+        assert!(
+            error.to_string().contains(&expected_error),
+            "unexpected error: {error}"
+        );
+    }
 
     async fn read_jsonrpc_line<R>(lines: &mut tokio::io::Lines<BufReader<R>>) -> JSONRPCMessage
     where

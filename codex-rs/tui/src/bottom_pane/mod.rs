@@ -931,19 +931,22 @@ impl BottomPane {
 
     /// Update the status indicator header (defaults to "Working") and details below it.
     ///
-    /// Passing `None` clears any existing details. No-ops if the status indicator is not active.
+    /// Passing `None` clears any existing details. Returns whether the active status indicator
+    /// was updated and requested a redraw.
     pub(crate) fn update_status(
         &mut self,
         header: String,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
-    ) {
+    ) -> bool {
         if let Some(status) = self.status.as_mut() {
             status.update_header(header);
             status.update_details(details, details_capitalization, details_max_lines.max(1));
             self.request_redraw();
+            return true;
         }
+        false
     }
 
     /// Show the transient "press again to quit" hint for `key`.
@@ -1690,16 +1693,6 @@ impl BottomPane {
 
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) {
         if self.composer.set_status_line_enabled(enabled) {
-            self.request_redraw();
-        }
-    }
-
-    /// Updates the contextual footer label and requests a redraw only when it changed.
-    ///
-    /// This keeps the footer plumbing cheap during thread transitions where `App` may recompute
-    /// the label several times while the visible thread settles.
-    pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
-        if self.composer.set_active_agent_label(active_agent_label) {
             self.request_redraw();
         }
     }

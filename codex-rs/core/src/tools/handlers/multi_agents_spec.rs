@@ -16,6 +16,7 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
+const SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION: &str = "Named Codewith auth profile (for example `account001`) the new agent should authenticate under. Omit to inherit the parent agent's auth profile.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 
@@ -590,6 +591,10 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
+        (
+            "auth_profile".to_string(),
+            JsonSchema::string(Some(SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION.to_string())),
+        ),
     ])
 }
 
@@ -632,6 +637,10 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
+        (
+            "auth_profile".to_string(),
+            JsonSchema::string(Some(SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION.to_string())),
+        ),
     ])
 }
 
@@ -640,6 +649,7 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
     properties.remove("model");
     properties.remove("reasoning_effort");
     properties.remove("service_tier");
+    properties.remove("auth_profile");
 }
 
 fn spawn_agent_tool_description(

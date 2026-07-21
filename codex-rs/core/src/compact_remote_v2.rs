@@ -7,6 +7,8 @@ use crate::client_common::ResponseEvent;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::InitialContextInjection;
 use crate::compact::compaction_status_from_result;
+use crate::compact_model_fallback::record_model_fallback;
+use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::build_compact_request_log_data;
 use crate::compact_remote::log_remote_compact_failure;
 use crate::compact_remote::process_compacted_history;
@@ -40,6 +42,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
+use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
@@ -57,19 +60,25 @@ const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    fallback_turn_context: Option<Arc<TurnContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
+    let compaction_metadata = CompactionTurnMetadata::new(
+        CompactionTrigger::Auto,
+        reason,
+        CompactionImplementation::ResponsesCompactionV2,
+        phase,
+    );
     run_remote_compact_task_inner(
         &sess,
         &turn_context,
+        fallback_turn_context.as_ref(),
         Some(client_session),
         initial_context_injection,
-        CompactionTrigger::Auto,
-        reason,
-        phase,
+        compaction_metadata,
     )
     .await
 }
@@ -87,14 +96,19 @@ pub(crate) async fn run_remote_compact_task(
     });
     sess.send_event(&turn_context, start_event).await;
 
+    let compaction_metadata = CompactionTurnMetadata::new(
+        CompactionTrigger::Manual,
+        CompactionReason::UserRequested,
+        CompactionImplementation::ResponsesCompactionV2,
+        CompactionPhase::StandaloneTurn,
+    );
     run_remote_compact_task_inner(
         &sess,
         &turn_context,
+        /*fallback_turn_context*/ None,
         /*client_session*/ None,
         InitialContextInjection::DoNotInject,
-        CompactionTrigger::Manual,
-        CompactionReason::UserRequested,
-        CompactionPhase::StandaloneTurn,
+        compaction_metadata,
     )
     .await
 }
@@ -102,25 +116,22 @@ pub(crate) async fn run_remote_compact_task(
 async fn run_remote_compact_task_inner(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    fallback_turn_context: Option<&Arc<TurnContext>>,
     client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
-    trigger: CompactionTrigger,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<()> {
-    let compaction_metadata = CompactionTurnMetadata::new(
-        trigger,
-        reason,
-        CompactionImplementation::ResponsesCompactionV2,
-        phase,
-    );
+    let trigger = compaction_metadata.trigger();
+    let reason = compaction_metadata.reason();
+    let implementation = compaction_metadata.implementation();
+    let phase = compaction_metadata.phase();
     let mut active_context_tokens_before = sess.get_total_token_usage().await;
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
         trigger,
         reason,
-        CompactionImplementation::ResponsesCompactionV2,
+        implementation,
         phase,
     )
     .await;
@@ -143,6 +154,7 @@ async fn run_remote_compact_task_inner(
     let result = run_remote_compact_task_inner_impl(
         sess,
         turn_context,
+        fallback_turn_context,
         client_session,
         initial_context_injection,
         compaction_metadata,
@@ -187,15 +199,17 @@ async fn run_remote_compact_task_inner(
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    client_session: Option<&mut ModelClientSession>,
+    fallback_turn_context: Option<&Arc<TurnContext>>,
+    mut client_session: Option<&mut ModelClientSession>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     active_context_tokens_before: &mut i64,
 ) -> CodexResult<()> {
     let context_compaction_item = ContextCompactionItem::new();
+    let compaction_id = context_compaction_item.id.clone();
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
         turn_context.sub_id.as_str(),
-        context_compaction_item.id.as_str(),
+        compaction_id.as_str(),
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
@@ -203,6 +217,124 @@ async fn run_remote_compact_task_inner_impl(
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
 
+    let attempt = run_remote_compact_v2_attempt(
+        sess,
+        turn_context,
+        client_session.as_deref_mut(),
+        &compaction_trace,
+        compaction_metadata,
+        active_context_tokens_before,
+    )
+    .await;
+    // When previous-model compaction is rejected in a way that may be model-specific (e.g. a
+    // resumed thread references a retired model slug), retry once with the currently selected
+    // model. The successful attempt's turn context then drives history processing so lifecycle
+    // events and token accounting stay aligned with the model that actually compacted.
+    let (attempt, compaction_turn_context) = match attempt {
+        Ok(attempt) => (attempt, turn_context),
+        Err(error) => {
+            let Some(fallback_turn_context) = fallback_turn_context else {
+                return Err(error);
+            };
+            if !should_retry_with_current_model(&error) {
+                return Err(error);
+            }
+            let fallback_compaction_trace =
+                sess.services.rollout_thread_trace.compaction_trace_context(
+                    fallback_turn_context.sub_id.as_str(),
+                    compaction_id.as_str(),
+                    fallback_turn_context.model_info.slug.as_str(),
+                    fallback_turn_context.provider.info().name.as_str(),
+                );
+            let fallback_result = run_remote_compact_v2_attempt(
+                sess,
+                fallback_turn_context,
+                client_session,
+                &fallback_compaction_trace,
+                compaction_metadata,
+                active_context_tokens_before,
+            )
+            .await;
+            record_model_fallback(
+                &sess.services.session_telemetry,
+                turn_context.model_info.slug.as_str(),
+                fallback_turn_context.model_info.slug.as_str(),
+                compaction_metadata.reason(),
+                compaction_metadata.implementation(),
+                fallback_result.as_ref().err(),
+            );
+            match fallback_result {
+                Ok(attempt) => (attempt, fallback_turn_context),
+                // Surface the original previous-model error so the retry does not change the
+                // user-visible failure.
+                Err(_) => return Err(error),
+            }
+        }
+    };
+    let RemoteCompactV2Attempt {
+        trace_input_history,
+        prompt_input,
+        compaction_output,
+        token_usage,
+        owned_client_session: _owned_client_session,
+    } = attempt;
+    if let Some(token_usage) = token_usage {
+        *active_context_tokens_before = token_usage.input_tokens;
+    }
+    let compacted_history = build_v2_compacted_history(&prompt_input, compaction_output);
+    let new_history = process_compacted_history(
+        sess.as_ref(),
+        compaction_turn_context.as_ref(),
+        compacted_history,
+        initial_context_injection,
+    )
+    .await;
+
+    let reference_context_item = match initial_context_injection {
+        InitialContextInjection::DoNotInject => None,
+        InitialContextInjection::BeforeLastUserMessage => {
+            Some(compaction_turn_context.to_turn_context_item())
+        }
+    };
+    let compacted_item = CompactedItem {
+        message: String::new(),
+        replacement_history: Some(new_history.clone()),
+    };
+    compaction_trace.record_installed(&CompactionCheckpointTracePayload {
+        input_history: &trace_input_history,
+        replacement_history: &new_history,
+    });
+    sess.replace_compacted_history(new_history, reference_context_item, compacted_item)
+        .await;
+    sess.recompute_token_usage(compaction_turn_context).await;
+
+    sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
+        .await;
+    Ok(())
+}
+
+/// A single Responses Compaction V2 attempt against one model's turn context.
+struct RemoteCompactV2Attempt {
+    trace_input_history: Vec<ResponseItem>,
+    prompt_input: Vec<ResponseItem>,
+    compaction_output: ResponseItem,
+    token_usage: Option<TokenUsage>,
+    /// Keeps a session created for standalone compaction alive through lifecycle completion.
+    owned_client_session: Option<ModelClientSession>,
+}
+
+/// Runs the Responses Compaction V2 request for a single model.
+///
+/// Extracted so that previous-model compaction can be retried with the currently selected model
+/// without duplicating history preparation, prompt construction, or failure logging.
+async fn run_remote_compact_v2_attempt(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: Option<&mut ModelClientSession>,
+    compaction_trace: &CompactionTraceContext,
+    compaction_metadata: CompactionTurnMetadata,
+    active_context_tokens_before: &mut i64,
+) -> CodexResult<RemoteCompactV2Attempt> {
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_base_instructions().await;
     let (rewritten_outputs, estimated_deleted_tokens) =
@@ -238,13 +370,10 @@ async fn run_remote_compact_task_inner_impl(
     let turn_metadata_header = turn_context
         .turn_metadata_state
         .current_header_value_for_compaction(&window_id, compaction_metadata);
-    let mut owned_client_session;
+    let mut owned_client_session = None;
     let client_session = match client_session {
         Some(client_session) => client_session,
-        None => {
-            owned_client_session = sess.runtime_model_client().new_session();
-            &mut owned_client_session
-        }
+        None => owned_client_session.insert(sess.runtime_model_client().new_session()),
     };
     let request_budget = RemoteCompactionRequestBudget::new();
     let trace_input_history = history.raw_items().to_vec();
@@ -293,6 +422,11 @@ async fn run_remote_compact_task_inner_impl(
             return Err(err);
         }
     };
+    // Surface exact per-response usage for this compaction request. Only the successful
+    // attempt reaches this point (failed attempts return early), so this emits one event
+    // per completed compaction response, mirroring the standard turn and remote-compact
+    // (non-v2) paths. History processing and active-context accounting are handled by the
+    // caller via the returned `RemoteCompactV2Attempt`.
     sess.send_event(
         turn_context,
         EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
@@ -301,37 +435,13 @@ async fn run_remote_compact_task_inner_impl(
         }),
     )
     .await;
-    if let Some(token_usage) = token_usage {
-        *active_context_tokens_before = token_usage.input_tokens;
-    }
-    let compacted_history = build_v2_compacted_history(&prompt_input, compaction_output);
-    let new_history = process_compacted_history(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        compacted_history,
-        initial_context_injection,
-    )
-    .await;
-
-    let reference_context_item = match initial_context_injection {
-        InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage => Some(turn_context.to_turn_context_item()),
-    };
-    let compacted_item = CompactedItem {
-        message: String::new(),
-        replacement_history: Some(new_history.clone()),
-    };
-    compaction_trace.record_installed(&CompactionCheckpointTracePayload {
-        input_history: &trace_input_history,
-        replacement_history: &new_history,
-    });
-    sess.replace_compacted_history(new_history, reference_context_item, compacted_item)
-        .await;
-    sess.recompute_token_usage(turn_context).await;
-
-    sess.emit_turn_item_completed(turn_context, compaction_item)
-        .await;
-    Ok(())
+    Ok(RemoteCompactV2Attempt {
+        trace_input_history,
+        prompt_input,
+        compaction_output,
+        token_usage,
+        owned_client_session,
+    })
 }
 
 struct RemoteCompactionV2Output {

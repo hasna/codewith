@@ -740,6 +740,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadWorkflowListResponse,
     },
+    #[experimental("thread/workflow/delete")]
+    ThreadWorkflowDelete => "thread/workflow/delete" {
+        params: v2::ThreadWorkflowDeleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadWorkflowDeleteResponse,
+    },
     #[experimental("thread/workflow/run/list")]
     ThreadWorkflowRunList => "thread/workflow/run/list" {
         params: v2::ThreadWorkflowRunListParams,
@@ -4476,6 +4482,13 @@ mod tests {
                 limit: None,
             },
         };
+        let delete_request = ClientRequest::ThreadWorkflowDelete {
+            request_id: RequestId::Integer(10),
+            params: v2::ThreadWorkflowDeleteParams {
+                thread_id: "thr_123".to_string(),
+                workflow_record_id: "workflow_123".to_string(),
+            },
+        };
         let run_list_request = ClientRequest::ThreadWorkflowRunList {
             request_id: RequestId::Integer(4),
             params: v2::ThreadWorkflowRunListParams {
@@ -4534,6 +4547,10 @@ mod tests {
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&list_request),
             Some("thread/workflow/list")
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&delete_request),
+            Some("thread/workflow/delete")
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&run_list_request),

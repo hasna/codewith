@@ -833,11 +833,9 @@ impl ModelClient {
         if model_info.supports_reasoning_summaries {
             Some(Reasoning {
                 effort: effort.or_else(|| model_info.default_reasoning_level.clone()),
-                summary: if summary == ReasoningSummaryConfig::None {
-                    None
-                } else {
-                    Some(summary)
-                },
+                summary: (model_info.supports_reasoning_summary_parameter
+                    && summary != ReasoningSummaryConfig::None)
+                    .then_some(summary),
                 // When Responses Lite is disabled, omit context so Responses uses the default,
                 // which is currently `current_turn`.
                 context: model_info

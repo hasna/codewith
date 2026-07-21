@@ -3102,6 +3102,56 @@ async fn status_line_goal_title_updates_and_clears_with_goal_state() {
 }
 
 #[tokio::test]
+async fn active_agent_status_line_renders_label_and_omits_when_absent() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["active-agent".to_string()]);
+
+    // Multi-agent session: the cached active-agent label surfaces as the segment.
+    chat.set_active_agent_label(Some("Main [default]".to_string()));
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ActiveAgent),
+        Some("Main [default]".to_string())
+    );
+    assert_eq!(status_line_text(&chat), Some("Main [default]".to_string()));
+
+    // Single-agent session: no label, so the segment (and the whole line) is omitted.
+    chat.set_active_agent_label(None);
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ActiveAgent),
+        None
+    );
+    assert_eq!(status_line_text(&chat), None);
+}
+
+#[tokio::test]
+async fn active_agent_status_line_omission_leaves_no_stray_separator() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["current-dir".to_string(), "active-agent".to_string()]);
+    chat.refresh_status_line();
+
+    // active_agent_label defaults to None (single-agent), so only current-dir renders: the
+    // omitted active-agent segment must not leave a dangling " · " separator artifact.
+    let without_label =
+        status_line_text(&chat).expect("current-dir keeps the status line non-empty");
+    assert!(
+        !without_label.contains("Main [default]"),
+        "unexpected active-agent label: {without_label:?}"
+    );
+    assert!(
+        !without_label.contains(" · "),
+        "omitted active-agent segment left a separator artifact: {without_label:?}"
+    );
+
+    // With a label present, both segments render joined by the standard separator.
+    chat.set_active_agent_label(Some("Main [default]".to_string()));
+    let with_label = status_line_text(&chat).expect("status line present");
+    assert!(
+        with_label.contains(" · Main [default]"),
+        "expected joined active-agent segment: {with_label:?}"
+    );
+}
+
+#[tokio::test]
 async fn status_line_run_state_maps_deterministic_task_states() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["run-state".to_string()]);
@@ -3572,6 +3622,32 @@ async fn interrupted_turn_clears_visible_running_hook() {
         "interrupted_turn_clears_visible_running_hook",
         format!(
             "before interrupt:\n{before_interrupt}after interrupt:\n{}",
+            active_hook_blob(&chat)
+        )
+    );
+}
+
+#[tokio::test]
+async fn completed_turn_clears_visible_running_hook() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    handle_hook_started(
+        &mut chat,
+        hook_started_run(
+            "post-tool-use:0:/tmp/hooks.json",
+            codex_app_server_protocol::HookEventName::PostToolUse,
+            /*status_message*/ None,
+        ),
+    );
+    reveal_running_hooks(&mut chat);
+    let before_completion = active_hook_blob(&chat);
+
+    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
+
+    assert_chatwidget_snapshot!(
+        "completed_turn_clears_visible_running_hook",
+        format!(
+            "before completion:\n{before_completion}after completion:\n{}",
             active_hook_blob(&chat)
         )
     );
@@ -5243,5 +5319,216 @@ async fn chatwidget_tall() {
     assert_chatwidget_snapshot!(
         "chatwidget_tall",
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
+    );
+}
+
+#[tokio::test]
+async fn single_line_final_answer_hides_working_status_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+
+    complete_user_message(&mut chat, "user-1", "count to 1");
+    chat.on_task_started();
+    complete_assistant_message(
+        &mut chat,
+        "msg-final-single-line",
+        "1",
+        Some(MessagePhase::FinalAnswer),
+    );
+
+    assert!(chat.bottom_pane.is_task_running());
+    assert!(!chat.bottom_pane.status_indicator_visible());
+
+    let width: u16 = 40;
+    let vt_height: u16 = 10;
+    let ui_height = chat.desired_height(width);
+    let viewport = Rect::new(0, vt_height - ui_height - 1, width, ui_height);
+    let backend = VT100Backend::new(width, vt_height);
+    let mut terminal = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    terminal.set_viewport_area(viewport);
+
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines(&mut terminal, lines)
+            .expect("insert history lines");
+    }
+
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw final answer");
+    assert_chatwidget_snapshot!(
+        "single_line_final_answer_hides_working_status",
+        normalize_snapshot_paths(terminal.backend().vt100().screen().contents())
+    );
+}
+
+#[tokio::test]
+async fn unterminated_agent_delta_does_not_redraw_unchanged_stream_tail() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.handle_streaming_delta("| Step | Owner |\n".to_string());
+    assert!(chat.active_cell_is_stream_tail());
+    let revision = chat.transcript.active_cell_revision;
+
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    chat.frame_requester = frame_requester;
+    chat.handle_streaming_delta("| partial".to_string());
+
+    assert_eq!(chat.transcript.active_cell_revision, revision);
+    assert!(matches!(
+        draw_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn newline_agent_delta_redraws_stream_tail_after_noop_catch_up() {
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    let (mut chat, _rx, _op_rx) =
+        make_chatwidget_manual_with_frame_requester(/*model_override*/ None, frame_requester).await;
+    chat.on_task_started();
+    chat.handle_streaming_delta("Earlier line\n".to_string());
+    chat.on_commit_tick();
+    assert!(!chat.bottom_pane.status_indicator_visible());
+    while draw_rx.try_recv().is_ok() {}
+
+    chat.handle_streaming_delta("Intro line\n| Step | Owner |\n".to_string());
+
+    assert!(chat.active_cell_is_stream_tail());
+    assert!(
+        draw_rx.try_recv().is_ok(),
+        "expected the changed assistant stream tail to schedule a redraw",
+    );
+}
+
+#[tokio::test]
+async fn newline_plan_delta_redraws_stream_tail_after_noop_catch_up() {
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual_with_frame_requester(
+        /*model_override*/ Some("gpt-5"),
+        frame_requester,
+    )
+    .await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+    chat.on_task_started();
+    chat.on_plan_delta("Earlier line\n".to_string());
+    chat.on_commit_tick();
+    assert!(!chat.bottom_pane.status_indicator_visible());
+    while draw_rx.try_recv().is_ok() {}
+
+    chat.on_plan_delta("Intro line\n| Step | Owner |\n".to_string());
+
+    assert!(chat.active_cell_is_stream_tail());
+    assert!(
+        draw_rx.try_recv().is_ok(),
+        "expected the changed plan stream tail to schedule a redraw",
+    );
+}
+
+#[tokio::test]
+async fn regular_commit_tick_clears_orphaned_plan_stream_tail() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+    chat.on_task_started();
+    chat.on_plan_delta("| Step | Owner |\n".to_string());
+    assert!(chat.active_cell_is_stream_tail());
+
+    chat.on_task_started();
+    assert!(chat.active_cell_is_stream_tail());
+    chat.on_commit_tick();
+
+    assert!(!chat.active_cell_is_stream_tail());
+}
+
+#[tokio::test]
+async fn reasoning_delta_redraws_only_when_header_becomes_visible() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    chat.frame_requester = frame_requester;
+
+    chat.on_agent_reasoning_delta("still looking".to_string());
+    assert!(matches!(
+        draw_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(chat.reasoning_header, None);
+
+    chat.on_agent_reasoning_delta(" **Checking".to_string());
+    assert!(matches!(
+        draw_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+
+    chat.on_agent_reasoning_delta(" files**".to_string());
+    assert!(draw_rx.try_recv().is_ok());
+    assert_eq!(chat.reasoning_header.as_deref(), Some("Checking files"));
+
+    chat.on_agent_reasoning_delta(" and preparing a response".to_string());
+    assert!(matches!(
+        draw_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn reasoning_delta_does_not_double_schedule_visible_status_redraw() {
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    let (mut chat, _rx, _op_rx) =
+        make_chatwidget_manual_with_frame_requester(/*model_override*/ None, frame_requester).await;
+    chat.on_task_started();
+    assert!(chat.bottom_pane.status_indicator_visible());
+    while draw_rx.try_recv().is_ok() {}
+
+    chat.on_agent_reasoning_delta("**Checking files**".to_string());
+
+    assert_eq!(chat.reasoning_header.as_deref(), Some("Checking files"));
+    assert!(draw_rx.try_recv().is_ok());
+    assert!(matches!(
+        draw_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn reasoning_delta_restores_recreated_status_indicator_header() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+    chat.on_agent_reasoning_delta("**Checking files**".to_string());
+
+    chat.on_agent_message_delta("Preamble line\n".to_string());
+    chat.on_commit_tick();
+    drain_insert_history(&mut rx);
+    assert!(!chat.bottom_pane.status_indicator_visible());
+
+    begin_unified_exec_startup(&mut chat, "call-1", "proc-1", "sleep 2");
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be recreated");
+    assert_eq!(status.header(), "Working");
+
+    chat.on_agent_reasoning_delta(" and preparing a response".to_string());
+
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should remain visible");
+    assert_eq!(status.header(), "Checking files");
+
+    let width: u16 = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("create terminal");
+    terminal.set_viewport_area(Rect::new(/*x*/ 0, /*y*/ 0, width, height));
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw restored reasoning status");
+    assert_chatwidget_snapshot!(
+        "reasoning_delta_restores_recreated_status_indicator",
+        normalized_backend_snapshot(terminal.backend())
     );
 }

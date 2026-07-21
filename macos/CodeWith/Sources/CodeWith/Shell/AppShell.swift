@@ -104,8 +104,13 @@ struct AppShell: View {
                         machines: model.machines,
                         error: model.machinesError,
                         pairing: model.machinePairing,
+                        remoteControl: model.remoteControlStatus,
                         onStartPairing: { Task { await model.startMachinePairing() } },
-                        onCheckPairing: { Task { await model.refreshMachinePairingStatus() } })
+                        onCheckPairing: { Task { await model.refreshMachinePairingStatus() } },
+                        onSetRemoteControlEnabled: { enabled in Task { await model.setRemoteControlEnabled(enabled) } },
+                        onUpdateTrust: { machine, trust in Task { await model.updateMachineTrust(machine, trustState: trust) } },
+                        onDisableMachine: { machine in Task { await model.disableMachine(machine) } },
+                        onForgetMachine: { machine in Task { await model.forgetMachine(machine) } })
                 case .profiles: ProfilesView(profiles: model.authProfiles,
                                              activeEmail: model.account.email,
                                              profileError: model.profileError,
@@ -214,8 +219,13 @@ struct AppShell: View {
                 machines: model.machines,
                 error: model.machinesError,
                 pairing: model.machinePairing,
+                remoteControl: model.remoteControlStatus,
                 onStartPairing: { Task { await model.startMachinePairing() } },
-                onCheckPairing: { Task { await model.refreshMachinePairingStatus() } })
+                onCheckPairing: { Task { await model.refreshMachinePairingStatus() } },
+                onSetRemoteControlEnabled: { enabled in Task { await model.setRemoteControlEnabled(enabled) } },
+                onUpdateTrust: { machine, trust in Task { await model.updateMachineTrust(machine, trustState: trust) } },
+                onDisableMachine: { machine in Task { await model.disableMachine(machine) } },
+                onForgetMachine: { machine in Task { await model.forgetMachine(machine) } })
         default:
             SettingsGeneral(
                 fullAccess: model.fullAccess,

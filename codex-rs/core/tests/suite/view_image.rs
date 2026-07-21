@@ -1367,6 +1367,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         base_instructions: "base instructions".to_string(),
         model_messages: None,
         supports_reasoning_summaries: false,
+        supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
         default_verbosity: None,
