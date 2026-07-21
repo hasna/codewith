@@ -289,6 +289,7 @@ pub use workflows::WorkflowRunStepApprovalDecision;
 pub use workflows::WorkflowRunStepApprovalOutcome;
 pub use workflows::WorkflowRunStepApprovalParams;
 pub use workflows::WorkflowSpecCreateParams;
+pub use workflows::WorkflowSpecDeleteOutcome;
 pub use workflows::WorkflowSpecListPage;
 pub use workflows::WorkflowStore;
 

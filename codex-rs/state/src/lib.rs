@@ -273,6 +273,7 @@ pub use runtime::WorkflowRunVerifierRecordResultOutcome;
 pub use runtime::WorkflowRunVerifierRecordResultParams;
 pub use runtime::WorkflowRunVerifierResultSummary;
 pub use runtime::WorkflowSpecCreateParams;
+pub use runtime::WorkflowSpecDeleteOutcome;
 pub use runtime::WorkflowSpecListPage;
 pub use runtime::WorkflowStore;
 pub use runtime::WorkflowTimerClaim;

@@ -2,6 +2,7 @@ use super::ChatWidget;
 use codex_app_server_protocol::ThreadGoalPlan;
 use codex_app_server_protocol::ThreadGoalPlanStatus;
 use codex_app_server_protocol::ThreadWorkflow;
+use codex_app_server_protocol::ThreadWorkflowDeleteResponse;
 use codex_app_server_protocol::ThreadWorkflowGetResponse;
 use codex_app_server_protocol::ThreadWorkflowListResponse;
 use codex_app_server_protocol::ThreadWorkflowRun;
@@ -41,6 +42,24 @@ impl ChatWidget {
         };
 
         self.add_plain_history_lines(thread_workflow_detail_lines(&workflow));
+    }
+
+    pub(crate) fn show_thread_workflow_deleted(
+        &mut self,
+        response: ThreadWorkflowDeleteResponse,
+        workflow_record_id: String,
+    ) {
+        if response.deleted {
+            self.add_info_message(
+                format!("Deleted workflow {workflow_record_id}."),
+                Some(super::workflow_slash::WORKFLOW_USAGE_HINT.to_string()),
+            );
+        } else {
+            self.add_info_message(
+                format!("No workflow {workflow_record_id} to delete."),
+                Some(super::workflow_slash::WORKFLOW_USAGE_HINT.to_string()),
+            );
+        }
     }
 
     pub(crate) fn show_thread_workflow_run_summary(

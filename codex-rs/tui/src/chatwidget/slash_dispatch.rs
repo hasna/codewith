@@ -2890,6 +2890,9 @@ fn workflow_slash_command_to_action(command: WorkflowSlashCommand<'_>) -> Thread
         WorkflowSlashCommand::Show { workflow_record_id } => ThreadWorkflowAction::Show {
             workflow_record_id: workflow_record_id.to_string(),
         },
+        WorkflowSlashCommand::Delete { workflow_record_id } => ThreadWorkflowAction::Delete {
+            workflow_record_id: workflow_record_id.to_string(),
+        },
         WorkflowSlashCommand::Draft { .. } => ThreadWorkflowAction::List,
         WorkflowSlashCommand::RunList => ThreadWorkflowAction::RunList,
         WorkflowSlashCommand::RunShow { run_id } => ThreadWorkflowAction::RunShow {
