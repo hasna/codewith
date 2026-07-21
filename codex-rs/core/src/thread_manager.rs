@@ -1179,10 +1179,11 @@ impl ThreadManagerState {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
         });
+        let auth_manager = Box::pin(self.auth_manager_for_config(&config)).await;
         Box::pin(self.spawn_thread_with_source(
             config,
             InitialHistory::New,
-            Arc::clone(&self.auth_manager),
+            auth_manager,
             agent_control,
             session_source,
             parent_thread_id,
@@ -1197,6 +1198,23 @@ impl ThreadManagerState {
             /*user_shell_override*/ None,
         ))
         .await
+    }
+
+    /// Resolves the auth manager a spawned or forked child thread should use.
+    ///
+    /// Child threads normally share the parent's live [`AuthManager`] so cached auth and refresh
+    /// state are reused. When the child config selects a *different* named auth profile than the
+    /// parent is currently bound to (for example an in-session `spawn_agent` that pins
+    /// `auth_profile`), we derive a profile-scoped manager so the child authenticates under the
+    /// requested profile instead of silently inheriting the parent's credentials.
+    async fn auth_manager_for_config(&self, config: &Config) -> Arc<AuthManager> {
+        let requested = config.selected_auth_profile.clone();
+        if requested == self.auth_manager.selected_auth_profile() {
+            return Arc::clone(&self.auth_manager);
+        }
+        self.auth_manager
+            .shared_scoped_auth_profile(requested)
+            .await
     }
 
     pub(crate) async fn resume_thread_with_history_with_source(
@@ -1252,10 +1270,11 @@ impl ThreadManagerState {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
         });
+        let auth_manager = Box::pin(self.auth_manager_for_config(&config)).await;
         Box::pin(self.spawn_thread_with_source(
             config,
             initial_history,
-            Arc::clone(&self.auth_manager),
+            auth_manager,
             agent_control,
             session_source,
             parent_thread_id,
