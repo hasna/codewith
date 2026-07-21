@@ -3,4 +3,4 @@ source: tui/src/bottom_pane/footer.rs
 expression: terminal.backend()
 ---
 "  gpt-5.2-codex · open-codewith · feature/statusline-wrap "
-"  work · Ship statusline titles  Goal achieved (10h 12m)  "
+"  work · Ship statusline titles · Goal achieved (10h 12m) "
