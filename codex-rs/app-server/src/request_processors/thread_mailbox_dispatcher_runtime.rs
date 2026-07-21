@@ -20,7 +20,13 @@ const MAILBOX_DISPATCH_LEASE_DURATION: Duration = Duration::from_secs(60);
 const MAILBOX_DISPATCH_RETRY_DELAY_SECONDS: i64 = 30;
 const MAILBOX_DISPATCH_DURABLE_WRITE_ATTEMPTS: usize = 10;
 const MAILBOX_DISPATCH_DURABLE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(100);
-const MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(5);
+// Liveness window for treating another owner's local active session as still
+// serving a target. A tight window (previously 5s) let a brief GC pause, sleep,
+// or debugger stall on a live owner make its target look claimable, so a second
+// default-on dispatcher could cold-resume and duplicate work against the same
+// rollout. Heartbeats refresh roughly once per second, so 30s tolerates short
+// stalls while staying well under the lease (60s) and retention (300s) windows.
+const MAILBOX_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(30);
 const MAILBOX_LOCAL_ACTIVE_SESSION_RETENTION: Duration = Duration::from_secs(300);
 const MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK: usize = 16;
 const MAILBOX_DISPATCH_LEASE_OWNER: &str = "app-server-local-mailbox-dispatcher";
@@ -163,18 +169,30 @@ impl ThreadMailboxDispatcherRuntime {
         }
     }
 
+    /// Refreshes this process's local active-session heartbeats and returns the
+    /// set of thread ids whose heartbeat was durably written this pass.
+    ///
+    /// Heartbeats are refreshed per peer so one bad peer (for example a loaded
+    /// peer missing its `threads` FK row) cannot hide this process's other live
+    /// sessions or, in `dispatch_claim`, block releasing an unrelated target's
+    /// dispatch lease. Pruning is best-effort for the same reason: a transient
+    /// prune failure keeps stale rows a little longer (the safe direction) rather
+    /// than aborting the whole refresh.
     async fn refresh_local_active_sessions(
         &self,
         state_db: &StateDbHandle,
         now: DateTime<Utc>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<HashSet<ThreadId>> {
         let now_seen = LastSeenAt::from_unix_seconds(now.timestamp());
         let registry = self.active_peer_directory.snapshot(now_seen).await?;
         let freshness = ActivePeerFreshness::new(now_seen, Duration::from_secs(0));
         let mut active_thread_ids = Vec::new();
+        let mut heartbeated = HashSet::new();
         for peer in registry.list_active(freshness) {
+            // Keep advertising every active peer even when a single heartbeat
+            // write fails, so prune below does not drop a still-active session.
             active_thread_ids.push(peer.thread_id);
-            state_db
+            match state_db
                 .local_active_sessions()
                 .heartbeat_session(codex_state::LocalActiveSessionHeartbeatParams {
                     thread_id: peer.thread_id,
@@ -183,21 +201,38 @@ impl ThreadMailboxDispatcherRuntime {
                     pid: Some(std::process::id()),
                     now,
                 })
-                .await?;
+                .await
+            {
+                Ok(_) => {
+                    heartbeated.insert(peer.thread_id);
+                }
+                Err(err) => {
+                    warn!(
+                        thread_id = %peer.thread_id,
+                        "failed to heartbeat local mailbox active session; continuing with other peers: {err}"
+                    );
+                }
+            }
         }
-        state_db
+        if let Err(err) = state_db
             .local_active_sessions()
             .prune_owner_sessions(codex_state::LocalActiveSessionPruneOwnerParams {
                 owner_id: self.local_active_owner_id.clone(),
                 active_thread_ids,
                 observed_at: now,
             })
-            .await?;
-        state_db
+            .await
+        {
+            warn!("failed to prune owner mailbox active sessions: {err}");
+        }
+        if let Err(err) = state_db
             .local_active_sessions()
             .prune_stale_sessions(mailbox_local_active_retention_cutoff(now))
-            .await?;
-        Ok(())
+            .await
+        {
+            warn!("failed to prune stale mailbox active sessions: {err}");
+        }
+        Ok(heartbeated)
     }
 
     async fn dispatch_claim(&self, state_db: &StateDbHandle, claim: codex_state::MailboxClaim) {
@@ -205,8 +240,13 @@ impl ThreadMailboxDispatcherRuntime {
         let message_id = claim.message.message_id.clone();
         let lease_id = claim.attempt.lease_id.clone();
         let result = self.deliver_claim(&claim).await;
+        let mut wake_thread_id = None;
         let durable_transition_ok = match result {
-            MailboxDispatchResult::Delivered { receipt } => {
+            MailboxDispatchResult::Delivered {
+                receipt,
+                wake_thread_id: wake,
+            } => {
+                wake_thread_id = wake;
                 self.ack_dispatch_claim(state_db, &claim, receipt).await
             }
             MailboxDispatchResult::Retry { error, retry_at } => {
@@ -228,32 +268,47 @@ impl ThreadMailboxDispatcherRuntime {
             );
             return;
         }
-        match self
+        // The durable claim is acked, so it is finally safe to wake the target and
+        // let it drain the enqueued mailbox item into model context. Had the process
+        // crashed before this point, the row would still be claimable and simply
+        // redelivered, without the target ever consuming a duplicate.
+        if let Some(thread_id) = wake_thread_id {
+            self.spawn_pending_work_wake(thread_id);
+        }
+        // Refresh is best-effort: a per-peer heartbeat failure elsewhere must not
+        // keep this target's dispatch lease alive. Release the lease once this
+        // process has advertised the target as a local active session, so future
+        // dispatch is handed off promptly instead of waiting out the lease.
+        let heartbeated = self
             .refresh_local_active_sessions(state_db, Utc::now())
             .await
-        {
-            Ok(()) => {
-                if let Err(err) = state_db
-                    .mailbox_messages()
-                    .release_dispatch_target_lease(
-                        target_thread_id,
-                        self.local_active_owner_id.as_str(),
-                        lease_id.as_str(),
-                    )
-                    .await
-                {
-                    warn!(
-                        message_id = %message_id,
-                        "failed to release mailbox target dispatch lease: {err}"
-                    );
-                }
-            }
-            Err(err) => {
+            .unwrap_or_else(|err| {
                 warn!(
                     message_id = %message_id,
-                    "failed to refresh local active sessions after mailbox dispatch; leaving target lease to expire: {err}"
+                    "failed to refresh local active sessions after mailbox dispatch: {err}"
+                );
+                HashSet::new()
+            });
+        if heartbeated.contains(&target_thread_id) {
+            if let Err(err) = state_db
+                .mailbox_messages()
+                .release_dispatch_target_lease(
+                    target_thread_id,
+                    self.local_active_owner_id.as_str(),
+                    lease_id.as_str(),
+                )
+                .await
+            {
+                warn!(
+                    message_id = %message_id,
+                    "failed to release mailbox target dispatch lease: {err}"
                 );
             }
+        } else {
+            warn!(
+                message_id = %message_id,
+                "leaving mailbox target dispatch lease to expire because the target's local active session was not advertised"
+            );
         }
     }
 
@@ -447,11 +502,13 @@ impl ThreadMailboxDispatcherRuntime {
             .enqueue_for_pending_work(&envelope, &target_peer, communication)
             .await;
         match delivery_outcome {
+            // Defer the pending-work wake until dispatch_claim has durably acked
+            // this claim. Waking here (before the ack) risked the target draining
+            // the item into model context while the durable row was still
+            // claimable, so a crash or ack failure could redeliver it.
             Ok(ActiveChannelDeliveryOutcome::Delivered { .. }) => {
-                if delivery.trigger_turn() {
-                    self.spawn_pending_work_wake(target_peer.thread_id);
-                }
                 MailboxDispatchResult::Delivered {
+                    wake_thread_id: mailbox_dispatch_wake_target(delivery, target_peer.thread_id),
                     receipt: serde_json::json!({
                         "delivery": if resumed_target { "resumed" } else { "live" },
                         "recipientPeerId": target_peer.peer_id,
@@ -633,6 +690,9 @@ impl ThreadMailboxDispatcherRuntime {
 enum MailboxDispatchResult {
     Delivered {
         receipt: serde_json::Value,
+        /// Thread to wake for pending work once the claim is durably acked, or
+        /// `None` for queue-only deliveries that must not trigger a turn.
+        wake_thread_id: Option<ThreadId>,
     },
     Retry {
         error: String,
@@ -772,6 +832,15 @@ fn mailbox_local_delivery_policy_from_payload(
         _ => None,
     })
     .unwrap_or(MailboxLocalDeliveryPolicy::LiveOnly)
+}
+
+/// Thread to wake after a delivered claim is durably acked. Queue-only
+/// deliveries never trigger a turn, so they schedule no post-ack wake.
+fn mailbox_dispatch_wake_target(
+    delivery: ActiveChannelDeliveryMode,
+    thread_id: ThreadId,
+) -> Option<ThreadId> {
+    delivery.trigger_turn().then_some(thread_id)
 }
 
 fn mailbox_delivery_mode_name(mode: ActiveChannelDeliveryMode) -> &'static str {
@@ -1119,6 +1188,34 @@ mod tests {
         assert_eq!(
             Some(codex_protocol::protocol::AskForApproval::Never),
             typesafe_overrides.approval_policy
+        );
+    }
+
+    #[test]
+    fn trigger_turn_delivery_wakes_target_only_after_ack() {
+        let thread_id = ThreadId::new();
+        // Queue-only deliveries must never schedule a post-ack wake.
+        assert_eq!(
+            mailbox_dispatch_wake_target(ActiveChannelDeliveryMode::QueueOnly, thread_id),
+            None
+        );
+        // Trigger-turn deliveries hand the target back to dispatch_claim, which
+        // only wakes it once the durable claim is acked.
+        assert_eq!(
+            mailbox_dispatch_wake_target(ActiveChannelDeliveryMode::TriggerTurn, thread_id),
+            Some(thread_id)
+        );
+    }
+
+    #[test]
+    fn local_active_fresh_after_tolerates_short_stalls() {
+        let now =
+            DateTime::<Utc>::from_timestamp(1_700_000_000, /*nsecs*/ 0).expect("valid timestamp");
+        let window = now - mailbox_local_active_fresh_after(now);
+        assert!(
+            window.num_seconds() >= 30,
+            "liveness window must tolerate brief stalls before a live target looks claimable; got {}s",
+            window.num_seconds()
         );
     }
 

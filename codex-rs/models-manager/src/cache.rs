@@ -193,7 +193,7 @@ pub(crate) struct ModelsCache {
 }
 
 impl ModelsCache {
-    /// Returns `true` when the cache entry has not exceeded the configured TTL.
+    /// Returns `true` when the cache entry is not future-dated and has not exceeded the TTL.
     fn is_fresh(&self, ttl: Duration) -> bool {
         if ttl.is_zero() {
             return false;
@@ -202,6 +202,6 @@ impl ModelsCache {
             return false;
         };
         let age = Utc::now().signed_duration_since(self.fetched_at);
-        age <= ttl_duration
+        age >= chrono::Duration::zero() && age <= ttl_duration
     }
 }

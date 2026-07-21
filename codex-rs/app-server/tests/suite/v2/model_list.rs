@@ -587,6 +587,7 @@ async fn list_models_falls_back_for_every_known_provider_discovery_failure() -> 
         ("cerebras", "gpt-oss-120b"),
         ("deepseek", "deepseek-v4-flash"),
         ("google", "gemini-3.5-flash"),
+        ("kimi", "kimi-k3"),
         ("minimax", "MiniMax-M3"),
         ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
         ("openrouter", "z-ai/glm-5.2"),

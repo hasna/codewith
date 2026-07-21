@@ -7,7 +7,10 @@
 //! while keeping transcript, approval, and audit ownership in Codewith.
 
 mod acp;
+mod acp_adapter;
 mod claude;
+#[cfg(windows)]
+mod claude_windows;
 mod contract;
 mod platform_sandbox;
 mod runtimes;
@@ -15,6 +18,7 @@ mod runtimes;
 mod windows_cmd_shim;
 
 pub use acp::*;
+pub use acp_adapter::*;
 pub use claude::*;
 pub use contract::*;
 pub use platform_sandbox::*;

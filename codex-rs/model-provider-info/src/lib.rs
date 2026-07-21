@@ -6,7 +6,8 @@
 //!      key. These override or extend the defaults at runtime.
 //!
 //! The built-in picker surface is intentionally small: OpenAI, Anthropic, Cerebras, NVIDIA,
-//! OpenRouter, xAI, Xiaomi, DeepSeek, Alibaba Qwen, Google Gemini, Z.ai, and MiniMax.
+//! OpenRouter, xAI, Xiaomi, DeepSeek, Alibaba Qwen, Google Gemini, Kimi (Moonshot), Z.ai,
+//! and MiniMax.
 
 mod provider_credentials;
 
@@ -77,6 +78,9 @@ pub use codex_protocol::provider_identity::QWEN_PROVIDER_ID;
 const GOOGLE_PROVIDER_NAME: &str = "Google Gemini";
 pub use codex_protocol::provider_identity::GOOGLE_BASE_URL;
 pub use codex_protocol::provider_identity::GOOGLE_PROVIDER_ID;
+const KIMI_PROVIDER_NAME: &str = "Kimi (Moonshot)";
+pub use codex_protocol::provider_identity::KIMI_BASE_URL;
+pub use codex_protocol::provider_identity::KIMI_PROVIDER_ID;
 const ZAI_PROVIDER_NAME: &str = "Z.ai";
 pub use codex_protocol::provider_identity::ZAI_BASE_URL;
 pub use codex_protocol::provider_identity::ZAI_PROVIDER_ID;
@@ -211,6 +215,7 @@ fn trusted_secret_backend_base_url_for_env_key(env_key: &str) -> Option<&'static
         "mimo" => Some(XIAOMI_BASE_URL),
         "deepseek" => Some(DEEPSEEK_BASE_URL),
         "dashscope" => Some(QWEN_BASE_URL),
+        "moonshot" => Some(KIMI_BASE_URL),
         "gemini" => Some(GOOGLE_BASE_URL),
         "zai" => Some(ZAI_BASE_URL),
         "minimax" => Some(MINIMAX_BASE_URL),
@@ -734,6 +739,32 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_kimi_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: KIMI_PROVIDER_NAME.into(),
+            base_url: Some(KIMI_BASE_URL.into()),
+            env_key: Some("MOONSHOT_API_KEY".into()),
+            env_key_instructions: Some(
+                "Set MOONSHOT_API_KEY to a Kimi (Moonshot) API key from your Kimi Code \
+subscription."
+                    .into(),
+            ),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_zai_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: ZAI_PROVIDER_NAME.into(),
@@ -924,6 +955,12 @@ const BUILT_IN_MODEL_PROVIDER_SPECS: &[BuiltInModelProviderSpec] = &[
     BuiltInModelProviderSpec {
         id: GOOGLE_PROVIDER_ID,
         factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_google_provider),
+        allows_partial_override: true,
+        default_override_wire_api: WireApi::Chat,
+    },
+    BuiltInModelProviderSpec {
+        id: KIMI_PROVIDER_ID,
+        factory: BuiltInProviderFactory::Static(ModelProviderInfo::create_kimi_provider),
         allows_partial_override: true,
         default_override_wire_api: WireApi::Chat,
     },

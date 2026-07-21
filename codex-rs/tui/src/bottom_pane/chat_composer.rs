@@ -898,6 +898,9 @@ impl ChatComposer {
     /// the next user Enter key, then syncs popup state.
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+        // Strip CSI sequences and non-whitespace control characters from explicit paste input
+        // before it enters the composer so a pasted escape sequence cannot corrupt the terminal.
+        let pasted = history_cell::sanitize_user_text(&pasted);
         let char_count = pasted.chars().count();
         if char_count > LARGE_PASTE_CHAR_THRESHOLD {
             let placeholder = self.next_large_paste_placeholder(char_count);
@@ -7113,6 +7116,40 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match result {
             InputResult::Submitted { text, .. } => assert_eq!(text, "1あ"),
+            _ => panic!("expected Submitted"),
+        }
+    }
+
+    /// Behavior: a small explicit paste inserts text directly (no placeholder), and any CSI
+    /// sequence or non-whitespace control characters are stripped before entering the composer,
+    /// so the submitted text matches the sanitized text visible in the textarea.
+    #[test]
+    fn handle_paste_small_sanitizes_and_inserts_text() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codewith to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let sanitized = "_count_rows\tindent\ntwo";
+        let needs_redraw =
+            composer.handle_paste("_count_r\x1b[13;2:3uows\tindent\n\0two\u{7f}".to_string());
+        assert!(needs_redraw);
+        assert_eq!(composer.draft.textarea.text(), sanitized);
+        assert!(composer.draft.pending_pastes.is_empty());
+
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match result {
+            InputResult::Submitted { text, .. } => assert_eq!(text, sanitized),
             _ => panic!("expected Submitted"),
         }
     }

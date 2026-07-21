@@ -21,6 +21,20 @@
 - Bigger runners can help only after the workflow shape is right. Use them for true bottlenecks such as Bazel Linux test/clippy, argument-comment-lint, and Windows build jobs; do not use longer timeouts as the primary speed strategy.
 - The Intel macOS release build in `.github/workflows/rust-release.yml` intentionally uses an xlarge macOS runner. Do not downgrade it unless fresh evidence shows the release binary build finishes reliably on a smaller runner.
 
+### Builds and tests run on remote sandboxes (do not compile `codex-rs` locally)
+
+Codewith agents build and test `codex-rs` on remote sandboxes via the `remote-sandbox-build`
+skill, not on the local machine. The default backend is **Blacksmith** (fast Firecracker
+microVMs with a pre-installed Rust toolchain and large disk); AWS Fargate, E2B, and Daytona
+are fallbacks.
+
+- Do not run `cargo build` / `cargo test` / `cargo nextest` / `just test*` / `just check*`
+  for `codex-rs` on the local machine — dispatch them to a remote sandbox instead.
+- Scoped build/test of the changed crate(s) is the norm; run the full suite for the affected
+  gate (e.g. `codex-core`). Reuse a warm sandbox for fast (~seconds) incremental rebuilds.
+- A cold full `codex-core` suite links and runs in ~10 minutes with ample disk headroom;
+  warm rebuilds of a single changed crate are seconds.
+
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`

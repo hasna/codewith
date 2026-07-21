@@ -522,6 +522,16 @@ async fn build_harness_inner(
             "PARITY_USER_INSTRUCTIONS",
         ));
         config.developer_instructions = Some("PARITY_DEVELOPER_INSTRUCTIONS".to_string());
+        // Skills are discovered asynchronously (embedded `.system` skills plus any
+        // skills contributed by the `codex_apps` MCP server), so the rendered
+        // `<skills_instructions>` developer block is not deterministic across the two
+        // sequential sessions this parity test drives (legacy vs v2). That timing
+        // volatility is orthogonal to remote-compaction request parity — both paths
+        // inject the same block from the same session state — and it made
+        // `remote_compaction_parity_manual_transcripts` flake in Bazel CI. Disable the
+        // block here to keep the request-body comparison hermetic, mirroring how
+        // subagent_notifications.rs and client.rs pin down volatile instruction blocks.
+        config.include_skill_instructions = false;
         if settings.service_tier_fast {
             config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
         }

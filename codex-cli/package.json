@@ -1,6 +1,6 @@
 {
   "name": "@hasna/codewith",
-  "version": "0.1.67",
+  "version": "0.1.70",
   "description": "Codewith command-line coding agent from Hasna.",
   "license": "Apache-2.0",
   "bin": {

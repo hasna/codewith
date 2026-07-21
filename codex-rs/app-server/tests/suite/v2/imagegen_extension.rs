@@ -59,7 +59,7 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model() -> Resul
                 responses::ev_response_created("resp-1"),
                 responses::ev_function_call_with_namespace(
                     call_id,
-                    "image_gen",
+                    "images",
                     "imagegen",
                     &json!({
                         "action": "generate",
@@ -199,7 +199,7 @@ async fn standalone_image_generation_is_exposed_in_code_mode_only() -> Result<()
     assert!(
         response_mock
             .single_request()
-            .body_contains_text("image_gen__imagegen")
+            .body_contains_text("images__imagegen")
     );
 
     Ok(())
@@ -222,7 +222,7 @@ async fn standalone_image_generation_is_callable_from_code_mode_only() -> Result
                     call_id,
                     "exec",
                     r#"
-const result = await tools.image_gen__imagegen({
+const result = await tools.images__imagegen({
   action: "generate",
   prompt: "paint a blue whale",
 });
@@ -271,7 +271,7 @@ generatedImage(result);
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].body_contains_text("image_gen__imagegen"));
+    assert!(requests[0].body_contains_text("images__imagegen"));
     let output = requests[1].custom_tool_call_output(call_id);
     assert_eq!(
         output["output"][1],

@@ -920,7 +920,27 @@ async fn apply_patch_cli_preserves_existing_hard_link_outside_workspace() -> Res
 async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = apply_patch_harness().await?;
+    // Unlike the sibling `Add File` traversal test, this case updates a file
+    // that lives *inside* the workspace, so the Linux fs sandbox actually reads
+    // it through bubblewrap before the traversal guard rejects the outside move.
+    // Reading through the sandbox first masks the workspace `.git` metadata dir
+    // read-only. The shared harness leaves `config.workspace_roots` pointing at
+    // the process's build-time working directory (see `prepare_config`, which
+    // overrides `config.cwd` but not `config.workspace_roots`). On a developer
+    // machine that directory is the repo checkout with a real `.git`, so the
+    // mask binds an existing path; under the Bazel hermetic CI sandbox that
+    // directory has no `.git`, so bwrap cannot set up the `.git` mask and the
+    // read aborts before the traversal guard runs. Pin the workspace root to the
+    // harness cwd (a writable temp dir) so the `.git` mask always targets an
+    // existing, writable location regardless of the process working directory.
+    let harness = apply_patch_harness_with(|builder| {
+        builder.with_config(|config| {
+            let workspace_roots = vec![config.cwd.clone()];
+            config.workspace_roots = workspace_roots.clone();
+            config.permissions.set_workspace_roots(workspace_roots);
+        })
+    })
+    .await?;
 
     let escape_path = harness
         .test()
