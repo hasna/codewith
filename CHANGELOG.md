@@ -52,7 +52,7 @@ Release headlined by an opt-in keep-going / auto-resume mode: a new
 `/keep-going` slash command and a `[keep_going]` config section let a turn keep
 working toward the active goal and auto-resume instead of stopping early. It
 ships alongside a `/privacy-filter` readiness check, a cluster of app-server,
-TUI, and usage correctness fixes, and ten Dependabot dependency bumps
+TUI, and usage correctness fixes, and nine Dependabot dependency bumps
 (including the rust-toolchain 1.97.0 to 1.97.1 update).
 
 ### Added
@@ -84,7 +84,10 @@ TUI, and usage correctness fixes, and ten Dependabot dependency bumps
 - CI: bumped `softprops/action-gh-release` from 3.0.1 to 3.0.2. (#347)
 - Rust: bumped `regex` from 1.12.3 to 1.13.0. (#348)
 - Rust: bumped `age` from 0.11.2 to 0.12.1. (#349)
-- Rust: bumped `cpal` from 0.15.3 to 0.18.1. (#350)
+- Rust: kept `cpal` at 0.15.3; the 0.18.1 bump (#350) was reverted because cpal
+  0.18 changed `SampleRate` from a tuple struct to a type alias, breaking the
+  macOS-gated audio code. Migrating `audio_device.rs` to the cpal 0.18 API is a
+  deferred follow-up.
 - Rust: bumped `axum` from 0.8.8 to 0.8.9. (#351)
 - Rust: bumped `ctor` from 1.0.7 to 1.0.10. (#352)
 
