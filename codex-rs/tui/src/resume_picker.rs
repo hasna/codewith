@@ -5809,7 +5809,7 @@ session_picker_view = "dense"
             }],
         };
 
-        let rendered = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+        let rendered = thread_to_transcript_cells(thread, RawReasoningVisibility::Visible)
             .into_iter()
             .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
             .map(|line| line.to_string())
@@ -5865,13 +5865,13 @@ session_picker_view = "dense"
             }],
         };
 
-        let hidden = thread_to_transcript_cells(&thread, RawReasoningVisibility::Hidden)
+        let hidden = thread_to_transcript_cells(thread.clone(), RawReasoningVisibility::Hidden)
             .into_iter()
             .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        let visible = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+        let visible = thread_to_transcript_cells(thread, RawReasoningVisibility::Visible)
             .into_iter()
             .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
             .map(|line| line.to_string())
@@ -5925,7 +5925,7 @@ session_picker_view = "dense"
             }],
         };
 
-        let rendered = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+        let rendered = thread_to_transcript_cells(thread, RawReasoningVisibility::Visible)
             .into_iter()
             .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
             .map(|line| line.to_string())

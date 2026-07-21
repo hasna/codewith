@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadPendingInteraction": {
       "properties": {
         "createdAt": {
@@ -18,7 +17,7 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/definitions/ThreadPendingInteractionKind"
+          "$ref": "#/$defs/ThreadPendingInteractionKind"
         },
         "noClientPolicy": {
           "type": "string"
@@ -69,10 +68,10 @@
           ]
         },
         "sourceKind": {
-          "$ref": "#/definitions/ThreadPendingInteractionSourceKind"
+          "$ref": "#/$defs/ThreadPendingInteractionSourceKind"
         },
         "status": {
-          "$ref": "#/definitions/ThreadPendingInteractionStatus"
+          "$ref": "#/$defs/ThreadPendingInteractionStatus"
         },
         "terminalAt": {
           "format": "int64",
@@ -109,18 +108,18 @@
         }
       },
       "required": [
-        "createdAt",
         "interactionId",
+        "threadId",
+        "sourceKind",
         "kind",
-        "noClientPolicy",
+        "status",
         "requestPayload",
-        "requestPayloadPreview",
         "requestPayloadSha256",
+        "requestPayloadPreview",
         "requestRedactions",
         "responseRedactions",
-        "sourceKind",
-        "status",
-        "threadId",
+        "noClientPolicy",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -161,6 +160,7 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "dryRun": {
       "type": "boolean"
@@ -168,7 +168,7 @@
     "interaction": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadPendingInteraction"
+          "$ref": "#/$defs/ThreadPendingInteraction"
         },
         {
           "type": "null"

@@ -1,0 +1,6 @@
+---
+source: tui/src/chatwidget/collab_wait_status.rs
+expression: "status_snapshot(waits.status_indicator_state_at(now,\n&metadata).expect(\"active status\"))"
+---
+Waiting for Robie
+Inspect the waiting-agent rendering path and describe every possible regressi... · waiting 1m 05s

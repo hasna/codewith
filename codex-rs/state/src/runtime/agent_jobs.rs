@@ -8,11 +8,12 @@ impl StateRuntime {
         items: &[AgentJobItemCreateParams],
     ) -> anyhow::Result<AgentJob> {
         let now = Utc::now().timestamp();
-        let input_headers_json = serde_json::to_string(&params.input_headers)?;
+        let input_headers_json =
+            crate::redacted_local_state_serialized_json_string(&params.input_headers)?;
         let output_schema_json = params
             .output_schema_json
             .as_ref()
-            .map(serde_json::to_string)
+            .map(redact_state_json_string)
             .transpose()?;
         let max_runtime_seconds = params
             .max_runtime_seconds
@@ -42,9 +43,9 @@ INSERT INTO agent_jobs (
             "#,
         )
         .bind(params.id.as_str())
-        .bind(params.name.as_str())
+        .bind(redact_state_string(params.name.as_str()))
         .bind(AgentJobStatus::Pending.as_str())
-        .bind(params.instruction.as_str())
+        .bind(redact_state_string(params.instruction.as_str()))
         .bind(i64::from(params.auto_export))
         .bind(max_runtime_seconds)
         .bind(output_schema_json)
@@ -57,7 +58,7 @@ INSERT INTO agent_jobs (
         .await?;
 
         for item in items {
-            let row_json = serde_json::to_string(&item.row_json)?;
+            let row_json = redact_state_json_string(&item.row_json)?;
             sqlx::query(
                 r#"
 INSERT INTO agent_job_items (
@@ -430,7 +431,7 @@ WHERE job_id = ? AND item_id = ? AND status = ?
         result_json: &Value,
     ) -> anyhow::Result<bool> {
         let now = Utc::now().timestamp();
-        let serialized = serde_json::to_string(result_json)?;
+        let serialized = redact_state_json_string(result_json)?;
         let result = sqlx::query(
             r#"
 UPDATE agent_job_items

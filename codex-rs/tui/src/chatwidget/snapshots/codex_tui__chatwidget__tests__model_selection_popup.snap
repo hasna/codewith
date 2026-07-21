@@ -5,15 +5,19 @@ expression: popup
   Select Model and Effort
   Hasna
 
-  1. gpt-5.5 (default)    Frontier model for complex coding, research, and
+  2. gpt-5.6-terra        Preview GPT-5.6 model balancing intelligence and
+                          cost.
+  3. gpt-5.6-luna         Preview GPT-5.6 model optimized for fast, cost-
+                          sensitive workloads.
+  4. gpt-5.5              Frontier model for complex coding, research, and
                           real-world
-  2. gpt-5.4              Strong model for everyday coding.
-  3. gpt-5.4-mini         Small, fast, and cost-efficient model for simpler
-                          coding
-  4. gpt-5.3-codex-spark  Text-only research preview model optimized for near-
+  5. gpt-5.3-codex-spark  Text-only research preview model optimized for near-
                           instant coding
-  5. gpt-5.3-codex        Coding-optimized model.
-› 6. gpt-5.2 (current)    Optimized for professional work and long-running
+  6. gpt-5.4              Strong model for everyday coding.
+  7. gpt-5.4-mini         Small, fast, and cost-efficient model for simpler
+                          coding
+  8. gpt-5.3-codex        Coding-optimized model.
+› 9. gpt-5.2 (current)    Optimized for professional work and long-running
                           agents.
 
   Press enter to confirm or esc to go back

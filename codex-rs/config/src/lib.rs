@@ -1,3 +1,4 @@
+pub mod auth_capsule_policy;
 mod cloud_config_bundle;
 mod cloud_config_layers;
 mod config_layer_source;
@@ -32,6 +33,8 @@ pub mod types;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 
+pub use auth_capsule_policy::AUTH_CAPSULE_POLICY_CAPABILITIES_SCHEMA_VERSION;
+pub use auth_capsule_policy::AuthCapsulePolicyCapabilities;
 pub use cloud_config_bundle::CloudConfigBundle;
 pub use cloud_config_bundle::CloudConfigBundleLayers;
 pub use cloud_config_bundle::CloudConfigBundleLoadError;
@@ -78,6 +81,7 @@ pub use config_requirements::Sourced;
 pub use config_requirements::WebSearchModeRequirement;
 pub use config_requirements::WindowsRequirementsToml;
 pub use config_requirements::sandbox_mode_requirement_for_permission_profile;
+pub use config_toml::ToolPolicy;
 pub use constraint::Constrained;
 pub use constraint::ConstraintError;
 pub use constraint::ConstraintResult;

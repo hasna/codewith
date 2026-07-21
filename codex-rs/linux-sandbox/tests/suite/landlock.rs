@@ -18,6 +18,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cargo_bin::cargo_bin;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,14 +42,35 @@ const NETWORK_TIMEOUT_MS: u64 = 10_000;
 const NETWORK_TIMEOUT_MS: u64 = 10_000;
 
 const BWRAP_UNAVAILABLE_ERR: &str = "bubblewrap is unavailable: no system bwrap was found";
+const BAZEL_BWRAP_ENV_KEYS: &[&str] = &[
+    "CARGO_BIN_EXE_bwrap",
+    "RUNFILES_DIR",
+    "RUNFILES_MANIFEST_FILE",
+    "RUNFILES_MANIFEST_ONLY",
+    "TEST_SRCDIR",
+    "TEST_WORKSPACE",
+];
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
-    create_env(&policy, /*thread_id*/ None)
+    let mut env = create_env(&policy, /*thread_id*/ None);
+    preserve_bazel_bwrap_env(&mut env);
+    env
+}
+
+fn preserve_bazel_bwrap_env(env: &mut HashMap<String, String>) {
+    for key in BAZEL_BWRAP_ENV_KEYS {
+        if let Ok(value) = std::env::var(key) {
+            env.insert((*key).to_string(), value);
+        }
+    }
 }
 
 fn codex_linux_sandbox_exe() -> PathBuf {
-    let sandbox_program = PathBuf::from(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    let sandbox_program = match cargo_bin("codex-linux-sandbox") {
+        Ok(path) => path,
+        Err(err) => panic!("resolve codex-linux-sandbox binary for integration test: {err}"),
+    };
     match sandbox_program.canonicalize() {
         Ok(path) => path,
         Err(_) => sandbox_program,

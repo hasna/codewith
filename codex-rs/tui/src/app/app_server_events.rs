@@ -82,6 +82,8 @@ impl App {
                 return;
             }
             ServerNotification::AccountUpdated(notification) => {
+                self.chat_widget
+                    .invalidate_rate_limit_reset_state_after_account_update();
                 self.chat_widget.update_account_state(
                     status_account_display_from_auth_mode(
                         notification.auth_mode,

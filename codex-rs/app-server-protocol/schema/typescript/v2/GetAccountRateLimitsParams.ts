@@ -7,4 +7,8 @@ export type GetAccountRateLimitsParams = {
  * Auth profile used for this read. `null` selects the default root auth;
  * omission leaves the app-server's selected auth profile unchanged.
  */
-authProfile?: string | null, };
+authProfile?: string | null,
+/**
+ * Include detailed reset-credit rows even when no credits remain available.
+ */
+includeResetCreditDetails?: boolean, };

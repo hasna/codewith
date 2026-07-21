@@ -92,7 +92,6 @@ const NOTIFICATIONS_TO_OPT_OUT: &[&str] = &[
     "command/exec/outputDelta",
     "item/agentMessage/delta",
     "item/plan/delta",
-    "item/fileChange/outputDelta",
     "item/reasoning/summaryTextDelta",
     "item/reasoning/textDelta",
 ];

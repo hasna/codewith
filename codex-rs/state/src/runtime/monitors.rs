@@ -74,12 +74,12 @@ RETURNING
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(monitor_id)
             .bind(params.thread_id.to_string())
-            .bind(params.name)
-            .bind(params.prompt)
-            .bind(params.command)
-            .bind(params.cwd)
+            .bind(redact_state_string(params.name))
+            .bind(redact_state_string(params.prompt))
+            .bind(redact_state_string(params.command))
+            .bind(redact_state_optional_string(params.cwd))
             .bind(params.routing.as_str())
-            .bind(params.output_file)
+            .bind(redact_state_optional_string(params.output_file))
             .bind(params.status.as_str())
             .bind(now_ms)
             .bind(now_ms)
@@ -185,6 +185,12 @@ ORDER BY updated_at_ms, monitor_id
         let process_id = update.process_id.unwrap_or(existing.process_id);
         let last_event_at = update.last_event_at.unwrap_or(existing.last_event_at);
         let last_error = update.last_error.unwrap_or(existing.last_error);
+        let name = redact_state_string(name);
+        let prompt = redact_state_string(prompt);
+        let command = redact_state_string(command);
+        let cwd = redact_state_optional_string(cwd);
+        let output_file = redact_state_optional_string(output_file);
+        let last_error = redact_state_optional_string(last_error);
         let sql = thread_monitor_returning(
             r#"
 UPDATE thread_monitors
@@ -344,6 +350,7 @@ RETURNING
         let event_id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
+        let text = redact_state_string(params.text);
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
@@ -368,7 +375,7 @@ RETURNING
         .bind(params.monitor_id)
         .bind(params.thread_id.to_string())
         .bind(params.stream.as_str())
-        .bind(params.text)
+        .bind(text)
         .bind(now_ms)
         .fetch_one(&mut *tx)
         .await?;
@@ -498,6 +505,10 @@ mod tests {
             .expect("valid thread id")
     }
 
+    fn synthetic_secret() -> String {
+        format!("{}{}", "sk-proj-", "a".repeat(32))
+    }
+
     async fn upsert_test_thread(runtime: &StateRuntime, thread_id: ThreadId) {
         let metadata = test_thread_metadata(
             runtime.codex_home(),
@@ -587,6 +598,63 @@ mod tests {
                 .await
                 .expect("read should succeed")
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn monitor_fields_and_events_are_redacted_before_write() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 9);
+        upsert_test_thread(&runtime, thread_id).await;
+        let sample_value = synthetic_secret();
+
+        let created = runtime
+            .thread_monitors()
+            .create_thread_monitor(ThreadMonitorCreateParams {
+                thread_id,
+                name: format!("CI {sample_value}"),
+                prompt: format!("watch {sample_value}"),
+                command: format!("printf '%s' {sample_value}"),
+                cwd: None,
+                routing: crate::ThreadMonitorRouting::Stream,
+                output_file: None,
+                status: crate::ThreadMonitorStatus::Running,
+            })
+            .await
+            .expect("monitor should be created");
+        assert!(
+            created
+                .prompt
+                .contains(crate::local_state_redaction_marker())
+        );
+        assert!(!created.prompt.contains(sample_value.as_str()));
+        assert!(!created.command.contains(sample_value.as_str()));
+
+        let event = runtime
+            .thread_monitors()
+            .create_thread_monitor_event(ThreadMonitorEventCreateParams {
+                thread_id,
+                monitor_id: created.monitor_id.clone(),
+                stream: crate::ThreadMonitorEventStream::Stderr,
+                text: format!("failed with {sample_value}"),
+            })
+            .await
+            .expect("event should be created");
+        assert!(event.text.contains(crate::local_state_redaction_marker()));
+        assert!(!event.text.contains(sample_value.as_str()));
+
+        let reloaded = runtime
+            .thread_monitors()
+            .get_thread_monitor(created.monitor_id.as_str())
+            .await
+            .expect("monitor query should work")
+            .expect("monitor should exist");
+        assert_eq!(reloaded.last_error.as_deref(), Some(event.text.as_str()));
+        assert!(
+            !reloaded
+                .last_error
+                .unwrap_or_default()
+                .contains(sample_value.as_str())
         );
     }
 }

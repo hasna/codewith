@@ -739,6 +739,21 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::RespondExternalAgentPermission {
+                run_id,
+                request_id,
+                decision,
+            } => {
+                app_server
+                    .thread_external_agent_permission_respond(
+                        thread_id,
+                        run_id.to_string(),
+                        request_id.to_string(),
+                        *decision,
+                    )
+                    .await?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }

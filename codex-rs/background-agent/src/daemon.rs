@@ -127,7 +127,14 @@ impl BackgroundAgentDaemon {
             handle,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
-        write_pid_record(&self.paths.pid_file(), &record).await?;
+        if let Err(publication_error) = write_pid_record(&self.paths.pid_file(), &record).await {
+            return match self.controller.stop(&record.handle).await {
+                Ok(_) => Err(publication_error),
+                Err(cleanup_error) => Err(publication_error.context(format!(
+                    "failed to stop background-agent worker after pid record publication failed: {cleanup_error:#}"
+                ))),
+            };
+        }
         self.output(
             BackgroundAgentDaemonStatus::Started,
             Some(record),
@@ -363,6 +370,8 @@ pub fn ensure_supported_platform() -> Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -434,6 +443,146 @@ mod tests {
         assert_eq!(output.status, BackgroundAgentDaemonStatus::AlreadyRunning);
         assert_eq!(output.pid, Some(existing.pid));
         let _ = controller.stop(&existing).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_start_stops_worker_when_pid_record_write_fails() -> Result<()> {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let worker_path = temp_dir.path().join("worker.sh");
+        fs::write(&worker_path, "#!/bin/sh\nsleep 60\n").await?;
+        let mut permissions = std::fs::metadata(&worker_path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&worker_path, permissions)?;
+        fs::create_dir(temp_dir.path().join("daemon.json.tmp")).await?;
+        let daemon = BackgroundAgentDaemon::with_controller(
+            BackgroundAgentDaemonPaths::new(&worker_path, temp_dir.path()),
+            WorkerProcessController::with_timeouts(
+                Duration::from_millis(50),
+                Duration::from_secs(5),
+            ),
+        );
+
+        let error = daemon
+            .start()
+            .await
+            .expect_err("pid record write should fail");
+
+        assert!(
+            format!("{error:#}").contains("failed to write daemon pid temp file"),
+            "unexpected error: {error:#}"
+        );
+        let process_list = tokio::process::Command::new("ps")
+            .args(["-eo", "pid=,args="])
+            .output()
+            .await
+            .context("failed to list processes")?;
+        if !process_list.status.success() {
+            bail!("ps failed while listing processes");
+        }
+        let stdout = String::from_utf8(process_list.stdout).context("ps output was not utf-8")?;
+        let worker_arg = worker_path.to_string_lossy();
+        let leaked_worker_pid = stdout
+            .lines()
+            .find(|line| line.contains(worker_arg.as_ref()))
+            .map(|line| {
+                line.split_whitespace()
+                    .next()
+                    .context("matching ps line had no pid")?
+                    .parse::<u32>()
+                    .context("matching ps line had an invalid pid")
+            })
+            .transpose()?;
+        if let Some(worker_pid) = leaked_worker_pid {
+            let raw_pid = libc::pid_t::try_from(worker_pid)?;
+            unsafe {
+                libc::kill(-raw_pid, libc::SIGKILL);
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let result = unsafe {
+                    libc::kill(raw_pid, /*sig*/ 0)
+                };
+                if result != 0
+                    && std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting for process {worker_pid} to exit");
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        }
+        assert_eq!(leaked_worker_pid, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_start_preserves_publication_error_when_worker_cleanup_fails() -> Result<()> {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let worker_path = temp_dir.path().join("worker.sh");
+        fs::write(&worker_path, "#!/bin/sh\ntrap '' TERM\nsleep 60\n").await?;
+        let mut permissions = std::fs::metadata(&worker_path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&worker_path, permissions)?;
+        let temp_pid_path = temp_dir.path().join("daemon.json.tmp");
+        fs::create_dir(&temp_pid_path).await?;
+        let daemon = BackgroundAgentDaemon::with_controller(
+            BackgroundAgentDaemonPaths::new(&worker_path, temp_dir.path()),
+            WorkerProcessController::with_timeouts(
+                /*stop_grace_period*/ Duration::ZERO,
+                /*hard_kill_timeout*/ Duration::ZERO,
+            ),
+        );
+
+        let error = daemon
+            .start()
+            .await
+            .expect_err("pid publication and worker cleanup should fail");
+        let cleanup_context = error.to_string();
+        let worker_pid = cleanup_context
+            .strip_prefix(
+                "failed to stop background-agent worker after pid record publication failed: \
+                 timed out waiting for background agent worker process ",
+            )
+            .and_then(|message| message.strip_suffix(" to stop"))
+            .context("cleanup error did not retain the worker pid")?
+            .parse::<u32>()
+            .context("cleanup error contained an invalid worker pid")?;
+        let raw_pid = libc::pid_t::try_from(worker_pid)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let result = unsafe {
+                libc::kill(raw_pid, /*sig*/ 0)
+            };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                unsafe {
+                    libc::kill(-raw_pid, libc::SIGKILL);
+                }
+                bail!("timed out waiting for process {worker_pid} to exit");
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            error_chain.first(),
+            Some(&format!(
+                "failed to stop background-agent worker after pid record publication failed: \
+                 timed out waiting for background agent worker process {worker_pid} to stop"
+            ))
+        );
+        assert_eq!(
+            error_chain.get(1),
+            Some(&format!(
+                "failed to write daemon pid temp file {}",
+                temp_pid_path.display()
+            ))
+        );
         Ok(())
     }
 

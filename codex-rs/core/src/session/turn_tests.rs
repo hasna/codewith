@@ -136,3 +136,83 @@ async fn oversized_sampling_prompt_is_rejected_before_streaming() {
         Err(CodexErr::ContextWindowExceeded)
     ));
 }
+
+#[tokio::test]
+async fn auto_compact_status_uses_chatgpt_capped_bundled_gpt_window() {
+    let (session, _initial_turn_context, _rx_event) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |config| {
+                config.model = Some("gpt-5.5".to_string());
+            },
+        )
+        .await;
+    let turn_context = session.new_default_turn().await;
+
+    assert_eq!(turn_context.model_context_window(), Some(258_400));
+
+    let over_chatgpt_default_limit = 272_000 * 90 / 100 + 1;
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(codex_protocol::protocol::TokenUsageInfo {
+            total_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: over_chatgpt_default_limit,
+                ..Default::default()
+            },
+            last_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: over_chatgpt_default_limit,
+                ..Default::default()
+            },
+            model_context_window: turn_context.model_context_window(),
+        }));
+    }
+
+    let status = auto_compact_token_status(&session, &turn_context).await;
+
+    assert_eq!(status.active_context_tokens, over_chatgpt_default_limit);
+    assert_eq!(status.auto_compact_scope_tokens, over_chatgpt_default_limit);
+    assert_eq!(status.auto_compact_scope_limit, 244_800);
+    assert!(status.token_limit_reached);
+}
+
+#[tokio::test]
+async fn body_after_prefix_auto_compact_status_uses_chatgpt_capped_full_window() {
+    let (session, _initial_turn_context, _rx_event) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |config| {
+                config.model = Some("gpt-5.5".to_string());
+                config.model_auto_compact_token_limit = Some(999_999);
+                config.model_auto_compact_token_limit_scope =
+                    codex_protocol::config_types::AutoCompactTokenLimitScope::BodyAfterPrefix;
+            },
+        )
+        .await;
+    let turn_context = session.new_default_turn().await;
+
+    assert_eq!(turn_context.model_context_window(), Some(258_400));
+
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(codex_protocol::protocol::TokenUsageInfo {
+            total_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: 258_400,
+                ..Default::default()
+            },
+            last_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: 258_400,
+                ..Default::default()
+            },
+            model_context_window: turn_context.model_context_window(),
+        }));
+    }
+
+    let status = auto_compact_token_status(&session, &turn_context).await;
+
+    assert_eq!(status.full_context_window_limit, Some(258_400));
+    assert!(status.full_context_window_limit_reached);
+    assert_eq!(status.auto_compact_scope_limit, 999_999);
+    assert!(status.token_limit_reached);
+}

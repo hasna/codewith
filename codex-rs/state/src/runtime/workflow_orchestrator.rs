@@ -1142,7 +1142,7 @@ WHERE id = ?
     });
     let prompt_snapshot_ref = format!("workflow:{}:step:{}:prompt", run.run_id, candidate.step_id);
     let source = WORKFLOW_BRANCH_SOURCE.to_string();
-    let spawn_linkage_json = serde_json::to_string(&json!({
+    let spawn_linkage_json = redact_state_json_string(&json!({
         "schemaVersion": "workflow.branch_spawn/v0",
         "redactionVersion": 1,
         "workflowRunId": run.run_id.as_str(),
@@ -1182,9 +1182,9 @@ INSERT INTO background_agent_runs (
         "#,
     )
     .bind(background_agent_run_id)
-    .bind(idempotency_key)
+    .bind(redact_state_string(idempotency_key))
     .bind(source)
-    .bind(prompt_snapshot_ref.as_str())
+    .bind(redact_state_string(prompt_snapshot_ref.as_str()))
     .bind(WORKFLOW_BRANCH_THREAD_STORE_KIND)
     .bind(
         run.source_thread_id
@@ -1193,10 +1193,10 @@ INSERT INTO background_agent_runs (
     )
     .bind(params.parent_agent_run_id.as_deref())
     .bind(spawn_linkage_json.as_str())
-    .bind(params.auth_profile_ref.as_deref())
+    .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
     .bind(BackgroundAgentDesiredState::Running.as_str())
     .bind(BackgroundAgentRunStatus::Queued.as_str())
-    .bind("queued by workflow branch admission")
+    .bind(redact_state_string("queued by workflow branch admission"))
     .bind(params.config_fingerprint.as_deref())
     .bind(params.version_fingerprint.as_deref())
     .bind(crate::BackgroundAgentRetentionState::Active.as_str())
@@ -1289,9 +1289,9 @@ ON CONFLICT(run_id) DO UPDATE SET
     .bind(seq)
     .bind(status.as_str())
     .bind(desired_state.as_str())
-    .bind(summary)
+    .bind(redact_state_string(summary))
     .bind(seq)
-    .bind(serde_json::to_string(payload_json)?)
+    .bind(redact_state_json_string(payload_json)?)
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -1329,7 +1329,7 @@ INSERT INTO background_agent_execution_snapshots (
     .bind(run_id)
     .bind(seq)
     .bind(snapshot_kind)
-    .bind(serde_json::to_string(&payload_json)?)
+    .bind(redact_state_json_string(&payload_json)?)
     .bind(recovery_policy)
     .bind(config_fingerprint)
     .bind(now)
@@ -2056,7 +2056,7 @@ WHERE run_id = ?
         "#,
     )
     .bind(BackgroundAgentPendingInteractionStatus::Cancelled.as_str())
-    .bind(serde_json::to_string(
+    .bind(redact_state_json_string(
         &json!({"reason": "workflow_cancelled"}),
     )?)
     .bind(now)
@@ -2180,7 +2180,7 @@ ON CONFLICT(run_id) DO UPDATE SET
             .bind(worktree_path)
             .bind(dirty)
             .bind(cleanup_after)
-            .bind(serde_json::to_string(&payload_json)?)
+            .bind(redact_state_json_string(&payload_json)?)
             .bind(now)
             .execute(&mut **tx)
             .await?;
@@ -3414,8 +3414,8 @@ WHERE plan_id = ? AND key = ?
                 run_id: branch_run_id.clone(),
                 identity: "branch-lease".to_string(),
                 mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: repo.to_string_lossy().into_owned(),
-                worktree_path: worktree.to_string_lossy().into_owned(),
+                base_repo_path: repo,
+                worktree_path: worktree,
                 branch: Some("codewith/branch-lease".to_string()),
                 head_sha: Some("abc123".to_string()),
                 status_snapshot_json: json!({"dirty": true, "paths": ["src/user-work.rs"]}),

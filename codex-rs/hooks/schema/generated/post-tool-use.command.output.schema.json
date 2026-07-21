@@ -13,7 +13,10 @@
       "properties": {
         "additionalContext": {
           "default": null,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "hookEventName": {
           "const": "PostToolUse",
@@ -35,28 +38,40 @@
       "type": "boolean"
     },
     "decision": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/BlockDecisionWire"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null
     },
     "hookSpecificOutput": {
-      "allOf": [
+      "anyOf": [
         {
           "$ref": "#/definitions/PostToolUseHookSpecificOutputWire"
+        },
+        {
+          "type": "null"
         }
       ],
       "default": null
     },
     "reason": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "stopReason": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "suppressOutput": {
       "default": false,
@@ -64,7 +79,10 @@
     },
     "systemMessage": {
       "default": null,
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "post-tool-use.command.output",

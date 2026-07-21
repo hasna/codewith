@@ -13,8 +13,8 @@ use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
-use schemars::r#gen::SchemaGenerator;
-use schemars::schema::Schema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -740,19 +740,20 @@ impl<T> JsonSchema for RequiredNullable<T>
 where
     Option<T>: JsonSchema,
 {
-    fn is_referenceable() -> bool {
-        false
+    fn inline_schema() -> bool {
+        true
     }
 
-    fn schema_name() -> String {
+    fn schema_name() -> Cow<'static, str> {
         format!(
             "RequiredNullable_for_{}",
             <Option<T> as JsonSchema>::schema_name()
         )
+        .into()
     }
 
     fn schema_id() -> Cow<'static, str> {
-        Cow::Owned(Self::schema_name())
+        Cow::Owned(Self::schema_name().into_owned())
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {

@@ -28,7 +28,7 @@ impl CommonConfigSection {
 
     pub(crate) fn description(self) -> &'static str {
         match self {
-            Self::AccountAutomation => "Auth failover, recaps, and update policy.",
+            Self::AccountAutomation => "Auth failover, usage resets, recaps, and update policy.",
             Self::AiContext => "What Codewith shows the model.",
             Self::InterfacePrivacy => "Composer, transcript, privacy, and TUI behavior.",
         }
@@ -101,6 +101,14 @@ pub(crate) fn common_config_options(config: &Config) -> Vec<CommonConfigOption> 
             "Allow auto-switching when the weekly limit is exhausted.",
             "auth_profile_auto_switch.on_weekly_limit",
             config.auth_profile_auto_switch.on_weekly_limit,
+        ),
+        option(
+            AccountAutomation,
+            "usage-limit-auto-reset",
+            "Usage limit auto-reset",
+            "Use an available reset after Codewith confirms the weekly limit is exhausted.",
+            "usage_limit.auto_reset_enabled",
+            config.usage_limit.auto_reset_enabled,
         ),
         option(
             AccountAutomation,

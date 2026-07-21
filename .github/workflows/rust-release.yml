@@ -56,12 +56,12 @@ jobs:
   tag-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # action pinned; toolchain must match codex-rs/rust-toolchain.toml
         with:
-          toolchain: "1.96.1"
+          toolchain: "1.97.0"
       - name: Validate tag matches Cargo.toml version
         shell: bash
         env:
@@ -228,7 +228,7 @@ jobs:
             build_dmg: "false"
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Print runner specs (Linux)
@@ -269,12 +269,12 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # action pinned; toolchain must match codex-rs/rust-toolchain.toml
         with:
-          toolchain: "1.96.1"
+          toolchain: "1.97.0"
           targets: ${{ matrix.target }}
           # Install the exact components pinned in codex-rs/rust-toolchain.toml.
           # If the installed toolchain does not already satisfy the toml, the
           # first `cargo build` inside codex-rs triggers a fresh toml-override
-          # toolchain sync ("syncing channel updates for 1.96.1-...") that
+          # toolchain sync ("syncing channel updates for 1.97.0-...") that
           # reinstalls only the host std and drops the cross target added above,
           # causing error[E0463]: can't find crate for `core`.
           components: clippy,rustfmt,rust-src
@@ -344,11 +344,11 @@ jobs:
           # present in the exact rustup home the build uses, so cross-compiled
           # targets (musl on x86_64/arm64, x86_64-apple-darwin on the arm64
           # macOS runner) do not fail with error[E0463]: can't find crate for
-          # `core`. `--toolchain 1.96.1` pins the install to the same toolchain
+          # `core`. `--toolchain 1.97.0` pins the install to the same toolchain
           # the pinned rust-toolchain.toml selects. Idempotent when the target
           # is already installed (e.g. the native target).
-          rustup target add --toolchain 1.96.1 "${{ matrix.target }}"
-          rustup target list --toolchain 1.96.1 --installed
+          rustup target add --toolchain 1.97.0 "${{ matrix.target }}"
+          rustup target list --toolchain 1.97.0 --installed
 
       - if: ${{ contains(matrix.target, 'linux') }}
         name: Build bwrap and export digest
@@ -647,7 +647,7 @@ jobs:
             build_dmg: "false"
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -890,7 +890,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -1142,7 +1142,7 @@ jobs:
 
       - name: Setup pnpm
         if: ${{ env.SIGN_MACOS == 'true' }}
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           run_install: false
 
@@ -1294,11 +1294,18 @@ jobs:
               --dir dist/npm
           done
 
-      # No NODE_AUTH_TOKEN needed because we use OIDC.
+      # npm trusted publishing (OIDC) is not configured on npmjs.org for the
+      # @hasna/codewith* packages, so authenticate with the NODE_AUTH_TOKEN
+      # repository secret through the .npmrc that setup-node writes above
+      # (registry-url + scope). Every prior fork release had to be published
+      # by hand because this env var was missing (0.1.51 run 28254747302
+      # failed E404 with a placeholder token; 0.1.52-0.1.56 never published
+      # from CI at all).
       - name: Publish to npm
         env:
           VERSION: ${{ needs.release.outputs.version }}
           NPM_TAG: ${{ needs.release.outputs.npm_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           prefix=""

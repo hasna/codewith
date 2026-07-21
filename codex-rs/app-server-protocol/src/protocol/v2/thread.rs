@@ -31,17 +31,10 @@ use ts_rs::TS;
 
 // Schemars' `required` attribute otherwise emits the inner string schema for
 // `Option<String>`, so keep the required field nullable in generated fixtures.
-fn required_nullable_string_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    schemars::schema::SchemaObject {
-        instance_type: Some(schemars::schema::SingleOrVec::Vec(vec![
-            schemars::schema::InstanceType::String,
-            schemars::schema::InstanceType::Null,
-        ])),
-        ..Default::default()
-    }
-    .into()
+fn required_nullable_string_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["string", "null"]
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -2005,6 +1998,16 @@ pub enum ThreadExternalAgentEvent {
     PermissionRequested {
         request: ThreadExternalAgentPermissionRequest,
     },
+    /// Audit notification emitted once a previously-surfaced permission request
+    /// reaches a terminal decision, whether answered by the client, denied by
+    /// default on timeout, or otherwise resolved by the server.
+    PermissionResolved {
+        #[serde(rename = "requestId")]
+        #[ts(rename = "requestId")]
+        request_id: String,
+        decision: ThreadExternalAgentPermissionOption,
+        resolution: ThreadExternalAgentPermissionResolution,
+    },
     ProposedAction {
         proposal: JsonValue,
     },
@@ -2037,6 +2040,47 @@ pub struct ThreadExternalAgentPermissionRequest {
 pub enum ThreadExternalAgentPermissionOption {
     AllowOnce,
     RejectOnce,
+}
+
+/// How a surfaced external-agent permission request was ultimately resolved.
+///
+/// Included in [`ThreadExternalAgentEvent::PermissionResolved`] so clients can
+/// keep an audit trail that distinguishes an explicit client decision from a
+/// server-applied default-deny.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadExternalAgentPermissionResolution {
+    /// The client answered the request via `thread/externalAgent/permission/respond`.
+    Client,
+    /// No response arrived before the server-side timeout elapsed; denied by default.
+    TimedOut,
+    /// The request could not be parked for a response (e.g. the run is gone) and
+    /// was denied by default.
+    DefaultDenied,
+    /// The run was cancelled, or a newer request replaced this one, before a
+    /// decision was made; denied by default.
+    Superseded,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentPermissionRespondParams {
+    pub thread_id: String,
+    pub run_id: String,
+    /// Echoes [`ThreadExternalAgentPermissionRequest::id`] from the request being answered.
+    pub request_id: String,
+    pub decision: ThreadExternalAgentPermissionOption,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadExternalAgentPermissionRespondResponse {
+    /// `true` when a pending request matched and received this decision.
+    /// `false` for unknown, already-resolved, or replayed request ids.
+    pub accepted: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

@@ -11,10 +11,16 @@
   },
   "properties": {
     "agent_id": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "agent_type": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "cwd": {
       "type": "string"
@@ -45,13 +51,13 @@
     }
   },
   "required": [
+    "session_id",
+    "turn_id",
+    "transcript_path",
     "cwd",
     "hook_event_name",
     "model",
-    "session_id",
-    "transcript_path",
-    "trigger",
-    "turn_id"
+    "trigger"
   ],
   "title": "post-compact.command.input",
   "type": "object"

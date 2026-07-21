@@ -1,6 +1,8 @@
 use chrono::DateTime;
 use chrono::Utc;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::test_support::all_model_presets;
+use codex_login::AuthManager;
 use codex_model_provider::model_cache_key_for_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -133,6 +135,29 @@ pub fn write_models_cache(codex_home: &Path) -> std::io::Result<()> {
 pub fn write_mock_provider_models_cache(codex_home: &Path) -> std::io::Result<()> {
     let provider_cache_key = mock_provider_cache_key(codex_home);
     write_models_cache_for_provider(codex_home, &provider_cache_key)
+}
+
+pub async fn write_mock_provider_models_cache_with_auth(codex_home: &Path) -> std::io::Result<()> {
+    let provider_info = mock_provider_info_from_config(codex_home);
+    let auth_manager = AuthManager::new(
+        codex_home.to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+    )
+    .await;
+    let provider_cache_key =
+        model_cache_key_for_provider("mock_provider", &provider_info, Some(&auth_manager));
+    let mut models = bundled_models_response()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?
+        .models;
+    if let Some(mut lite_model) = models.iter().find(|model| model.slug == "gpt-5.4").cloned() {
+        lite_model.slug = "imagegen-lite-model".to_string();
+        lite_model.display_name = "Imagegen Lite Model".to_string();
+        lite_model.use_responses_lite = true;
+        models.push(lite_model);
+    }
+    write_models_cache_with_models_for_provider(codex_home, models, &provider_cache_key)
 }
 
 fn mock_provider_cache_key(codex_home: &Path) -> String {

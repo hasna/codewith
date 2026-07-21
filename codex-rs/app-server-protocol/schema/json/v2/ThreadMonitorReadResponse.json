@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ThreadMonitor": {
       "properties": {
         "command": {
@@ -56,10 +55,10 @@
           "type": "string"
         },
         "routing": {
-          "$ref": "#/definitions/ThreadMonitorRouting"
+          "$ref": "#/$defs/ThreadMonitorRouting"
         },
         "status": {
-          "$ref": "#/definitions/ThreadMonitorStatus"
+          "$ref": "#/$defs/ThreadMonitorStatus"
         },
         "threadId": {
           "type": "string"
@@ -70,15 +69,15 @@
         }
       },
       "required": [
-        "command",
-        "createdAt",
-        "generation",
+        "threadId",
         "monitorId",
         "name",
         "prompt",
+        "command",
         "routing",
         "status",
-        "threadId",
+        "generation",
+        "createdAt",
         "updatedAt"
       ],
       "type": "object"
@@ -96,7 +95,7 @@
           "type": "string"
         },
         "stream": {
-          "$ref": "#/definitions/ThreadMonitorEventStream"
+          "$ref": "#/$defs/ThreadMonitorEventStream"
         },
         "text": {
           "type": "string"
@@ -106,12 +105,12 @@
         }
       },
       "required": [
-        "createdAt",
-        "eventId",
+        "threadId",
         "monitorId",
+        "eventId",
         "stream",
         "text",
-        "threadId"
+        "createdAt"
       ],
       "type": "object"
     },
@@ -140,17 +139,18 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "events": {
       "items": {
-        "$ref": "#/definitions/ThreadMonitorEvent"
+        "$ref": "#/$defs/ThreadMonitorEvent"
       },
       "type": "array"
     },
     "monitor": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ThreadMonitor"
+          "$ref": "#/$defs/ThreadMonitor"
         },
         {
           "type": "null"

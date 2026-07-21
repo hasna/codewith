@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/usage_limit_reset_tests.rs
+expression: "lines_to_single_string(&cells[0])"
+---
+■ '/profile' is disabled while automatic usage-limit recovery is in progress.

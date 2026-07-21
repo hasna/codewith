@@ -1,0 +1,33 @@
+{
+  "pr_view": {
+    "baseRefName": "main",
+    "headRefName": "feature",
+    "headRefOid": "4444444444444444444444444444444444444444",
+    "headRepositoryOwner": {
+      "login": "hasna"
+    },
+    "isDraft": false,
+    "mergeStateStatus": "CLEAN",
+    "mergeable": "MERGEABLE",
+    "number": 215,
+    "reviewDecision": "APPROVED",
+    "reviews": [
+      {
+        "author": {
+          "login": "reviewer-a"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "state": "OPEN",
+    "url": "https://github.com/hasna/codewith/pull/215"
+  },
+  "checks": [
+    {
+      "conclusion": "startup_failure",
+      "link": "https://github.com/hasna/codewith/actions/runs/4/job/1",
+      "name": "legacy startup failure check",
+      "status": "completed"
+    }
+  ]
+}

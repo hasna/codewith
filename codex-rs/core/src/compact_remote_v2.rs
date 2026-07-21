@@ -16,6 +16,7 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::remote_compaction_budget::RemoteCompactionRequestBudget;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::session::Session;
@@ -225,37 +226,17 @@ async fn run_remote_compact_task_inner_impl(
             .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens));
     }
 
-    let trace_input_history = history.raw_items().to_vec();
-    let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
     let tool_router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
         &CancellationToken::new(),
     )
     .await?;
-    let mut input = prompt_input.clone();
-    input.push(ResponseItem::CompactionTrigger);
-    let prompt = Prompt {
-        input,
-        tools: tool_router.model_visible_specs(),
-        parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
-        base_instructions,
-        personality: turn_context.personality,
-        output_schema: None,
-        output_schema_strict: true,
-    };
 
     let window_id = sess.runtime_model_client().current_window_id();
     let turn_metadata_header = turn_context
         .turn_metadata_state
         .current_header_value_for_compaction(&window_id, compaction_metadata);
-    let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
-        "model": turn_context.model_info.slug.as_str(),
-        "instructions": prompt.base_instructions.text.as_str(),
-        "input": &prompt.input,
-        "parallel_tool_calls": prompt.parallel_tool_calls,
-    }));
-
     let mut owned_client_session;
     let client_session = match client_session {
         Some(client_session) => client_session,
@@ -264,24 +245,52 @@ async fn run_remote_compact_task_inner_impl(
             &mut owned_client_session
         }
     };
-    let compaction_output_result = run_remote_compaction_request_v2(
+    let request_budget = RemoteCompactionRequestBudget::new();
+    let trace_input_history = history.raw_items().to_vec();
+    let prompt_input = history
+        .clone()
+        .for_prompt(&turn_context.model_info.input_modalities);
+    let mut input = prompt_input.clone();
+    input.push(ResponseItem::CompactionTrigger);
+    let prompt = Prompt {
+        input,
+        tools: tool_router.model_visible_specs(),
+        parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
+        base_instructions: base_instructions.clone(),
+        personality: turn_context.personality,
+        output_schema: None,
+        output_schema_strict: true,
+    };
+    let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
+        "model": turn_context.model_info.slug.as_str(),
+        "instructions": prompt.base_instructions.text.as_str(),
+        "input": &prompt.input,
+        "parallel_tool_calls": prompt.parallel_tool_calls,
+    }));
+    let result = run_remote_compaction_request_v2(
         sess,
         turn_context,
         client_session,
         &prompt,
         turn_metadata_header.as_deref(),
+        &request_budget,
     )
     .await;
-
     trace_attempt.record_result(
-        compaction_output_result
+        result
             .as_ref()
             .map(|output| std::slice::from_ref(&output.compaction_output)),
     );
     let RemoteCompactionV2Output {
         compaction_output,
         token_usage,
-    } = compaction_output_result?;
+    } = match result {
+        Ok(output) => output,
+        Err(err) => {
+            log_remote_compaction_request_failure(sess, turn_context, &prompt, &err).await;
+            return Err(err);
+        }
+    };
     if let Some(token_usage) = token_usage {
         *active_context_tokens_before = token_usage.input_tokens;
     }
@@ -326,6 +335,7 @@ async fn run_remote_compaction_request_v2(
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
     turn_metadata_header: Option<&str>,
+    request_budget: &RemoteCompactionRequestBudget,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let max_retries = turn_context
         .provider
@@ -335,7 +345,7 @@ async fn run_remote_compaction_request_v2(
     let mut retries = 0;
     loop {
         let result = match client_session
-            .stream(
+            .stream_remote_compaction(
                 prompt,
                 &turn_context.model_info,
                 &turn_context.session_telemetry,
@@ -344,6 +354,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context.config.service_tier.clone(),
                 turn_metadata_header,
                 &InferenceTraceContext::disabled(),
+                request_budget,
             )
             .await
         {
@@ -354,11 +365,11 @@ async fn run_remote_compaction_request_v2(
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
             Err(err) if !err.is_retryable() => {
-                log_remote_compaction_request_failure(sess, turn_context, prompt, &err).await;
                 return Err(err);
             }
+            Err(err) if request_budget.remaining() == 0 => return Err(err),
             Err(err) => {
-                if let Err(err) = handle_retryable_response_stream_error(
+                handle_retryable_response_stream_error(
                     &mut retries,
                     max_retries,
                     err,
@@ -367,11 +378,7 @@ async fn run_remote_compaction_request_v2(
                     turn_context,
                     ResponsesStreamRequest::RemoteCompactionV2,
                 )
-                .await
-                {
-                    log_remote_compaction_request_failure(sess, turn_context, prompt, &err).await;
-                    return Err(err);
-                }
+                .await?;
             }
         }
     }

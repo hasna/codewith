@@ -165,7 +165,7 @@ impl App {
         }
         self.chat_widget.add_info_message(
             "Agent-requested MCP config change denied.".to_string(),
-            None,
+            /*hint*/ None,
         );
         let response = super::ui_dynamic_tools::dynamic_tool_response(
             json!({

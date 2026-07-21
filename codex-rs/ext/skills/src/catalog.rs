@@ -60,7 +60,19 @@ pub struct SkillPackageId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SkillResourceId(pub String);
 
-/// Metadata shown in the always-visible skills catalog.
+/// Availability policy for a skill catalog entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkillAvailability {
+    /// The skill is included in ambient prompt instructions and can be loaded.
+    Enabled,
+    /// The skill is omitted from ambient prompt instructions but remains
+    /// searchable and explicitly loadable.
+    Deferred,
+    /// The skill is neither surfaced nor loadable.
+    Disabled,
+}
+
+/// Metadata resolved into the per-turn skills catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillCatalogEntry {
     pub id: SkillPackageId,
@@ -71,8 +83,7 @@ pub struct SkillCatalogEntry {
     pub main_prompt: SkillResourceId,
     pub display_path: Option<String>,
     pub dependencies: Option<SkillDependencies>,
-    pub enabled: bool,
-    pub prompt_visible: bool,
+    pub availability: SkillAvailability,
 }
 
 impl SkillCatalogEntry {
@@ -92,8 +103,7 @@ impl SkillCatalogEntry {
             main_prompt,
             display_path: None,
             dependencies: None,
-            enabled: true,
-            prompt_visible: true,
+            availability: SkillAvailability::Enabled,
         }
     }
 
@@ -113,13 +123,25 @@ impl SkillCatalogEntry {
     }
 
     pub fn disabled(mut self) -> Self {
-        self.enabled = false;
+        self.availability = SkillAvailability::Disabled;
         self
     }
 
-    pub fn hidden_from_prompt(mut self) -> Self {
-        self.prompt_visible = false;
+    pub fn deferred(mut self) -> Self {
+        self.availability = SkillAvailability::Deferred;
         self
+    }
+
+    pub fn is_prompt_visible(&self) -> bool {
+        self.availability == SkillAvailability::Enabled
+    }
+
+    pub fn is_searchable(&self) -> bool {
+        self.availability != SkillAvailability::Disabled
+    }
+
+    pub fn is_explicitly_loadable(&self) -> bool {
+        self.availability != SkillAvailability::Disabled
     }
 
     pub(crate) fn rendered_path(&self) -> &str {

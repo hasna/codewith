@@ -158,6 +158,18 @@ const WRITER_MAX_CONNECTIONS: u32 = 1;
 /// the database layer instead of silently re-introducing multi-writer 517.
 const READER_MAX_CONNECTIONS: u32 = 5;
 
+pub(crate) fn redact_state_string(input: impl AsRef<str>) -> String {
+    crate::redact_local_state_string(input)
+}
+
+pub(crate) fn redact_state_optional_string(input: Option<String>) -> Option<String> {
+    input.map(redact_state_string)
+}
+
+pub(crate) fn redact_state_json_string(value: &Value) -> anyhow::Result<String> {
+    crate::redacted_local_state_json_string(value)
+}
+
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::ThreadGoalPlanAddOutcome;
@@ -477,6 +489,7 @@ impl StateRuntime {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(&codex_home).await?;
+        crate::set_owner_only_dir(codex_home.as_path())?;
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let goals_migrator = runtime_goals_migrator();
@@ -597,6 +610,14 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
+        if let Err(err) =
+            managed_worktrees::path_backfill::backfill_legacy_managed_worktree_path_keys(
+                runtime.pool.as_ref(),
+            )
+            .await
+        {
+            warn!("managed worktree path-key startup backfill failed: {err}");
+        }
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!(
                 "failed to run startup maintenance for logs db at {}: {err}",
@@ -865,7 +886,23 @@ async fn open_sqlite(
         &migrate_result,
     );
     migrate_result?;
+    enforce_sqlite_owner_only_paths(path)?;
     Ok(pool)
+}
+
+fn enforce_sqlite_owner_only_paths(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        crate::set_owner_only_file(path)?;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            crate::set_owner_only_file(sidecar.as_path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Connect options for a read-only reader pool.
@@ -1188,6 +1225,155 @@ mod tests {
             table_name: base.table_name.clone(),
             create_schemas: base.create_schemas.clone(),
         }
+    }
+
+    #[tokio::test]
+    async fn pending_interaction_event_sequence_migration_survives_vacuum() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        migrator_through(&STATE_MIGRATOR, /*version*/ 55)
+            .run(&pool)
+            .await
+            .expect("apply pre-sequence state schema");
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode
+) VALUES ('thread-1', '', 0, 0, 'cli', 'test-provider', '/', 'fixture', 'workspace-write', 'on-request')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert pending interaction event thread");
+        sqlx::query(
+            r#"
+INSERT INTO thread_pending_interactions (
+    interaction_id,
+    thread_id,
+    source_kind,
+    kind,
+    status,
+    request_payload_json,
+    request_payload_sha256,
+    request_payload_preview,
+    request_redactions_json,
+    no_client_policy,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('interaction-1', 'thread-1', 'thread', 'permission_grant', 'pending', '{}', ?, 'fixture', '[]', 'fixture', 0, 0)
+            "#,
+        )
+        .bind("0".repeat(64))
+        .execute(&pool)
+        .await
+        .expect("insert pending interaction event parent");
+
+        for (event_id, event_kind, status) in [
+            ("event-z-first", "created", "pending"),
+            ("event-a-second", "delivered", "delivered"),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES (?, 'interaction-1', 'thread-1', ?, ?, '{}', ?, 'fixture', '[]', 1700000000000)
+                "#,
+            )
+            .bind(event_id)
+            .bind(event_kind)
+            .bind(status)
+            .bind("0".repeat(64))
+            .execute(&pool)
+            .await
+            .expect("insert pre-migration event using named columns");
+        }
+
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("apply pending interaction event sequence migration");
+        let table_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_pending_interaction_events'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated table definition");
+        assert!(table_sql.contains("insertion_seq INTEGER PRIMARY KEY AUTOINCREMENT"));
+
+        let before_vacuum: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read migrated event order");
+        sqlx::query("VACUUM")
+            .execute(&pool)
+            .await
+            .expect("vacuum migrated state db");
+        let after_vacuum: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read vacuumed event order");
+        assert_eq!(before_vacuum, after_vacuum);
+
+        sqlx::query(
+            r#"
+INSERT INTO thread_pending_interaction_events (
+    event_id,
+    interaction_id,
+    thread_id,
+    event_kind,
+    status,
+    payload_json,
+    payload_sha256,
+    payload_preview,
+    redactions_json,
+    created_at_ms
+) VALUES ('event-m-after', 'interaction-1', 'thread-1', 'responded', 'responded', '{}', ?, 'fixture', '[]', 1700000000000)
+            "#,
+        )
+        .bind("0".repeat(64))
+        .execute(&pool)
+        .await
+        .expect("named-column insert should remain compatible after migration");
+        let event_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT event_id FROM thread_pending_interaction_events ORDER BY created_at_ms, insertion_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read post-migration event order");
+        assert_eq!(
+            event_ids,
+            vec![
+                "event-z-first".to_string(),
+                "event-a-second".to_string(),
+                "event-m-after".to_string(),
+            ]
+        );
+
+        pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]

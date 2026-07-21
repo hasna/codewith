@@ -46,6 +46,18 @@ const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
 const CODEX_CONNECTORS_TOKEN_ENV_VAR: &str = "CODEX_CONNECTORS_TOKEN";
 
+/// Controls whether an MCP connection may consult or attach credentials.
+///
+/// Infinity Agent bridges use [`Self::Forbid`] so transport construction cannot
+/// read persisted OAuth state, resolve bearer tokens from the environment, or
+/// attach the root Codewith auth provider.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum McpCredentialPolicy {
+    #[default]
+    AllowConfigured,
+    Forbid,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum McpSnapshotDetail {
     #[default]

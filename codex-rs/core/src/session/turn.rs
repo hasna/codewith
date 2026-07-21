@@ -146,6 +146,7 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
+    let mut turn_context = turn_context;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.runtime_model_client().new_session());
     let mut auth_profile_auto_switch = AuthProfileAutoSwitchTurnState::default();
@@ -157,7 +158,7 @@ pub(crate) async fn run_turn(
         match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
             Ok(()) => break,
             Err(CodexErr::UsageLimitReached(err)) => {
-                if switch_auth_profile_for_usage_limit(
+                if let Some(updated_turn_context) = switch_auth_profile_for_usage_limit(
                     &sess,
                     &turn_context,
                     &mut client_session,
@@ -166,6 +167,7 @@ pub(crate) async fn run_turn(
                 )
                 .await
                 {
+                    turn_context = updated_turn_context;
                     continue;
                 }
                 let err = CodexErr::UsageLimitReached(err);
@@ -315,7 +317,7 @@ pub(crate) async fn run_turn(
                     .await
                     {
                         if let CodexErr::UsageLimitReached(usage_err) = err {
-                            if switch_auth_profile_for_usage_limit(
+                            if let Some(updated_turn_context) = switch_auth_profile_for_usage_limit(
                                 &sess,
                                 &turn_context,
                                 &mut client_session,
@@ -324,6 +326,7 @@ pub(crate) async fn run_turn(
                             )
                             .await
                             {
+                                turn_context = updated_turn_context;
                                 can_drain_pending_input = false;
                                 continue;
                             }
@@ -412,7 +415,7 @@ pub(crate) async fn run_turn(
                 .await
                 {
                     if let CodexErr::UsageLimitReached(usage_err) = err {
-                        if switch_auth_profile_for_usage_limit(
+                        if let Some(updated_turn_context) = switch_auth_profile_for_usage_limit(
                             &sess,
                             &turn_context,
                             &mut client_session,
@@ -421,6 +424,7 @@ pub(crate) async fn run_turn(
                         )
                         .await
                         {
+                            turn_context = updated_turn_context;
                             can_drain_pending_input = false;
                             continue;
                         }
@@ -440,7 +444,7 @@ pub(crate) async fn run_turn(
                 continue;
             }
             Err(CodexErr::UsageLimitReached(err)) => {
-                if switch_auth_profile_for_usage_limit(
+                if let Some(updated_turn_context) = switch_auth_profile_for_usage_limit(
                     &sess,
                     &turn_context,
                     &mut client_session,
@@ -449,6 +453,7 @@ pub(crate) async fn run_turn(
                 )
                 .await
                 {
+                    turn_context = updated_turn_context;
                     can_drain_pending_input = false;
                     continue;
                 }
@@ -508,14 +513,11 @@ async fn switch_auth_profile_for_usage_limit(
     client_session: &mut ModelClientSession,
     auth_profile_auto_switch: &mut AuthProfileAutoSwitchTurnState,
     err: &UsageLimitReachedError,
-) -> bool {
+) -> Option<Arc<TurnContext>> {
     let previous_profile = sess.selected_auth_profile().await;
-    let Some(next_profile) = auth_profile_auto_switch
+    let next_profile = auth_profile_auto_switch
         .next_profile_for_usage_limit(sess, err)
-        .await
-    else {
-        return false;
-    };
+        .await?;
 
     let updates = SessionSettingsUpdate {
         auth_profile: Some(Some(next_profile.clone())),
@@ -536,10 +538,15 @@ async fn switch_auth_profile_for_usage_limit(
             }),
         )
         .await;
-        return false;
+        return None;
     }
 
     *client_session = sess.runtime_model_client().new_session();
+    let updated_turn_context = sess
+        .new_default_turn_with_sub_id(turn_context.sub_id.clone())
+        .await;
+    sess.refresh_token_context_window_for_profile_switch(&updated_turn_context)
+        .await;
     let previous_label = previous_profile.as_deref().unwrap_or("default");
     info!(
         previous_auth_profile = previous_label,
@@ -555,7 +562,7 @@ async fn switch_auth_profile_for_usage_limit(
         }),
     )
     .await;
-    true
+    Some(updated_turn_context)
 }
 
 async fn turn_diff_display_roots(turn_context: &TurnContext) -> Vec<(String, PathBuf)> {
