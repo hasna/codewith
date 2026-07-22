@@ -431,7 +431,6 @@ impl GoalToolExecutor {
         let Some(goal) = goal else {
             return Ok(None);
         };
-        self.accounting_state.clear_blocker_audit();
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
         self.metrics.record_created();
         let turn_id = self
