@@ -42,6 +42,47 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.74] - 2026-07-22
+
+Tag: `rust-v0.1.74`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.74>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.73...rust-v0.1.74>
+
+Release headlined by TUI polish and goal-planning ergonomics: a hierarchical
+agent-tree path (`root/agent/sub-agent`) replaces raw thread UUIDs in the
+statusline, the login flow becomes a provider → auth-method chooser with
+profile-picker fixes, and the automatic goal-plan caps grow larger and
+configurable. It is paired with faster session resume, an inline goal-pursuit
+statusline indicator, an external-agent child-thread fork fix, and Codewith's
+own announcements and tips in place of OpenAI product marketing.
+
+### Added
+
+- TUI: render a hierarchical agent-tree path (`root/agent/sub-agent`) in place
+  of raw thread UUIDs. (#356)
+- TUI/CLI: replaced the login flow with a provider → auth-method chooser and
+  fixed the profile picker. (#362)
+- Goal: made the per-node goal-plan objective cap configurable (default ~600
+  words). (#365)
+
+### Changed
+
+- Branding: replaced OpenAI product-marketing announcements and tips with
+  Codewith's own. (#359)
+
+### Fixed
+
+- TUI: render the goal indicator inline in the statusline row (`·` separated)
+  with a distinct color from the session name. (#357)
+- TUI: clear the composer input after an unrecognized slash command. (#358)
+- TUI: fixed an external-agent child-thread fork that failed with "no rollout
+  found" during TUI bootstrap. (#360)
+- Goal: raised the default automatic goal-plan cap from 12 to 48 nodes. (#363)
+
+### Performance
+
+- App server / rollout / TUI: sped up session resume. (#361)
+
 ## [0.1.73] - 2026-07-22
 
 Tag: `rust-v0.1.73`
