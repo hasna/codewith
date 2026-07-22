@@ -4,4 +4,4 @@ expression: "status_snapshot(waits.status_indicator_state_at(now,\n&metadata).ex
 ---
 Waiting for 2 agents
 • Robie — Inspect rendering · 9s
-• 019cff70-2599-75e2-af72-b96db334332d — Working · 4s
+• 019cff70 — Working · 4s

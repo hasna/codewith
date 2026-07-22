@@ -62,6 +62,8 @@ impl App {
             child_thread_id,
             /*agent_nickname*/ None,
             /*agent_role*/ None,
+            Some(parent_thread_id),
+            /*agent_path*/ None,
             /*is_closed*/ false,
         );
         self.agent_navigation

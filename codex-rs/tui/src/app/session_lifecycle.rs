@@ -120,6 +120,8 @@ impl App {
                 primary_thread_id,
                 /*agent_nickname*/ None,
                 /*agent_role*/ None,
+                /*parent_thread_id*/ None,
+                /*agent_path*/ None,
                 /*is_closed*/ false,
             );
         }
@@ -187,22 +189,38 @@ impl App {
 
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
-    /// These two writes stay paired so the picker rows and contextual footer continue to describe
-    /// the same displayed thread after nickname or role updates.
+    /// The parent edge and authoritative `agent_path` (when known) are recorded first so the
+    /// recomputed tree path stored in the rendering metadata reflects the freshest ancestry. These
+    /// writes stay paired so the picker rows, contextual footer, and collab rows continue to
+    /// describe the same displayed thread after nickname, role, or ancestry updates.
     pub(super) fn upsert_agent_picker_thread(
         &mut self,
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
+        parent_thread_id: Option<ThreadId>,
+        agent_path: Option<String>,
         is_closed: bool,
     ) {
-        self.chat_widget.set_collab_agent_metadata(
+        if let Some(parent_thread_id) = parent_thread_id {
+            self.agent_navigation.set_parent(thread_id, parent_thread_id);
+        }
+        if let Some(agent_path) = agent_path {
+            self.agent_navigation.set_agent_path(thread_id, agent_path);
+        }
+        self.agent_navigation.upsert(
             thread_id,
             agent_nickname.clone(),
             agent_role.clone(),
+            is_closed,
         );
-        self.agent_navigation
-            .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        let tree_path = self.agent_tree_path(thread_id);
+        self.chat_widget.set_collab_agent_metadata(
+            thread_id,
+            agent_nickname,
+            agent_role,
+            Some(tree_path),
+        );
         self.sync_active_agent_label();
     }
 
@@ -230,6 +248,11 @@ impl App {
             .await
         {
             Ok(thread) => {
+                let parent_thread_id = thread
+                    .parent_thread_id
+                    .as_deref()
+                    .and_then(|id| ThreadId::from_string(id).ok());
+                let agent_path = thread_spawn_agent_path(&thread.source);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -242,6 +265,8 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
+                    parent_thread_id,
+                    agent_path,
                     matches!(
                         thread.status,
                         codex_app_server_protocol::ThreadStatus::NotLoaded
@@ -266,12 +291,14 @@ impl App {
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
+                        /*parent_thread_id*/ None,
+                        /*agent_path*/ None,
                         is_closed,
                     );
                 } else {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
+                        /*parent_thread_id*/ None, /*agent_path*/ None, is_closed,
                     );
                 }
                 true
@@ -357,11 +384,27 @@ impl App {
             chat_widget.last_terminal_title = previous_terminal_title;
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        let reseed: Vec<(ThreadId, Option<String>, Option<String>)> = self
+            .agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .map(|(thread_id, entry)| {
+                (
+                    thread_id,
+                    entry.agent_nickname.clone(),
+                    entry.agent_role.clone(),
+                )
+            })
+            .collect();
+        for (thread_id, agent_nickname, agent_role) in reseed {
+            // Recompute the tree path from the persisted navigation ancestry so the rebuilt widget
+            // renders hierarchical labels immediately after a thread switch.
+            let tree_path = self.agent_tree_path(thread_id);
             chat_widget.set_collab_agent_metadata(
                 thread_id,
-                entry.agent_nickname.clone(),
-                entry.agent_role.clone(),
+                agent_nickname,
+                agent_role,
+                Some(tree_path),
             );
         }
         self.chat_widget = chat_widget;
@@ -709,6 +752,8 @@ impl App {
                 thread_id,
                 thread.agent_nickname,
                 thread.agent_role,
+                thread.parent_thread_id,
+                thread.agent_path,
                 /*is_closed*/ false,
             );
             self.agent_navigation

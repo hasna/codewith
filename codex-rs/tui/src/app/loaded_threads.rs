@@ -28,6 +28,11 @@ pub(crate) struct LoadedSubagentThread {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) thread_name: Option<String>,
+    /// Parent thread id, used to reconstruct the agent tree path.
+    pub(crate) parent_thread_id: Option<ThreadId>,
+    /// Authoritative absolute agent path (for example `/root/backend_audit/db_check`), when the
+    /// server composed one for this spawned thread.
+    pub(crate) agent_path: Option<String>,
 }
 
 /// Walks the spawn tree rooted at `primary_thread_id` and returns every descendant subagent.
@@ -84,6 +89,12 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
                 .remove(&thread_id)
                 .map(|thread| LoadedSubagentThread {
                     thread_id,
+                    parent_thread_id: thread
+                        .parent_thread_id
+                        .as_deref()
+                        .and_then(|id| ThreadId::from_string(id).ok())
+                        .or_else(|| thread_spawn_parent_thread_id(&thread.source)),
+                    agent_path: thread_spawn_agent_path(&thread.source),
                     agent_nickname: thread.agent_nickname,
                     agent_role: thread.agent_role,
                     thread_name: thread.name,
@@ -105,6 +116,22 @@ pub(crate) fn thread_spawn_parent_thread_id(
         return None;
     };
     Some(*parent_thread_id)
+}
+
+/// Extracts the server-composed absolute agent path from a thread's session source, when present.
+pub(crate) fn thread_spawn_agent_path(
+    source: &codex_app_server_protocol::SessionSource,
+) -> Option<String> {
+    let codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        agent_path,
+        ..
+    }) = source
+    else {
+        return None;
+    };
+    agent_path
+        .as_ref()
+        .map(|agent_path| agent_path.as_str().to_string())
 }
 
 #[cfg(test)]
@@ -213,17 +240,65 @@ mod tests {
             vec![
                 LoadedSubagentThread {
                     thread_id: child_thread_id,
+                    parent_thread_id: Some(primary_thread_id),
+                    agent_path: None,
                     agent_nickname: Some("Scout".to_string()),
                     agent_role: Some("explorer".to_string()),
                     thread_name: None,
                 },
                 LoadedSubagentThread {
                     thread_id: grandchild_thread_id,
+                    parent_thread_id: Some(child_thread_id),
+                    agent_path: None,
                     agent_nickname: Some("Atlas".to_string()),
                     agent_role: Some("worker".to_string()),
                     thread_name: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn captures_authoritative_agent_path_and_parent_for_loaded_subagent() {
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+
+        let source: SessionSource = serde_json::from_value(serde_json::json!({
+            "subAgent": {
+                "thread_spawn": {
+                    "parent_thread_id": primary_thread_id.to_string(),
+                    "depth": 1,
+                    "agent_path": "/root/backend_audit",
+                    "agent_nickname": "Scout",
+                    "agent_role": "explorer",
+                }
+            }
+        }))
+        .expect("valid subagent source");
+        let mut child = test_thread(child_thread_id, source);
+        child.agent_nickname = Some("Scout".to_string());
+        child.agent_role = Some("explorer".to_string());
+
+        let loaded = find_loaded_subagent_threads_for_primary(
+            vec![
+                test_thread(primary_thread_id, SessionSource::Cli),
+                child,
+            ],
+            primary_thread_id,
+        );
+
+        assert_eq!(
+            loaded,
+            vec![LoadedSubagentThread {
+                thread_id: child_thread_id,
+                parent_thread_id: Some(primary_thread_id),
+                agent_path: Some("/root/backend_audit".to_string()),
+                agent_nickname: Some("Scout".to_string()),
+                agent_role: Some("explorer".to_string()),
+                thread_name: None,
+            }]
         );
     }
 }
