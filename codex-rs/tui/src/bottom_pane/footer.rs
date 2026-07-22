@@ -41,6 +41,7 @@
 //! In short: `single_line_footer_layout` chooses *what* best fits, and the two
 //! render helpers choose whether to draw the chosen line or the default
 //! `FooterProps` mapping.
+use super::status_line_style::goal_status_line_style;
 use crate::goal_display::format_goal_elapsed_seconds;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -57,7 +58,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use super::status_line_style::goal_status_line_style;
 
 /// The rendering inputs for the footer area under the composer.
 ///
@@ -619,7 +619,10 @@ pub(crate) fn goal_status_indicator_line(
     // Style the locked goal segment with the dedicated goal accent so it stays visually distinct
     // from the session/thread-title segment it renders next to (both were previously magenta and
     // blurred together). The surrounding ` · ` separators are added dim by the caller.
-    Some(Line::from(vec![Span::styled(label, goal_status_line_style())]))
+    Some(Line::from(vec![Span::styled(
+        label,
+        goal_status_line_style(),
+    )]))
 }
 
 pub(crate) fn status_line_right_indicator_line(
