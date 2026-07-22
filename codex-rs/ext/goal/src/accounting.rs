@@ -1,5 +1,4 @@
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_state::ThreadGoalStatus;
 use std::collections::HashMap;
@@ -22,15 +21,6 @@ struct GoalAccountingInner {
     turns: HashMap<String, GoalTurnAccounting>,
     wall_clock: GoalWallClockAccounting,
     budget_limit_reported_goal_id: Option<String>,
-    blocker_audit: Option<GoalBlockerAudit>,
-}
-
-#[derive(Debug)]
-struct GoalBlockerAudit {
-    goal_id: String,
-    error: CodexErrorInfo,
-    last_turn_id: String,
-    consecutive_turns: u8,
 }
 
 #[derive(Debug)]
@@ -39,6 +29,7 @@ struct GoalTurnAccounting {
     last_accounted_token_usage: TokenUsage,
     active_goal_id: Option<String>,
     account_tokens: bool,
+    error_observed: bool,
 }
 
 #[derive(Debug)]
@@ -73,62 +64,7 @@ pub(crate) struct RecordedTokenDelta {
     pub(crate) thread_unflushed_delta: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GoalTurnErrorDisposition {
-    Pause,
-    Block,
-}
-
-const REQUIRED_CONSECUTIVE_BLOCKER_TURNS: u8 = 3;
-
 impl GoalAccountingState {
-    pub(crate) fn observe_goal_turn_error(
-        &self,
-        goal_id: &str,
-        turn_id: &str,
-        error: &CodexErrorInfo,
-    ) -> GoalTurnErrorDisposition {
-        let mut inner = self.inner();
-        let consecutive_turns = match inner.blocker_audit.as_mut() {
-            Some(audit) if audit.goal_id == goal_id && &audit.error == error => {
-                if audit.last_turn_id != turn_id {
-                    audit.last_turn_id = turn_id.to_string();
-                    audit.consecutive_turns = audit.consecutive_turns.saturating_add(1);
-                }
-                audit.consecutive_turns
-            }
-            _ => {
-                inner.blocker_audit = Some(GoalBlockerAudit {
-                    goal_id: goal_id.to_string(),
-                    error: error.clone(),
-                    last_turn_id: turn_id.to_string(),
-                    consecutive_turns: 1,
-                });
-                1
-            }
-        };
-        if consecutive_turns >= REQUIRED_CONSECUTIVE_BLOCKER_TURNS {
-            GoalTurnErrorDisposition::Block
-        } else {
-            GoalTurnErrorDisposition::Pause
-        }
-    }
-
-    pub(crate) fn clear_blocker_audit(&self) {
-        self.inner().blocker_audit = None;
-    }
-
-    pub(crate) fn clear_blocker_audit_for_goal(&self, goal_id: &str) {
-        let mut inner = self.inner();
-        if inner
-            .blocker_audit
-            .as_ref()
-            .is_some_and(|audit| audit.goal_id == goal_id)
-        {
-            inner.blocker_audit = None;
-        }
-    }
-
     pub(crate) fn start_turn(
         &self,
         turn_id: impl Into<String>,
@@ -180,6 +116,19 @@ impl GoalAccountingState {
         }
         let turn = inner.turns.get(turn_id)?;
         turn.account_tokens.then(|| turn.active_goal_id()).flatten()
+    }
+
+    pub(crate) fn mark_turn_error_observed(&self, turn_id: &str) {
+        if let Some(turn) = self.inner().turns.get_mut(turn_id) {
+            turn.error_observed = true;
+        }
+    }
+
+    pub(crate) fn turn_error_observed(&self, turn_id: &str) -> bool {
+        self.inner()
+            .turns
+            .get(turn_id)
+            .is_some_and(|turn| turn.error_observed)
     }
 
     pub(crate) fn record_token_usage(
@@ -416,7 +365,6 @@ impl Default for GoalAccountingInner {
             turns: HashMap::new(),
             wall_clock: GoalWallClockAccounting::new(),
             budget_limit_reported_goal_id: None,
-            blocker_audit: None,
         }
     }
 }
@@ -439,6 +387,7 @@ impl GoalTurnAccounting {
             current_token_usage,
             active_goal_id: None,
             account_tokens,
+            error_observed: false,
         }
     }
 

@@ -168,6 +168,7 @@ pub use runtime::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT;
 pub use runtime::DEFAULT_WEBHOOK_EVENT_LIST_LIMIT;
 pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
+pub use runtime::GoalBlockerAuditOutcome;
 pub use runtime::GoalDeleteOutcome;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;

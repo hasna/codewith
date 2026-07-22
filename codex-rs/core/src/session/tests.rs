@@ -2741,6 +2741,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         turn_level_id: String,
         turn_id: String,
         error: CodexErrorInfo,
+        error_fingerprint: String,
         saw_session_store: bool,
         saw_thread_store: bool,
     }
@@ -2749,9 +2750,17 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         records: Arc<std::sync::Mutex<Vec<RecordedTurnError>>>,
     }
 
+    struct LegacyTurnErrorRecorder {
+        errors: Arc<std::sync::Mutex<Vec<CodexErrorInfo>>>,
+    }
+
     #[async_trait::async_trait]
     impl codex_extension_api::TurnLifecycleContributor for TurnErrorRecorder {
-        async fn on_turn_error(&self, input: codex_extension_api::TurnErrorInput<'_>) {
+        async fn on_turn_error_with_fingerprint(
+            &self,
+            input: codex_extension_api::TurnErrorInput<'_>,
+            error_fingerprint: &str,
+        ) {
             self.records
                 .lock()
                 .expect("turn error records lock")
@@ -2761,6 +2770,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
                     turn_level_id: input.turn_store.level_id().to_string(),
                     turn_id: input.turn_id.to_string(),
                     error: input.error,
+                    error_fingerprint: error_fingerprint.to_string(),
                     saw_session_store: input
                         .session_store
                         .get::<SessionTurnErrorMarker>()
@@ -2770,11 +2780,25 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         }
     }
 
+    #[async_trait::async_trait]
+    impl codex_extension_api::TurnLifecycleContributor for LegacyTurnErrorRecorder {
+        async fn on_turn_error(&self, input: codex_extension_api::TurnErrorInput<'_>) {
+            self.errors
+                .lock()
+                .expect("legacy turn error records lock")
+                .push(input.error);
+        }
+    }
+
     let (mut session, turn_context) = make_session_and_context().await;
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let legacy_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
     builder.turn_lifecycle_contributor(Arc::new(TurnErrorRecorder {
         records: Arc::clone(&records),
+    }));
+    builder.turn_lifecycle_contributor(Arc::new(LegacyTurnErrorRecorder {
+        errors: Arc::clone(&legacy_errors),
     }));
     session.services.extensions = Arc::new(builder.build());
     session
@@ -2786,18 +2810,38 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .thread_extension_data
         .insert(ThreadTurnErrorMarker);
 
-    let expected = RecordedTurnError {
+    let expected = |error, error_fingerprint: &str| RecordedTurnError {
         session_level_id: session.session_id().to_string(),
         thread_level_id: session.thread_id.to_string(),
         turn_level_id: turn_context.sub_id.clone(),
         turn_id: turn_context.sub_id.clone(),
-        error: CodexErrorInfo::UsageLimitExceeded,
+        error,
+        error_fingerprint: error_fingerprint.to_string(),
         saw_session_store: true,
         saw_thread_store: true,
     };
 
     session
-        .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded)
+        .emit_turn_error_lifecycle(
+            &turn_context,
+            &codex_protocol::error::CodexErr::UsageNotIncluded,
+        )
+        .await;
+    session
+        .emit_turn_error_lifecycle(&turn_context, &codex_protocol::error::CodexErr::TurnAborted)
+        .await;
+    session
+        .emit_turn_error_lifecycle(
+            &turn_context,
+            &codex_protocol::error::CodexErr::RequestTimeout,
+        )
+        .await;
+    session
+        .emit_turn_error_lifecycle_with_protocol_error(
+            &turn_context,
+            &codex_protocol::error::CodexErr::InvalidImageRequest(),
+            CodexErrorInfo::BadRequest,
+        )
         .await;
 
     let actual = records
@@ -2805,7 +2849,36 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .expect("turn error records lock")
         .drain(..)
         .collect::<Vec<_>>();
-    assert_eq!(vec![expected], actual);
+    assert_eq!(
+        vec![
+            expected(
+                CodexErrorInfo::UsageLimitExceeded,
+                "codex_err:usage_not_included",
+            ),
+            expected(CodexErrorInfo::Other, "codex_err:turn_aborted"),
+            expected(CodexErrorInfo::Other, "codex_err:request_timeout"),
+            expected(
+                CodexErrorInfo::BadRequest,
+                "codex_err:invalid_image_request"
+            ),
+        ],
+        actual,
+        "broad client variants must retain distinct host classifications without changing the client error"
+    );
+    assert_eq!(
+        vec![
+            CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::Other,
+            CodexErrorInfo::Other,
+            CodexErrorInfo::BadRequest,
+        ],
+        legacy_errors
+            .lock()
+            .expect("legacy turn error records lock")
+            .drain(..)
+            .collect::<Vec<_>>(),
+        "contributors implementing only the original callback must still receive errors"
+    );
 }
 
 #[tokio::test]

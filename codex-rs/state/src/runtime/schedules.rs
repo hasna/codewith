@@ -1038,13 +1038,16 @@ WHERE schedule_id = ? AND lease_id = ?
 UPDATE thread_schedules
 SET
     status = CASE
+        WHEN status = 'expired' THEN 'expired'
         WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN 'expired'
+        WHEN status = 'paused' THEN 'paused'
         ELSE status
     END,
     lease_id = NULL,
     lease_expires_at_ms = NULL,
     last_run_at_ms = ?,
     next_run_at_ms = CASE
+        WHEN status IN ('expired', 'paused') THEN NULL
         WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN NULL
         ELSE ?
     END,
@@ -1134,7 +1137,9 @@ WHERE status = 'active'
 UPDATE thread_schedules
 SET
     status = CASE
+        WHEN status = 'expired' THEN 'expired'
         WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN 'expired'
+        WHEN status = 'paused' THEN 'paused'
         WHEN ? THEN 'paused'
         WHEN ? IS NULL THEN 'expired'
         ELSE status
@@ -1142,7 +1147,13 @@ SET
     lease_id = NULL,
     lease_expires_at_ms = NULL,
     last_run_at_ms = ?,
-    next_run_at_ms = ?,
+    next_run_at_ms = CASE
+        WHEN status IN ('expired', 'paused') THEN NULL
+        WHEN expires_at_ms IS NOT NULL AND ? >= expires_at_ms THEN NULL
+        WHEN ? THEN NULL
+        WHEN ? IS NULL THEN NULL
+        ELSE ?
+    END,
     failure_count = CASE WHEN ? THEN failure_count + 1 ELSE 0 END,
     updated_at_ms = ?
 WHERE schedule_id = ? AND lease_id = ?
@@ -1152,6 +1163,9 @@ WHERE schedule_id = ? AND lease_id = ?
         .bind(pause_schedule)
         .bind(next_run_at_ms)
         .bind(completed_at_ms)
+        .bind(completed_at_ms)
+        .bind(pause_schedule)
+        .bind(next_run_at_ms)
         .bind(next_run_at_ms)
         .bind(failed)
         .bind(completed_at_ms)
@@ -2634,6 +2648,218 @@ mod tests {
                 .is_none(),
             "a held schedule must not become claimable again"
         );
+    }
+
+    #[tokio::test]
+    async fn late_pause_completion_preserves_expired_schedule_with_active_lease() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 32);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "expired while leased", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-expired", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+
+        let expired = runtime
+            .thread_schedules()
+            .set_thread_schedule_status(&schedule.schedule_id, crate::ThreadScheduleStatus::Expired)
+            .await
+            .expect("schedule should expire")
+            .expect("schedule should still exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, expired.status);
+        assert_eq!(Some("lease-expired".to_string()), expired.lease_id);
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run_and_pause(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-expired",
+                    now + chrono::Duration::seconds(5),
+                )
+                .await
+                .expect("late completion should finish the run")
+        );
+
+        let completed = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(
+            crate::ThreadScheduleStatus::Expired,
+            completed.status,
+            "a late held completion must not downgrade expired to paused"
+        );
+        assert_eq!(None, completed.next_run_at);
+        assert_eq!(None, completed.lease_id);
+        let run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&claim.run.run_id)
+            .await
+            .expect("run should load")
+            .expect("run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Completed, run.status);
+    }
+
+    #[tokio::test]
+    async fn late_schedule_finalizers_preserve_existing_terminal_status_precedence() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 33);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+
+        for (index, held_status) in [
+            crate::ThreadScheduleStatus::Paused,
+            crate::ThreadScheduleStatus::Expired,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let complete_lease = format!("lease-complete-{index}");
+            let complete_schedule = create_interval_schedule(
+                &runtime,
+                thread_id,
+                &format!("late complete {index}"),
+                Some(now),
+            )
+            .await;
+            let complete_claim = runtime
+                .thread_schedules()
+                .claim_due_thread_schedule(now, complete_lease.as_str(), Duration::from_secs(300))
+                .await
+                .expect("complete schedule should claim")
+                .expect("complete schedule should be due");
+            runtime
+                .thread_schedules()
+                .set_thread_schedule_status(&complete_schedule.schedule_id, held_status)
+                .await
+                .expect("complete schedule status should update")
+                .expect("complete schedule should exist");
+            assert!(
+                runtime
+                    .thread_schedules()
+                    .complete_thread_schedule_run(
+                        &complete_schedule.schedule_id,
+                        &complete_claim.run.run_id,
+                        complete_lease.as_str(),
+                        now + chrono::Duration::seconds(5),
+                        Some(now + chrono::Duration::hours(1)),
+                    )
+                    .await
+                    .expect("late completion should succeed")
+            );
+            let after_complete = runtime
+                .thread_schedules()
+                .get_thread_schedule(&complete_schedule.schedule_id)
+                .await
+                .expect("complete schedule should load")
+                .expect("complete schedule should exist");
+            assert_eq!(held_status, after_complete.status);
+            assert_eq!(None, after_complete.next_run_at);
+            assert_eq!(None, after_complete.lease_id);
+
+            let defer_lease = format!("lease-defer-{index}");
+            let defer_schedule = create_interval_schedule(
+                &runtime,
+                thread_id,
+                &format!("late defer {index}"),
+                Some(now),
+            )
+            .await;
+            let defer_claim = runtime
+                .thread_schedules()
+                .claim_due_thread_schedule(now, defer_lease.as_str(), Duration::from_secs(300))
+                .await
+                .expect("deferred schedule should claim")
+                .expect("deferred schedule should be due");
+            runtime
+                .thread_schedules()
+                .set_thread_schedule_status(&defer_schedule.schedule_id, held_status)
+                .await
+                .expect("deferred schedule status should update")
+                .expect("deferred schedule should exist");
+            assert!(
+                runtime
+                    .thread_schedules()
+                    .defer_thread_schedule_run(
+                        &defer_schedule.schedule_id,
+                        &defer_claim.run.run_id,
+                        defer_lease.as_str(),
+                        now + chrono::Duration::seconds(5),
+                        now + chrono::Duration::hours(1),
+                        "held by goal status".to_string(),
+                    )
+                    .await
+                    .expect("late deferral should succeed")
+            );
+            let after_defer = runtime
+                .thread_schedules()
+                .get_thread_schedule(&defer_schedule.schedule_id)
+                .await
+                .expect("deferred schedule should load")
+                .expect("deferred schedule should exist");
+            assert_eq!(held_status, after_defer.status);
+            assert_eq!(None, after_defer.next_run_at);
+            assert_eq!(None, after_defer.lease_id);
+            let deferred_run = runtime
+                .thread_schedules()
+                .get_thread_schedule_run(&defer_claim.run.run_id)
+                .await
+                .expect("deferred run should load")
+                .expect("deferred run should exist");
+            assert_eq!(
+                crate::ThreadScheduleRunStatus::Deferred,
+                deferred_run.status
+            );
+        }
+
+        let failed_schedule =
+            create_interval_schedule(&runtime, thread_id, "late failed hold", Some(now)).await;
+        let failed_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-failed", Duration::from_secs(300))
+            .await
+            .expect("failed schedule should claim")
+            .expect("failed schedule should be due");
+        runtime
+            .thread_schedules()
+            .set_thread_schedule_status(
+                &failed_schedule.schedule_id,
+                crate::ThreadScheduleStatus::Expired,
+            )
+            .await
+            .expect("failed schedule should expire")
+            .expect("failed schedule should exist");
+        assert!(
+            runtime
+                .thread_schedules()
+                .fail_thread_schedule_run_and_pause(
+                    &failed_schedule.schedule_id,
+                    &failed_claim.run.run_id,
+                    "lease-failed",
+                    now + chrono::Duration::seconds(5),
+                    "goal held".to_string(),
+                )
+                .await
+                .expect("late failure should succeed")
+        );
+        let after_failure = runtime
+            .thread_schedules()
+            .get_thread_schedule(&failed_schedule.schedule_id)
+            .await
+            .expect("failed schedule should load")
+            .expect("failed schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, after_failure.status);
+        assert_eq!(None, after_failure.next_run_at);
+        assert_eq!(None, after_failure.lease_id);
     }
 
     #[tokio::test]
