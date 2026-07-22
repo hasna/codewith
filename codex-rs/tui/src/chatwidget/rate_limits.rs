@@ -311,16 +311,31 @@ impl ChatWidget {
                 self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
             }
 
-            self.update_auth_profile_auto_switch_snapshot(&limit_id, &snapshot, is_codex_limit);
-            if is_codex_limit {
-                let selected_profile = self.config.selected_auth_profile.clone();
-                self.update_auth_profile_usage_exhaustion(
-                    &selected_profile,
-                    std::slice::from_ref(&snapshot),
-                );
-            }
-            if !self.usage_limit_reset_takes_precedence_for_snapshot(&snapshot) {
-                self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
+            // Exhaustion bookkeeping and auth-profile auto-switching must only be driven by
+            // authoritative, account-verified rate-limit reads. `event_dispatch` confirms an
+            // `AccountUsage` snapshot belongs to the currently-selected account (via
+            // `is_current_profile` + `account_identity_fingerprint`) before applying it.
+            //
+            // Rolling `account/rateLimits/updated` notifications (`RollingUpdate`) carry no
+            // account identity (see `AccountRateLimitsUpdatedNotification`) and are emitted per
+            // turn. Under multi-agent spawning a sibling turn running on a *different* (exhausted)
+            // account emits a "100%" snapshot that would otherwise be misattributed to the current
+            // profile — triggering a false-positive auto-switch and suppressing the corrective
+            // usage heartbeat. Cascaded across profiles this rotates through every configured
+            // account even though only one is genuinely exhausted, so rolling updates stay
+            // display-only here.
+            if matches!(source, RateLimitSnapshotSource::AccountUsage) {
+                self.update_auth_profile_auto_switch_snapshot(&limit_id, &snapshot, is_codex_limit);
+                if is_codex_limit {
+                    let selected_profile = self.config.selected_auth_profile.clone();
+                    self.update_auth_profile_usage_exhaustion(
+                        &selected_profile,
+                        std::slice::from_ref(&snapshot),
+                    );
+                }
+                if !self.usage_limit_reset_takes_precedence_for_snapshot(&snapshot) {
+                    self.maybe_auto_switch_auth_profile_for_rate_limit(&limit_id, &snapshot);
+                }
             }
 
             let mut display =

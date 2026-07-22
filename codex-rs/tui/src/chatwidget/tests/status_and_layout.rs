@@ -1476,6 +1476,59 @@ async fn exhausted_five_hour_limit_auto_switches_to_next_auth_profile() {
 }
 
 #[tokio::test]
+async fn rolling_rate_limit_update_does_not_auto_switch_auth_profile() {
+    // Regression: rolling `account/rateLimits/updated` notifications carry no account
+    // identity and are emitted per turn, so under multi-agent spawning one can originate
+    // from a sibling turn running on a *different* (exhausted) account. They must never
+    // drive an auth-profile auto-switch, otherwise a single exhausted account cascades a
+    // switch through every configured profile even when the current account is healthy.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_self_heal.enabled = true;
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // A rolling update reporting the (unverified) current profile as fully exhausted must
+    // not trigger a switch.
+    chat.on_rolling_rate_limit_snapshot(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    ));
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "rolling rate-limit update must not auto-switch auth profile, got {event:?}"
+        );
+    }
+
+    // The authoritative, account-verified read of the same exhausted window still switches,
+    // confirming auto-switch remains wired for the trusted path.
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 123,
+    )));
+    match rx.try_recv() {
+        Ok(AppEvent::SwitchAuthProfile {
+            profile, reason, ..
+        }) => {
+            assert_eq!(profile.as_deref(), Some("personal"));
+            assert_eq!(
+                reason,
+                crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                    window: "5h".to_string()
+                }
+            );
+        }
+        other => {
+            panic!("expected auth profile switch from authoritative read, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test]
 async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");
