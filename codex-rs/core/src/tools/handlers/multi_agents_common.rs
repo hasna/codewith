@@ -132,6 +132,11 @@ pub(crate) fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionC
         CodexErr::UnsupportedOperation(_) => {
             FunctionCallError::RespondToModel("collab manager unavailable".to_string())
         }
+        // A rejected delivery (most commonly a full mailbox: "mailbox context
+        // queue is full; limit is 8 messages") is recoverable — surface the
+        // reason to the sending model so it can wait for the target to drain and
+        // retry, rather than being told the send succeeded.
+        CodexErr::InvalidRequest(message) => FunctionCallError::RespondToModel(message),
         err => FunctionCallError::RespondToModel(format!("collab tool failed: {err}")),
     }
 }
@@ -676,5 +681,30 @@ mod auth_profile_tests {
             .expect("forking without auth_profile should be allowed");
         reject_forked_spawn_auth_profile(Some("   "), /*forked*/ true)
             .expect("blank auth_profile is treated as omitted");
+    }
+}
+
+#[cfg(test)]
+mod collab_error_tests {
+    use super::*;
+
+    #[test]
+    fn full_mailbox_error_is_surfaced_to_the_sending_model() {
+        // A rejected delivery (MailboxQueueFull) reaches the tool as
+        // CodexErr::InvalidRequest; it must become a RespondToModel error so the
+        // sender's model learns the message was dropped and can retry, rather than
+        // being told the send succeeded.
+        let err = collab_agent_error(
+            ThreadId::new(),
+            CodexErr::InvalidRequest(
+                "mailbox context queue is full; limit is 8 messages".to_string(),
+            ),
+        );
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "mailbox context queue is full; limit is 8 messages".to_string()
+            )
+        );
     }
 }

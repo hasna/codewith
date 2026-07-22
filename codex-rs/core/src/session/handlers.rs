@@ -937,6 +937,16 @@ pub(super) async fn submission_loop(
                     }
                     false
                 }
+                Op::WakePendingWork => {
+                    // Runs on the submission loop, so the wake is serialized with
+                    // this thread's turn lifecycle: it observes a fully-installed
+                    // running turn (and skips) instead of taking over an in-flight
+                    // turn-start reservation the way an inline wake from another
+                    // task could.
+                    sess.maybe_start_turn_for_pending_work_with_sub_id(sub.id.clone())
+                        .await;
+                    false
+                }
                 Op::ExecApproval {
                     id: approval_id,
                     turn_id,

@@ -17,12 +17,15 @@ use codex_client::ByteStream;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
 use codex_client::StreamResponse;
+use codex_protocol::AgentPath;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -453,6 +456,37 @@ fn truncate_chat_tool_name(encoded: String) -> String {
     format!("{prefix}{suffix}")
 }
 
+/// Renders an internal `ResponseItem::AgentMessage` (inter-agent mailbox message)
+/// into the serialized inter-agent envelope used by the plain-content mailbox path,
+/// so chat-wire receivers see the same `author`/`recipient`/`content` shape the
+/// Responses wire delivers natively. Returns `None` when the message carries no
+/// body (nothing to deliver).
+fn chat_agent_message_text(
+    author: &str,
+    recipient: &str,
+    content: &[AgentMessageInputContent],
+) -> Option<String> {
+    let body: String = content
+        .iter()
+        .map(|item| match item {
+            AgentMessageInputContent::EncryptedContent { encrypted_content } => {
+                encrypted_content.as_str()
+            }
+        })
+        .collect();
+    if body.is_empty() {
+        return None;
+    }
+    let communication = InterAgentCommunication::new(
+        AgentPath::try_from(author).unwrap_or_else(|_| AgentPath::root()),
+        AgentPath::try_from(recipient).unwrap_or_else(|_| AgentPath::root()),
+        Vec::new(),
+        body,
+        /*trigger_turn*/ false,
+    );
+    Some(serde_json::to_string(&communication).unwrap_or_default())
+}
+
 fn chat_messages_from_responses(
     instructions: &str,
     input: &[ResponseItem],
@@ -563,10 +597,33 @@ fn chat_messages_from_responses(
                     "content": output_text(output),
                 }));
             }
+            ResponseItem::AgentMessage {
+                author,
+                recipient,
+                content,
+            } => {
+                // `AgentMessage` is Codewith's internal representation of an
+                // inter-agent mailbox message. Its `EncryptedContent` carries the
+                // plaintext message body (see `InterAgentCommunication::new_encrypted`,
+                // which stores the body verbatim — it is never real ciphertext).
+                // The Responses wire renders this as a native inter-agent item, but
+                // chat-completions has no equivalent item type. Previously this fell
+                // into the catch-all below and was dropped, so inter-agent messages
+                // were silently lost on every chat-wire provider (Anthropic,
+                // DeepSeek, Cerebras, ...) and the receiving model never saw them.
+                // Re-emit it as a normal assistant message carrying the same
+                // serialized envelope the plain-content mailbox path uses so every
+                // chat-wire provider delivers it.
+                if let Some(text) = chat_agent_message_text(author, recipient, content) {
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": text,
+                    }));
+                }
+            }
             // Handled above; listed for exhaustiveness.
             ResponseItem::FunctionCall { .. }
             | ResponseItem::Reasoning { .. }
-            | ResponseItem::AgentMessage { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
@@ -1351,6 +1408,91 @@ mod tests {
                     "schema": {"type": "object"}
                 }
             })
+        );
+    }
+
+    #[test]
+    fn chat_request_renders_agent_message_instead_of_dropping_it() {
+        // Regression: inter-agent mailbox messages arrive as
+        // `ResponseItem::AgentMessage`. The chat-completions builder used to drop
+        // them in its catch-all, so on every chat-wire provider (Anthropic,
+        // DeepSeek, ...) the receiving model never saw the message. They must now
+        // survive as an assistant message.
+        let request = ResponsesApiRequest {
+            model: "claude-sonnet".to_string(),
+            instructions: String::new(),
+            input: vec![ResponseItem::AgentMessage {
+                author: "/root/worker".to_string(),
+                recipient: "/root".to_string(),
+                content: vec![AgentMessageInputContent::EncryptedContent {
+                    encrypted_content: "status update from the worker".to_string(),
+                }],
+            }],
+            tools: Vec::new(),
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: Vec::new(),
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let parts = chat_request_from_responses(request, false).expect("request should map");
+        let messages = parts.body["messages"]
+            .as_array()
+            .expect("messages should be an array");
+        let assistant = messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("inter-agent message must be delivered as an assistant message");
+        let content = assistant["content"]
+            .as_str()
+            .expect("assistant content should be a string");
+        let communication: InterAgentCommunication = serde_json::from_str(content)
+            .expect("content should be a serialized inter-agent message");
+        assert_eq!(communication.content, "status update from the worker");
+        assert_eq!(communication.author.as_str(), "/root/worker");
+        assert_eq!(communication.recipient.as_str(), "/root");
+    }
+
+    #[test]
+    fn chat_request_skips_agent_message_without_body() {
+        // An empty inter-agent message has nothing to deliver and must not emit a
+        // bogus empty assistant message.
+        let request = ResponsesApiRequest {
+            model: "claude-sonnet".to_string(),
+            instructions: String::new(),
+            input: vec![ResponseItem::AgentMessage {
+                author: "/root/worker".to_string(),
+                recipient: "/root".to_string(),
+                content: Vec::new(),
+            }],
+            tools: Vec::new(),
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: false,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: Vec::new(),
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let parts = chat_request_from_responses(request, false).expect("request should map");
+        let messages = parts.body["messages"]
+            .as_array()
+            .expect("messages should be an array");
+        assert!(
+            messages
+                .iter()
+                .all(|message| message["role"] != "assistant"),
+            "empty agent message must not emit an assistant message"
         );
     }
 

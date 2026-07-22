@@ -41,6 +41,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ResumedHistory;
@@ -1099,6 +1100,56 @@ impl ThreadManagerState {
             log.push((thread_id, op.clone()));
         }
         thread.submit(op).await
+    }
+
+    /// Delivers an inter-agent communication to `thread_id` and returns any
+    /// delivery error (for example a full mailbox) to the caller.
+    ///
+    /// Unlike `send_op(Op::InterAgentCommunication { .. })`, which only enqueues
+    /// the op on the target's submission channel and returns `Ok` before the
+    /// mailbox insert runs (so a `MailboxQueueFull` rejection surfaces only on the
+    /// *target's* event stream and the sender is told it succeeded), this runs the
+    /// mailbox enqueue inline and propagates the error, matching the app-server
+    /// bridge delivery lane (`CodexThread::enqueue_inter_agent_communication_with_id`).
+    ///
+    /// The wake for a `trigger_turn` message is deferred to the target's own
+    /// submission loop via `Op::WakePendingWork` rather than started inline: an
+    /// inline wake runs on the sender's task and can take over the target's
+    /// in-flight turn-start reservation (aborting a live turn); routing it through
+    /// the submission loop serializes it with the target's turn lifecycle.
+    ///
+    /// The delivered op is recorded to the test ops log so delivery remains
+    /// observable to tests.
+    pub(crate) async fn deliver_inter_agent_communication(
+        &self,
+        thread_id: ThreadId,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        let thread = self.get_thread(thread_id).await?;
+        let trigger_turn = communication.trigger_turn;
+        let message_id = uuid::Uuid::now_v7().to_string();
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((
+                thread_id,
+                Op::InterAgentCommunication {
+                    communication: communication.clone(),
+                },
+            ));
+        }
+        // Synchronous enqueue: propagates MailboxQueueFull (as CodexErr::InvalidRequest)
+        // to the caller instead of dropping the message and reporting success.
+        thread
+            .enqueue_inter_agent_communication_with_id(message_id.clone(), communication)
+            .await?;
+        if trigger_turn {
+            // Best-effort wake on the target's submission loop; the message is
+            // already durably enqueued, so a failed wake only delays delivery to
+            // the next turn/prompt.
+            let _ = thread.submit(Op::WakePendingWork).await;
+        }
+        Ok(message_id)
     }
 
     /// Remove a thread from the manager by ID, returning it when present.
