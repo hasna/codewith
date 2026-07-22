@@ -13,6 +13,12 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         /*is_default*/ true,
     ),
     KnownProviderFallbackModel::new(
+        "gemini-3.6-flash",
+        "Gemini 3.6 Flash",
+        "Google Gemini's latest Flash model, balancing speed with strong agentic and multimodal performance.",
+        /*is_default*/ false,
+    ),
+    KnownProviderFallbackModel::new(
         "gemini-3.1-pro-preview",
         "Gemini 3.1 Pro Preview",
         "Google Gemini's preview Pro model for complex reasoning and coding.",
@@ -30,15 +36,23 @@ pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
         "Google Gemini's stable low-latency Flash-Lite model.",
         /*is_default*/ false,
     ),
+    KnownProviderFallbackModel::new(
+        "gemini-3.5-flash-lite",
+        "Gemini 3.5 Flash-Lite",
+        "Google Gemini's fastest, most cost-effective 3.5 model for high-throughput execution.",
+        /*is_default*/ false,
+    ),
 ];
 
 pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
     match slug {
         "gemini-3.5-flash" => Some(model("Gemini 3.5 Flash")),
+        "gemini-3.6-flash" => Some(model("Gemini 3.6 Flash")),
         "gemini-3.1-pro-preview" => Some(model("Gemini 3.1 Pro Preview")),
         "gemini-3.1-pro-preview-customtools" => Some(model("Gemini 3.1 Pro Preview Custom Tools")),
         "gemini-3-flash-preview" => Some(model("Gemini 3 Flash Preview")),
         "gemini-3.1-flash-lite" => Some(model("Gemini 3.1 Flash-Lite")),
+        "gemini-3.5-flash-lite" => Some(model("Gemini 3.5 Flash-Lite")),
         _ => None,
     }
 }
@@ -48,10 +62,12 @@ pub(crate) fn reasoning_levels(
 ) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
     match slug {
         "gemini-3.5-flash"
+        | "gemini-3.6-flash"
         | "gemini-3.1-pro-preview"
         | "gemini-3.1-pro-preview-customtools"
         | "gemini-3-flash-preview"
-        | "gemini-3.1-flash-lite" => (
+        | "gemini-3.1-flash-lite"
+        | "gemini-3.5-flash-lite" => (
             Some(ReasoningEffort::Medium),
             vec![
                 reasoning_preset(ReasoningEffort::Minimal, "Minimal thinking"),

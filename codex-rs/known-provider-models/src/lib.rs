@@ -748,6 +748,42 @@ mod tests {
     }
 
     #[test]
+    fn google_fallback_models_expose_latest_gemini_models() {
+        let models = fallback_models_for_provider(GOOGLE_PROVIDER_ID);
+
+        // Stable Gemini 3.5 Flash stays the default; newer entries are opt-in,
+        // matching how the Qwen 3.6 Flash rollout was handled.
+        assert_eq!(models[0].id, "gemini-3.5-flash");
+        assert!(models[0].is_default);
+        for id in ["gemini-3.6-flash", "gemini-3.5-flash-lite"] {
+            assert!(
+                models
+                    .iter()
+                    .any(|model| model.id == id && !model.is_default),
+                "{id} should be a non-default Google fallback model"
+            );
+        }
+
+        let gemini_3_6 = metadata_for_local_fallback(Some(GOOGLE_PROVIDER_ID), "gemini-3.6-flash")
+            .expect("gemini-3.6-flash metadata should exist");
+        assert_eq!(gemini_3_6.display_name, "Gemini 3.6 Flash");
+        assert_eq!(gemini_3_6.context_window, 1_048_576);
+        assert!(gemini_3_6.supports_tools);
+        assert!(gemini_3_6.supports_reasoning);
+
+        assert!(
+            metadata_for_local_fallback(Some(GOOGLE_PROVIDER_ID), "gemini-3.5-flash-lite")
+                .expect("gemini-3.5-flash-lite metadata should exist")
+                .supports_reasoning
+        );
+
+        let (default_effort, presets) =
+            reasoning_levels_for_local_fallback(Some(GOOGLE_PROVIDER_ID), "gemini-3.6-flash");
+        assert_eq!(default_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(presets.len(), 4);
+    }
+
+    #[test]
     fn nvidia_deepseek_v4_models_support_tools() {
         for slug in [
             "deepseek-ai/deepseek-v4-flash",
