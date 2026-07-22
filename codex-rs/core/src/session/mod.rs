@@ -2108,12 +2108,14 @@ impl Session {
             .rollout_thread_trace
             .is_enabled()
             .then(|| message.clone());
-        let communication = InterAgentCommunication::new(
+        // Completion notifications wake an idle parent (`wake_if_idle`) without
+        // deferring delivery out of a running turn (`trigger_turn` stays false),
+        // so a parent that has ended its turn auto-resumes and consumes the
+        // child's final answer instead of busy-polling `wait_agent`.
+        let communication = InterAgentCommunication::completion_notification(
             child_agent_path.clone(),
             parent_agent_path,
-            Vec::new(),
             message,
-            /*trigger_turn*/ false,
         );
         if let Err(err) = self
             .services

@@ -3260,12 +3260,10 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_COMPLETED_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3325,12 +3323,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_TIMEOUT_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3380,12 +3376,10 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_TIMEOUT_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3420,12 +3414,10 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_TIMEOUT_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3485,12 +3477,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_TIMEOUT_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3745,12 +3735,10 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     let (content, success) = expect_text_output(wait_output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_COMPLETED_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3827,12 +3815,10 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_COMPLETED_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -3919,12 +3905,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_COMPLETED_MESSAGE
     );
     assert_eq!(success, None);
 }
@@ -4008,12 +3992,10 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out);
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+        result.message,
+        crate::tools::handlers::multi_agents_v2::wait::WAIT_COMPLETED_MESSAGE
     );
     assert!(!content.contains("sensitive child output"));
     assert_eq!(success, None);

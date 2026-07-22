@@ -1036,6 +1036,23 @@ impl Session {
         .await
     }
 
+    /// Whether an idle parent should be auto-resumed into a fresh turn when a
+    /// spawned sub-agent finishes.
+    ///
+    /// Backed by `features.multi_agent_v2.auto_resume_on_subagent_completion`
+    /// (default `true`); hard-disabled under the infinity-agent policy at config
+    /// resolution. When `false`, sub-agent completion notifications never wake
+    /// an idle session (exactly the pre-feature behavior).
+    pub(crate) async fn auto_resume_on_subagent_completion(&self) -> bool {
+        self.state
+            .lock()
+            .await
+            .session_configuration
+            .original_config_do_not_use
+            .multi_agent_v2
+            .auto_resume_on_subagent_completion
+    }
+
     async fn default_turn_configuration_and_environments(
         &self,
     ) -> (SessionConfiguration, ResolvedTurnEnvironments) {

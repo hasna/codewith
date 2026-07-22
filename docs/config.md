@@ -146,6 +146,28 @@ enabled = false
 max_continuations = 25
 ```
 
+### `[features.multi_agent_v2]`
+
+Options for the experimental `multi_agent_v2` collaboration mode.
+
+`auto_resume_on_subagent_completion` controls Claude-Code-style push notifications
+for spawned sub-agents. When enabled (the default), a finishing sub-agent wakes an
+idle parent agent into a fresh turn that consumes the child's final answer as input,
+so the parent never has to busy-poll `wait_agent`. When disabled, sub-agent
+completion notifications are still delivered to the parent's mailbox but never wake
+an idle parent (the pre-feature behavior). The auto-resume turn is a normal turn:
+every tool call in it still passes all approval, sandbox, and policy enforcement.
+This setting is hard-disabled under the infinity-agent tool policy.
+
+| Key                                   | Default | Behavior                                                                                                    |
+| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| `auto_resume_on_subagent_completion`  | `true`  | Auto-resume an idle parent when a spawned sub-agent finishes. Hard-disabled under the infinity-agent policy. |
+
+```toml
+[features.multi_agent_v2]
+auto_resume_on_subagent_completion = true
+```
+
 ### `[auth_profile_auto_switch]`
 
 Switches to another saved auth profile when the selected Codewith rate-limit windows are

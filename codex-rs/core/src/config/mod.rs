@@ -499,7 +499,12 @@ pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usize = 4;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
-pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+// Sub-agent completion is push-based: a finishing child wakes an idle parent
+// and delivers its final answer, so `wait_agent` is a rarely-needed fallback.
+// The default timeout is generous (10 min) so a model that does call it blocks
+// on a genuine mailbox update instead of returning quickly and re-polling in a
+// tight loop. The 1h maximum is unchanged.
+pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 600_000;
 const DEFAULT_MULTI_AGENT_V2_ROOT_AGENT_USAGE_HINT_TEXT: &str = r#"You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
 At the start of your turn, you are the active agent.
@@ -510,6 +515,8 @@ You can use `spawn_agent` to create a new agent, `followup_task` to give an exis
 Child agents can also spawn their own sub-agents.
 You can decide how much context you want to propagate to your sub-agents with the `fork_turns` parameter.
 Use multi-agent capabilities only when there is a real reason to split the work; handle trivial or simple tasks directly.
+
+Sub-agent completion is push-based: after spawning, do other work or end your turn — you will be woken with each agent's FINAL_ANSWER as it finishes. Do not busy-wait with `wait_agent`.
 
 You will receive messages in the analysis channel in the form:
 ```
@@ -527,6 +534,8 @@ You can spawn sub-agents to handle subtasks, and those sub-agents can spawn thei
 You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task and trigger a turn, and `send_message` to pass a message to a running agent.
 Child agents can also spawn their own sub-agents.
 Use multi-agent capabilities only when there is a real reason to split the work; handle trivial or simple tasks directly.
+
+Sub-agent completion is push-based: after spawning, do other work or end your turn — you will be woken with each agent's FINAL_ANSWER as it finishes. Do not busy-wait with `wait_agent`.
 
 When you provide a response in the final channel, that content is immediately delivered back to your parent agent.
 
@@ -1701,6 +1710,11 @@ pub struct MultiAgentV2Config {
     pub tool_namespace: Option<String>,
     pub hide_spawn_agent_metadata: bool,
     pub non_code_mode_only: bool,
+    /// When `true` (default), a finishing sub-agent wakes an idle parent into a
+    /// fresh turn that consumes the child's final answer. Hard-disabled under
+    /// the infinity-agent policy. When `false`, completion notifications never
+    /// wake an idle session (pre-feature behavior).
+    pub auto_resume_on_subagent_completion: bool,
 }
 
 impl Default for MultiAgentV2Config {
@@ -1722,6 +1736,7 @@ impl Default for MultiAgentV2Config {
             tool_namespace: None,
             hide_spawn_agent_metadata: true,
             non_code_mode_only: true,
+            auto_resume_on_subagent_completion: true,
         }
     }
 }
@@ -3326,6 +3341,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let non_code_mode_only = base
         .and_then(|config| config.non_code_mode_only)
         .unwrap_or(default.non_code_mode_only);
+    let auto_resume_on_subagent_completion = base
+        .and_then(|config| config.auto_resume_on_subagent_completion)
+        .unwrap_or(default.auto_resume_on_subagent_completion);
 
     MultiAgentV2Config {
         max_concurrent_threads_per_session,
@@ -3339,6 +3357,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         tool_namespace,
         hide_spawn_agent_metadata,
         non_code_mode_only,
+        auto_resume_on_subagent_completion,
     }
 }
 
@@ -4131,7 +4150,13 @@ impl Config {
         // `tools_policy` / `infinity_agent_policy` are resolved earlier so the
         // fail-closed gating below can depend on them.
         let code_mode = resolve_code_mode_config(&cfg);
-        let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        let mut multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        if tool_policy == ToolPolicy::InfinityAgent {
+            // Fail-closed under the infinity-agent policy: never auto-resume an
+            // idle parent on sub-agent completion (mirrors the keep_going /
+            // usage-self-heal / auth-switch hard-disable above).
+            multi_agent_v2.auto_resume_on_subagent_completion = false;
+        }
         let apps_mcp_path_override = if features.enabled(Feature::AppsMcpPathOverride) {
             let base = apps_mcp_path_override_toml_config(cfg.features.as_ref());
             base.and_then(|config| config.path.as_ref())

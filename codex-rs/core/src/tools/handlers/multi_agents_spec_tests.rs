@@ -396,8 +396,9 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
+    assert!(description.contains("NEVER call wait_agent repeatedly in a loop"));
     assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
+        "when a spawned agent finishes, its final answer is delivered to you automatically"
     ));
     assert_eq!(
         properties
@@ -406,9 +407,16 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
+    let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
-        output_schema.expect("wait output schema")["properties"]["message"]["description"],
-        json!("Brief wait summary without the agent's final content.")
+        output_schema["properties"]["message"]["description"],
+        json!(
+            "Brief wait summary. On timeout it reminds you that completion is push-based and you must not re-poll."
+        )
+    );
+    assert_eq!(
+        output_schema["properties"]["agent_statuses"]["items"]["properties"]["thread_id"]["type"],
+        json!("string")
     );
 }
 

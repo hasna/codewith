@@ -708,6 +708,16 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub encrypted_content: Option<String>,
     pub trigger_turn: bool,
+    /// When `true`, this message should wake an idle recipient so it starts a
+    /// fresh turn that drains the message as input. Unlike `trigger_turn`, it
+    /// never defers delivery out of a running turn: it only affects idle
+    /// recipients. Used by sub-agent completion notifications so a parent that
+    /// has ended its turn is auto-resumed instead of busy-polling `wait_agent`.
+    ///
+    /// Defaults to `false` and is skipped when serializing so historical
+    /// rollouts (which never carried this field) replay unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wake_if_idle: bool,
 }
 
 impl InterAgentCommunication {
@@ -725,6 +735,7 @@ impl InterAgentCommunication {
             content,
             encrypted_content: None,
             trigger_turn,
+            wake_if_idle: false,
         }
     }
 
@@ -742,6 +753,27 @@ impl InterAgentCommunication {
             content: String::new(),
             encrypted_content: Some(encrypted_content),
             trigger_turn,
+            wake_if_idle: false,
+        }
+    }
+
+    /// Builds the standard sub-agent completion notification envelope: it does
+    /// not defer delivery into a running turn (`trigger_turn = false`) but does
+    /// wake an idle recipient so it resumes and consumes the child's final
+    /// answer (`wake_if_idle = true`).
+    pub fn completion_notification(
+        author: AgentPath,
+        recipient: AgentPath,
+        content: String,
+    ) -> Self {
+        Self {
+            author,
+            recipient,
+            other_recipients: Vec::new(),
+            content,
+            encrypted_content: None,
+            trigger_turn: false,
+            wake_if_idle: true,
         }
     }
 
@@ -4495,6 +4527,7 @@ mod tests {
             content: "review the diff".to_string(),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         };
 
         assert_eq!(
@@ -4507,6 +4540,49 @@ mod tests {
                 phase: Some(MessagePhase::Commentary),
             }
         );
+    }
+
+    #[test]
+    fn completion_notification_sets_wake_if_idle_without_trigger_turn() {
+        let communication = InterAgentCommunication::completion_notification(
+            AgentPath::root().join("worker").expect("author path"),
+            AgentPath::root(),
+            "child final answer".to_string(),
+        );
+        assert!(communication.wake_if_idle);
+        assert!(!communication.trigger_turn);
+    }
+
+    #[test]
+    fn inter_agent_communication_wake_if_idle_defaults_false_and_skips_when_false() {
+        // Historical rollouts never carried `wake_if_idle`; deserializing them
+        // must default the field to `false` so replay is unchanged.
+        let legacy = json!({
+            "author": "/root/worker",
+            "recipient": "/root",
+            "other_recipients": [],
+            "content": "hello",
+            "trigger_turn": false,
+        });
+        let parsed: InterAgentCommunication =
+            serde_json::from_value(legacy).expect("legacy communication parses");
+        assert!(!parsed.wake_if_idle);
+
+        // When false, the field is skipped from the serialized form so new
+        // rollouts stay byte-compatible with historical ones.
+        let serialized = serde_json::to_value(&parsed).expect("serialize communication");
+        assert!(serialized.get("wake_if_idle").is_none());
+
+        // When true, it round-trips.
+        let completion = InterAgentCommunication::completion_notification(
+            AgentPath::root().join("worker").expect("author path"),
+            AgentPath::root(),
+            "answer".to_string(),
+        );
+        let round_trip: InterAgentCommunication =
+            serde_json::from_value(serde_json::to_value(&completion).expect("serialize"))
+                .expect("round trip");
+        assert!(round_trip.wake_if_idle);
     }
 
     #[test]

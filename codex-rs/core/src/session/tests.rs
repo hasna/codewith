@@ -10199,6 +10199,128 @@ async fn pending_trigger_turn_mailbox_work_takes_over_empty_active_turn() {
 }
 
 #[tokio::test]
+async fn completion_notification_auto_resumes_idle_session_when_enabled() {
+    let (session, _turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            assert!(
+                config.multi_agent_v2.auto_resume_on_subagent_completion,
+                "auto-resume-on-subagent-completion should default to enabled"
+            );
+        },
+    )
+    .await;
+    {
+        let mut active_turn = session.active_turn.lock().await;
+        *active_turn = Some(ActiveTurn::default());
+    }
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::completion_notification(
+            AgentPath::root().join("worker").expect("worker path"),
+            AgentPath::root(),
+            "<subagent_notification>child final answer</subagent_notification>".to_string(),
+        ))
+        .await
+        .expect("mailbox queue has room");
+
+    assert!(
+        session.has_wake_worthy_pending_mailbox().await,
+        "a completion notification should be wake-worthy when auto-resume is enabled"
+    );
+    assert!(session.maybe_start_turn_for_pending_work().await);
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("event receiver open");
+            if matches!(event.msg, EventMsg::TurnStarted(_)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("completion notification should auto-start a turn for an idle session");
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn completion_notification_does_not_wake_idle_session_when_disabled() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.multi_agent_v2.auto_resume_on_subagent_completion = false;
+        },
+    )
+    .await;
+    {
+        let mut active_turn = session.active_turn.lock().await;
+        *active_turn = Some(ActiveTurn::default());
+    }
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::completion_notification(
+            AgentPath::root().join("worker").expect("worker path"),
+            AgentPath::root(),
+            "<subagent_notification>child final answer</subagent_notification>".to_string(),
+        ))
+        .await
+        .expect("mailbox queue has room");
+
+    // Disabled => the completion notification must not be treated as wake-worthy,
+    // and an idle session must not auto-resume (exactly the pre-feature behavior).
+    assert!(!session.has_wake_worthy_pending_mailbox().await);
+    assert!(!session.maybe_start_turn_for_pending_work().await);
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn trigger_turn_mail_still_wakes_when_auto_resume_disabled() {
+    let (session, _turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.multi_agent_v2.auto_resume_on_subagent_completion = false;
+        },
+    )
+    .await;
+    {
+        let mut active_turn = session.active_turn.lock().await;
+        *active_turn = Some(ActiveTurn::default());
+    }
+    session
+        .input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "pending trigger".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await
+        .expect("mailbox queue has room");
+
+    // `trigger_turn` mail is user/client-directed and always wakes, regardless of
+    // the auto-resume-on-subagent-completion setting.
+    assert!(session.has_wake_worthy_pending_mailbox().await);
+    assert!(session.maybe_start_turn_for_pending_work().await);
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("event receiver open");
+            if matches!(event.msg, EventMsg::TurnStarted(_)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("trigger-turn mail should wake regardless of auto-resume config");
+
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
     struct ThreadIdleRecorder {
         calls: Arc<std::sync::atomic::AtomicUsize>,

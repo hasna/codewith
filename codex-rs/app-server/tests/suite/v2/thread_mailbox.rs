@@ -301,6 +301,7 @@ async fn thread_mailbox_dispatcher_delivers_due_message_to_loaded_thread() -> Re
             ),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         }]
     );
 
@@ -362,6 +363,7 @@ async fn thread_mailbox_dispatcher_delivers_to_live_thread_in_separate_app_serve
             ),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         }]
     );
 
@@ -490,6 +492,7 @@ async fn thread_mailbox_dispatcher_resumes_unloaded_thread_when_requested() -> R
             ),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         }]
     );
 
@@ -760,6 +763,7 @@ async fn thread_mailbox_dispatcher_queues_trigger_turn_while_target_busy() -> Re
             ),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         }]
     );
 

@@ -22,6 +22,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -237,6 +238,34 @@ impl AgentControl {
         Ok(thread_ids)
     }
 
+    /// Snapshots the current status of each open direct sub-agent of
+    /// `parent_thread_id`, paired with the metadata needed to render them.
+    ///
+    /// Used by the v2 `wait_agent` tool to report an honest picture of which
+    /// agents exist and where they stand when a wait returns, instead of the
+    /// empty status set it produced before (which made the TUI print
+    /// "No agents completed yet"). Returns empty vectors when the thread tree
+    /// is unavailable.
+    pub(crate) async fn collect_child_agent_statuses(
+        &self,
+        parent_thread_id: ThreadId,
+    ) -> (Vec<CollabAgentRef>, HashMap<ThreadId, AgentStatus>) {
+        let Ok(children) = self.open_thread_spawn_children(parent_thread_id).await else {
+            return (Vec::new(), HashMap::new());
+        };
+        let mut receiver_agents = Vec::with_capacity(children.len());
+        let mut statuses = HashMap::with_capacity(children.len());
+        for (thread_id, metadata) in children {
+            receiver_agents.push(CollabAgentRef {
+                thread_id,
+                agent_nickname: metadata.agent_nickname,
+                agent_role: metadata.agent_role,
+            });
+            statuses.insert(thread_id, self.get_status(thread_id).await);
+        }
+        (receiver_agents, statuses)
+    }
+
     pub(crate) async fn get_agent_config_snapshot(
         &self,
         agent_id: ThreadId,
@@ -437,12 +466,13 @@ impl AgentControl {
                 else {
                     return;
                 };
-                let communication = InterAgentCommunication::new(
+                // Match the session terminal-turn forwarder: wake an idle parent
+                // so it consumes the child's final answer, without deferring
+                // delivery out of a running parent turn.
+                let communication = InterAgentCommunication::completion_notification(
                     child_agent_path,
                     parent_agent_path,
-                    Vec::new(),
                     message,
-                    /*trigger_turn*/ false,
                 );
                 if let Err(err) = control
                     .send_inter_agent_communication(parent_thread_id, communication)

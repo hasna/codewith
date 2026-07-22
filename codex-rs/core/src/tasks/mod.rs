@@ -452,16 +452,32 @@ impl Session {
             .await
     }
 
+    /// Whether pending mailbox mail should wake this session into a fresh turn.
+    ///
+    /// `trigger_turn` mail (user/client-directed) always wakes an idle session.
+    /// `wake_if_idle` sub-agent completion notifications additionally wake it,
+    /// but only when `auto_resume_on_subagent_completion` is enabled for this
+    /// session; when disabled the session stays idle exactly as it did before
+    /// this feature existed (the model keeps whatever wait/poll behavior it had).
+    pub(crate) async fn has_wake_worthy_pending_mailbox(self: &Arc<Self>) -> bool {
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            return true;
+        }
+        self.auto_resume_on_subagent_completion().await
+            && self.input_queue.has_wake_worthy_mailbox_items().await
+    }
+
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
     /// session.
     ///
-    /// The turn is created only when there is mailbox mail marked with `trigger_turn`, and only
-    /// if the session is currently idle.
+    /// The turn is created only when there is wake-worthy mailbox mail (see
+    /// [`Self::has_wake_worthy_pending_mailbox`]), and only if the session is
+    /// currently idle.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
     ) -> bool {
-        if !self.input_queue.has_trigger_turn_mailbox_items().await {
+        if !self.has_wake_worthy_pending_mailbox().await {
             return false;
         }
 
@@ -788,7 +804,13 @@ impl Session {
         if !cleared_active_turn {
             return;
         }
-        if self.input_queue.has_trigger_turn_mailbox_items().await {
+        // Check for wake-worthy pending mail (including sub-agent completion
+        // notifications) BEFORE emitting the idle lifecycle. This runs at the
+        // core turn-end boundary, ahead of the client's `keep_going` (#353)
+        // continuation, so a real sub-agent completion auto-resumes the parent
+        // (draining the child's final answer) and takes precedence over a
+        // keep-going nudge rather than racing with it.
+        if self.has_wake_worthy_pending_mailbox().await {
             self.maybe_start_turn_for_pending_work().await;
             return;
         }

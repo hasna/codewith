@@ -56,6 +56,12 @@ pub struct MultiAgentV2ConfigToml {
     pub hide_spawn_agent_metadata: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
+    /// When `true` (default), an idle parent agent is automatically resumed
+    /// into a fresh turn when a spawned sub-agent finishes, draining the
+    /// child's final answer as input instead of requiring the parent to
+    /// busy-poll `wait_agent`. Hard-disabled under the infinity-agent policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_resume_on_subagent_completion: Option<bool>,
 }
 
 impl FeatureConfig for MultiAgentV2ConfigToml {

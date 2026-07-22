@@ -273,6 +273,7 @@ async fn active_session_send_queue_only_reaches_target_next_turn_mailbox() -> Re
             ),
             encrypted_content: None,
             trigger_turn: false,
+            wake_if_idle: false,
         }]
     );
 
@@ -327,6 +328,7 @@ async fn active_session_send_trigger_turn_wakes_target_mailbox() -> Result<()> {
             ),
             encrypted_content: None,
             trigger_turn: true,
+            wake_if_idle: false,
         }]
     );
 
