@@ -3122,8 +3122,31 @@ async fn unrecognized_slash_command_is_not_added_to_local_recall() {
         rendered.contains("Unrecognized command '/does-not-exist'"),
         "expected unrecognized-command message, got: {rendered:?}"
     );
-    assert_eq!(chat.bottom_pane.composer_text(), "/does-not-exist");
+    // The mistyped command is cleared from the composer on submit (see
+    // `unrecognized_slash_command_clears_composer_input`) and is not recorded for recall.
+    assert_eq!(chat.bottom_pane.composer_text(), "");
     assert_eq!(recall_latest_after_clearing(&mut chat), "");
+}
+
+#[tokio::test]
+async fn unrecognized_slash_command_clears_composer_input() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/does-not-exist");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Unrecognized command '/does-not-exist'"),
+        "expected unrecognized-command error to render, got: {rendered:?}"
+    );
+    // The mistyped slash command must be cleared from the input after the error so the
+    // user can immediately retype instead of manually deleting the bad command.
+    assert_eq!(chat.bottom_pane.composer_text(), "");
 }
 
 #[tokio::test]

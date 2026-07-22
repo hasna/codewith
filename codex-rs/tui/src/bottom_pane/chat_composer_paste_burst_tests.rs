@@ -1022,8 +1022,11 @@ fn pasted_crlf_normalizes_newlines_for_elements() {
     assert_eq!(vec![path], imgs);
 }
 
+/// Submitting an unrecognized slash command clears the composer — including any pending
+/// paste payload — just like a valid command submission, rather than restoring the mistyped
+/// draft. This keeps the input empty so the user can immediately retype.
 #[test]
-fn suppressed_submission_restores_pending_paste_payload() {
+fn unrecognized_slash_command_submission_clears_pending_paste() {
     let (tx, _rx) = unbounded_channel::<AppEvent>();
     let sender = AppEventSender::new(tx);
     let mut composer = ChatComposer::new(
@@ -1040,37 +1043,15 @@ fn suppressed_submission_restores_pending_paste_payload() {
         .set_text_clearing_elements("/unknown ");
     composer.draft.textarea.set_cursor("/unknown ".len());
     let large_content = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
-    composer.handle_paste(large_content.clone());
-    let placeholder = composer
-        .draft
-        .pending_pastes
-        .first()
-        .expect("expected pending paste")
-        .0
-        .clone();
+    composer.handle_paste(large_content);
+    assert_eq!(composer.draft.pending_pastes.len(), 1);
 
     let (result, _) = composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(result, InputResult::None));
-    assert_eq!(composer.draft.pending_pastes.len(), 1);
-    assert_eq!(
-        composer.draft.textarea.text(),
-        format!("/unknown {placeholder}")
-    );
-
-    composer.draft.textarea.set_cursor(/*pos*/ 0);
-    composer.draft.textarea.insert_str(" ");
-    let (result, _) = composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    match result {
-        InputResult::Submitted {
-            text,
-            text_elements,
-        } => {
-            assert_eq!(text, format!("/unknown {large_content}"));
-            assert!(text_elements.is_empty());
-        }
-        _ => panic!("expected Submitted"),
-    }
+    // The unrecognized command is dropped from the composer along with its pending paste
+    // rather than restored, so nothing lingers in the input.
     assert!(composer.draft.pending_pastes.is_empty());
+    assert!(composer.draft.textarea.text().is_empty());
 }
 
 /// Behavior: fast "paste-like" ASCII input should buffer and then flush as a single paste. If

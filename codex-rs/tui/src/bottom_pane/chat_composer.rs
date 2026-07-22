@@ -357,6 +357,12 @@ pub(crate) struct ChatComposer {
     placeholder_text: String,
     is_task_running: bool,
     queue_submissions: bool,
+    /// Set by [`Self::prepare_submission_text_with_options`] when a submission is
+    /// suppressed because it is an unrecognized slash command. In that case the composer
+    /// has been intentionally cleared (so the mistyped text does not linger in the input)
+    /// and the submission caller MUST NOT restore the captured draft. Reset at the start
+    /// of every submission-preparation attempt.
+    submission_cleared_composer: bool,
     /// Slash-command draft staged for local recall after application-level dispatch.
     ///
     /// This slot is intentionally separate from `ChatComposerHistory` so inline slash commands can
@@ -533,6 +539,7 @@ impl ChatComposer {
             placeholder_text,
             is_task_running: false,
             queue_submissions: false,
+            submission_cleared_composer: false,
             pending_slash_command_history: None,
             #[cfg(not(target_os = "linux"))]
             next_element_id: 0,
@@ -2662,6 +2669,7 @@ impl ChatComposer {
         record_history: bool,
         slash_validation: SlashValidation,
     ) -> Option<(String, Vec<TextElement>)> {
+        self.submission_cleared_composer = false;
         let mut text = self.current_text();
         let original_input = text.clone();
         let original_text_elements = self.current_text_elements();
@@ -2699,16 +2707,13 @@ impl ChatComposer {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_info_event(message, /*hint*/ None),
             )));
-            self.set_text_content_with_mention_bindings(
-                original_input.clone(),
-                original_text_elements,
-                original_local_image_paths,
-                original_mention_bindings,
-            );
-            self.draft
-                .pending_pastes
-                .clone_from(&original_pending_pastes);
-            self.draft.textarea.set_cursor(original_input.len());
+            // Clear the composer just like a successful slash-command submission so the
+            // mistyped command does not linger in the input for the user to delete by
+            // hand. The textarea was already emptied above; drop the pending pastes and
+            // signal the caller not to restore the captured draft.
+            self.draft.pending_pastes.clear();
+            self.submission_cleared_composer = true;
+            self.sync_popups();
             return None;
         }
 
@@ -2882,6 +2887,12 @@ impl ChatComposer {
                     true,
                 )
             }
+        } else if self.submission_cleared_composer {
+            // An unrecognized slash command was submitted: the error has been surfaced and
+            // the composer intentionally cleared so the user can retype. Do not restore the
+            // mistyped draft.
+            self.submission_cleared_composer = false;
+            (InputResult::None, true)
         } else {
             // Restore text if submission was suppressed.
             self.set_text_content_with_mention_bindings(
@@ -5858,7 +5869,9 @@ mod tests {
             composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(matches!(result, InputResult::None));
-        assert_eq!(composer.draft.textarea.text(), "/not-a-command");
+        // The unrecognized command is cleared from the composer on submit, but the vim mode
+        // must stay in Insert because no successful dispatch occurred.
+        assert_eq!(composer.draft.textarea.text(), "");
         assert_eq!(
             composer.vim_mode_indicator_span(),
             Some("Vim: Insert".green())
