@@ -3652,6 +3652,26 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
+        // The fork snapshots the parent from the on-disk thread store. A freshly started
+        // parent thread may not have flushed its rollout yet (e.g. before the first user
+        // message, or while writes are still buffered during TUI bootstrap), which would
+        // otherwise fail the read with "no rollout found for thread id ...". When the parent
+        // is a live thread, persist and flush it first so the snapshot below observes it.
+        // This mirrors `ThreadManager::spawn_subagent`, which materializes+flushes the live
+        // fork source before reading it. No-op when forking by explicit rollout path or when
+        // the parent is not a live thread (e.g. an archived/persisted thread), in which case
+        // we fall through to the on-disk read unchanged.
+        if path.is_none()
+            && let Ok(parent_thread_id) = ThreadId::from_string(&thread_id)
+            && let Ok(live_parent) = self.thread_manager.get_thread(parent_thread_id).await
+        {
+            live_parent.ensure_rollout_materialized().await;
+            if let Err(err) = live_parent.flush_rollout().await {
+                warn!(
+                    "failed to flush live parent rollout for thread {parent_thread_id} before fork; continuing with on-disk snapshot: {err}"
+                );
+            }
+        }
         let source_thread = self
             .read_stored_thread_for_resume(&thread_id, path.as_ref(), /*include_history*/ true)
             .await?;
