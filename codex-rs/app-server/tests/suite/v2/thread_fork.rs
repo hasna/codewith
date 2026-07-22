@@ -500,8 +500,15 @@ async fn thread_fork_tracks_thread_initialized_analytics() -> Result<()> {
     Ok(())
 }
 
+/// Regression test for the external-agent / `/side` / `/fork` child-thread fork failing during
+/// TUI bootstrap with `thread/fork failed: no rollout found for thread id ... (code -32600)`.
+///
+/// A freshly started primary thread may not have flushed its rollout to disk yet (before the
+/// first user message / turn). The fork snapshots the parent from the on-disk thread store, so
+/// the app-server now persists+flushes the live parent first (mirroring
+/// `ThreadManager::spawn_subagent`). Forking a live, still-unmaterialized parent must succeed.
 #[tokio::test]
-async fn thread_fork_rejects_unmaterialized_thread() -> Result<()> {
+async fn thread_fork_materializes_live_parent_before_fork() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
@@ -521,10 +528,52 @@ async fn thread_fork_rejects_unmaterialized_thread() -> Result<()> {
     )
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+    let parent_thread_id = thread.id.clone();
 
+    // Fork the live parent before any user message / turn. This is the external-agent child
+    // thread path (ThreadSource::Subagent) and previously failed with "no rollout found".
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
-            thread_id: thread.id,
+            thread_id: parent_thread_id.clone(),
+            thread_source: Some(ThreadSource::Subagent),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread: forked, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_eq!(
+        forked.forked_from_id.as_deref(),
+        Some(parent_thread_id.as_str()),
+        "forked child should reference the live parent thread"
+    );
+    assert_ne!(
+        forked.id, parent_thread_id,
+        "fork must create a new child thread id"
+    );
+
+    Ok(())
+}
+
+/// Forking a thread id that has neither a live thread nor a persisted rollout still fails with
+/// the actionable "no rollout found" error — there is nothing to materialize.
+#[tokio::test]
+async fn thread_fork_rejects_unknown_thread_id() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let unknown_thread_id = "019f88ac-0000-7000-8000-0000000000ff".to_string();
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: unknown_thread_id,
             ..Default::default()
         })
         .await?;
