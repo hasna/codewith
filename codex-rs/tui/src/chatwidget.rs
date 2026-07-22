@@ -1055,6 +1055,13 @@ impl ChatWidget {
             .unwrap_or_default()
     }
 
+    /// Test-only view of the cached collab render metadata used by the "Spawned"/wait rows, so
+    /// app-level tests can assert lineage seeding without reaching into private fields.
+    #[cfg(test)]
+    pub(crate) fn collab_agent_metadata_for_test(&self, thread_id: ThreadId) -> AgentMetadata {
+        self.collab_agent_metadata(thread_id)
+    }
+
     fn realtime_conversation_enabled(&self) -> bool {
         self.config.features.enabled(Feature::RealtimeConversation)
             && cfg!(not(target_os = "linux"))

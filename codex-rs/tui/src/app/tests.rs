@@ -1468,6 +1468,152 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
 }
 
+/// Builds a completed `SpawnAgent` collab notification whose receiver is the freshly spawned child.
+fn spawn_completed_notification(
+    sender_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+) -> ServerNotification {
+    ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+        thread_id: sender_thread_id.to_string(),
+        turn_id: "turn-1".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::CollabAgentToolCall {
+            id: "spawn-1".to_string(),
+            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![child_thread_id.to_string()],
+            prompt: Some("Explore the repo".to_string()),
+            model: Some("gpt-5".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            agents_states: HashMap::from([(
+                child_thread_id.to_string(),
+                codex_app_server_protocol::CollabAgentState {
+                    status: codex_app_server_protocol::CollabAgentStatus::PendingInit,
+                    message: None,
+                },
+            )]),
+        },
+    })
+}
+
+/// A spawn completion whose child already has an authoritative agent path + nickname (its own
+/// `ThreadStarted` landed first) must seed the ChatWidget render metadata with the hierarchical
+/// path before the "Spawned" row renders, instead of leaving it to fall back to a short id.
+#[tokio::test]
+async fn spawn_notification_seeds_child_tree_path_from_authoritative_path() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid root");
+    let child = ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid child");
+    app.primary_thread_id = Some(root);
+    // Simulate the child's own `ThreadStarted` having captured the server-composed agent path and
+    // nickname in the navigation cache, without pushing anything into the ChatWidget metadata cache.
+    app.agent_navigation
+        .set_agent_path(child, "/root/backend_audit/db_check".to_string());
+    app.agent_navigation.upsert(
+        child,
+        Some("Sleuth".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    assert_eq!(
+        app.chat_widget
+            .collab_agent_metadata_for_test(child)
+            .tree_path,
+        None,
+        "precondition: the render cache has no tree path for the child yet"
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification(root, child),
+    ));
+
+    let metadata = app.chat_widget.collab_agent_metadata_for_test(child);
+    assert_eq!(
+        metadata.tree_path.as_deref(),
+        Some("root/backend_audit/Sleuth"),
+        "spawn seeding should resolve the authoritative path with a nickname leaf swap"
+    );
+    assert!(
+        !metadata
+            .tree_path
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&child.to_string()),
+        "seeded path must not leak the full child UUID"
+    );
+}
+
+/// Even before the child's own `ThreadStarted` arrives, the spawn notification itself is
+/// authoritative proof of the sender -> child edge, so seeding must still produce a hierarchical
+/// `root/<short-id>` path (never a bare or full thread id) rather than nothing.
+#[tokio::test]
+async fn spawn_notification_seeds_lineage_tree_path_without_prior_thread_started() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid root");
+    let child = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid child");
+    app.primary_thread_id = Some(root);
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification(root, child),
+    ));
+
+    let metadata = app.chat_widget.collab_agent_metadata_for_test(child);
+    assert_eq!(
+        metadata.tree_path.as_deref(),
+        Some("root/019f8894"),
+        "lineage-only seeding should still render a hierarchical short-id path"
+    );
+    // The spawn edge is recorded for later resolution, but no `/agent` picker row is fabricated.
+    assert_eq!(app.agent_navigation.parent(&child), Some(root));
+    assert_eq!(app.agent_navigation.get(&child), None);
+}
+
+/// Two children of the same parent must seed distinct render metadata even when their 8-char
+/// UUIDv7 short-id prefixes collide (siblings spawned within the same ~65s timestamp window).
+#[tokio::test]
+async fn spawn_notification_seeds_distinct_paths_for_distinct_children() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid root");
+    let first =
+        ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid first child");
+    let second =
+        ThreadId::from_string("019f8894-89dc-70f2-ad8e-000000000002").expect("valid second child");
+    app.primary_thread_id = Some(root);
+    app.agent_navigation
+        .set_agent_path(first, "/root/reviewer".to_string());
+    app.agent_navigation.upsert(
+        first, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(second, "/root/explorer".to_string());
+    app.agent_navigation.upsert(
+        second, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification(root, first),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification(root, second),
+    ));
+
+    let first_path = app
+        .chat_widget
+        .collab_agent_metadata_for_test(first)
+        .tree_path;
+    let second_path = app
+        .chat_widget
+        .collab_agent_metadata_for_test(second)
+        .tree_path;
+    assert_eq!(first_path.as_deref(), Some("root/reviewer"));
+    assert_eq!(second_path.as_deref(), Some("root/explorer"));
+    assert_ne!(
+        first_path, second_path,
+        "distinct children must not collapse onto an identical label"
+    );
+}
+
 #[test]
 fn open_agent_picker_does_not_promote_unverified_replay_channels() -> Result<()> {
     large_stack_test_runtime()?.block_on(async {
