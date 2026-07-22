@@ -1096,6 +1096,13 @@
           "minimum": 1,
           "type": "integer"
         },
+        "max_goal_plan_node_objective_chars": {
+          "description": "Maximum number of characters of a goal-plan node objective echoed back in\ntool responses, plan events, and completion reports. Larger values let a\nfull ~600-word objective show without truncation. Omit for the default\n(4000 characters, ~600 words). Clamped to a hard ceiling of 8000.",
+          "format": "uint",
+          "maximum": 8000,
+          "minimum": 1,
+          "type": "integer"
+        },
         "max_tokens_per_goal_plan": {
           "description": "Optional combined token cap for all goals in a plan. Omit for unlimited.",
           "format": "int64",

@@ -3610,6 +3610,37 @@ async fn config_agent_max_threads_popup_selects_value() {
 }
 
 #[tokio::test]
+async fn config_goal_plan_node_objective_popup_selects_value() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    // Start from a known current value so the initial highlight is deterministic (index 0 = "500").
+    chat.config.goals.max_goal_plan_node_objective_chars = 500;
+    while rx.try_recv().is_ok() {}
+
+    chat.open_goal_plan_node_objective_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Goal plan node objective limit"), "{popup}");
+    assert!(popup.contains("(default)"), "{popup}");
+
+    // Presets are [500, 1000, 2000, 4000, 6000, 8000]; move from "500" to "4000" and select it.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "goals.max_goal_plan_node_objective_chars"
+            && value == serde_json::json!(4000)
+            && label == "Goal plan node objective limit"
+    );
+}
+
+#[tokio::test]
 async fn config_agent_max_threads_menu_item_disabled_under_multi_agent_v2() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());

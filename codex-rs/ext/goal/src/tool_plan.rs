@@ -24,7 +24,6 @@ use crate::tool::validate_goal_budget;
 const MAX_GOAL_PLAN_NODES: usize = 64;
 const MAX_GOAL_PLAN_NODE_KEY_LEN: usize = 64;
 const MAX_GOAL_PLAN_RESPONSE_NODES: usize = 16;
-const MAX_GOAL_PLAN_RESPONSE_OBJECTIVE_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -244,6 +243,7 @@ impl GoalToolExecutor {
                 vec![GoalPlanResponse::from_snapshot_for_thread(
                     snapshot,
                     self.thread_id,
+                    self.plan_node_objective_char_limit(),
                 )],
                 CompletionBudgetReport::Omit,
             );
@@ -342,6 +342,7 @@ impl GoalToolExecutor {
         let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
             outcome.snapshot,
             self.thread_id,
+            self.plan_node_objective_char_limit(),
         )];
         goal_response_with_plan(
             activated_goal.clone(),
@@ -412,6 +413,7 @@ impl GoalToolExecutor {
         let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
             outcome.snapshot,
             self.thread_id,
+            self.plan_node_objective_char_limit(),
         )];
         goal_response_with_plan(
             activated_goal.clone(),
@@ -490,6 +492,7 @@ impl GoalToolExecutor {
     pub(crate) async fn goal_plan_responses(
         &self,
     ) -> Result<Vec<GoalPlanResponse>, FunctionCallError> {
+        let max_objective_chars = self.plan_node_objective_char_limit();
         self.state_db
             .thread_goals()
             .list_thread_goal_plans(self.thread_id)
@@ -498,7 +501,11 @@ impl GoalToolExecutor {
                 plans
                     .into_iter()
                     .map(|snapshot| {
-                        GoalPlanResponse::from_snapshot_for_thread(snapshot, self.thread_id)
+                        GoalPlanResponse::from_snapshot_for_thread(
+                            snapshot,
+                            self.thread_id,
+                            max_objective_chars,
+                        )
                     })
                     .collect()
             })
@@ -634,6 +641,7 @@ impl GoalPlanResponse {
     pub(crate) fn from_snapshot_for_thread(
         snapshot: codex_state::ThreadGoalPlanSnapshot,
         thread_id: ThreadId,
+        max_objective_chars: usize,
     ) -> Self {
         let summary = snapshot.usage_summary();
         let ready_node_ids = snapshot
@@ -672,7 +680,7 @@ impl GoalPlanResponse {
                 .into_iter()
                 .map(|node| {
                     let ready = ready_node_ids.contains(&node.node_id);
-                    GoalPlanNodeResponse::from_node(node.clone(), ready)
+                    GoalPlanNodeResponse::from_node(node.clone(), ready, max_objective_chars)
                 })
                 .collect(),
         }
@@ -683,6 +691,7 @@ impl GoalPlanCompletionReport {
     pub(crate) fn from_snapshot_if_terminal(
         snapshot: &codex_state::ThreadGoalPlanSnapshot,
         thread_id: ThreadId,
+        max_objective_chars: usize,
     ) -> Option<Self> {
         if !matches!(
             snapshot.plan.status,
@@ -724,7 +733,8 @@ impl GoalPlanCompletionReport {
             nodes: visible_nodes
                 .into_iter()
                 .map(|node| {
-                    let (objective, objective_truncated) = truncated_objective(&node.objective);
+                    let (objective, objective_truncated) =
+                        truncated_objective(&node.objective, max_objective_chars);
                     GoalPlanCompletionNodeReport {
                         key: node.key.clone(),
                         objective,
@@ -747,8 +757,13 @@ impl GoalPlanCompletionReport {
 }
 
 impl GoalPlanNodeResponse {
-    fn from_node(node: codex_state::ThreadGoalPlanNode, ready: bool) -> Self {
-        let (objective, objective_truncated) = truncated_objective(&node.objective);
+    fn from_node(
+        node: codex_state::ThreadGoalPlanNode,
+        ready: bool,
+        max_objective_chars: usize,
+    ) -> Self {
+        let (objective, objective_truncated) =
+            truncated_objective(&node.objective, max_objective_chars);
         Self {
             node_id: node.node_id,
             plan_id: node.plan_id,
@@ -773,8 +788,8 @@ impl GoalPlanNodeResponse {
     }
 }
 
-fn truncated_objective(value: &str) -> (String, bool) {
-    truncate_chars(value, MAX_GOAL_PLAN_RESPONSE_OBJECTIVE_CHARS)
+fn truncated_objective(value: &str, max_objective_chars: usize) -> (String, bool) {
+    truncate_chars(value, max_objective_chars)
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {

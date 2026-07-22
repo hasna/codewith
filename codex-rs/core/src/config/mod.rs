@@ -397,11 +397,22 @@ pub struct GoalsConfig {
     pub auto_execute: GoalAutoExecuteMode,
     pub max_auto_goals_per_plan: usize,
     pub max_tokens_per_goal_plan: Option<i64>,
+    pub max_goal_plan_node_objective_chars: usize,
     pub post_goal_context: PostGoalContextAction,
     pub post_goal_plan_context: PostGoalContextAction,
 }
 
 pub const MAX_AUTO_GOALS_PER_PLAN: usize = 64;
+
+/// Default per-node goal-plan objective echo/display limit, in characters.
+///
+/// 4000 characters is roughly 600 words and matches the objective input
+/// validation cap ([`codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS`]),
+/// so the full validated objective is echoed back by default.
+pub const DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS: usize = 4_000;
+
+/// Hard ceiling the resolver clamps `max_goal_plan_node_objective_chars` to.
+pub const MAX_GOAL_PLAN_NODE_OBJECTIVE_CHARS_CEIL: usize = 8_000;
 
 impl Default for GoalsConfig {
     fn default() -> Self {
@@ -409,6 +420,7 @@ impl Default for GoalsConfig {
             auto_execute: GoalAutoExecuteMode::Off,
             max_auto_goals_per_plan: 48,
             max_tokens_per_goal_plan: None,
+            max_goal_plan_node_objective_chars: DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS,
             post_goal_context: PostGoalContextAction::Keep,
             post_goal_plan_context: PostGoalContextAction::Keep,
         }
@@ -764,6 +776,11 @@ fn resolve_goals_config(config: Option<GoalsConfigToml>) -> GoalsConfig {
         max_tokens_per_goal_plan: config
             .max_tokens_per_goal_plan
             .filter(|max_tokens_per_goal_plan| *max_tokens_per_goal_plan > 0),
+        max_goal_plan_node_objective_chars: config
+            .max_goal_plan_node_objective_chars
+            .filter(|chars| *chars > 0)
+            .map(|chars| chars.min(MAX_GOAL_PLAN_NODE_OBJECTIVE_CHARS_CEIL))
+            .unwrap_or(defaults.max_goal_plan_node_objective_chars),
         post_goal_context: config
             .post_goal_context
             .map(PostGoalContextAction::from)

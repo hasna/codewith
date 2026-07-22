@@ -1450,6 +1450,10 @@ pub(crate) enum AppEvent {
     /// Open the agent subagent-thread-limit picker from the root config menu.
     OpenAgentMaxThreadsMenu,
 
+    /// Open the goal-plan node objective character-limit picker from the root
+    /// config menu.
+    OpenGoalPlanNodeObjectiveMenu,
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,

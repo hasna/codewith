@@ -13,7 +13,10 @@ use codex_protocol::protocol::ThreadGoalPlanUpdatedEvent;
 use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 
 const MAX_GOAL_PLAN_EVENT_NODES: usize = 16;
-const MAX_GOAL_PLAN_EVENT_OBJECTIVE_CHARS: usize = 512;
+// Kept at least as large as the configurable per-node goal-plan objective cap
+// ceiling so a full objective is never truncated below the node cap in events.
+const MAX_GOAL_PLAN_EVENT_OBJECTIVE_CHARS: usize =
+    codex_core::config::MAX_GOAL_PLAN_NODE_OBJECTIVE_CHARS_CEIL;
 
 #[derive(Clone)]
 pub(crate) struct GoalEventEmitter {
