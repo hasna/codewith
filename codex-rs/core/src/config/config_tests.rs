@@ -9745,6 +9745,7 @@ model = "gpt-5.4"
 auto_execute = "ai-directed"
 max_auto_goals_per_plan = 9999
 max_tokens_per_goal_plan = 123456
+max_goal_plan_node_objective_chars = 999999
 post_goal_context = "compact"
 post_goal_plan_context = "compact"
 "#,
@@ -9764,6 +9765,11 @@ post_goal_plan_context = "compact"
         config.goals.max_auto_goals_per_plan
     );
     assert_eq!(Some(123456), config.goals.max_tokens_per_goal_plan);
+    // An oversized objective cap clamps down to the hard ceiling.
+    assert_eq!(
+        MAX_GOAL_PLAN_NODE_OBJECTIVE_CHARS_CEIL,
+        config.goals.max_goal_plan_node_objective_chars
+    );
     assert_eq!(
         PostGoalContextAction::Compact,
         config.goals.post_goal_context
@@ -9772,6 +9778,49 @@ post_goal_plan_context = "compact"
         PostGoalContextAction::Compact,
         config.goals.post_goal_plan_context
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_goals_node_objective_cap_defaults_and_respects_override() -> std::io::Result<()> {
+    // With no [goals] override, the node objective cap resolves to the default.
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+model = "gpt-5.4"
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS,
+        config.goals.max_goal_plan_node_objective_chars
+    );
+    assert_eq!(4_000, config.goals.max_goal_plan_node_objective_chars);
+
+    // An explicit in-range value is honored verbatim.
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+model = "gpt-5.4"
+
+[goals]
+max_goal_plan_node_objective_chars = 6000
+"#,
+    )
+    .expect("TOML deserialization should succeed for goals config");
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(6_000, config.goals.max_goal_plan_node_objective_chars);
     Ok(())
 }
 

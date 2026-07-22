@@ -967,16 +967,56 @@ fn can_reuse_implicit_local_daemon(
         && !has_non_replayable_launch_overrides
 }
 
-fn apply_auth_profile_to_app_server_env(auth_profile: Option<&str>) -> std::io::Result<()> {
+/// How a requested `--auth-profile` was resolved at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthProfileEnvOutcome {
+    /// No `--auth-profile` was requested.
+    NotRequested,
+    /// The requested profile exists; the session was scoped to it.
+    Scoped,
+    /// The requested profile does not exist. Scoping was skipped so the session
+    /// falls back to the default (root) login instead of dead-ending in a login
+    /// screen, and the name is carried so we can offer to create it.
+    Missing(String),
+}
+
+impl AuthProfileEnvOutcome {
+    fn missing_profile(&self) -> Option<&str> {
+        match self {
+            Self::Missing(name) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Decide how to treat a requested `--auth-profile`, given whether it exists.
+/// Kept pure so the routing can be unit-tested without touching the
+/// environment or filesystem.
+fn auth_profile_env_decision(auth_profile: Option<&str>, exists: bool) -> AuthProfileEnvOutcome {
+    match auth_profile {
+        None => AuthProfileEnvOutcome::NotRequested,
+        Some(_) if exists => AuthProfileEnvOutcome::Scoped,
+        Some(name) => AuthProfileEnvOutcome::Missing(name.to_string()),
+    }
+}
+
+fn apply_auth_profile_to_app_server_env(
+    auth_profile: Option<&str>,
+) -> std::io::Result<AuthProfileEnvOutcome> {
     let Some(auth_profile) = auth_profile else {
-        return Ok(());
+        return Ok(AuthProfileEnvOutcome::NotRequested);
     };
     validate_auth_profile_name(auth_profile)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-    unsafe {
-        std::env::set_var(CODEWITH_AUTH_PROFILE_ENV_VAR, auth_profile);
+    let codex_home = find_codex_home()?;
+    let exists = codex_login::auth_profile_exists(codex_home.as_path(), auth_profile);
+    let outcome = auth_profile_env_decision(Some(auth_profile), exists);
+    if matches!(outcome, AuthProfileEnvOutcome::Scoped) {
+        unsafe {
+            std::env::set_var(CODEWITH_AUTH_PROFILE_ENV_VAR, auth_profile);
+        }
     }
-    Ok(())
+    Ok(outcome)
 }
 
 pub async fn run_main(
@@ -985,7 +1025,14 @@ pub async fn run_main(
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
-    apply_auth_profile_to_app_server_env(cli.auth_profile.as_deref())?;
+    let auth_profile_env_outcome =
+        apply_auth_profile_to_app_server_env(cli.auth_profile.as_deref())?;
+    // When `--auth-profile <name>` names a profile that doesn't exist yet, we
+    // fall back to the default login (above) and offer to create it via the
+    // provider chooser once the session is running.
+    let missing_auth_profile = auth_profile_env_outcome
+        .missing_profile()
+        .map(str::to_string);
 
     let strict_config = cli.strict_config;
     let (sandbox_mode, approval_policy) = if cli.dangerously_bypass_approvals_and_sandbox {
@@ -1180,7 +1227,13 @@ pub async fn run_main(
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         show_raw_agent_reasoning: cli.oss.then_some(true),
         bypass_hook_trust: cli.bypass_hook_trust.then_some(true),
-        auth_profile: cli.auth_profile.clone().map(Some),
+        auth_profile: if missing_auth_profile.is_some() {
+            // Force the selected profile to None (fall back to root) rather than
+            // selecting a profile that doesn't exist on disk.
+            Some(None)
+        } else {
+            cli.auth_profile.clone().map(Some)
+        },
         additional_writable_roots: additional_dirs,
         ..Default::default()
     };
@@ -1399,6 +1452,7 @@ pub async fn run_main(
         log_db,
         state_db,
         environment_manager,
+        missing_auth_profile,
     )
     .await
     .map_err(|err| std::io::Error::other(err.to_string()))
@@ -1421,6 +1475,7 @@ async fn run_ratatui_app(
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
+    missing_auth_profile: Option<String>,
 ) -> color_eyre::Result<AppExitInfo> {
     let uses_remote_workspace = app_server_target.uses_remote_workspace();
     color_eyre::install()?;
@@ -1946,6 +2001,7 @@ async fn run_ratatui_app(
         startup_elapsed_before_app,
         startup_bootstrap,
         startup_hooks_browser,
+        missing_auth_profile,
     )
     .await;
 
@@ -2160,6 +2216,27 @@ mod tests {
     use crate::legacy_core::config::ConfigOverrides;
     use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::ClientRequest;
+
+    #[test]
+    fn auth_profile_env_decision_routes_missing_profile_to_chooser() {
+        assert_eq!(
+            auth_profile_env_decision(None, false),
+            AuthProfileEnvOutcome::NotRequested
+        );
+        assert_eq!(
+            auth_profile_env_decision(Some("work"), true),
+            AuthProfileEnvOutcome::Scoped
+        );
+        // A requested-but-missing profile must not scope (which would dead-end in
+        // a login screen); it routes to the provider chooser instead.
+        let missing = auth_profile_env_decision(Some("work"), false);
+        assert_eq!(missing, AuthProfileEnvOutcome::Missing("work".to_string()));
+        assert_eq!(missing.missing_profile(), Some("work"));
+        assert_eq!(
+            auth_profile_env_decision(Some("work"), true).missing_profile(),
+            None
+        );
+    }
     use codex_app_server_protocol::RequestId;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;

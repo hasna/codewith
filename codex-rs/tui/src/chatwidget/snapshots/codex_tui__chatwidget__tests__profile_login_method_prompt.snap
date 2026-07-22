@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Choose login method
+  Sign-in methods for ChatGPT.
+
+› 1. Browser sign-in  Open a browser and sign in with your ChatGPT account.
+  2. Device code      Sign in on another device using a short code.
+  3. API key          Finish with an API key via the `codewith login` CLI.
+
+  Press enter to confirm or esc to go back

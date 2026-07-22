@@ -2,11 +2,13 @@
 source: tui/src/chatwidget/tests/popups_and_settings.rs
 expression: popup
 ---
-  Choose subscription
-  Create a profile tied to one provider subscription.
+  Choose provider
+  Pick who this profile signs in with; you'll choose a login method next.
 
-› 1. ChatGPT  Create a profile tied to ChatGPT.
-  2. Cursor   Tie this profile to your Cursor subscription login.
-  3. Grok     Tie this profile to your Grok subscription login.
+› 1. ChatGPT    Create a profile tied to ChatGPT.
+  2. Claude.ai  Tie this profile to your Claude.ai (Anthropic) subscription
+                login.
+  3. Cursor     Tie this profile to your Cursor subscription login.
+  4. Grok       Tie this profile to your Grok subscription login.
 
   Press enter to confirm or esc to go back

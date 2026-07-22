@@ -5127,13 +5127,19 @@ fn profile_popup_workflow_events(reset_generation: u64) -> Vec<AppEvent> {
             reset_generation,
         },
         AppEvent::OpenAuthProfileLoginPrompt { reset_generation },
+        AppEvent::OpenAuthProfileMethodPrompt {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
         AppEvent::OpenAuthProfileNamePrompt {
             subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            login_method: codex_login::AuthProfileLoginMethod::ChatgptBrowser,
             reset_generation,
         },
         AppEvent::LoginNewAuthProfile {
             profile: profile.clone(),
             subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            login_method: codex_login::AuthProfileLoginMethod::ChatgptBrowser,
             reset_generation,
         },
         AppEvent::AuthProfileLoginCompleted {
@@ -7024,14 +7030,22 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                         item: ThreadItem::CollabAgentToolCall {
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
-                            status:
-                                codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                            // A completed wait with a real agent status renders
+                            // a cell (an in-progress wait no longer does), so the
+                            // reseeded metadata is exercised on the replayed row.
+                            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             prompt: None,
                             model: None,
                             reasoning_effort: None,
-                            agents_states: HashMap::new(),
+                            agents_states: HashMap::from([(
+                                receiver_thread_id.to_string(),
+                                codex_app_server_protocol::CollabAgentState {
+                                    status: codex_app_server_protocol::CollabAgentStatus::Completed,
+                                    message: None,
+                                },
+                            )]),
                         },
                     },
                 ),

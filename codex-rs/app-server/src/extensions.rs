@@ -76,6 +76,7 @@ where
                 },
                 max_auto_goals_per_plan: config.goals.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.goals.max_tokens_per_goal_plan,
+                max_goal_plan_node_objective_chars: config.goals.max_goal_plan_node_objective_chars,
                 post_goal_context: post_goal_context_action(config.goals.post_goal_context),
                 post_goal_plan_context: post_goal_context_action(
                     config.goals.post_goal_plan_context,
