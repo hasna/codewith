@@ -945,6 +945,33 @@ mod tests {
     }
 
     #[test]
+    fn xai_exposes_grok_4_5_flagship_metadata() {
+        assert_eq!(
+            metadata_for_local_fallback(Some(XAI_PROVIDER_ID), "grok-4.5"),
+            Some(KnownProviderModelMetadata::with_search_tool(
+                "Grok 4.5", /*context_window*/ 500_000, /*supports_tools*/ true,
+                /*supports_parallel_tool_calls*/ false, /*supports_reasoning*/ true,
+                /*supports_search_tool*/ true,
+            ))
+        );
+        assert_eq!(
+            metadata_for_openai_compatible_response(Some(XAI_PROVIDER_ID), None, None, "grok-4.5"),
+            metadata_for_local_fallback(Some(XAI_PROVIDER_ID), "grok-4.5"),
+        );
+
+        // grok-4.5 is offered alongside the existing grok-4.3 default without
+        // displacing it (grok-4.3 keeps its larger 1M-token context window).
+        let models = fallback_models_for_provider(XAI_PROVIDER_ID);
+        assert_eq!(models[0].id, "grok-4.3");
+        assert!(models[0].is_default);
+        assert!(
+            models
+                .iter()
+                .any(|model| model.id == "grok-4.5" && !model.is_default)
+        );
+    }
+
+    #[test]
     fn zai_glm_5_2_metadata_matches_documented_capabilities() {
         assert_eq!(
             metadata_for_local_fallback(Some(ZAI_PROVIDER_ID), "glm-5.2"),
