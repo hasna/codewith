@@ -134,7 +134,6 @@ use codex_config::ConfigLayerStackOrdering;
 use codex_config::LoaderOverrides;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::MemoriesToml;
-use codex_config::types::ModelAvailabilityNuxConfig;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsToml;
 use codex_exec_server::EnvironmentManager;
@@ -152,7 +151,6 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -918,10 +916,11 @@ impl App {
         let (mut chat_widget, initial_started_thread) = match session_selection {
             SessionSelection::StartFresh | SessionSelection::Exit => {
                 spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
-                // Count a startup tooltip once the initial chat widget can render it.
-                let startup_tooltip_override =
-                    prepare_startup_tooltip_override(&mut config, &available_models, is_first_run)
-                        .await;
+                // De-branding: Codewith does not surface provider-supplied model
+                // "availability NUX" marketing as a startup tip. Startup tips come only
+                // from our announcement channel and bundled tooltips.txt (see
+                // `crate::tooltips`), so no catalog-derived override is produced here.
+                let startup_tooltip_override: Option<String> = None;
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),

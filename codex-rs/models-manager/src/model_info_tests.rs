@@ -698,3 +698,18 @@ fn model_context_window_uses_model_value_without_override() {
 
     assert_eq!(updated, model);
 }
+
+#[test]
+fn bundled_models_json_has_no_provider_marketing_urls() {
+    // De-branding guard: the bundled catalog must not ship OpenAI/ChatGPT product
+    // marketing links. User-facing announcement copy (e.g. `availability_nux.message`
+    // and `upgrade.migration_markdown`) is surfaced in Codewith UIs, so these
+    // domains must never appear anywhere in the bundled catalog.
+    const BUNDLED_MODELS_JSON: &str = include_str!("../models.json");
+    for needle in ["openai.com", "chatgpt.com"] {
+        assert!(
+            !BUNDLED_MODELS_JSON.contains(needle),
+            "bundled models.json must not contain provider marketing URL {needle:?}"
+        );
+    }
+}
