@@ -250,7 +250,7 @@ async fn cold_thread_resume_reuses_history_probe() -> Result<()> {
     .await??;
     client.shutdown().await?;
 
-    let mut client = start_in_process_client(config, loader_overrides).await?;
+    let client = start_in_process_client(config, loader_overrides).await?;
     let reads_before_resume = thread_store.calls().await.read_thread_with_history;
     // The in-memory store is pathless, so resume can fail later while assembling
     // the response. The history-bearing probe must still be read exactly once.
