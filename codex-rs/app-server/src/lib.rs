@@ -17,6 +17,7 @@ use std::io::Result as IoResult;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use crate::analytics_utils::analytics_events_client_from_config;
 use crate::config_manager::ConfigManager;
@@ -409,6 +410,17 @@ pub struct AppServerRuntimeOptions {
     pub install_shutdown_signal_handler: bool,
     pub background_agent_host: bool,
     pub background_agent_worker_run_id: Option<String>,
+    /// When set, a per-session control-socket app-server exits after its last
+    /// client disconnects and no client reconnects within this grace period.
+    ///
+    /// This reaps per-session, TUI-owned `--listen unix://` backends when the
+    /// owning TUI goes away — including when the TUI is signal-killed (e.g.
+    /// SIGHUP from a closing terminal/tmux pane) and cannot run any cleanup, so
+    /// the backend would otherwise be reparented to init and linger forever.
+    /// It is only honored for `unix://` control sockets that are not
+    /// remote-control or background-agent hosts (enforced in
+    /// [`run_main_with_transport_options`]); `None` disables idle shutdown.
+    pub idle_shutdown_after: Option<Duration>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -419,6 +431,7 @@ impl Default for AppServerRuntimeOptions {
             install_shutdown_signal_handler: true,
             background_agent_host: false,
             background_agent_worker_run_id: None,
+            idle_shutdown_after: None,
         }
     }
 }
@@ -716,6 +729,29 @@ pub async fn run_main_with_transport_options(
     }
     let background_agent_runtime_enabled = runtime_options.background_agent_host
         || runtime_options.background_agent_worker_run_id.is_some();
+
+    // Reap per-session, TUI-owned control sockets. When the owning TUI goes
+    // away — including a signal-kill (SIGHUP from a closing terminal/tmux pane)
+    // that runs no cleanup — its unix-socket connection closes; if no client
+    // reconnects within the grace period the backend exits instead of lingering
+    // as an orphan reparented to init. Standalone daemons must outlive any TUI,
+    // so idle shutdown is deliberately gated off for remote-control and
+    // background-agent hosts, and only applies to `unix://` control sockets
+    // (stdio already exits with its single client via `single_client_mode`;
+    // websocket servers are shared, longer-lived endpoints).
+    let idle_shutdown_after = resolve_idle_shutdown_after(
+        runtime_options.idle_shutdown_after,
+        &transport,
+        remote_control_enabled,
+        background_agent_runtime_enabled,
+    );
+    if let Some(grace) = idle_shutdown_after {
+        info!(
+            grace_ms = grace.as_millis() as u64,
+            "per-session app-server idle shutdown enabled; will exit after last client disconnects"
+        );
+    }
+
     if transport_accept_handles.is_empty()
         && !remote_control_enabled
         && !background_agent_runtime_enabled
@@ -846,6 +882,12 @@ pub async fn run_main_with_transport_options(
             }
             let mut listen_for_threads = true;
             let mut shutdown_state = ShutdownState::default();
+            // Idle-shutdown deadline for per-session control sockets. Armed at
+            // startup so a backend whose owning TUI dies before (or right after)
+            // connecting still exits after the grace period; disarmed while a
+            // client is connected and re-armed whenever the last one disconnects.
+            let mut idle_deadline: Option<tokio::time::Instant> =
+                idle_shutdown_after.map(|grace| tokio::time::Instant::now() + grace);
             loop {
                 let running_turn_count = {
                     let running_turn_count = running_turn_count_rx.borrow();
@@ -863,6 +905,22 @@ pub async fn run_main_with_transport_options(
                 }
 
                 tokio::select! {
+                    () = async {
+                        match idle_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if idle_shutdown_after.is_some() => {
+                        if connections.is_empty() {
+                            info!(
+                                "per-session app-server idle-shutdown grace elapsed with no clients connected; exiting"
+                            );
+                            break;
+                        }
+                        // A client reconnected before the grace elapsed; disarm
+                        // until the next time the last connection drops.
+                        idle_deadline = None;
+                    }
                     shutdown_signal_result = shutdown_signal(), if graceful_signal_restart_enabled && !shutdown_state.forced() => {
                         let signal = match shutdown_signal_result {
                             Ok(signal) => signal,
@@ -922,6 +980,8 @@ pub async fn run_main_with_transport_options(
                                         outbound_opted_out_notification_methods,
                                     ),
                                 );
+                                // Keep the backend alive while a client is using it.
+                                idle_deadline = None;
                             }
                             TransportEvent::ConnectionClosed { connection_id } => {
                                 let Some(connection_state) = connections.remove(&connection_id) else {
@@ -937,6 +997,14 @@ pub async fn run_main_with_transport_options(
                                 processor.connection_closed(connection_id, &connection_state.session).await;
                                 if shutdown_when_no_connections && connections.is_empty() {
                                     break;
+                                }
+                                // Per-session control socket: arm the idle timer
+                                // once the last client disconnects so an orphaned
+                                // backend exits after the reconnect grace period.
+                                if let Some(grace) = idle_shutdown_after
+                                    && connections.is_empty()
+                                {
+                                    idle_deadline = Some(tokio::time::Instant::now() + grace);
                                 }
                             }
                             TransportEvent::IncomingMessage { connection_id, message } => {
@@ -1111,6 +1179,29 @@ pub async fn run_main_with_transport_options(
     Ok(())
 }
 
+/// Resolve whether (and after how long) this app-server should idle-shut-down
+/// once its last client disconnects.
+///
+/// Idle shutdown only applies to per-session, TUI-owned `unix://` control
+/// sockets. It is refused for every other role so standalone daemons keep
+/// running with no client attached:
+/// - remote-control daemons must stay up to serve the remote-control channel;
+/// - background-agent hosts/workers must stay up to run queued work;
+/// - stdio servers already exit with their single client (`single_client_mode`);
+/// - websocket servers are shared, longer-lived endpoints.
+fn resolve_idle_shutdown_after(
+    requested: Option<Duration>,
+    transport: &AppServerTransport,
+    remote_control_enabled: bool,
+    background_agent_runtime_enabled: bool,
+) -> Option<Duration> {
+    requested.filter(|_| {
+        matches!(transport, AppServerTransport::UnixSocket { .. })
+            && !remote_control_enabled
+            && !background_agent_runtime_enabled
+    })
+}
+
 fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransport {
     match transport {
         AppServerTransport::Stdio => AppServerRpcTransport::Stdio,
@@ -1122,8 +1213,95 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 
 #[cfg(test)]
 mod tests {
+    use super::AppServerTransport;
+    use super::Duration;
     use super::LogFormat;
+    use super::resolve_idle_shutdown_after;
     use pretty_assertions::assert_eq;
+
+    const GRACE: Duration = Duration::from_millis(500);
+
+    #[cfg(unix)]
+    fn unix_transport() -> AppServerTransport {
+        AppServerTransport::from_listen_url("unix:///tmp/codex-idle-shutdown-test.sock")
+            .expect("unix transport should parse")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_shutdown_enabled_for_plain_unix_control_socket() {
+        assert_eq!(
+            resolve_idle_shutdown_after(
+                Some(GRACE),
+                &unix_transport(),
+                /*remote_control_enabled*/ false,
+                /*background_agent_runtime_enabled*/ false,
+            ),
+            Some(GRACE),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_shutdown_disabled_for_remote_control_daemon() {
+        assert_eq!(
+            resolve_idle_shutdown_after(
+                Some(GRACE),
+                &unix_transport(),
+                /*remote_control_enabled*/ true,
+                /*background_agent_runtime_enabled*/ false,
+            ),
+            None,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_shutdown_disabled_for_background_agent_host() {
+        assert_eq!(
+            resolve_idle_shutdown_after(
+                Some(GRACE),
+                &unix_transport(),
+                /*remote_control_enabled*/ false,
+                /*background_agent_runtime_enabled*/ true,
+            ),
+            None,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_shutdown_disabled_when_not_requested() {
+        assert_eq!(
+            resolve_idle_shutdown_after(
+                /*requested*/ None,
+                &unix_transport(),
+                /*remote_control_enabled*/ false,
+                /*background_agent_runtime_enabled*/ false,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn idle_shutdown_disabled_for_non_unix_transports() {
+        for transport in [
+            AppServerTransport::Stdio,
+            AppServerTransport::Off,
+            AppServerTransport::from_listen_url("ws://127.0.0.1:8080").expect("ws transport"),
+        ] {
+            assert_eq!(
+                resolve_idle_shutdown_after(
+                    Some(GRACE),
+                    &transport,
+                    /*remote_control_enabled*/ false,
+                    /*background_agent_runtime_enabled*/ false,
+                ),
+                None,
+                "transport {transport:?} should never idle-shut-down",
+            );
+        }
+    }
 
     #[test]
     fn log_format_from_env_value_matches_json_values_case_insensitively() {

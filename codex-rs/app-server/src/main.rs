@@ -10,6 +10,7 @@ use codex_config::LoaderOverrides;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_cli::CliConfigOverrides;
 use std::path::PathBuf;
+use std::time::Duration;
 
 // Debug-only test hook: lets integration tests point the server at a temporary
 // managed config file without writing to /etc.
@@ -64,6 +65,16 @@ struct AppServerArgs {
     /// Internal: run one durable background-agent worker and exit.
     #[arg(long = "background-agent-worker", value_name = "RUN_ID", hide = true)]
     background_agent_worker_run_id: Option<String>,
+
+    /// Internal: exit this app-server after its last client disconnects if no
+    /// client reconnects within the given grace period (milliseconds).
+    ///
+    /// Scoped to per-session `--listen unix://` control sockets spawned by a
+    /// TUI so they do not linger as orphans when the owning TUI is signal-killed
+    /// (e.g. SIGHUP from a closing terminal). Ignored for remote-control and
+    /// background-agent hosts, and for non-`unix://` transports. Absent = never.
+    #[arg(long = "exit-on-idle-ms", value_name = "MILLIS", hide = true)]
+    exit_on_idle_ms: Option<u64>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -79,6 +90,7 @@ fn main() -> anyhow::Result<()> {
             remote_control,
             background_agent_host,
             background_agent_worker_run_id,
+            exit_on_idle_ms,
         } = AppServerArgs::parse();
         let loader_overrides = if disable_managed_config_from_debug_env() {
             LoaderOverrides::without_managed_config_for_tests()
@@ -97,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         runtime_options.remote_control_enabled = remote_control;
         runtime_options.background_agent_host = background_agent_host;
         runtime_options.background_agent_worker_run_id = background_agent_worker_run_id;
+        runtime_options.idle_shutdown_after = exit_on_idle_ms.map(Duration::from_millis);
 
         run_main_with_transport_options(
             arg0_paths,

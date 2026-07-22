@@ -2,6 +2,8 @@ mod account;
 mod active_session;
 mod analytics;
 mod app_list;
+#[cfg(target_os = "linux")]
+mod app_server_idle_shutdown_unix;
 mod attestation;
 mod client_metadata;
 mod collaboration_mode_list;
