@@ -41,6 +41,7 @@
 //! In short: `single_line_footer_layout` chooses *what* best fits, and the two
 //! render helpers choose whether to draw the chosen line or the default
 //! `FooterProps` mapping.
+use super::status_line_style::goal_status_line_style;
 use crate::goal_display::format_goal_elapsed_seconds;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
@@ -615,7 +616,13 @@ pub(crate) fn goal_status_indicator_line(
         }
     };
 
-    Some(Line::from(vec![Span::from(label).magenta()]))
+    // Style the locked goal segment with the dedicated goal accent so it stays visually distinct
+    // from the session/thread-title segment it renders next to (both were previously magenta and
+    // blurred together). The surrounding ` · ` separators are added dim by the caller.
+    Some(Line::from(vec![Span::styled(
+        label,
+        goal_status_line_style(),
+    )]))
 }
 
 pub(crate) fn status_line_right_indicator_line(
@@ -837,7 +844,8 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
 
     // The goal-pursuit indicator is not a configurable `/statusline` item: append it last so it
     // renders one-after-another in the inline ` · ` flow whenever a goal status exists, preserving
-    // the exact goal text/format and its magenta styling.
+    // the exact goal text/format. It carries its own dedicated goal accent (see
+    // `goal_status_line_style`) so it stays visually distinct from the thread-title segment.
     if let Some(goal_line) = goal_status_indicator_line(props.goal_status_indicator.as_ref()) {
         if let Some(existing) = line.as_mut() {
             existing.spans.push(" · ".dim());
@@ -2481,6 +2489,78 @@ mod tests {
             !collapsed.contains("for shortcuts"),
             "the goal-bearing passive line should replace the shortcuts hint; got: {collapsed:?}"
         );
+    }
+
+    /// The goal-pursuit indicator must join the same status-line row inline (` · ` separated) AND
+    /// use a color distinct from the thread-title segment it sits next to, so the two do not blur
+    /// together. Guards both the inline placement (#340) and the distinct-color requirement.
+    #[test]
+    fn passive_footer_status_line_gives_goal_distinct_color_from_thread_title() {
+        use ratatui::style::Modifier;
+
+        let status_line = crate::bottom_pane::status_line_from_segments(
+            [(
+                crate::bottom_pane::status_line_setup::StatusLineItem::ThreadTitle,
+                "Platform Skills Mode Audit".to_string(),
+            )],
+            /*use_theme_colors*/ true,
+        );
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: status_line,
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            goal_status_indicator: Some(GoalStatusIndicator::ActivePlan {
+                usage: None,
+                current_goal: 5,
+                total_goals: 11,
+                current_elapsed_seconds: 8 * 60,
+                total_elapsed_seconds: 42 * 60,
+            }),
+        };
+
+        let line =
+            passive_footer_status_line(&props).expect("a present goal must force a passive line");
+
+        // Inline on the SAME row, appended after the thread title with a ` · ` separator.
+        assert_eq!(
+            line_text(&line),
+            "Platform Skills Mode Audit · Pursuing goal 5/11 (8m current, 42m total)"
+        );
+
+        let thread_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "Platform Skills Mode Audit")
+            .expect("thread-title span");
+        let goal_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref().starts_with("Pursuing goal"))
+            .expect("goal span");
+
+        // The goal segment carries the dedicated goal accent, so its text color differs from the
+        // thread-title segment's color.
+        assert_eq!(goal_span.style, goal_status_line_style());
+        assert_ne!(
+            goal_span.style.fg, thread_span.style.fg,
+            "goal segment must not share the thread-title color"
+        );
+
+        // Only the segment text colors differ; the separator between them stays dim as before.
+        let separator = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == STATUS_LINE_SEPARATOR)
+            .expect("dim ` · ` separator");
+        assert!(separator.style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

@@ -26,6 +26,7 @@ enum StatusLineAccent {
     Mode,
     Thread,
     Progress,
+    Goal,
 }
 
 impl StatusLineAccent {
@@ -71,6 +72,9 @@ impl StatusLineAccent {
             Self::Mode => &["storage.modifier", "keyword.operator"],
             Self::Thread => &["markup.heading", "entity.name.section"],
             Self::Progress => &["markup.inserted", "constant.numeric"],
+            // Deliberately different scope set from `Thread` so the locked goal segment resolves to
+            // a different theme color than the session/thread title it renders next to.
+            Self::Goal => &["markup.inserted", "string", "constant.numeric"],
         }
     }
 
@@ -79,7 +83,7 @@ impl StatusLineAccent {
             Self::Model | Self::State | Self::Metadata | Self::Mode => {
                 Style::default().fg(accent_color())
             }
-            Self::Path | Self::Usage | Self::Progress => Style::default().green(),
+            Self::Path | Self::Usage | Self::Progress | Self::Goal => Style::default().green(),
             Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
         }
     }
@@ -128,6 +132,27 @@ where
     }
 
     (!spans.is_empty()).then(|| Line::from(spans))
+}
+
+/// Text style for the locked, always-on goal-pursuit segment appended inline to the status line.
+///
+/// The goal-pursuit indicator ("Pursuing goal N/M (…)") is not a configurable `/statusline` item,
+/// so it does not flow through [`StatusLineAccent::for_item`]. It is styled here with the
+/// dedicated [`StatusLineAccent::Goal`] category, which is deliberately DISTINCT from
+/// [`StatusLineItem::ThreadTitle`]'s `Thread` accent so the goal text does not blur into the
+/// session/thread title when both render inline on the same row. It is theme-aware and softened
+/// for readability exactly like the other themed segments; the surrounding ` · ` separators stay
+/// dim (applied by the caller).
+pub(crate) fn goal_status_line_style() -> Style {
+    status_line_accent_style(StatusLineAccent::Goal)
+}
+
+/// Resolves the softened, theme-derived text style for a single accent, falling back to the
+/// accent's built-in color when the active theme does not define a matching scope.
+fn status_line_accent_style(accent: StatusLineAccent) -> Style {
+    soften_status_line_style(
+        foreground_style_for_scopes(accent.scopes()).unwrap_or_else(|| accent.fallback_style()),
+    )
 }
 
 fn soften_status_line_style(mut style: Style) -> Style {
@@ -410,6 +435,24 @@ mod tests {
                 |_| None,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn goal_status_line_style_differs_from_thread_title_style() {
+        // The locked goal segment renders next to the session/thread title, so its color must not
+        // collapse into the thread title's `Self::Thread` accent (both previously magenta).
+        let goal = goal_status_line_style();
+        let thread = status_line_accent_style(StatusLineAccent::Thread);
+        assert_ne!(
+            goal.fg, thread.fg,
+            "goal segment must use a color distinct from the thread-title segment"
+        );
+        // The thread-title accent maps `ThreadTitle` (and `GoalTitle`) to `Self::Thread`, so guard
+        // against a future regression that would route the goal color through it again.
+        assert_ne!(
+            goal.fg,
+            status_line_accent_style(StatusLineAccent::for_item(StatusLineItem::ThreadTitle)).fg,
         );
     }
 }
