@@ -60,6 +60,28 @@ Any config key can be overridden for a single run with `-c <dotted.key>=<value>`
 profiles are separate; use `--auth-profile <name>` or `codewith profile ...`
 for credential profiles.
 
+## Goal plans
+
+`[goals] max_goal_plan_node_objective_chars` controls how many characters of each
+goal-plan node objective Codewith echoes back to the model (in `create_goal_plan`
+tool responses, plan events, and completion reports). Larger values let a full,
+detailed objective show without being clipped.
+
+| Key                                 | Default | Behavior                                                                                                    |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| `max_goal_plan_node_objective_chars` | `4000`  | Max characters of a goal-plan node objective echoed to the model (~600 words). Clamped to a ceiling of `8000`. |
+
+```toml
+[goals]
+max_goal_plan_node_objective_chars = 4000
+```
+
+You can also change it interactively from `/config` in the TUI ("Goal objective
+limit"), which shows the current value and writes
+`[goals] max_goal_plan_node_objective_chars` for you; restart the session to apply
+the new limit. Override it for a single run with
+`-c goals.max_goal_plan_node_objective_chars=6000`.
+
 ## Usage limits & automatic recovery
 
 Codewith can keep a session moving when it hits Codewith usage limits or transient

@@ -21,6 +21,11 @@ enabled = true
 [agents]
 max_threads = 4
 
+# Max characters of a goal-plan node objective echoed to the model
+# (default: 4000, ~600 words; clamped to a ceiling of 8000).
+[goals]
+max_goal_plan_node_objective_chars = 4000
+
 # Consume one banked reset credit after the weekly usage limit is exhausted.
 [usage_limit]
 auto_reset_enabled = false

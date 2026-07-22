@@ -40,7 +40,10 @@ use crate::tool_plan::GoalPlanCompletionReport;
 use crate::tool_plan::GoalPlanResponse;
 
 const MAX_GOAL_TOOL_RESPONSE_PLANS: usize = 4;
-const MAX_GOAL_TOOL_OBJECTIVE_CHARS: usize = 512;
+// Kept at least as large as the configurable per-node goal-plan objective cap
+// ceiling so a full objective is never truncated below the node cap here.
+const MAX_GOAL_TOOL_OBJECTIVE_CHARS: usize =
+    codex_core::config::MAX_GOAL_PLAN_NODE_OBJECTIVE_CHARS_CEIL;
 
 #[derive(Clone)]
 pub(crate) struct GoalToolExecutor {
@@ -249,6 +252,16 @@ impl GoalToolExecutor {
             metrics,
             plan_config: None,
         }
+    }
+
+    /// Resolve the configured per-node goal-plan objective echo limit (in
+    /// characters), falling back to the built-in default when no plan runtime
+    /// config is attached (e.g. tool kinds that do not carry one).
+    pub(crate) fn plan_node_objective_char_limit(&self) -> usize {
+        self.plan_config
+            .as_ref()
+            .map(|plan_config| plan_config.current().max_goal_plan_node_objective_chars)
+            .unwrap_or(codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS)
     }
 }
 
@@ -560,9 +573,11 @@ impl GoalToolExecutor {
                 Some(invocation.turn_id.clone()),
                 outcome.snapshot.clone(),
             );
+            let objective_char_limit = self.plan_node_objective_char_limit();
             let goal_plan_completion_report = GoalPlanCompletionReport::from_snapshot_if_terminal(
                 &outcome.snapshot,
                 self.thread_id,
+                objective_char_limit,
             );
             let activated_goal = self
                 .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
@@ -571,6 +586,7 @@ impl GoalToolExecutor {
                 vec![GoalPlanResponse::from_snapshot_for_thread(
                     outcome.snapshot,
                     self.thread_id,
+                    objective_char_limit,
                 )],
                 activated_goal,
                 goal_plan_completion_report,

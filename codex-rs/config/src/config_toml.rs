@@ -176,6 +176,13 @@ pub struct GoalsConfigToml {
     #[schemars(range(min = 1))]
     pub max_tokens_per_goal_plan: Option<i64>,
 
+    /// Maximum number of characters of a goal-plan node objective echoed back in
+    /// tool responses, plan events, and completion reports. Larger values let a
+    /// full ~600-word objective show without truncation. Omit for the default
+    /// (4000 characters, ~600 words). Clamped to a hard ceiling of 8000.
+    #[schemars(range(min = 1, max = 8000))]
+    pub max_goal_plan_node_objective_chars: Option<usize>,
+
     /// Context lifecycle action after a completed goal when no next goal is
     /// immediately activated.
     pub post_goal_context: Option<PostGoalContextActionToml>,

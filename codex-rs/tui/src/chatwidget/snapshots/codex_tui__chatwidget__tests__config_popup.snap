@@ -12,5 +12,6 @@ expression: popup
                              settings.
   4. Agent subagent threads  Max concurrent subagent threads per agent run (currently
                              the built-in default).
+  5. Goal objective limit    Max characters echoed per goal objective (now 4000).
 
   Press enter to open; esc to close

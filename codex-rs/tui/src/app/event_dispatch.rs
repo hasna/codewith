@@ -1758,6 +1758,9 @@ impl App {
             AppEvent::OpenAgentMaxThreadsMenu => {
                 self.chat_widget.open_agent_max_threads_popup();
             }
+            AppEvent::OpenGoalPlanNodeObjectiveMenu => {
+                self.chat_widget.open_goal_plan_node_objective_popup();
+            }
             AppEvent::OpenRealtimeAudioDeviceSelection { kind } => {
                 self.chat_widget.open_realtime_audio_device_selection(kind);
             }

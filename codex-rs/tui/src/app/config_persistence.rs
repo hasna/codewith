@@ -467,6 +467,15 @@ impl App {
             return Ok(());
         }
 
+        if key_path == "goals.max_goal_plan_node_objective_chars" {
+            if let Some(chars) = value.as_u64() {
+                self.config.goals.max_goal_plan_node_objective_chars = chars as usize;
+            }
+            self.chat_widget.apply_config_popup_value(&key_path, &value);
+            self.refresh_status_line();
+            return Ok(());
+        }
+
         if key_path == "goals.auto_execute" {
             apply_goal_auto_execute_value(&mut self.config, &value);
             self.chat_widget.apply_config_popup_value(&key_path, &value);
