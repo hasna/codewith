@@ -863,7 +863,24 @@ pub(crate) fn passive_footer_status_lines(
     area: Rect,
     right_width: u16,
 ) -> Option<Vec<Line<'static>>> {
-    let line = passive_footer_status_line(props)?;
+    if !shows_passive_footer_line(props) {
+        return None;
+    }
+
+    // Keep the configurable `/statusline` items separate from the goal-pursuit indicator so the
+    // goal can be pinned inline to the trailing status row rather than wrapping onto a row of its
+    // own. The configurable items still wrap by whole items across rows exactly as before; only the
+    // goal gets the "never a new row, truncate instead" treatment (see `pack_status_line_items`).
+    let base = if props.status_line_enabled {
+        props.status_line_value.clone()
+    } else {
+        None
+    };
+    let goal = goal_status_indicator_line(props.goal_status_indicator.as_ref());
+    if base.is_none() && goal.is_none() {
+        return None;
+    }
+
     let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16);
     if available_width == 0 {
         return None;
@@ -871,7 +888,8 @@ pub(crate) fn passive_footer_status_lines(
 
     let second_row_width = max_left_width_for_right(area, right_width).unwrap_or(available_width);
     Some(pack_status_line_items(
-        line,
+        base,
+        goal,
         available_width,
         second_row_width,
     ))
@@ -886,8 +904,21 @@ pub(crate) fn passive_footer_status_height(
     Some(u16::try_from(lines.len()).unwrap_or(u16::MAX))
 }
 
+/// Pack the configurable status-line `items` into rows, then pin the goal-pursuit `goal` inline to
+/// the trailing row.
+///
+/// The configurable `/statusline` items wrap by whole items across rows (each non-final row is at
+/// most `row_width` wide; the final row is reserved to `final_row_width` so a right-aligned
+/// indicator can sit beside it). The goal indicator is deliberately **not** a wrappable item: it is
+/// appended to whatever row the trailing status item lands on so it renders on the SAME row as
+/// `model · account · session · …`. When width would force it off that row we truncate the goal
+/// text (it is the tail of the row, so the ellipsis lands on it) instead of dropping it onto a row
+/// of its own. This is the invariant that regressed after PRs #340/#357: the goal was appended into
+/// the packed line as just another item, so a long goal-plan segment (`Pursuing goal N/M (…)`)
+/// wrapped to a second row whenever it did not fit beside the other segments.
 fn pack_status_line_items(
-    line: Line<'static>,
+    line: Option<Line<'static>>,
+    goal: Option<Line<'static>>,
     row_width: u16,
     final_row_width: u16,
 ) -> Vec<Line<'static>> {
@@ -895,10 +926,7 @@ fn pack_status_line_items(
         return Vec::new();
     }
 
-    let items = status_line_items(line);
-    if items.is_empty() {
-        return Vec::new();
-    }
+    let items = line.map(status_line_items).unwrap_or_default();
 
     let mut rows: Vec<Vec<Line<'static>>> = Vec::new();
     let mut current = Vec::new();
@@ -931,7 +959,18 @@ fn pack_status_line_items(
     }
 
     let final_row_width = final_row_width.min(row_width);
-    if final_row_width < row_width {
+    if let Some(goal) = goal {
+        // Pin the goal to the trailing status row (or make it the only row when the configurable
+        // status line is empty/disabled). It must never occupy a row of its own, so we intentionally
+        // skip the "move the last item onto its own row" reservation below: the goal-bearing row is
+        // truncated to `final_row_width` instead, which trims the goal (the row tail) rather than
+        // wrapping it to a new line.
+        if let Some(last) = rows.last_mut() {
+            last.push(goal);
+        } else {
+            rows.push(vec![goal]);
+        }
+    } else if final_row_width < row_width {
         while rows.last().is_some_and(|row| {
             !row.is_empty() && status_items_width(row) > final_row_width as usize
         }) {
@@ -945,6 +984,10 @@ fn pack_status_line_items(
                 break;
             }
         }
+    }
+
+    if rows.is_empty() {
+        return Vec::new();
     }
 
     let row_count = rows.len();
@@ -2344,7 +2387,12 @@ mod tests {
             "profile".fg(crate::style::accent_color()),
         ]);
 
-        let rows = pack_status_line_items(line, /*row_width*/ 13, /*final_row_width*/ 20);
+        let rows = pack_status_line_items(
+            Some(line),
+            /*goal*/ None,
+            /*row_width*/ 13,
+            /*final_row_width*/ 20,
+        );
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "model · /repo");
@@ -2362,7 +2410,12 @@ mod tests {
             "three".magenta(),
         ]);
 
-        let rows = pack_status_line_items(line, /*row_width*/ 5, /*final_row_width*/ 5);
+        let rows = pack_status_line_items(
+            Some(line),
+            /*goal*/ None,
+            /*row_width*/ 5,
+            /*final_row_width*/ 5,
+        );
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "one");
@@ -2380,7 +2433,12 @@ mod tests {
             "gamma".magenta(),
         ]);
 
-        let rows = pack_status_line_items(line, /*row_width*/ 20, /*final_row_width*/ 5);
+        let rows = pack_status_line_items(
+            Some(line),
+            /*goal*/ None,
+            /*row_width*/ 20,
+            /*final_row_width*/ 5,
+        );
 
         assert_eq!(rows.len(), 2);
         assert_eq!(line_text(&rows[0]), "alpha · beta");
@@ -2395,7 +2453,12 @@ mod tests {
             "beta beta".green(),
         ]);
 
-        let rows = pack_status_line_items(line, /*row_width*/ 20, /*final_row_width*/ 5);
+        let rows = pack_status_line_items(
+            Some(line),
+            /*goal*/ None,
+            /*row_width*/ 20,
+            /*final_row_width*/ 5,
+        );
 
         assert_eq!(rows.len(), 3);
         assert_eq!(line_text(&rows[0]), "alpha");
@@ -2561,6 +2624,146 @@ mod tests {
             .find(|span| span.content.as_ref() == STATUS_LINE_SEPARATOR)
             .expect("dim ` · ` separator");
         assert!(separator.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    /// Shared `model · account · session` status line for the goal-inline regression tests below.
+    #[cfg(test)]
+    fn goal_inline_status_line_value() -> Line<'static> {
+        Line::from(vec![
+            "gpt-5.6-sol max fast".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "account006".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "EA cross-station remediation".magenta(),
+        ])
+    }
+
+    #[cfg(test)]
+    fn goal_inline_props(goal: GoalStatusIndicator) -> FooterProps {
+        FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: Some(goal_inline_status_line_value()),
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            goal_status_indicator: Some(goal),
+        }
+    }
+
+    /// Regression guard for the recurring bug that slipped past PR #340 and PR #357: when a goal
+    /// PLAN is running (`Pursuing goal N/M (…)`), the goal segment must render on the SAME row as
+    /// `model · account · session`, not on a row of its own. The width here is wide enough that the
+    /// whole line fits, so the snapshot visibly proves same-line rendering: everything sits on ONE
+    /// row, ` · ` separated, with the goal at the tail.
+    #[test]
+    fn footer_status_line_keeps_active_goal_plan_inline() {
+        let props = goal_inline_props(GoalStatusIndicator::ActivePlan {
+            usage: None,
+            current_goal: 7,
+            total_goals: 12,
+            current_elapsed_seconds: 2 * 60 * 60 + 41 * 60,
+            total_elapsed_seconds: 3 * 60 * 60 + 60,
+        });
+        let goal_status = props
+            .goal_status_indicator
+            .clone()
+            .expect("goal status set by helper");
+
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_keeps_active_goal_plan_inline",
+            /*width*/ 120,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+    }
+
+    /// The single-goal (non-plan) case must also stay inline on the same status row.
+    #[test]
+    fn footer_status_line_keeps_single_goal_inline() {
+        let props = goal_inline_props(GoalStatusIndicator::Active {
+            usage: None,
+            elapsed_seconds: 8 * 60,
+        });
+        let goal_status = props
+            .goal_status_indicator
+            .clone()
+            .expect("goal status set by helper");
+
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_keeps_single_goal_inline",
+            /*width*/ 120,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+    }
+
+    /// The packed status-line layout must pin an active goal plan to a single row: at a width where
+    /// `model · account · session` fits but the long goal-plan segment does NOT fit beside it, the
+    /// goal must be truncated in place rather than dropped onto a second row (the exact regression
+    /// #340/#357 missed). When width allows, the full goal renders inline with its distinct accent.
+    #[test]
+    fn passive_footer_status_lines_pins_goal_plan_to_one_row() {
+        let props = goal_inline_props(GoalStatusIndicator::ActivePlan {
+            usage: None,
+            current_goal: 7,
+            total_goals: 12,
+            current_elapsed_seconds: 2 * 60 * 60 + 41 * 60,
+            total_elapsed_seconds: 3 * 60 * 60 + 60,
+        });
+
+        // Width where the base items fit but base + goal does not: the goal must NOT wrap.
+        let narrow = Rect::new(0, 0, /*width*/ 90, 2);
+        let rows = passive_footer_status_lines(&props, narrow, /*right_width*/ 0)
+            .expect("a present goal must force a passive line");
+        assert_eq!(
+            rows.len(),
+            1,
+            "goal must stay on the same row, never wrap to a new one: {rows:?}"
+        );
+        let narrow_text = line_text(&rows[0]);
+        assert!(
+            narrow_text
+                .starts_with("gpt-5.6-sol max fast · account006 · EA cross-station remediation"),
+            "base status items must remain intact: {narrow_text}"
+        );
+        assert!(
+            narrow_text.contains("Pursuing goal 7/12"),
+            "goal must remain inline on the row: {narrow_text}"
+        );
+        assert!(
+            narrow_text.contains('…'),
+            "goal text must truncate (not wrap) when width is tight: {narrow_text}"
+        );
+
+        // Wide enough for the whole line: one row, full goal text, goal keeps its distinct accent.
+        let wide = Rect::new(0, 0, /*width*/ 120, 2);
+        let rows = passive_footer_status_lines(&props, wide, /*right_width*/ 0)
+            .expect("a present goal must force a passive line");
+        assert_eq!(rows.len(), 1, "everything must fit on one row: {rows:?}");
+        assert_eq!(
+            line_text(&rows[0]),
+            "gpt-5.6-sol max fast · account006 · EA cross-station remediation · Pursuing goal 7/12 (2h 41m current, 3h 1m total)"
+        );
+        let goal_span = rows[0]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref().starts_with("Pursuing goal"))
+            .expect("goal span present on the single row");
+        assert_eq!(
+            goal_span.style,
+            goal_status_line_style(),
+            "goal segment must keep its dedicated accent when rendered inline"
+        );
     }
 
     #[test]
