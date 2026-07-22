@@ -42,6 +42,31 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.76] - 2026-07-22
+
+Tag: `rust-v0.1.76`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.76>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.75...rust-v0.1.76>
+
+Maintenance release focused on multi-agent messaging and process reliability:
+inter-agent messages now deliver over chat-wire providers with mailbox-full
+surfaced back to the sender, monitor event injection is reliable with no
+mid-turn drops, and per-session app-servers are reaped when their owning TUI
+exits. It also stops a false-positive weekly-limit cascade across auth profiles
+and renders the goal indicator truly inline in the statusline.
+
+### Fixed
+
+- Core/API: deliver inter-agent messages on chat-wire providers and surface a
+  mailbox-full error back to the sender. (#377)
+- TUI: render the goal indicator truly inline in the statusline row (`·`
+  separated), including the active goal plan. (#373)
+- Core: make monitor event injection reliable with a queue and wake-if-idle so
+  events are not dropped mid-turn. (#376)
+- App server: terminate the per-session app-server when its owning TUI exits so
+  no orphan processes are left behind. (#372)
+- Auth: stop a false-positive weekly-limit cascade across auth profiles. (#374)
+
 ## [0.1.75] - 2026-07-22
 
 Tag: `rust-v0.1.75`
