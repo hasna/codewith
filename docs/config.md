@@ -159,9 +159,9 @@ an idle parent (the pre-feature behavior). The auto-resume turn is a normal turn
 every tool call in it still passes all approval, sandbox, and policy enforcement.
 This setting is hard-disabled under the infinity-agent tool policy.
 
-| Key                                   | Default | Behavior                                                                                                    |
-| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
-| `auto_resume_on_subagent_completion`  | `true`  | Auto-resume an idle parent when a spawned sub-agent finishes. Hard-disabled under the infinity-agent policy. |
+| Key                                  | Default | Behavior                                                                                                     |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `auto_resume_on_subagent_completion` | `true`  | Auto-resume an idle parent when a spawned sub-agent finishes. Hard-disabled under the infinity-agent policy. |
 
 ```toml
 [features.multi_agent_v2]
