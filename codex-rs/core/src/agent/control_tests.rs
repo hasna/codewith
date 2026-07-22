@@ -11,6 +11,7 @@ use crate::context::SubagentNotification;
 use crate::init_state_db;
 use assert_matches::assert_matches;
 use codex_features::Feature;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ModeKind;
@@ -3274,4 +3275,106 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .shutdown_agent_tree(parent_thread_id)
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
+}
+
+#[tokio::test]
+async fn resume_thread_with_history_reloads_running_subagent_subtree() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+
+    // Spawn a child with an explicit canonical agent path so we can assert that
+    // path-based resolution survives the resume (registry key recovery).
+    let child_agent_path = AgentPath::root()
+        .join("explorer")
+        .expect("child agent path");
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: Some(child_agent_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
+
+    let root_rollout_path = root_thread
+        .rollout_path()
+        .expect("root thread should have a rollout path");
+
+    // Simulate the process going down with the sub-agent still running.
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    // Resume ONLY the root via the top-level session-resume path. The fix must
+    // rebuild the sub-agent subtree from the persisted `Open` spawn edges.
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let resumed = harness
+        .manager
+        .resume_thread_from_rollout(
+            harness.config.clone(),
+            root_rollout_path,
+            auth_manager,
+            /*parent_trace*/ None,
+        )
+        .await
+        .expect("root session resume should succeed");
+    assert_eq!(resumed.thread_id, root_thread_id);
+
+    // The child sub-agent must be reloaded into the manager on resume.
+    harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child should be reloaded into the manager on resume");
+
+    // The resumed root session must see the child again through the same registry
+    // its multi-agent tools query.
+    let session_control = resumed.thread.codex.session.services.agent_control.clone();
+    let child_metadata = session_control
+        .get_agent_metadata(child_thread_id)
+        .expect("resumed registry should know the child sub-agent");
+    // Step 3: the canonical agent path is recovered from persisted metadata.
+    assert_eq!(child_metadata.agent_path.as_ref(), Some(&child_agent_path));
+    assert_eq!(
+        session_control.state.agent_id_for_path(&child_agent_path),
+        Some(child_thread_id),
+        "path-based resolution should survive resume"
+    );
+
+    let listed = session_control
+        .list_agents(&resumed.thread.session_source, /*path_prefix*/ None)
+        .await
+        .expect("list agents should succeed");
+    assert!(
+        listed
+            .iter()
+            .any(|agent| agent.agent_name == child_agent_path.as_str()),
+        "list_agents should surface the reloaded child; got {listed:?}"
+    );
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
 }

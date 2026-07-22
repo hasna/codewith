@@ -526,7 +526,8 @@ impl AgentControl {
             .await
     }
 
-    /// Resume an existing agent thread from a recorded rollout file.
+    /// Resume an existing agent thread from a recorded rollout file, then rebuild
+    /// the live sub-agent subtree beneath it.
     pub(crate) async fn resume_agent_from_rollout(
         &self,
         config: Config,
@@ -540,15 +541,45 @@ impl AgentControl {
             session_source,
         ))
         .await?;
-        let state = self.upgrade()?;
-        let Ok(resumed_thread) = state.get_thread(resumed_thread_id).await else {
-            return Ok(resumed_thread_id);
+        self.reload_live_subtree(thread_id, root_depth, &config)
+            .await;
+        Ok(resumed_thread_id)
+    }
+
+    /// Walk the persisted `Open` thread-spawn edges beneath `root_thread_id` and
+    /// reload every still-live sub-agent into this `AgentControl`'s in-memory
+    /// registry.
+    ///
+    /// The persisted spawn graph (child rollout files plus parent -> child `Open`
+    /// edges) survives a restart, but the in-memory registry does not: a resumed
+    /// root would otherwise forget its running children and be unable to reconnect
+    /// to them. This is the shared reload path used both by the v1 `resume_agent`
+    /// tool (via [`Self::resume_agent_from_rollout`]) and by top-level session
+    /// resume (`ThreadManager::resume_thread_with_history`). It must run against
+    /// the same `AgentControl` instance the resumed root session holds so the
+    /// registry it repopulates is the one the parent's multi-agent tools query.
+    ///
+    /// Best-effort: individual descendant reload failures are logged and skipped
+    /// rather than aborting the resume. Sessions without persisted `Open` spawn
+    /// edges return after a single cheap lookup, so plain single-agent resumes pay
+    /// effectively nothing.
+    pub(crate) async fn reload_live_subtree(
+        &self,
+        root_thread_id: ThreadId,
+        root_depth: i32,
+        config: &Config,
+    ) {
+        let Ok(state) = self.upgrade() else {
+            return;
         };
-        let Some(state_db_ctx) = resumed_thread.state_db() else {
-            return Ok(resumed_thread_id);
+        let Ok(root_thread) = state.get_thread(root_thread_id).await else {
+            return;
+        };
+        let Some(state_db_ctx) = root_thread.state_db() else {
+            return;
         };
 
-        let mut resume_queue = VecDeque::from([(thread_id, root_depth)]);
+        let mut resume_queue = VecDeque::from([(root_thread_id, root_depth)]);
         while let Some((parent_thread_id, parent_depth)) = resume_queue.pop_front() {
             let child_ids = match state_db_ctx
                 .list_thread_spawn_children_with_status(
@@ -571,11 +602,22 @@ impl AgentControl {
                 let child_resumed = if state.get_thread(child_thread_id).await.is_ok() {
                     true
                 } else {
+                    // Recover the child's canonical agent path from persisted
+                    // state-DB metadata. The in-memory session source is gone after a
+                    // restart, so without this the child would re-register under a
+                    // synthetic `thread:<id>` key and path-based resolution
+                    // (`agent_id_for_path`, `resolve_agent_reference`) would break.
+                    let agent_path = match state_db_ctx.get_thread(child_thread_id).await {
+                        Ok(Some(metadata)) => metadata
+                            .agent_path
+                            .and_then(|path| AgentPath::from_string(path).ok()),
+                        Ok(None) | Err(_) => None,
+                    };
                     let child_session_source =
                         SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                             parent_thread_id,
                             depth: child_depth,
-                            agent_path: None,
+                            agent_path,
                             agent_nickname: None,
                             agent_role: None,
                         });
@@ -586,7 +628,19 @@ impl AgentControl {
                     ))
                     .await
                     {
-                        Ok(_) => true,
+                        Ok(_) => {
+                            // TODO(#364): deliver completion-on-return here. A child
+                            // that finished while the session was down reloads idle,
+                            // and its result would otherwise be silently dropped. Once
+                            // `InterAgentCommunication::completion_notification` /
+                            // `wake_if_idle` land on main (PR #364), re-derive the
+                            // child's final status from its reloaded rollout (status is
+                            // never persisted and `agent_status()` reports
+                            // `PendingInit` right after resume) and, when `is_final`,
+                            // send the completion envelope with `wake_if_idle=true` to
+                            // `parent_thread_id` so an idle parent is surfaced/woken.
+                            true
+                        }
                         Err(err) => {
                             warn!("failed to resume descendant thread {child_thread_id}: {err}");
                             false
@@ -598,8 +652,6 @@ impl AgentControl {
                 }
             }
         }
-
-        Ok(resumed_thread_id)
     }
 
     async fn resume_single_agent_from_rollout(
