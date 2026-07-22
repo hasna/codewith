@@ -1,6 +1,8 @@
 use super::thread_monitor_api::api_thread_monitor_event_from_state;
 use super::thread_monitor_api::api_thread_monitor_from_state;
 use super::*;
+use codex_protocol::AgentPath;
+use codex_protocol::protocol::InterAgentCommunication;
 #[cfg(not(target_os = "windows"))]
 use codex_shell_command::shell_detect::ShellType;
 #[cfg(not(target_os = "windows"))]
@@ -166,6 +168,31 @@ impl ThreadMonitorRuntime {
 
     async fn start_monitor_if_needed(&self, monitor: codex_state::ThreadMonitor) {
         if monitor.status != codex_state::ThreadMonitorStatus::Running {
+            return;
+        }
+
+        // Only run the monitor in the process that currently hosts its thread.
+        //
+        // `list_running_thread_monitors` is a global `status = 'running'` query
+        // with no owner/lease scoping, so every app-server sharing CODEX_HOME
+        // (daemon + `codewith exec` + embedded TUI app-server) would otherwise
+        // spawn its own copy of every running monitor: N duplicate child
+        // processes, N duplicate `thread_monitor_events` rows, and — for a
+        // consuming monitor (e.g. one that fetches-and-marks-read new messages)
+        // — a non-hosting copy could drain the watched source so the hosting
+        // thread never observes the event. Injection also requires the loaded
+        // thread (see `inject_monitor_output`), so a monitor that cannot be
+        // co-located with its thread here can never steer output into it. This
+        // gate does mean a monitor whose thread is not loaded in any process is
+        // paused until the thread is reloaded, which is correct for
+        // stream-routing monitors and an acceptable change for file-routing
+        // background loggers (previously run, buggily, from every process).
+        if self
+            .thread_manager
+            .get_thread(monitor.thread_id)
+            .await
+            .is_err()
+        {
             return;
         }
 
@@ -399,7 +426,7 @@ impl ThreadMonitorRuntime {
         if stream == codex_state::ThreadMonitorEventStream::Stdout
             && monitor.routing.streams_to_thread()
         {
-            self.steer_monitor_output(monitor, line).await;
+            self.inject_monitor_output(monitor, line).await;
         }
     }
 
@@ -438,39 +465,36 @@ impl ThreadMonitorRuntime {
         Ok(())
     }
 
-    async fn steer_monitor_output(&self, monitor: &codex_state::ThreadMonitor, line: String) {
+    /// Injects a monitor stdout line into the thread using the same durable
+    /// mailbox path that inter-agent messages use.
+    ///
+    /// The previous implementation pushed the line via `thread.steer_input`,
+    /// which places items only into the turn-scoped `TurnState.pending_input`.
+    /// That dropped the line whenever the thread was idle (no active turn) and
+    /// wiped it when a turn was interrupted before its next model call
+    /// (`clear_pending`), so monitor events did not reach the model reliably.
+    ///
+    /// Routing through `deliver_inter_agent_communication` instead lands the
+    /// line in the session-level mailbox queue, which (a) survives turn abort,
+    /// (b) is drained into the next model call, and (c) wakes an idle thread
+    /// (`trigger_turn`), matching inter-agent mailbox reliability.
+    async fn inject_monitor_output(&self, monitor: &codex_state::ThreadMonitor, line: String) {
         let Ok(thread) = self.thread_manager.get_thread(monitor.thread_id).await else {
             return;
         };
-        let text = format!(
-            "\
-Codewith monitor `{}` ({}) emitted this stdout update.
-
-Monitor purpose:
-{}
-
-Output:
-{}",
-            monitor.name, monitor.monitor_id, monitor.prompt, line
-        );
-        let result = thread
-            .steer_input(
-                vec![CoreInputItem::Text {
-                    text,
-                    text_elements: Vec::new(),
-                }],
-                BTreeMap::new(),
-                /*expected_turn_id*/ None,
-                /*client_user_message_id*/ None,
-                /*responsesapi_client_metadata*/ None,
-            )
-            .await;
-        match result {
-            Ok(_) | Err(SteerInputError::NoActiveTurn(_)) => {}
+        let communication = monitor_output_communication(monitor, line);
+        match thread
+            .deliver_inter_agent_communication(communication)
+            .await
+        {
+            Ok(()) => {}
+            // The thread stopped running between the host check and delivery;
+            // there is no live session to inject into, so drop quietly.
+            Err(CodexErr::InternalAgentDied) => {}
             Err(err) => warn!(
                 monitor_id = %monitor.monitor_id,
                 thread_id = %monitor.thread_id,
-                "failed to steer monitor output into thread: {err:?}"
+                "failed to inject monitor output into thread mailbox: {err:?}"
             ),
         }
     }
@@ -623,6 +647,36 @@ async fn monitor_thread_cwd(
         anyhow::bail!("monitor thread cwd is empty");
     }
     Ok(metadata.cwd)
+}
+
+/// Builds the mailbox communication injected into a thread for a monitor line.
+///
+/// `trigger_turn` is `true` so an idle thread is woken to observe the event
+/// (parity with inter-agent mailbox `UserInstruction` delivery); while a turn is
+/// already running the message is queued and delivered on the next turn instead
+/// of being dropped.
+fn monitor_output_communication(
+    monitor: &codex_state::ThreadMonitor,
+    line: String,
+) -> InterAgentCommunication {
+    let content = format!(
+        "\
+Codewith monitor `{}` ({}) emitted this stdout update.
+
+Monitor purpose:
+{}
+
+Output:
+{}",
+        monitor.name, monitor.monitor_id, monitor.prompt, line
+    );
+    InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        content,
+        /*trigger_turn*/ true,
+    )
 }
 
 fn monitor_command(command: &str) -> Command {
@@ -796,6 +850,27 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&output.stdout), "ok");
+    }
+
+    #[test]
+    fn monitor_output_communication_uses_wake_if_idle_mailbox_shape() {
+        let monitor = test_monitor(None);
+        let communication =
+            monitor_output_communication(&monitor, "new conversations message".to_string());
+
+        // Routed as a root-addressed mailbox message so it uses the durable
+        // queue + wake-if-idle path rather than the turn-scoped steer buffer.
+        assert_eq!(AgentPath::root(), communication.author);
+        assert_eq!(AgentPath::root(), communication.recipient);
+        assert!(
+            communication.trigger_turn,
+            "monitor output must wake an idle thread"
+        );
+        // The human-readable monitor context is preserved in the payload.
+        assert!(communication.content.contains(monitor.name.as_str()));
+        assert!(communication.content.contains(monitor.monitor_id.as_str()));
+        assert!(communication.content.contains(monitor.prompt.as_str()));
+        assert!(communication.content.contains("new conversations message"));
     }
 
     fn test_monitor(cwd: Option<&str>) -> codex_state::ThreadMonitor {

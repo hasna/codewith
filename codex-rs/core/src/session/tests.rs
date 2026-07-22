@@ -10828,6 +10828,103 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
+/// A stream-routing monitor that emits output while the thread is busy running a
+/// turn must not silently drop the line. The monitor runtime now injects lines
+/// through the same durable mailbox path inter-agent messages use
+/// (`deliver_inter_agent_communication` -> `inter_agent_communication`), so the
+/// line survives the turn being interrupted (`clear_pending`) and is delivered
+/// on the next turn.
+///
+/// The old `steer_input` path placed the line only in the turn-scoped
+/// `TurnState.pending_input`, which `clear_pending` wipes on abort, so a monitor
+/// line emitted mid-turn was lost if the turn was interrupted before the next
+/// model call. This test would fail under that path.
+#[tokio::test]
+async fn monitor_output_survives_busy_turn_and_interrupt_via_mailbox() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    // Matches `monitor_output_communication` in the app-server thread monitor
+    // runtime: root author/recipient, wake-if-idle, monitor-shaped content.
+    let communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        "Codewith monitor `conversations-watch` (mon-1) emitted this stdout update.\n\nOutput:\nnew conversations message".to_string(),
+        /*trigger_turn*/ true,
+    );
+
+    // The session is busy running a turn when the monitor emits its line.
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    // Inject exactly as the monitor runtime does (via the shared handler).
+    inter_agent_communication(&sess, "monitor-event-1".to_string(), communication.clone())
+        .await
+        .expect("monitor mailbox injection should be accepted");
+
+    // The running turn does not swallow the line (trigger-turn mail defers to the
+    // next turn), yet it is durably held in the session-level mailbox queue.
+    assert!(
+        sess.input_queue.has_pending_mailbox_items().await,
+        "monitor line must be durably queued while a turn is running"
+    );
+
+    // Interrupting the turn runs clear_pending, which wiped the old steer_input
+    // buffer. The mailbox-backed monitor line must survive it. Replaced avoids
+    // auto-starting a follow-up turn so the assertion stays deterministic.
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+
+    // The monitor line is delivered to the model on the next turn — no drop.
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        vec![TurnInput::ResponseItem(ResponseItem::from(
+            crate::context::MailboxContextFragment::new(communication).into_response_input_item()
+        ))],
+    );
+}
+
+/// A monitor line emitted while the thread is idle must wake a turn so the model
+/// actually observes the event (wake-if-idle parity with the inter-agent
+/// mailbox). The old `steer_input` path returned `NoActiveTurn` and dropped the
+/// line entirely when the thread had no active turn.
+#[tokio::test]
+async fn monitor_output_wakes_idle_thread_via_mailbox() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    assert!(
+        sess.active_turn.lock().await.is_none(),
+        "session should start idle"
+    );
+
+    inter_agent_communication(
+        &sess,
+        "monitor-event-1".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "Codewith monitor `conversations-watch` (mon-1) emitted this stdout update.\n\nOutput:\nnew conversations message".to_string(),
+            /*trigger_turn*/ true,
+        ),
+    )
+    .await
+    .expect("monitor mailbox injection should be accepted");
+
+    // Wake-if-idle: a turn is started to consume the queued monitor line, rather
+    // than the line sitting unseen until the user happens to send input.
+    assert!(
+        sess.active_turn.lock().await.is_some(),
+        "an idle thread must be woken to observe the monitor line"
+    );
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[tokio::test]
 async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
