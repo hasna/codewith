@@ -720,11 +720,15 @@ impl ThreadManager {
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        Box::pin(self.state.spawn_thread_with_source(
-            config,
+        // Hold onto the `AgentControl` we hand the resumed root so we can rebuild
+        // its sub-agent subtree afterwards against the *same* registry the root's
+        // multi-agent tools will query (the clone shares the registry `Arc`).
+        let agent_control = self.agent_control();
+        let new_thread = Box::pin(self.state.spawn_thread_with_source(
+            config.clone(),
             initial_history,
             auth_manager,
-            self.agent_control(),
+            agent_control.clone(),
             session_source,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
@@ -737,7 +741,14 @@ impl ThreadManager {
             environments,
             /*user_shell_override*/ None,
         ))
-        .await
+        .await?;
+        // Reconnect the resumed root to any sub-agents that were still running when
+        // the session ended. A cheap no-op for sessions with no persisted `Open`
+        // spawn edges (the common single-agent case).
+        agent_control
+            .reload_live_subtree(new_thread.thread_id, /*root_depth*/ 0, &config)
+            .await;
+        Ok(new_thread)
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
