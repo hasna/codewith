@@ -286,15 +286,21 @@ pub(crate) fn tool_call_history_cell(
             }
         }),
         CollabAgentTool::Wait => {
+            // A waiting turn is already conveyed by the running status spinner
+            // (`begin_collab_wait`), so an in-progress `wait_agent` should not
+            // add a persistent transcript cell.
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                Some(waiting_begin(receiver_thread_ids, &mut agent_metadata))
-            } else {
-                Some(waiting_end(
-                    receiver_thread_ids,
-                    agents_states,
-                    &mut agent_metadata,
-                ))
+                return None;
             }
+            // On completion, only surface a cell when there are real agent
+            // statuses to report. An empty status set previously produced a
+            // useless "No agents completed yet" cell on every wait.
+            let details =
+                wait_complete_lines(receiver_thread_ids, agents_states, &mut agent_metadata);
+            if details.is_empty() {
+                return None;
+            }
+            Some(collab_event(title_text("Agents finished"), details))
         }
         CollabAgentTool::CloseAgent => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
@@ -344,47 +350,6 @@ fn interaction_end(
         details.push(line);
     }
     collab_event(title, details)
-}
-
-fn waiting_begin(
-    receiver_thread_ids: &[String],
-    agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
-) -> PlainHistoryCell {
-    let receiver_agents = receiver_thread_ids
-        .iter()
-        .filter_map(|thread_id| parse_thread_id(thread_id))
-        .map(|thread_id| (thread_id, agent_metadata(thread_id)))
-        .collect::<Vec<_>>();
-
-    let title = match receiver_agents.as_slice() {
-        [(thread_id, metadata)] => title_with_agent(
-            "Waiting for",
-            agent_label(*thread_id, metadata),
-            /*spawn_request*/ None,
-        ),
-        [] => title_text("Waiting for agents"),
-        _ => title_text(format!("Waiting for {} agents", receiver_agents.len())),
-    };
-
-    let details = if receiver_agents.len() > 1 {
-        receiver_agents
-            .iter()
-            .map(|(thread_id, metadata)| agent_label_line(agent_label(*thread_id, metadata)))
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    collab_event(title, details)
-}
-
-fn waiting_end(
-    receiver_thread_ids: &[String],
-    agents_states: &std::collections::HashMap<String, CollabAgentState>,
-    agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
-) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
-    collab_event(title_text("Finished waiting"), details)
 }
 
 fn close_end(
@@ -472,10 +437,6 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         role: metadata.agent_role.as_deref(),
         tree_path: metadata.tree_path.as_deref(),
     }
-}
-
-fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
-    agent_label_spans(agent).into()
 }
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
@@ -571,19 +532,17 @@ fn wait_complete_lines(
     extras.sort_by_key(|entry| entry.0.to_string());
     entries.extend(extras);
 
-    if entries.is_empty() {
-        vec![Line::from(Span::from("No agents completed yet"))]
-    } else {
-        entries
-            .into_iter()
-            .map(|(thread_id, metadata, status)| {
-                let mut spans = agent_label_spans(agent_label(thread_id, &metadata));
-                spans.push(Span::from(": ").dim());
-                spans.extend(status_summary_spans(status));
-                spans.into()
-            })
-            .collect()
-    }
+    // Empty => caller suppresses the cell entirely (no "No agents completed yet"
+    // noise); the status spinner already conveyed the wait.
+    entries
+        .into_iter()
+        .map(|(thread_id, metadata, status)| {
+            let mut spans = agent_label_spans(agent_label(thread_id, &metadata));
+            spans.push(Span::from(": ").dim());
+            spans.extend(status_summary_spans(status));
+            spans.into()
+        })
+        .collect()
 }
 
 fn first_agent_state<'a>(
@@ -713,22 +672,48 @@ mod tests {
         )
         .expect("send-input item renders");
 
-        let waiting = tool_call_history_cell(
-            &ThreadItem::CollabAgentToolCall {
-                id: "call-wait".to_string(),
-                tool: CollabAgentTool::Wait,
-                status: CollabAgentToolCallStatus::InProgress,
-                sender_thread_id: sender_thread_id.to_string(),
-                receiver_thread_ids: vec![robie_id.to_string()],
-                prompt: None,
-                model: None,
-                reasoning_effort: None,
-                agents_states: HashMap::new(),
-            },
-            /*cached_spawn_request*/ None,
-            |thread_id| metadata_for(thread_id, robie_id, bob_id),
-        )
-        .expect("wait begin item renders");
+        // An in-progress wait is conveyed by the status spinner, not a cell.
+        assert!(
+            tool_call_history_cell(
+                &ThreadItem::CollabAgentToolCall {
+                    id: "call-wait".to_string(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![robie_id.to_string()],
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                /*cached_spawn_request*/ None,
+                |thread_id| metadata_for(thread_id, robie_id, bob_id),
+            )
+            .is_none(),
+            "an in-progress wait should not render a persistent cell",
+        );
+
+        // A completed wait with no agent statuses is also suppressed (no more
+        // "No agents completed yet" noise).
+        assert!(
+            tool_call_history_cell(
+                &ThreadItem::CollabAgentToolCall {
+                    id: "call-wait-empty".to_string(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![robie_id.to_string()],
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                /*cached_spawn_request*/ None,
+                |thread_id| metadata_for(thread_id, robie_id, bob_id),
+            )
+            .is_none(),
+            "a completed wait with no agent statuses should not render a cell",
+        );
 
         let finished = tool_call_history_cell(
             &ThreadItem::CollabAgentToolCall {
@@ -776,7 +761,7 @@ mod tests {
         )
         .expect("close item renders");
 
-        let snapshot = [spawn, send, waiting, finished, close]
+        let snapshot = [spawn, send, finished, close]
             .iter()
             .map(cell_to_text)
             .collect::<Vec<_>>()
@@ -902,7 +887,8 @@ mod tests {
         assert_snapshot!("collab_resume_interrupted", cell_to_text(&cell));
     }
 
-    /// Builds a single-receiver "Waiting for" row for the given receiver metadata.
+    /// Builds a single-receiver completed-wait row for the given receiver
+    /// metadata, exercising the agent-label rendering in the surviving cell.
     fn waiting_row(receiver: ThreadId, metadata: AgentMetadata) -> PlainHistoryCell {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");
@@ -910,13 +896,16 @@ mod tests {
             &ThreadItem::CollabAgentToolCall {
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
-                status: CollabAgentToolCallStatus::InProgress,
+                status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                agents_states: HashMap::new(),
+                agents_states: HashMap::from([(
+                    receiver.to_string(),
+                    agent_state(CollabAgentStatus::Completed, /*message*/ None),
+                )]),
             },
             /*cached_spawn_request*/ None,
             |thread_id| {
@@ -927,7 +916,7 @@ mod tests {
                 }
             },
         )
-        .expect("wait begin item renders")
+        .expect("completed wait row renders")
     }
 
     #[test]
