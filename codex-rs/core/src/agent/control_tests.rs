@@ -529,6 +529,48 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
 }
 
 #[tokio::test]
+async fn send_inter_agent_communication_reports_error_when_mailbox_full() {
+    let harness = AgentControlHarness::new().await;
+    let (thread_id, thread) = harness.start_thread().await;
+
+    // Fill the target mailbox to its cap so the next send must be rejected.
+    for i in 0..crate::context::MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+        thread
+            .codex
+            .session
+            .input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                Vec::new(),
+                format!("queued {i}"),
+                /*trigger_turn*/ false,
+            ))
+            .await
+            .expect("seeding the mailbox up to the cap should succeed");
+    }
+
+    let overflow = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::try_from("/root/worker").expect("agent path"),
+        Vec::new(),
+        "one message too many".to_string(),
+        /*trigger_turn*/ false,
+    );
+    // A full mailbox must surface to the sender instead of being silently dropped
+    // (the sender's tool previously reported success while the message vanished).
+    let err = harness
+        .control
+        .send_inter_agent_communication(thread_id, overflow)
+        .await
+        .expect_err("a full mailbox must be reported to the sender");
+    assert!(
+        err.to_string().contains("mailbox context queue is full"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);

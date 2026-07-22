@@ -117,7 +117,16 @@ pub(crate) async fn handle_message_string_tool(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication = communication_from_tool_message(author, receiver_agent_path, message);
+    // Pick the wire representation from the receiver's provider so chat-wire
+    // targets get plain content they can actually read (see
+    // `communication_from_tool_message`).
+    let receiver_wire = session
+        .services
+        .agent_control
+        .agent_wire_api(receiver_thread_id)
+        .await;
+    let communication =
+        communication_from_tool_message(author, receiver_agent_path, message, receiver_wire);
     let result = session
         .services
         .agent_control

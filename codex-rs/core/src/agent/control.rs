@@ -13,6 +13,7 @@ use crate::shell_snapshot::ShellSnapshot;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
+use codex_model_provider_info::WireApi;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -40,6 +41,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
+use tracing::debug;
 use tracing::warn;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
@@ -149,12 +151,15 @@ impl AgentControl {
     ) -> CodexResult<String> {
         let last_task_message = last_task_message_from_communication(&communication);
         let state = self.upgrade()?;
+        // Enqueue synchronously so a full mailbox (or a dead target) is reported
+        // back to the caller instead of only surfacing on the target's event
+        // stream. The sending tool maps the error to the model so it can retry.
         let result = self
             .handle_thread_request_result(
                 agent_id,
                 &state,
                 state
-                    .send_op(agent_id, Op::InterAgentCommunication { communication })
+                    .deliver_inter_agent_communication(agent_id, communication)
                     .await,
             )
             .await;
@@ -167,6 +172,15 @@ impl AgentControl {
             }
         }
         result
+    }
+
+    /// Returns the wire protocol of `agent_id`'s configured provider, or `None`
+    /// when the thread is not currently resolvable. Callers use this to encode an
+    /// inter-agent message in a form the receiver's wire can actually deliver.
+    pub(crate) async fn agent_wire_api(&self, agent_id: ThreadId) -> Option<WireApi> {
+        let state = self.upgrade().ok()?;
+        let thread = state.get_thread(agent_id).await.ok()?;
+        Some(thread.wire_api().await)
     }
 
     /// Interrupt the current task for an existing agent thread.
@@ -430,9 +444,14 @@ impl AgentControl {
                     message,
                     /*trigger_turn*/ false,
                 );
-                let _ = control
+                if let Err(err) = control
                     .send_inter_agent_communication(parent_thread_id, communication)
-                    .await;
+                    .await
+                {
+                    debug!(
+                        "failed to notify parent thread {parent_thread_id} of child completion: {err}"
+                    );
+                }
                 return;
             }
             let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {

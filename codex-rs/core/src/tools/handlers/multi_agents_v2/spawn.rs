@@ -125,6 +125,10 @@ async fn handle_spawn_agent(
         source_role_name,
         Some(args.task_name.clone()),
     )?;
+    // Capture the child's wire before `config` is moved into the spawn call, so
+    // the spawn message is encoded for the new agent's provider (chat-wire
+    // children need plain content — see `communication_from_tool_message`).
+    let child_wire = config.model_provider.wire_api;
     let result = Box::pin(
         session.services.agent_control.spawn_agent_with_metadata(
             config,
@@ -138,7 +142,12 @@ async fn handle_spawn_agent(
                         .session_source
                         .get_agent_path()
                         .unwrap_or_else(AgentPath::root);
-                    let communication = communication_from_tool_message(author, recipient, message);
+                    let communication = communication_from_tool_message(
+                        author,
+                        recipient,
+                        message,
+                        Some(child_wire),
+                    );
                     Op::InterAgentCommunication { communication }
                 }
                 (_, initial_operation) => initial_operation,
