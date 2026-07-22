@@ -203,7 +203,8 @@ impl App {
         is_closed: bool,
     ) {
         if let Some(parent_thread_id) = parent_thread_id {
-            self.agent_navigation.set_parent(thread_id, parent_thread_id);
+            self.agent_navigation
+                .set_parent(thread_id, parent_thread_id);
         }
         if let Some(agent_path) = agent_path {
             self.agent_navigation.set_agent_path(thread_id, agent_path);

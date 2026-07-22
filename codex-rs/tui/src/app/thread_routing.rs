@@ -2131,10 +2131,8 @@ mod tests {
         let root = thread_id("000000000001");
         let leaf = thread_id("000000000002");
         app.primary_thread_id = Some(root);
-        app.agent_navigation.set_agent_path(
-            leaf,
-            "/root/backend_audit/db_check".to_string(),
-        );
+        app.agent_navigation
+            .set_agent_path(leaf, "/root/backend_audit/db_check".to_string());
         app.agent_navigation.upsert(
             leaf,
             Some("Sleuth".to_string()),
@@ -2193,8 +2191,8 @@ mod tests {
         let mut app = crate::app::test_support::make_test_app().await;
         let root = thread_id("000000000001");
         // The exact UUID from the upstream bug report (codex#23588) that previously leaked in full.
-        let leaf = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
-            .expect("valid thread id");
+        let leaf =
+            ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid thread id");
         app.primary_thread_id = Some(root);
         app.agent_navigation.upsert(
             leaf, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
@@ -2285,8 +2283,8 @@ mod tests {
     async fn agent_tree_path_unknown_thread_never_emits_full_uuid() {
         let mut app = crate::app::test_support::make_test_app().await;
         let root = thread_id("000000000001");
-        let unknown = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
-            .expect("valid thread id");
+        let unknown =
+            ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid thread id");
         app.primary_thread_id = Some(root);
 
         let rendered = app.agent_tree_path(unknown);

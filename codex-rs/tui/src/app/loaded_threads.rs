@@ -282,10 +282,7 @@ mod tests {
         child.agent_role = Some("explorer".to_string());
 
         let loaded = find_loaded_subagent_threads_for_primary(
-            vec![
-                test_thread(primary_thread_id, SessionSource::Cli),
-                child,
-            ],
+            vec![test_thread(primary_thread_id, SessionSource::Cli), child],
             primary_thread_id,
         );
 
