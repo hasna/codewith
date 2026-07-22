@@ -642,6 +642,7 @@ impl GoalToolExecutor {
         let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
             outcome.snapshot,
             self.thread_id,
+            self.plan_node_objective_char_limit(),
         )];
         let response = goal_response_with_plan(
             activated_goal.clone(),
