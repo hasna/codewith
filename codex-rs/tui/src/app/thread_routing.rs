@@ -12,6 +12,17 @@ use crate::app::app_server_requests::AppServerRequestResolution;
 use crate::session_resume::read_session_model;
 use codex_app_server_protocol::ThreadExternalAgentStartStatus;
 
+/// Maximum number of `/`-joined segments shown in a rendered agent tree path before the middle is
+/// collapsed to a single ellipsis segment (`root/…/<parent>/<leaf>`).
+const AGENT_TREE_PATH_MAX_SEGMENTS: usize = 4;
+/// Maximum graphemes shown per tree-path segment so a wait/spawn row cannot overflow its line.
+const AGENT_TREE_PATH_SEGMENT_MAX_GRAPHEMES: usize = 24;
+/// Segment inserted when the middle of a deep path is collapsed or when the chain to the root
+/// cannot be confirmed (cycle or orphaned ancestor).
+const AGENT_TREE_PATH_ELLIPSIS: &str = "…";
+/// Synthetic top segment for a resolved agent tree path.
+const AGENT_TREE_PATH_ROOT: &str = "root";
+
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
         if let Some(thread_id) = self.chat_widget.thread_id() {
@@ -149,6 +160,131 @@ impl App {
         } else {
             fallback_label
         }
+    }
+
+    /// Resolves a readable hierarchical path (for example `root/backend_audit/db_check`) for a
+    /// thread, guaranteeing the result never contains a full 36-character thread UUID.
+    ///
+    /// Resolution order:
+    /// 1. an authoritative server-composed `agent_path` (leading `/` stripped, and the leaf segment
+    ///    swapped for the thread's nickname when one is known);
+    /// 2. otherwise a parent-chain walk up to the root, labeling each node by nickname -> `[role]`
+    ///    -> 8-character short id, with a visited-set guard against cycles and an ellipsis prefix
+    ///    when the chain to the root cannot be confirmed;
+    /// 3. otherwise the single-line `thread_label`, which itself never contains a full UUID.
+    pub(super) fn agent_tree_path(&self, thread_id: ThreadId) -> String {
+        if let Some(agent_path) = self.agent_navigation.agent_path(&thread_id) {
+            return self.format_authoritative_agent_path(agent_path, thread_id);
+        }
+        if let Some(tree_path) = self.walk_agent_tree_path(thread_id) {
+            return tree_path;
+        }
+        self.thread_label(thread_id)
+    }
+
+    /// Formats a server-composed absolute `agent_path` for display.
+    ///
+    /// Strips the leading `/`, and when the path has more than just the `root` segment, swaps the
+    /// leaf for the thread's nickname when one is available so the most specific segment stays
+    /// human-readable.
+    fn format_authoritative_agent_path(&self, agent_path: &str, thread_id: ThreadId) -> String {
+        let mut segments: Vec<String> = agent_path
+            .strip_prefix('/')
+            .unwrap_or(agent_path)
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string)
+            .collect();
+        if segments.is_empty() {
+            segments.push(AGENT_TREE_PATH_ROOT.to_string());
+        }
+        if segments.len() > 1
+            && let Some(nickname) = self.agent_nickname(thread_id)
+            && let Some(leaf) = segments.last_mut()
+        {
+            *leaf = nickname;
+        }
+        finalize_agent_tree_path(segments)
+    }
+
+    /// Reconstructs a tree path by walking cached parent edges from `thread_id` up to the root.
+    ///
+    /// Returns `None` when the thread has no known parent edge so the caller can fall back to
+    /// `thread_label`. Terminates on a cycle, a self-parent, or an ancestor edge that points at a
+    /// thread with no cached metadata, prefixing the path with an ellipsis in those cases because
+    /// the chain to the root could not be confirmed.
+    fn walk_agent_tree_path(&self, thread_id: ThreadId) -> Option<String> {
+        self.agent_navigation.parent(&thread_id)?;
+
+        let mut ancestors: Vec<ThreadId> = Vec::new();
+        let mut visited: std::collections::HashSet<ThreadId> =
+            std::collections::HashSet::from([thread_id]);
+        let mut current = thread_id;
+        let mut reached_root = false;
+
+        while let Some(parent_thread_id) = self.agent_navigation.parent(&current) {
+            if Some(parent_thread_id) == self.primary_thread_id {
+                reached_root = true;
+                break;
+            }
+            if !visited.insert(parent_thread_id) {
+                // Cycle or self-parent: stop before revisiting a node.
+                break;
+            }
+            if !self.agent_navigation.is_tracked(&parent_thread_id) {
+                // Edge points at a thread we have never seen metadata for.
+                break;
+            }
+            ancestors.push(parent_thread_id);
+            current = parent_thread_id;
+        }
+
+        let mut segments: Vec<String> = Vec::with_capacity(ancestors.len() + 2);
+        segments.push(if reached_root {
+            AGENT_TREE_PATH_ROOT.to_string()
+        } else {
+            AGENT_TREE_PATH_ELLIPSIS.to_string()
+        });
+        for ancestor in ancestors.iter().rev() {
+            segments.push(self.agent_node_label(*ancestor));
+        }
+        segments.push(self.agent_node_label(thread_id));
+
+        Some(finalize_agent_tree_path(segments))
+    }
+
+    /// Returns the single-segment label for a node in a tree path: nickname, else `[role]`, else an
+    /// 8-character short id. Never returns a full UUID.
+    fn agent_node_label(&self, thread_id: ThreadId) -> String {
+        if let Some(entry) = self.agent_navigation.get(&thread_id) {
+            if let Some(nickname) = entry
+                .agent_nickname
+                .as_deref()
+                .map(str::trim)
+                .filter(|nickname| !nickname.is_empty())
+            {
+                return nickname.to_string();
+            }
+            if let Some(role) = entry
+                .agent_role
+                .as_deref()
+                .map(str::trim)
+                .filter(|role| !role.is_empty())
+            {
+                return format!("[{role}]");
+            }
+        }
+        crate::multi_agents::short_thread_id(thread_id)
+    }
+
+    /// Returns the trimmed, non-empty nickname for a thread, if one is cached.
+    fn agent_nickname(&self, thread_id: ThreadId) -> Option<String> {
+        self.agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_nickname.as_deref())
+            .map(str::trim)
+            .filter(|nickname| !nickname.is_empty())
+            .map(str::to_string)
     }
 
     /// Returns the thread whose transcript is currently on screen.
@@ -1061,12 +1197,17 @@ impl App {
         }
         session.message_history = None;
         session.rollout_path = rollout_path;
+        let parent_thread_id = notification
+            .thread
+            .parent_thread_id
+            .as_deref()
+            .and_then(|id| ThreadId::from_string(id).ok())
+            .or_else(|| thread_spawn_parent_thread_id(&notification.thread.source));
         let should_register_picker_thread = if self.primary_thread_id == Some(thread_id) {
             true
-        } else if let (Some(primary_thread_id), Some(parent_thread_id)) = (
-            self.primary_thread_id,
-            thread_spawn_parent_thread_id(&notification.thread.source),
-        ) {
+        } else if let (Some(primary_thread_id), Some(parent_thread_id)) =
+            (self.primary_thread_id, parent_thread_id)
+        {
             parent_thread_id == primary_thread_id
                 || self.agent_navigation.get(&parent_thread_id).is_some()
         } else {
@@ -1077,6 +1218,8 @@ impl App {
                 thread_id,
                 notification.thread.agent_nickname.clone(),
                 notification.thread.agent_role.clone(),
+                parent_thread_id,
+                thread_spawn_agent_path(&notification.thread.source),
                 /*is_closed*/ false,
             );
             self.agent_navigation
@@ -1189,7 +1332,7 @@ impl App {
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false,
+            /*parent_thread_id*/ None, /*agent_path*/ None, /*is_closed*/ false,
         );
         let channel = self.ensure_thread_channel(thread_id);
         {
@@ -1759,6 +1902,32 @@ impl App {
     }
 }
 
+/// Applies the depth cap and per-segment grapheme truncation, then joins segments with `/`.
+fn finalize_agent_tree_path(segments: Vec<String>) -> String {
+    cap_agent_tree_path_depth(segments)
+        .into_iter()
+        .map(|segment| {
+            crate::text_formatting::truncate_text(&segment, AGENT_TREE_PATH_SEGMENT_MAX_GRAPHEMES)
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Collapses the middle of an over-deep path to a single ellipsis segment, keeping the root, the
+/// immediate parent, and the leaf: `root/…/<parent>/<leaf>`.
+fn cap_agent_tree_path_depth(segments: Vec<String>) -> Vec<String> {
+    if segments.len() <= AGENT_TREE_PATH_MAX_SEGMENTS {
+        return segments;
+    }
+    let len = segments.len();
+    vec![
+        segments[0].clone(),
+        AGENT_TREE_PATH_ELLIPSIS.to_string(),
+        segments[len - 2].clone(),
+        segments[len - 1].clone(),
+    ]
+}
+
 struct AppServerRequestLookup {
     kind: &'static str,
     key: String,
@@ -1937,5 +2106,189 @@ mod tests {
                 .is_none(),
             "answered request should no longer be recoverable"
         );
+    }
+
+    fn thread_id(last_hextet: &str) -> ThreadId {
+        ThreadId::from_string(&format!("00000000-0000-0000-0000-{last_hextet:0>12}"))
+            .expect("valid thread id")
+    }
+
+    /// Asserts that a rendered tree path never leaks any full 36-character thread UUID.
+    fn assert_no_full_uuid(rendered: &str, thread_ids: &[ThreadId]) {
+        for thread_id in thread_ids {
+            let full = thread_id.to_string();
+            assert_eq!(full.len(), 36, "thread ids should be 36-char UUIDs");
+            assert!(
+                !rendered.contains(&full),
+                "tree path `{rendered}` must not contain the full UUID `{full}`"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_uses_authoritative_path_with_nickname_leaf_swap() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        let leaf = thread_id("000000000002");
+        app.primary_thread_id = Some(root);
+        app.agent_navigation
+            .set_agent_path(leaf, "/root/backend_audit/db_check".to_string());
+        app.agent_navigation.upsert(
+            leaf,
+            Some("Sleuth".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+
+        let rendered = app.agent_tree_path(leaf);
+        assert_eq!(rendered, "root/backend_audit/Sleuth");
+        assert_no_full_uuid(&rendered, &[root, leaf]);
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_authoritative_without_nickname_keeps_path_segments() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let leaf = thread_id("000000000002");
+        app.agent_navigation
+            .set_agent_path(leaf, "/root/backend_audit".to_string());
+        app.agent_navigation.upsert(
+            leaf, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+
+        assert_eq!(app.agent_tree_path(leaf), "root/backend_audit");
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_walks_parents_labeling_by_nickname_then_role() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        let parent = thread_id("000000000002");
+        let leaf = thread_id("000000000003");
+        app.primary_thread_id = Some(root);
+        app.agent_navigation.upsert(
+            parent,
+            Some("Scout".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
+        app.agent_navigation.upsert(
+            leaf,
+            /*agent_nickname*/ None,
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+        app.agent_navigation.set_parent(parent, root);
+        app.agent_navigation.set_parent(leaf, parent);
+
+        let rendered = app.agent_tree_path(leaf);
+        // Parent labeled by nickname, leaf labeled by `[role]` because it has no nickname.
+        assert_eq!(rendered, "root/Scout/[worker]");
+        assert_no_full_uuid(&rendered, &[root, parent, leaf]);
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_walk_uses_short_id_without_nickname_or_role() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        // The exact UUID from the upstream bug report (codex#23588) that previously leaked in full.
+        let leaf =
+            ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid thread id");
+        app.primary_thread_id = Some(root);
+        app.agent_navigation.upsert(
+            leaf, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+        app.agent_navigation.set_parent(leaf, root);
+
+        let rendered = app.agent_tree_path(leaf);
+        assert_eq!(rendered, "root/019f8894");
+        assert_no_full_uuid(&rendered, &[root, leaf]);
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_collapses_deep_authoritative_paths() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let leaf = thread_id("000000000002");
+        app.agent_navigation
+            .set_agent_path(leaf, "/root/a/b/c/d/e".to_string());
+        app.agent_navigation.upsert(
+            leaf, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+        );
+
+        // Six segments collapse to root/…/<parent>/<leaf>.
+        assert_eq!(app.agent_tree_path(leaf), "root/…/d/e");
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_stops_on_cycle_with_ellipsis_prefix() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        let a = thread_id("00000000000a");
+        let b = thread_id("00000000000b");
+        app.primary_thread_id = Some(root);
+        app.agent_navigation.upsert(
+            a,
+            Some("Aa".to_string()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+        app.agent_navigation.upsert(
+            b,
+            Some("Bb".to_string()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+        // Two-node cycle that never reaches the root.
+        app.agent_navigation.set_parent(a, b);
+        app.agent_navigation.set_parent(b, a);
+
+        let rendered = app.agent_tree_path(a);
+        assert!(
+            rendered.starts_with("…/"),
+            "unconfirmed chain should be ellipsis-prefixed, got `{rendered}`"
+        );
+        assert_no_full_uuid(&rendered, &[root, a, b]);
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_marks_orphaned_parent_with_ellipsis_prefix() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        let orphan = thread_id("00000000000f");
+        let leaf = thread_id("000000000003");
+        app.primary_thread_id = Some(root);
+        app.agent_navigation.upsert(
+            leaf,
+            Some("Solo".to_string()),
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+        // Parent edge points at a thread we never cached metadata for.
+        app.agent_navigation.set_parent(leaf, orphan);
+
+        let rendered = app.agent_tree_path(leaf);
+        assert_eq!(rendered, "…/Solo");
+        assert_no_full_uuid(&rendered, &[root, orphan, leaf]);
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_primary_falls_back_to_thread_label() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        app.primary_thread_id = Some(root);
+
+        assert_eq!(app.agent_tree_path(root), "Main [default]");
+    }
+
+    #[tokio::test]
+    async fn agent_tree_path_unknown_thread_never_emits_full_uuid() {
+        let mut app = crate::app::test_support::make_test_app().await;
+        let root = thread_id("000000000001");
+        let unknown =
+            ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b").expect("valid thread id");
+        app.primary_thread_id = Some(root);
+
+        let rendered = app.agent_tree_path(unknown);
+        assert_eq!(rendered, "Agent (019f8894)");
+        assert_no_full_uuid(&rendered, &[root, unknown]);
     }
 }

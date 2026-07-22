@@ -42,6 +42,14 @@ pub(crate) struct AgentNavigationState {
     threads: HashMap<ThreadId, AgentPickerThreadEntry>,
     /// Stable first-seen traversal order for picker rows and keyboard cycling.
     order: Vec<ThreadId>,
+    /// Child -> parent edges used to reconstruct a hierarchical agent tree path when an
+    /// authoritative `agent_path` is unavailable. Kept separate from `threads` so ancestry
+    /// survives thread switches (which rebuild the `ChatWidget`) even when a parent is not itself a
+    /// picker row.
+    parents: HashMap<ThreadId, ThreadId>,
+    /// Authoritative absolute agent paths (for example `/root/backend_audit/db_check`) captured
+    /// from the server-composed `AgentPath`, keyed by thread id.
+    paths: HashMap<ThreadId, String>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -108,6 +116,40 @@ impl AgentNavigationState {
         }
     }
 
+    /// Records an authoritative child -> parent edge, overwriting any previously cached parent.
+    ///
+    /// Used at spawn/read sites that carry a trustworthy `parent_thread_id`. The reverse edge is
+    /// never stored, and a self-parent is ignored so the tree walk cannot spin on a degenerate edge.
+    pub(crate) fn set_parent(&mut self, child_thread_id: ThreadId, parent_thread_id: ThreadId) {
+        if child_thread_id == parent_thread_id {
+            return;
+        }
+        self.parents.insert(child_thread_id, parent_thread_id);
+    }
+
+    /// Returns the cached parent for a thread, if any.
+    pub(crate) fn parent(&self, child_thread_id: &ThreadId) -> Option<ThreadId> {
+        self.parents.get(child_thread_id).copied()
+    }
+
+    /// Stores the authoritative absolute agent path for a thread.
+    pub(crate) fn set_agent_path(&mut self, thread_id: ThreadId, agent_path: String) {
+        self.paths.insert(thread_id, agent_path);
+    }
+
+    /// Returns the authoritative absolute agent path for a thread, if one was captured.
+    pub(crate) fn agent_path(&self, thread_id: &ThreadId) -> Option<&str> {
+        self.paths.get(thread_id).map(String::as_str)
+    }
+
+    /// Returns whether the navigation cache has a picker entry for a thread.
+    ///
+    /// Used by the tree-path walk to distinguish a known ancestor from an orphaned edge that points
+    /// at a thread we have never seen metadata for.
+    pub(crate) fn is_tracked(&self, thread_id: &ThreadId) -> bool {
+        self.threads.contains_key(thread_id)
+    }
+
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
@@ -132,6 +174,8 @@ impl AgentNavigationState {
     pub(crate) fn clear(&mut self) {
         self.threads.clear();
         self.order.clear();
+        self.parents.clear();
+        self.paths.clear();
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.

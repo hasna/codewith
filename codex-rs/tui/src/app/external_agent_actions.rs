@@ -132,6 +132,8 @@ impl App {
                     child_thread_id,
                     Some(runtime_display_name.clone()),
                     Some(agent_role),
+                    Some(parent_thread_id),
+                    /*agent_path*/ None,
                     /*is_closed*/ false,
                 );
                 self.agent_navigation

@@ -48,6 +48,9 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Precomputed hierarchical tree path (for example `root/backend_audit/db_check`) rendered when
+    /// no nickname is available, so collab rows never fall back to a raw thread UUID.
+    pub(crate) tree_path: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -55,6 +58,15 @@ struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
+    tree_path: Option<&'a str>,
+}
+
+/// Returns the first eight characters of a thread id, used as a last-resort agent label.
+///
+/// This is deliberately short so a wait/spawn row never prints a full 36-character UUID even when
+/// no nickname, role, or tree path is available for the thread.
+pub(crate) fn short_thread_id(thread_id: ThreadId) -> String {
+    thread_id.to_string().chars().take(8).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,6 +470,7 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+        tree_path: metadata.tree_path.as_deref(),
     }
 }
 
@@ -473,10 +486,21 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
         .filter(|nickname| !nickname.is_empty());
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
+    let tree_path = agent
+        .tree_path
+        .map(str::trim)
+        .filter(|tree_path| !tree_path.is_empty());
+
     if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).fg(accent_color()).bold());
+    } else if let Some(tree_path) = tree_path {
+        // Prefer the readable hierarchical path over a raw id. `agent_tree_path` guarantees this
+        // never contains a full UUID (worst case an 8-character short id).
+        spans.push(Span::from(tree_path.to_string()).fg(accent_color()));
     } else if let Some(thread_id) = agent.thread_id {
-        spans.push(Span::from(thread_id.to_string()).fg(accent_color()));
+        // Last resort for threads with no cached metadata at all: an 8-character short id, never
+        // the full 36-character UUID.
+        spans.push(Span::from(short_thread_id(thread_id)).fg(accent_color()));
     } else {
         spans.push(Span::from("agent").fg(accent_color()));
     }
@@ -878,6 +902,75 @@ mod tests {
         assert_snapshot!("collab_resume_interrupted", cell_to_text(&cell));
     }
 
+    /// Builds a single-receiver "Waiting for" row for the given receiver metadata.
+    fn waiting_row(receiver: ThreadId, metadata: AgentMetadata) -> PlainHistoryCell {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-wait".to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+            /*cached_spawn_request*/ None,
+            |thread_id| {
+                if thread_id == receiver {
+                    metadata.clone()
+                } else {
+                    AgentMetadata::default()
+                }
+            },
+        )
+        .expect("wait begin item renders")
+    }
+
+    #[test]
+    fn nickname_less_row_renders_tree_path_instead_of_uuid() {
+        let receiver = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
+            .expect("valid receiver thread id");
+        let cell = waiting_row(
+            receiver,
+            AgentMetadata {
+                agent_nickname: None,
+                agent_role: None,
+                tree_path: Some("root/backend_audit/db_check".to_string()),
+            },
+        );
+
+        let text = cell_to_text(&cell);
+        assert!(
+            text.contains("root/backend_audit/db_check"),
+            "expected hierarchical tree path, got: {text}"
+        );
+        assert!(
+            !text.contains(&receiver.to_string()),
+            "must not leak the full receiver UUID, got: {text}"
+        );
+    }
+
+    #[test]
+    fn nickname_less_row_without_tree_path_renders_short_id_not_uuid() {
+        let receiver = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
+            .expect("valid receiver thread id");
+        let cell = waiting_row(receiver, AgentMetadata::default());
+
+        let text = cell_to_text(&cell);
+        assert!(
+            text.contains("019f8894"),
+            "expected 8-char short id, got: {text}"
+        );
+        assert!(
+            !text.contains(&receiver.to_string()),
+            "must not leak the full receiver UUID, got: {text}"
+        );
+    }
+
     fn agent_state(status: CollabAgentStatus, message: Option<&str>) -> CollabAgentState {
         CollabAgentState {
             status,
@@ -890,11 +983,13 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                tree_path: None,
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                tree_path: None,
             }
         } else {
             AgentMetadata::default()

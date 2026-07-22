@@ -118,8 +118,21 @@ impl CollabWaitStatus {
                     .and_then(|metadata| metadata.agent_nickname.as_deref())
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
-                    .unwrap_or(&target.raw_thread_id)
-                    .to_string();
+                    .map(str::to_string)
+                    // Prefer the precomputed hierarchical tree path over a raw id, then fall back
+                    // to an 8-character short id. This live wait indicator, like the collab
+                    // transcript rows, must never surface a full thread UUID.
+                    .or_else(|| {
+                        metadata
+                            .and_then(|metadata| metadata.tree_path.as_deref())
+                            .map(str::trim)
+                            .filter(|tree_path| !tree_path.is_empty())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| match target.thread_id {
+                        Some(thread_id) => crate::multi_agents::short_thread_id(thread_id),
+                        None => target.raw_thread_id.chars().take(8).collect(),
+                    });
                 let activity = target
                     .thread_id
                     .and_then(|thread_id| self.agent_activities.get(&thread_id))
@@ -340,6 +353,7 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                tree_path: None,
             },
         )]);
 
@@ -377,6 +391,7 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                tree_path: None,
             },
         )]);
 
@@ -451,6 +466,7 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some(unsafe_role.clone()),
+                tree_path: None,
             },
         )]);
 
