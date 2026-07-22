@@ -407,7 +407,7 @@ impl Default for GoalsConfig {
     fn default() -> Self {
         Self {
             auto_execute: GoalAutoExecuteMode::Off,
-            max_auto_goals_per_plan: 12,
+            max_auto_goals_per_plan: 48,
             max_tokens_per_goal_plan: None,
             post_goal_context: PostGoalContextAction::Keep,
             post_goal_plan_context: PostGoalContextAction::Keep,
