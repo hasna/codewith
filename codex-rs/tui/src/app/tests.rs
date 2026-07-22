@@ -5978,7 +5978,9 @@ async fn initial_replay_buffer_keeps_recent_rows_when_row_cap_present() {
     enable_terminal_resize_reflow(&mut app);
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
-    app.begin_initial_history_replay_buffer();
+    // Exercise the line-buffering trim helper directly; the startup replay path
+    // itself uses transcript-tail rendering when a row cap is present.
+    app.initial_history_replay_buffer = Some(Default::default());
     for index in 0..5 {
         App::buffer_initial_history_replay_display_lines(
             app.initial_history_replay_buffer
@@ -6005,6 +6007,73 @@ async fn initial_replay_buffer_keeps_recent_rows_when_row_cap_present() {
             "line 4".to_string(),
         ]
     );
+}
+
+#[tokio::test]
+async fn initial_replay_buffer_uses_transcript_tail_mode_when_row_cap_present() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
+
+    app.begin_initial_history_replay_buffer();
+
+    let buffer = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("initial replay buffer should be active");
+    assert!(buffer.render_from_transcript_tail);
+    assert!(buffer.retained_lines.is_empty());
+}
+
+#[tokio::test]
+async fn initial_replay_buffer_tail_start_excludes_pre_replay_cells() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(100);
+
+    // Cells written before the replay buffer begins (session header, banners) are
+    // already in terminal scrollback and must not be re-rendered by the tail flush.
+    app.transcript_cells = vec![plain_line_cell("session header".to_string())];
+
+    app.begin_initial_history_replay_buffer();
+    let tail_start = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("initial replay buffer should be active")
+        .transcript_tail_start;
+    assert_eq!(tail_start, 1);
+
+    app.transcript_cells
+        .extend((0..2).map(|i| plain_line_cell(format!("replayed {i}"))));
+
+    let rendered = app.render_transcript_lines_for_reflow_from(/*width*/ 80, tail_start);
+    assert_eq!(
+        rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>(),
+        vec![
+            "replayed 0".to_string(),
+            String::new(),
+            "replayed 1".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn initial_replay_buffer_stays_line_buffered_without_row_cap() {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    enable_terminal_resize_reflow(&mut app);
+    app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
+
+    app.begin_initial_history_replay_buffer();
+
+    let buffer = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("initial replay buffer should be active");
+    assert!(!buffer.render_from_transcript_tail);
 }
 
 #[tokio::test]
