@@ -5,6 +5,7 @@ use std::process::Stdio;
 use tempfile::TempDir;
 use tokio::process::Command;
 
+use super::PER_SESSION_IDLE_SHUTDOWN_GRACE_MS;
 use super::PidBackend;
 use super::PidCommandKind;
 use super::PidFileState;
@@ -171,10 +172,45 @@ fn app_server_remote_control_uses_runtime_flag() {
         /*remote_control_enabled*/ true,
     );
 
+    // The remote-control daemon must outlive any TUI so it can keep serving the
+    // remote-control channel; it must NOT opt into idle shutdown.
     assert_eq!(
         backend.command_args(),
         vec!["app-server", "--remote-control", "--listen", "unix://"]
     );
+}
+
+#[test]
+fn app_server_default_daemon_opts_into_idle_shutdown() {
+    let backend = PidBackend::new(
+        "codewith".into(),
+        "app-server.pid".into(),
+        /*remote_control_enabled*/ false,
+    );
+
+    // The plain per-session default daemon is TUI-owned and must reap itself
+    // once its last client disconnects (e.g. after a SIGHUP-killed TUI).
+    assert_eq!(
+        backend.command_args(),
+        vec![
+            "app-server",
+            "--listen",
+            "unix://",
+            "--exit-on-idle-ms",
+            PER_SESSION_IDLE_SHUTDOWN_GRACE_MS,
+        ]
+    );
+}
+
+#[test]
+fn update_loop_daemon_does_not_opt_into_idle_shutdown() {
+    let backend = PidBackend::new_update_loop("codewith".into(), "app-server-updater.pid".into());
+
+    // The update-loop daemon is a standalone, long-lived lifecycle process and
+    // must never idle-shut-down.
+    let args = backend.command_args();
+    assert!(!args.contains(&"--exit-on-idle-ms"), "got {args:?}");
+    assert_eq!(args, vec!["app-server", "daemon", "pid-update-loop"]);
 }
 
 #[tokio::test]

@@ -703,6 +703,16 @@ struct AppServerCommand {
     #[arg(long = "background-agent-worker", value_name = "RUN_ID", hide = true)]
     background_agent_worker_run_id: Option<String>,
 
+    /// Internal: exit this app-server after its last client disconnects if no
+    /// client reconnects within the given grace period (milliseconds).
+    ///
+    /// Scoped to per-session `--listen unix://` control sockets spawned by a TUI
+    /// so they do not linger as orphans when the owning TUI is signal-killed
+    /// (e.g. SIGHUP from a closing terminal). Ignored for remote-control and
+    /// background-agent hosts, and for non-`unix://` transports. Absent = never.
+    #[arg(long = "exit-on-idle-ms", value_name = "MILLIS", hide = true)]
+    exit_on_idle_ms: Option<u64>,
+
     /// Controls whether analytics are enabled by default.
     ///
     /// Analytics are disabled by default for app-server. Users have to explicitly opt in
@@ -1412,6 +1422,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 remote_control,
                 background_agent_host,
                 background_agent_worker_run_id,
+                exit_on_idle_ms,
                 analytics_default_enabled,
                 auth,
             } = app_server_cli;
@@ -1434,6 +1445,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         remote_control_enabled: remote_control,
                         background_agent_host,
                         background_agent_worker_run_id,
+                        idle_shutdown_after: exit_on_idle_ms.map(std::time::Duration::from_millis),
                         ..Default::default()
                     };
                     codex_app_server::run_main_with_transport_options(

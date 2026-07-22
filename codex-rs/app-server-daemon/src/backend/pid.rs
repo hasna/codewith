@@ -23,6 +23,17 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(70);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
 
+/// Grace period, in milliseconds, before a per-session, TUI-owned app-server
+/// (`app-server --listen unix://`) exits after its last client disconnects.
+///
+/// This bounds how long an orphaned backend can linger when the owning TUI is
+/// signal-killed (e.g. SIGHUP from a closing terminal/tmux pane) and cannot run
+/// cleanup. It is passed via `--exit-on-idle-ms` and kept short so orphans do
+/// not accumulate, yet long enough that a quick relaunch or resume reconnects to
+/// the still-warm daemon instead of paying a cold start. Only the plain default
+/// daemon opts in; remote-control and update-loop daemons must outlive any TUI.
+const PER_SESSION_IDLE_SHUTDOWN_GRACE_MS: &str = "30000";
+
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct PidBackend {
@@ -402,7 +413,15 @@ impl PidBackend {
             } => vec!["app-server", "--remote-control", "--listen", "unix://"],
             PidCommandKind::AppServer {
                 remote_control_enabled: false,
-            } => vec!["app-server", "--listen", "unix://"],
+            } => vec![
+                "app-server",
+                "--listen",
+                "unix://",
+                // Reap this per-session, TUI-owned backend when its owning TUI
+                // goes away instead of leaving an orphan reparented to init.
+                "--exit-on-idle-ms",
+                PER_SESSION_IDLE_SHUTDOWN_GRACE_MS,
+            ],
             PidCommandKind::UpdateLoop => vec!["app-server", "daemon", "pid-update-loop"],
         }
     }
