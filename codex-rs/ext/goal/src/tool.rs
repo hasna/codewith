@@ -390,7 +390,6 @@ impl GoalToolExecutor {
                     )
                 })?
         };
-        self.accounting_state.clear_blocker_audit();
         fill_empty_thread_preview_if_possible(self.state_db.as_ref(), self.thread_id, &goal).await;
         if let Some(action) = request.post_goal_context {
             self.state_db
@@ -481,8 +480,6 @@ impl GoalToolExecutor {
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
-        self.accounting_state
-            .clear_blocker_audit_for_goal(goal.goal_id.as_str());
         if goal.status == codex_state::ThreadGoalStatus::Blocked {
             crate::pending_interaction::record_goal_status_wait(
                 self.state_db.as_ref(),
@@ -741,10 +738,6 @@ impl GoalToolExecutor {
                     "cannot resume goal because this thread has no goal".to_string(),
                 )
             })?;
-        if previous_status != codex_state::ThreadGoalStatus::Paused {
-            self.accounting_state
-                .clear_blocker_audit_for_goal(goal.goal_id.as_str());
-        }
         self.metrics
             .record_resumed_if_status_changed(Some(previous_status), goal.status);
         crate::pending_interaction::clear_goal_status_waits(

@@ -181,6 +181,7 @@ pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
+pub use goals::GoalBlockerAuditOutcome;
 pub use goals::GoalDeleteOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
@@ -2198,8 +2199,8 @@ INSERT INTO thread_goal_plan_nodes (
         assert!(matches!(unrepaired_err, MigrateError::VersionMismatch(5)));
         strict_pool.close().await;
 
-        // Full runtime init repairs the stamp and applies the missing
-        // versions 5-7 on top of the legacy schema.
+        // Full runtime init repairs the stamp and applies the remaining
+        // migrations on top of the legacy schema.
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("state runtime should initialize on a 0.1.48-stamped goals db");
@@ -2214,7 +2215,7 @@ INSERT INTO thread_goal_plan_nodes (
                 .await
                 .expect("repaired stamps should query");
         assert_eq!(
-            (1..=8).collect::<Vec<i64>>(),
+            (1..=9).collect::<Vec<i64>>(),
             stamped
                 .iter()
                 .map(|(version, _)| *version)
@@ -2228,7 +2229,11 @@ INSERT INTO thread_goal_plan_nodes (
             .to_vec();
         assert_eq!(
             embedded_deferred_checksum,
-            stamped.last().expect("version 8 stamp").1,
+            stamped
+                .iter()
+                .find(|(version, _)| *version == 8)
+                .expect("version 8 stamp")
+                .1,
             "version 8 must carry the embedded deferred checksum after repair"
         );
         // The repaired database converges on the fresh schema: assignment
@@ -2254,6 +2259,18 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
                 .await
                 .expect("goal context lifecycle table should exist");
         assert_eq!(0, lifecycle_count);
+        let blocker_audit_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_blocker_audits")
+                .fetch_one(&query_pool)
+                .await
+                .expect("goal blocker audit table should exist");
+        assert_eq!(0, blocker_audit_count);
+        let blocker_audit_turn_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_blocker_audit_turns")
+                .fetch_one(&query_pool)
+                .await
+                .expect("goal blocker audit turn table should exist");
+        assert_eq!(0, blocker_audit_turn_count);
         let indexes: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'thread_goal_plan_nodes' AND name LIKE 'idx_%' ORDER BY name",
         )

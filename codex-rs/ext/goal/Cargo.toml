@@ -31,5 +31,6 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 pretty_assertions = { workspace = true }
+sqlx = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

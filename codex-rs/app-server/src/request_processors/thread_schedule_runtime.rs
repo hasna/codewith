@@ -182,9 +182,25 @@ impl ThreadScheduleRuntime {
         self.emit_schedule_run_updated(thread_id, claim.run.clone())
             .await;
 
-        let result = self
-            .submit_claimed_schedule(thread_id, state_db.clone(), &claim)
-            .await;
+        let (result, resolved_goal_objective) = match self
+            .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
+            .await
+        {
+            Ok(prompt) => {
+                let resolved_goal_objective = scheduled_goal_objective(&prompt).map(str::to_string);
+                let result = self
+                    .submit_claimed_schedule(
+                        thread_id,
+                        state_db.clone(),
+                        &claim,
+                        prompt,
+                        resolved_goal_objective.clone(),
+                    )
+                    .await;
+                (result, resolved_goal_objective)
+            }
+            Err(err) => (Err(err), None),
+        };
         if let Err(err) = result {
             warn!(
                 schedule_id = %claim.schedule.schedule_id,
@@ -201,9 +217,7 @@ impl ThreadScheduleRuntime {
                     .await;
                 return;
             }
-            let held_goal_objective = err
-                .downcast_ref::<ScheduledGoalHeld>()
-                .map(|held| held.objective.clone());
+            let held_goal_objective = submit_failure_goal_objective(resolved_goal_objective, &err);
             self.fail_claimed_run_after_submit_error(
                 state_db,
                 claim,
@@ -219,11 +233,9 @@ impl ThreadScheduleRuntime {
         thread_id: ThreadId,
         state_db: StateDbHandle,
         claim: &codex_state::ThreadScheduleClaim,
+        prompt: String,
+        scheduled_goal_objective: Option<String>,
     ) -> anyhow::Result<()> {
-        let prompt = self
-            .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
-            .await?;
-        let scheduled_goal_objective = scheduled_goal_objective(&prompt).map(str::to_string);
         let claim_auth_profile = self
             .claim_auth_profile(&state_db, thread_id, &claim.schedule)
             .await;
@@ -798,6 +810,17 @@ fn scheduled_goal_objective(prompt: &str) -> Option<&str> {
     Some(rest.trim())
 }
 
+fn submit_failure_goal_objective(
+    resolved_goal_objective: Option<String>,
+    error: &anyhow::Error,
+) -> Option<String> {
+    resolved_goal_objective.or_else(|| {
+        error
+            .downcast_ref::<ScheduledGoalHeld>()
+            .map(|held| held.objective.clone())
+    })
+}
+
 fn scheduled_goal_is_held(goal: &codex_state::ThreadGoal, objective: &str) -> bool {
     goal.objective == objective
         && matches!(
@@ -1092,11 +1115,28 @@ struct ScheduledGoalHeld {
 
 impl std::fmt::Display for ScheduledGoalHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "scheduled goal is {:?}; resume the goal and its schedule explicitly before another run",
-            self.status
-        )
+        let recovery = match self.status {
+            codex_state::ThreadGoalStatus::Paused => {
+                "scheduled goal is paused; resume the goal and its schedule explicitly before another run"
+            }
+            codex_state::ThreadGoalStatus::Blocked => {
+                "scheduled goal is blocked; resume the goal and its schedule explicitly before another run"
+            }
+            codex_state::ThreadGoalStatus::UsageLimited => {
+                "scheduled goal is usage limited; wait for or resolve the usage limit, then resume the goal and its schedule explicitly before another run"
+            }
+            codex_state::ThreadGoalStatus::BudgetLimited => {
+                "scheduled goal is budget limited; change the goal token budget before resuming the goal, then resume its schedule explicitly before another run"
+            }
+            status => {
+                return write!(
+                    f,
+                    "scheduled goal is {}; resume the goal and its schedule explicitly before another run",
+                    status.as_str()
+                );
+            }
+        };
+        f.write_str(recovery)
     }
 }
 
@@ -3008,7 +3048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_default_goal_prompt_pauses_schedule_when_goal_remains_held() {
+    async fn resolved_default_goal_prompt_submit_failure_pauses_schedule_when_goal_remains_held() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let state_db = codex_state::StateRuntime::init(
             temp_dir.path().to_path_buf(),
@@ -3073,11 +3113,11 @@ mod tests {
             &claim.run.run_id,
             "lease-run",
             Some(objective),
-            None,
+            Some("failed after resolving the default goal prompt".to_string()),
             scheduled_for + chrono::Duration::seconds(5),
         )
         .await
-        .expect("successful run should finish")
+        .expect("failed run should finish")
         .expect("finished rows should load");
 
         assert_eq!(
@@ -3086,10 +3126,13 @@ mod tests {
         );
         assert_eq!(None, finished_schedule.next_run_at);
         assert_eq!(
-            codex_state::ThreadScheduleRunStatus::Completed,
+            codex_state::ThreadScheduleRunStatus::Failed,
             finished_run.status
         );
-        assert_eq!(None, finished_run.error);
+        assert_eq!(
+            Some("failed after resolving the default goal prompt".to_string()),
+            finished_run.error
+        );
     }
 
     #[tokio::test]
@@ -3405,6 +3448,19 @@ mod tests {
     }
 
     #[test]
+    fn generic_submit_failure_keeps_resolved_default_goal_objective() {
+        let error = anyhow::anyhow!("failed after the default prompt was resolved");
+        assert_eq!(
+            Some("watch the default release gate"),
+            submit_failure_goal_objective(
+                Some("watch the default release gate".to_string()),
+                &error,
+            )
+            .as_deref()
+        );
+    }
+
+    #[test]
     fn scheduled_goal_objective_requires_goal_command_boundary() {
         assert_eq!(None, scheduled_goal_objective("please run /goal later"));
         assert_eq!(None, scheduled_goal_objective("/goalkeeper report"));
@@ -3444,6 +3500,34 @@ mod tests {
             &goal(codex_state::ThreadGoalStatus::Paused),
             "ship a different objective"
         ));
+    }
+
+    #[test]
+    fn scheduled_goal_hold_recovery_is_status_specific() {
+        let error = |status| {
+            ScheduledGoalHeld {
+                objective: "watch the release gate".to_string(),
+                status,
+            }
+            .to_string()
+        };
+
+        assert_eq!(
+            "scheduled goal is paused; resume the goal and its schedule explicitly before another run",
+            error(codex_state::ThreadGoalStatus::Paused)
+        );
+        assert_eq!(
+            "scheduled goal is blocked; resume the goal and its schedule explicitly before another run",
+            error(codex_state::ThreadGoalStatus::Blocked)
+        );
+        assert_eq!(
+            "scheduled goal is usage limited; wait for or resolve the usage limit, then resume the goal and its schedule explicitly before another run",
+            error(codex_state::ThreadGoalStatus::UsageLimited)
+        );
+        assert_eq!(
+            "scheduled goal is budget limited; change the goal token budget before resuming the goal, then resume its schedule explicitly before another run",
+            error(codex_state::ThreadGoalStatus::BudgetLimited)
+        );
     }
 
     #[test]

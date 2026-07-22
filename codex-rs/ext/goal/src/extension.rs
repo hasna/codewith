@@ -92,6 +92,40 @@ impl<C> GoalExtension<C> {
             goals_config: Arc::new(goals_config),
         }
     }
+
+    async fn handle_turn_error(&self, input: TurnErrorInput<'_>, error_fingerprint: &str) {
+        let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+            return;
+        };
+        // Core emits turn-stop after terminal turn errors. Record the error
+        // before any fallible persistence so that later success-only cleanup
+        // cannot erase this or an earlier durable blocker observation.
+        runtime
+            .accounting_state()
+            .mark_turn_error_observed(input.turn_id);
+
+        let reason = match &input.error {
+            CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
+            // The turn has ended because the error was non-retryable or its
+            // retries were exhausted. Hold the goal to prevent automatic
+            // continuation from looping and consuming tokens. The runtime
+            // promotes the same blocker to Blocked only after the required
+            // number of consecutive goal turns.
+            _ => ActiveGoalStopReason::TurnError {
+                error: input.error.clone(),
+                fingerprint: error_fingerprint.to_string(),
+            },
+        };
+        if let Err(err) = runtime
+            .stop_active_goal_for_turn(input.turn_id, reason)
+            .await
+        {
+            tracing::warn!(
+                error = ?input.error,
+                "failed to stop active goal after turn error: {err}"
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -276,29 +310,40 @@ where
         }
 
         let turn_id = input.turn_store.level_id();
-        let goal_id = runtime
-            .accounting_state()
-            .active_goal_id_for_current_turn(turn_id);
+        let accounting_state = runtime.accounting_state();
+        let goal_id = (!accounting_state.turn_error_observed(turn_id))
+            .then(|| accounting_state.active_goal_id_for_current_turn(turn_id))
+            .flatten();
         if let Some(goal_id) = goal_id.as_deref() {
-            runtime
-                .accounting_state()
-                .clear_blocker_audit_for_goal(goal_id);
+            let clear_result = codex_state::busy_retry::retry_on_busy(
+                "clear blocker audit after successful turn",
+                || {
+                    self.state_dbs
+                        .thread_goals()
+                        .clear_thread_goal_blocker_audit_for_goal(runtime.thread_id(), goal_id)
+                },
+            )
+            .await;
+            if let Err(err) = clear_result {
+                tracing::warn!(
+                    "failed to clear blocker audit after successful turn {turn_id}: {err}"
+                );
+            }
         }
-        if let Err(err) = runtime
+        let accounting_result = runtime
             .account_active_goal_progress(
                 turn_id,
                 &format!("{turn_id}:turn-stop"),
                 codex_state::GoalAccountingMode::ActiveOnly,
                 BudgetLimitedGoalDisposition::ClearActive,
             )
-            .await
-        {
+            .await;
+        runtime.accounting_state().finish_turn(turn_id);
+        if let Err(err) = accounting_result {
             tracing::warn!(
                 "failed to account active goal progress at turn stop for {turn_id}: {err}"
             );
-            return;
         }
-        runtime.accounting_state().finish_turn(turn_id);
     }
 
     async fn on_turn_abort(&self, input: TurnAbortInput<'_>) {
@@ -310,54 +355,52 @@ where
         }
 
         let turn_id = input.turn_store.level_id();
-        let goal_id = runtime
-            .accounting_state()
-            .active_goal_id_for_current_turn(turn_id);
+        let accounting_state = runtime.accounting_state();
+        let goal_id = (!accounting_state.turn_error_observed(turn_id))
+            .then(|| accounting_state.active_goal_id_for_current_turn(turn_id))
+            .flatten();
         if let Some(goal_id) = goal_id.as_deref() {
-            runtime
-                .accounting_state()
-                .clear_blocker_audit_for_goal(goal_id);
+            let clear_result = codex_state::busy_retry::retry_on_busy(
+                "clear blocker audit after turn abort",
+                || {
+                    self.state_dbs
+                        .thread_goals()
+                        .clear_thread_goal_blocker_audit_for_goal(runtime.thread_id(), goal_id)
+                },
+            )
+            .await;
+            if let Err(err) = clear_result {
+                tracing::warn!("failed to clear blocker audit after turn abort {turn_id}: {err}");
+            }
         }
-        if let Err(err) = runtime
+        let accounting_result = runtime
             .account_active_goal_progress(
                 turn_id,
                 &format!("{turn_id}:turn-abort"),
                 codex_state::GoalAccountingMode::ActiveOnly,
                 BudgetLimitedGoalDisposition::ClearActive,
             )
-            .await
-        {
+            .await;
+        runtime.accounting_state().finish_turn(turn_id);
+        if let Err(err) = accounting_result {
             tracing::warn!(
                 "failed to account active goal progress after turn abort for {turn_id}: {err}"
             );
-            return;
         }
-        runtime.accounting_state().finish_turn(turn_id);
     }
 
     async fn on_turn_error(&self, input: TurnErrorInput<'_>) {
-        let Some(runtime) = goal_runtime_handle(input.thread_store) else {
-            return;
-        };
+        let error_fingerprint = protocol_error_fingerprint(&input.error);
+        self.handle_turn_error(input, error_fingerprint.as_str())
+            .await;
+    }
 
-        let reason = match &input.error {
-            CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
-            // The turn has ended because the error was non-retryable or its
-            // retries were exhausted. Hold the goal to prevent automatic
-            // continuation from looping and consuming tokens. The runtime
-            // promotes the same blocker to Blocked only after the required
-            // number of consecutive goal turns.
-            _ => ActiveGoalStopReason::TurnError(input.error.clone()),
-        };
-        if let Err(err) = runtime
-            .stop_active_goal_for_turn(input.turn_id, reason)
-            .await
-        {
-            tracing::warn!(
-                error = ?input.error,
-                "failed to stop active goal after turn error: {err}"
-            );
-        }
+    async fn on_turn_error_with_fingerprint(
+        &self,
+        input: TurnErrorInput<'_>,
+        error_fingerprint: &str,
+    ) {
+        self.handle_turn_error(input, error_fingerprint).await;
     }
 }
 
@@ -549,6 +592,58 @@ pub fn install_with_backend<C>(
 
 fn goal_runtime_handle(thread_store: &ExtensionData) -> Option<Arc<GoalRuntimeHandle>> {
     thread_store.get::<GoalRuntimeHandle>()
+}
+
+fn protocol_error_fingerprint(error: &CodexErrorInfo) -> String {
+    let fingerprint = match error {
+        CodexErrorInfo::ContextWindowExceeded => "codex_err:protocol:context_window_exceeded",
+        CodexErrorInfo::UsageLimitExceeded => "codex_err:protocol:usage_limit_exceeded",
+        CodexErrorInfo::ServerOverloaded => "codex_err:protocol:server_overloaded",
+        CodexErrorInfo::CyberPolicy => "codex_err:protocol:cyber_policy",
+        CodexErrorInfo::HttpConnectionFailed { http_status_code } => {
+            return protocol_http_error_fingerprint("http_connection_failed", *http_status_code);
+        }
+        CodexErrorInfo::ResponseStreamConnectionFailed { http_status_code } => {
+            return protocol_http_error_fingerprint(
+                "response_stream_connection_failed",
+                *http_status_code,
+            );
+        }
+        CodexErrorInfo::InternalServerError => "codex_err:protocol:internal_server_error",
+        CodexErrorInfo::Unauthorized => "codex_err:protocol:unauthorized",
+        CodexErrorInfo::BadRequest => "codex_err:protocol:bad_request",
+        CodexErrorInfo::SandboxError => "codex_err:protocol:sandbox_error",
+        CodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
+            return protocol_http_error_fingerprint(
+                "response_stream_disconnected",
+                *http_status_code,
+            );
+        }
+        CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
+            return protocol_http_error_fingerprint(
+                "response_too_many_failed_attempts",
+                *http_status_code,
+            );
+        }
+        CodexErrorInfo::ActiveTurnNotSteerable { turn_kind } => match turn_kind {
+            codex_protocol::protocol::NonSteerableTurnKind::Review => {
+                "codex_err:protocol:active_turn_not_steerable:review"
+            }
+            codex_protocol::protocol::NonSteerableTurnKind::Compact => {
+                "codex_err:protocol:active_turn_not_steerable:compact"
+            }
+        },
+        CodexErrorInfo::ThreadRollbackFailed => "codex_err:protocol:thread_rollback_failed",
+        CodexErrorInfo::Other => "codex_err:protocol:other",
+    };
+    fingerprint.to_string()
+}
+
+fn protocol_http_error_fingerprint(kind: &str, status: Option<u16>) -> String {
+    match status {
+        Some(status) => format!("codex_err:protocol:{kind}:http_{status}"),
+        None => format!("codex_err:protocol:{kind}:http_unknown"),
+    }
 }
 
 fn tool_attempt_counts_for_goal_progress(outcome: ToolCallOutcome) -> bool {
