@@ -53,6 +53,7 @@ pub struct GoalExtensionConfig {
     pub auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub max_auto_goals_per_plan: usize,
     pub max_tokens_per_goal_plan: Option<i64>,
+    pub max_goal_plan_node_objective_chars: usize,
     pub post_goal_context: codex_state::PostGoalContextAction,
     pub post_goal_plan_context: codex_state::PostGoalContextAction,
 }
@@ -126,6 +127,7 @@ where
                     auto_execute: config.auto_execute,
                     max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                     max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                    max_goal_plan_node_objective_chars: config.max_goal_plan_node_objective_chars,
                     post_goal_context: config.post_goal_context,
                     post_goal_plan_context: config.post_goal_plan_context,
                 },
@@ -137,6 +139,7 @@ where
             auto_execute: config.auto_execute,
             max_auto_goals_per_plan: config.max_auto_goals_per_plan,
             max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+            max_goal_plan_node_objective_chars: config.max_goal_plan_node_objective_chars,
             post_goal_context: config.post_goal_context,
             post_goal_plan_context: config.post_goal_plan_context,
         });
@@ -211,6 +214,7 @@ where
                 auto_execute: config.auto_execute,
                 max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                max_goal_plan_node_objective_chars: config.max_goal_plan_node_objective_chars,
                 post_goal_context: config.post_goal_context,
                 post_goal_plan_context: config.post_goal_plan_context,
             });

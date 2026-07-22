@@ -362,6 +362,164 @@ async fn load_rollout_items_filters_legacy_ghost_snapshots_from_compaction_histo
     Ok(())
 }
 
+fn write_session_meta_line(file: &mut File, thread_id: ThreadId, ts: &str) -> std::io::Result<()> {
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": ts,
+                "cwd": ".",
+                "originator": "test_originator",
+                "cli_version": "test_version",
+                "source": "cli",
+                "model_provider": "test-provider",
+            },
+        })
+    )
+}
+
+fn assistant_message_line(ts: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": ts,
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": text,
+                }
+            ],
+        },
+    })
+}
+
+#[tokio::test]
+async fn load_rollout_items_counts_malformed_lines_as_parse_errors() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let mut file = File::create(&rollout_path)?;
+    let thread_id = ThreadId::new();
+    let ts = "2025-01-03T12:00:00Z";
+
+    write_session_meta_line(&mut file, thread_id, ts)?;
+    // Invalid JSON entirely.
+    writeln!(file, "this is not json")?;
+    // Valid JSON that is not a valid rollout line.
+    writeln!(file, "{}", serde_json::json!({ "type": "mystery_line" }))?;
+    writeln!(file, "{}", assistant_message_line(ts, "hello"))?;
+
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 2);
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], RolloutItem::SessionMeta(_)));
+    assert!(matches!(
+        items[1],
+        RolloutItem::ResponseItem(ResponseItem::Message { .. })
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_rollout_items_keeps_lines_mentioning_ghost_snapshot_in_content() -> std::io::Result<()>
+{
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let mut file = File::create(&rollout_path)?;
+    let thread_id = ThreadId::new();
+    let ts = "2025-01-03T12:00:00Z";
+
+    write_session_meta_line(&mut file, thread_id, ts)?;
+    // Mentions the legacy marker in ordinary message text: this bypasses the direct
+    // parse fast path but must survive the legacy-strip slow path untouched.
+    writeln!(
+        file,
+        "{}",
+        assistant_message_line(ts, "discussing the legacy ghost_snapshot format")
+    )?;
+
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    assert_eq!(items.len(), 2);
+    let RolloutItem::ResponseItem(ResponseItem::Message { content, .. }) = &items[1] else {
+        panic!("expected assistant message rollout item");
+    };
+    assert!(format!("{content:?}").contains("ghost_snapshot"));
+
+    Ok(())
+}
+
+/// Manual perf measurement for resume-time rollout parsing. Run with:
+/// `cargo test -p codex-rollout --release perf_load_rollout_items_large_file -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "manual perf measurement"]
+async fn perf_load_rollout_items_large_file() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let mut file = std::io::BufWriter::new(File::create(&rollout_path)?);
+    let thread_id = ThreadId::new();
+    let ts = "2025-01-03T12:00:00Z";
+    const LINE_COUNT: usize = 100_000;
+
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": ts,
+                "cwd": ".",
+                "originator": "test_originator",
+                "cli_version": "test_version",
+                "source": "cli",
+                "model_provider": "test-provider",
+            },
+        })
+    )?;
+    let body = "lorem ipsum dolor sit amet, consectetur adipiscing elit ".repeat(8);
+    for index in 0..LINE_COUNT {
+        writeln!(
+            file,
+            "{}",
+            assistant_message_line(ts, &format!("message {index}: {body}"))
+        )?;
+    }
+    file.flush()?;
+    drop(file);
+    let file_len = fs::metadata(&rollout_path)?.len();
+
+    let start = std::time::Instant::now();
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    let elapsed = start.elapsed();
+
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    assert_eq!(items.len(), LINE_COUNT + 1);
+    println!(
+        "load_rollout_items: {} items / {:.1} MiB in {elapsed:?} ({:.0} items/s)",
+        items.len(),
+        file_len as f64 / (1024.0 * 1024.0),
+        items.len() as f64 / elapsed.as_secs_f64(),
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");

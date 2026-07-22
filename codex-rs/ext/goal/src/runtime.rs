@@ -34,6 +34,7 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub(crate) max_auto_goals_per_plan: usize,
     pub(crate) max_tokens_per_goal_plan: Option<i64>,
+    pub(crate) max_goal_plan_node_objective_chars: usize,
     pub(crate) post_goal_context: codex_state::PostGoalContextAction,
     pub(crate) post_goal_plan_context: codex_state::PostGoalContextAction,
 }
@@ -63,6 +64,7 @@ pub(crate) struct GoalPlanRuntimeConfig {
     pub(crate) auto_execute: codex_state::ThreadGoalPlanAutoExecute,
     pub(crate) max_auto_goals_per_plan: usize,
     pub(crate) max_tokens_per_goal_plan: Option<i64>,
+    pub(crate) max_goal_plan_node_objective_chars: usize,
     pub(crate) post_goal_context: codex_state::PostGoalContextAction,
     pub(crate) post_goal_plan_context: codex_state::PostGoalContextAction,
 }
@@ -140,6 +142,7 @@ impl GoalRuntimeHandle {
                     auto_execute: config.auto_execute,
                     max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                     max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                    max_goal_plan_node_objective_chars: config.max_goal_plan_node_objective_chars,
                     post_goal_context: config.post_goal_context,
                     post_goal_plan_context: config.post_goal_plan_context,
                 }),
@@ -157,6 +160,7 @@ impl GoalRuntimeHandle {
                 auto_execute: config.auto_execute,
                 max_auto_goals_per_plan: config.max_auto_goals_per_plan,
                 max_tokens_per_goal_plan: config.max_tokens_per_goal_plan,
+                max_goal_plan_node_objective_chars: config.max_goal_plan_node_objective_chars,
                 post_goal_context: config.post_goal_context,
                 post_goal_plan_context: config.post_goal_plan_context,
             };
@@ -196,6 +200,8 @@ impl GoalRuntimeHandle {
                 auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
                 max_auto_goals_per_plan: 1,
                 max_tokens_per_goal_plan: None,
+                max_goal_plan_node_objective_chars:
+                    codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS,
                 post_goal_context: codex_state::PostGoalContextAction::Keep,
                 post_goal_plan_context: codex_state::PostGoalContextAction::Keep,
             })

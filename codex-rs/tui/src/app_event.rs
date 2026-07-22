@@ -55,6 +55,7 @@ use crate::chatwidget::UserMessage;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
+use codex_login::AuthProfileLoginMethod;
 use codex_login::AuthProfileMoveDirection;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_plugin::PluginCapabilitySummary;
@@ -1378,9 +1379,17 @@ pub(crate) enum AppEvent {
         reset_generation: u64,
     },
 
-    /// Prompt for naming a new saved auth profile after a provider is selected.
+    /// Prompt for choosing the login method for a newly selected provider.
+    OpenAuthProfileMethodPrompt {
+        subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
+    },
+
+    /// Prompt for naming a new saved auth profile after a provider and login
+    /// method are selected.
     OpenAuthProfileNamePrompt {
         subscription_provider: AuthProfileSubscriptionProvider,
+        login_method: AuthProfileLoginMethod,
         reset_generation: u64,
     },
 
@@ -1388,6 +1397,7 @@ pub(crate) enum AppEvent {
     LoginNewAuthProfile {
         profile: String,
         subscription_provider: AuthProfileSubscriptionProvider,
+        login_method: AuthProfileLoginMethod,
         reset_generation: u64,
     },
 
@@ -1439,6 +1449,10 @@ pub(crate) enum AppEvent {
 
     /// Open the agent subagent-thread-limit picker from the root config menu.
     OpenAgentMaxThreadsMenu,
+
+    /// Open the goal-plan node objective character-limit picker from the root
+    /// config menu.
+    OpenGoalPlanNodeObjectiveMenu,
 
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
@@ -1862,6 +1876,9 @@ impl AppEvent {
                 reset_generation, ..
             }
             | Self::OpenAuthProfileLoginPrompt { reset_generation }
+            | Self::OpenAuthProfileMethodPrompt {
+                reset_generation, ..
+            }
             | Self::OpenAuthProfileNamePrompt {
                 reset_generation, ..
             }

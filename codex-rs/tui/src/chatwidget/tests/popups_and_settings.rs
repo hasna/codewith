@@ -17,6 +17,7 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Stage;
 use codex_login::AuthDotJson;
+use codex_login::AuthProfileLoginMethod;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::TokenData;
 use codex_login::list_auth_profiles;
@@ -2925,7 +2926,10 @@ async fn profile_selection_popup_snapshot_and_selection() {
     assert!(popup.contains("personal"));
     assert!(popup.contains("work"));
     assert!(popup.contains("Log in new profile"));
-    assert!(popup.contains("ChatGPT Pro / el@elyratelier.com"));
+    // Bug C: the picker shows the subscription provider (and plan) but never the
+    // account email.
+    assert!(popup.contains("ChatGPT Pro"));
+    assert!(!popup.contains("el@elyratelier.com"));
     assert!(!popup.contains("ChatGPT / Pro"));
     assert!(!popup.contains("ChatGPT / ApiKey"));
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
@@ -2935,7 +2939,10 @@ async fn profile_selection_popup_snapshot_and_selection() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_selection_popup_profile_actions", popup);
-    assert!(popup.contains("usage unknown"));
+    // Bug C: the highlighted profile's detail is provider + weekly usage (a
+    // loading placeholder until usage is fetched), never the email.
+    assert!(popup.contains("ChatGPT · usage loading"));
+    assert!(!popup.contains("el@elyratelier.com"));
     assert!(!popup.contains("› 2. personal            ChatGPT Pro / el@elyratelier.com"));
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
     assert!(popup.contains("Press enter to confirm or esc to go back"));
@@ -3021,25 +3028,56 @@ async fn profile_login_prompt_snapshot_and_submit() {
 
     chat.open_auth_profile_login_prompt(chat.rate_limit_reset_generation);
 
+    // Step 1: the provider chooser is derived from the provider model, so every
+    // provider is offered — including Claude.ai, which the old hardcoded list
+    // dropped.
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_prompt", popup);
     assert!(popup.contains("ChatGPT"));
-    assert!(!popup.contains("Claude.ai"));
+    assert!(popup.contains("Claude.ai"));
+    assert!(popup.contains("Cursor"));
+    assert!(popup.contains("Grok"));
     assert!(!popup.contains("Claude Code"));
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let subscription_provider = match rx.try_recv() {
-        Ok(AppEvent::OpenAuthProfileNamePrompt {
+        Ok(AppEvent::OpenAuthProfileMethodPrompt {
             subscription_provider,
             ..
         }) => subscription_provider,
-        event => panic!("expected profile provider name prompt event, got {event:?}"),
+        event => panic!("expected profile method prompt event, got {event:?}"),
     };
     assert_eq!(
         subscription_provider,
         AuthProfileSubscriptionProvider::ChatGpt
     );
-    chat.open_auth_profile_name_prompt(subscription_provider, chat.rate_limit_reset_generation);
+
+    // Step 2: the method chooser lists only the methods ChatGPT supports.
+    chat.open_auth_profile_method_prompt(subscription_provider, chat.rate_limit_reset_generation);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("profile_login_method_prompt", popup);
+    assert!(popup.contains("Browser sign-in"));
+    assert!(popup.contains("Device code"));
+    assert!(popup.contains("API key"));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let login_method = match rx.try_recv() {
+        Ok(AppEvent::OpenAuthProfileNamePrompt {
+            subscription_provider: event_provider,
+            login_method,
+            ..
+        }) => {
+            assert_eq!(event_provider, AuthProfileSubscriptionProvider::ChatGpt);
+            login_method
+        }
+        event => panic!("expected profile name prompt event, got {event:?}"),
+    };
+    assert_eq!(login_method, AuthProfileLoginMethod::ChatgptBrowser);
+    chat.open_auth_profile_name_prompt(
+        subscription_provider,
+        login_method,
+        chat.rate_limit_reset_generation,
+    );
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("profile_login_name_prompt", popup);
@@ -3056,10 +3094,68 @@ async fn profile_login_prompt_snapshot_and_submit() {
         Ok(AppEvent::LoginNewAuthProfile {
             profile,
             subscription_provider,
+            login_method,
             ..
         }) if profile == "work-dev"
             && subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
+            && login_method == AuthProfileLoginMethod::ChatgptBrowser
     );
+}
+
+#[tokio::test]
+async fn profile_popup_refresh_preserves_cursor_position() {
+    // Bug B: a background usage-heartbeat refresh rebuilds the popup in place.
+    // The user's cursor must survive the rebuild instead of snapping back to the
+    // active (current) row.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_auth_profile(&chat, "alpha");
+    save_popup_auth_profile(&chat, "bravo");
+    save_popup_auth_profile(&chat, "charlie");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    // The popup opens highlighting the current (default) row at index 0; move the
+    // cursor down onto a named profile.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let before = chat
+        .bottom_pane
+        .selected_index_for_active_view("auth-profile-selection");
+    assert_eq!(before, Some(2));
+
+    assert!(chat.refresh_profile_popup_if_active());
+    let after = chat
+        .bottom_pane
+        .selected_index_for_active_view("auth-profile-selection");
+    assert_eq!(after, before, "refresh must not move the cursor");
+}
+
+#[tokio::test]
+async fn profile_detail_shows_provider_and_weekly_usage_not_email() {
+    // Bug C: the highlighted profile's detail shows subscription provider plus
+    // weekly usage remaining, and never the account email.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "personal", "el@elyratelier.com");
+    // `profile_usage_snapshot`'s primary window is the weekly window; 40% used
+    // leaves 60% weekly remaining.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 20, /*primary_used_percent*/ 40,
+        )],
+    );
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("ChatGPT · weekly 60% left"),
+        "expected provider + weekly usage detail, got:\n{popup}"
+    );
+    assert!(!popup.contains("el@elyratelier.com"));
 }
 
 fn drain_profile_usage_refresh_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
@@ -3086,6 +3182,7 @@ async fn profile_login_validation_errors_do_not_start_browser_login() {
     chat.start_auth_profile_login(
         "nested/work".to_string(),
         AuthProfileSubscriptionProvider::ChatGpt,
+        AuthProfileLoginMethod::ChatgptBrowser,
         chat.rate_limit_reset_generation,
     );
     let rendered = drain_insert_history(&mut rx)
@@ -3109,6 +3206,7 @@ async fn profile_login_duplicate_errors_do_not_start_browser_login() {
     chat.start_auth_profile_login(
         "personal".to_string(),
         AuthProfileSubscriptionProvider::ChatGpt,
+        AuthProfileLoginMethod::ChatgptBrowser,
         chat.rate_limit_reset_generation,
     );
     let rendered = drain_insert_history(&mut rx)
@@ -3132,6 +3230,7 @@ async fn profile_login_api_only_mode_points_to_cli_flow() {
     chat.start_auth_profile_login(
         "work".to_string(),
         AuthProfileSubscriptionProvider::ChatGpt,
+        AuthProfileLoginMethod::ChatgptBrowser,
         chat.rate_limit_reset_generation,
     );
     let rendered = drain_insert_history(&mut rx)
@@ -3154,6 +3253,7 @@ async fn external_profile_login_creates_metadata_profile() {
     chat.start_auth_profile_login(
         "claude-work".to_string(),
         AuthProfileSubscriptionProvider::ClaudeAi,
+        AuthProfileLoginMethod::SubscriptionLogin,
         chat.rate_limit_reset_generation,
     );
 
@@ -3219,7 +3319,10 @@ async fn profile_selection_popup_shows_usage_hints() {
     assert!(!popup.contains("Press Enter to confirm or Esc to go back"));
     assert!(popup.contains("Press enter to confirm or esc to go back"));
     assert!(!popup.contains("ChatGPT Pro / el@elyratelier.com"));
-    assert!(popup.contains("stale weekly 60% left, 5h 30% left"));
+    // Bug C: the highlighted profile's detail is provider + weekly usage
+    // remaining (no email, and no multi-window/stale hint string).
+    assert!(popup.contains("ChatGPT · weekly 60% left"));
+    assert!(!popup.contains("5h 30% left"));
     assert!(popup.contains("weekly"));
     assert!(popup.contains("ChatGPT API key"));
     assert!(popup.contains("Enter switch / l relogin / r rename"));
@@ -3503,6 +3606,37 @@ async fn config_agent_max_threads_popup_selects_value() {
         }) if key_path == "agents.max_threads"
             && value == serde_json::json!(4)
             && label == "Agent subagent thread limit"
+    );
+}
+
+#[tokio::test]
+async fn config_goal_plan_node_objective_popup_selects_value() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    // Start from a known current value so the initial highlight is deterministic (index 0 = "500").
+    chat.config.goals.max_goal_plan_node_objective_chars = 500;
+    while rx.try_recv().is_ok() {}
+
+    chat.open_goal_plan_node_objective_popup();
+    let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(popup.contains("Goal plan node objective limit"), "{popup}");
+    assert!(popup.contains("(default)"), "{popup}");
+
+    // Presets are [500, 1000, 2000, 4000, 6000, 8000]; move from "500" to "4000" and select it.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateConfigValue {
+            key_path,
+            value,
+            label,
+        }) if key_path == "goals.max_goal_plan_node_objective_chars"
+            && value == serde_json::json!(4000)
+            && label == "Goal plan node objective limit"
     );
 }
 

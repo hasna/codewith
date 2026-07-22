@@ -644,6 +644,10 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
         GoalExtensionConfig {
             auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
             max_auto_goals_per_plan: 24,
+            // Use a small model-visible node objective cap so the response
+            // truncation path is exercised even though the objective stays well
+            // under the input-validation ceiling.
+            max_goal_plan_node_objective_chars: 240,
             ..test_goal_extension_config()
         },
     )
@@ -676,6 +680,9 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
     assert_eq!(nodes.len(), 16);
     assert_eq!(result["goalPlans"][0]["nodeCount"], 20);
     assert_eq!(result["goalPlans"][0]["nodesOmittedCount"], 4);
+    // The model-visible response honors the configured per-node objective cap
+    // (240 here) and reports the truncation.
+    assert!(nodes[0]["objective"].as_str().unwrap_or_default().len() <= 240);
     assert!(nodes[0]["objective"].as_str().unwrap_or_default().len() < long_objective.len());
     assert_eq!(nodes[0]["objectiveTruncated"], true);
 
@@ -688,12 +695,53 @@ async fn create_goal_plan_tool_response_caps_model_visible_plan_details() -> any
     assert_eq!(Some("turn-1".to_string()), plan_events[0].turn_id);
     assert_eq!(20, plan_events[0].node_count);
     assert_eq!(16, plan_events[0].node_objectives.len());
+    // The event objective cap is raised above the node objective cap, so plan
+    // events echo the full (untruncated) objective rather than clipping it like
+    // the model-visible response above.
     assert!(
         plan_events[0]
             .node_objectives
             .iter()
-            .all(|objective| objective.len() < long_objective.len())
+            .all(|objective| objective.len() >= long_objective.len())
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_echoes_full_objective_up_to_configured_cap() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    // Uses the default node objective cap (DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS).
+    let tools = installed_tools(runtime, thread_id).await;
+
+    // A ~600-word objective at the default cap validates and is echoed back in
+    // full, without truncation.
+    let objective = "a".repeat(codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS);
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-full-objective",
+        json!({ "goals": [{ "key": "node-0", "objective": objective.clone() }] }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let nodes = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(
+        nodes[0]["objective"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .count(),
+        codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS
+    );
+    // `objective_truncated` is skipped when false, so an untruncated objective
+    // simply omits the flag (never reports `true`).
+    assert_ne!(nodes[0]["objectiveTruncated"], serde_json::json!(true));
     Ok(())
 }
 
@@ -3332,6 +3380,8 @@ fn test_goal_extension_config() -> GoalExtensionConfig {
         auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
         max_auto_goals_per_plan: 12,
         max_tokens_per_goal_plan: None,
+        max_goal_plan_node_objective_chars:
+            codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS,
         post_goal_context: codex_state::PostGoalContextAction::Keep,
         post_goal_plan_context: codex_state::PostGoalContextAction::Keep,
     }

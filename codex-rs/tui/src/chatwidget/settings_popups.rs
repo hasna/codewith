@@ -133,6 +133,7 @@ impl ChatWidget {
             .map(|section| config_section_item(&self.config, section))
             .collect();
         items.push(self.agent_max_threads_menu_item());
+        items.push(self.goal_plan_node_objective_menu_item());
 
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Config".bold()));
@@ -246,6 +247,76 @@ impl ChatWidget {
         });
     }
 
+    /// Root-menu entry that opens the goal-plan node objective character-limit
+    /// picker.
+    fn goal_plan_node_objective_menu_item(&self) -> SelectionItem {
+        let current = self.config.goals.max_goal_plan_node_objective_chars;
+        SelectionItem {
+            name: "Goal objective limit".to_string(),
+            description: Some(format!(
+                "Max characters echoed per goal objective (now {current})."
+            )),
+            actions: vec![Box::new(|tx| {
+                tx.send(AppEvent::OpenGoalPlanNodeObjectiveMenu);
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        }
+    }
+
+    /// Preset picker for `[goals] max_goal_plan_node_objective_chars`. Selecting a
+    /// value persists it to `config.toml` (via the shared config-write path) and
+    /// reports that a restart is required to apply it.
+    pub(crate) fn open_goal_plan_node_objective_popup(&mut self) {
+        const PRESETS: [usize; 6] = [500, 1000, 2000, 4000, 6000, 8000];
+        let default_chars = crate::legacy_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS;
+        let current = self.config.goals.max_goal_plan_node_objective_chars;
+
+        let items: Vec<SelectionItem> = PRESETS
+            .into_iter()
+            .map(|chars| {
+                let is_current = current == chars;
+                let name = if chars == default_chars {
+                    format!("{chars} (default)")
+                } else {
+                    chars.to_string()
+                };
+                // Approximate words assuming ~6.7 characters per word.
+                let approx_words = chars * 3 / 20;
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    tx.send(AppEvent::UpdateConfigValue {
+                        key_path: "goals.max_goal_plan_node_objective_chars".to_string(),
+                        value: serde_json::json!(chars),
+                        label: "Goal plan node objective limit".to_string(),
+                    });
+                })];
+                SelectionItem {
+                    name,
+                    description: Some(format!(
+                        "Echo up to {chars} characters (~{approx_words} words) of each goal-plan node objective."
+                    )),
+                    is_current,
+                    actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Goal plan node objective limit".bold()));
+        header.push(Line::from(
+            "Cap characters echoed per goal-plan node objective; ~600 words at the default 4000. Restart to apply.".dim(),
+        ));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: Box::new(header),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
     pub(crate) fn open_config_section_popup(
         &mut self,
         section: crate::common_config_options::CommonConfigSection,
@@ -281,6 +352,17 @@ impl ChatWidget {
             }
             self.add_info_message(
                 "Agent subagent thread limit saved. Restart the session to apply it (or set [agents] max_threads in config.toml / use -c agents.max_threads=N).".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        if key_path == "goals.max_goal_plan_node_objective_chars" {
+            if let Some(chars) = value.as_u64() {
+                self.config.goals.max_goal_plan_node_objective_chars = chars as usize;
+            }
+            self.add_info_message(
+                "Goal plan node objective limit saved. Restart the session to apply it (or set [goals] max_goal_plan_node_objective_chars in config.toml).".to_string(),
                 /*hint*/ None,
             );
             return;

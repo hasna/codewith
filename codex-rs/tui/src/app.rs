@@ -500,6 +500,10 @@ struct SessionSummary {
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
+    /// Index into `transcript_cells` when the buffer was started. Cells before this
+    /// index were already written to scrollback through the normal insert path, so
+    /// the transcript-tail flush must not render them again.
+    transcript_tail_start: usize,
 }
 
 pub(crate) struct App {
@@ -780,6 +784,7 @@ impl App {
         startup_elapsed_before_app: Duration,
         startup_bootstrap: Option<AppServerBootstrap>,
         startup_hooks_browser: Option<HooksListEntry>,
+        missing_auth_profile: Option<String>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
         let startup_started_at = Instant::now();
@@ -1099,6 +1104,20 @@ See the Codewith keymap documentation for supported actions and examples."
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
+        }
+        if let Some(profile) = missing_auth_profile {
+            // `--auth-profile <name>` referenced a profile that doesn't exist.
+            // Instead of dead-ending in a login screen, explain what happened and
+            // open the provider -> login-method chooser so the user can create it.
+            app.chat_widget.add_info_message(
+                format!(
+                    "Auth profile `{profile}` doesn't exist yet — signed in with your default login. Pick a provider to create it."
+                ),
+                /*hint*/ None,
+            );
+            let reset_generation = app.chat_widget.rate_limit_reset_generation;
+            app.app_event_tx
+                .send(AppEvent::OpenAuthProfileLoginPrompt { reset_generation });
         }
         let initial_session_started_at = Instant::now();
         if let Some(started) = initial_started_thread {
