@@ -863,6 +863,20 @@ impl RolloutRecorder {
                 continue;
             }
             saw_non_empty_line = true;
+
+            // Fast path: parse straight into `RolloutLine` without materializing an
+            // intermediate `serde_json::Value`. Legacy `ghost_snapshot` payloads must
+            // contain the literal marker string, so only lines that might need the
+            // legacy strip (or that fail the direct parse) take the slower
+            // `Value`-based path below. This roughly halves resume-time parse cost on
+            // large rollouts.
+            if !line.contains(LEGACY_GHOST_SNAPSHOT_TYPE)
+                && let Ok(rollout_line) = serde_json::from_str::<RolloutLine>(&line)
+            {
+                Self::collect_rollout_item(&mut items, &mut thread_id, rollout_line.item);
+                continue;
+            }
+
             let mut v: Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(e) => {
@@ -877,29 +891,10 @@ impl RolloutRecorder {
             }
 
             // Parse the rollout line structure
-            match serde_json::from_value::<RolloutLine>(v.clone()) {
-                Ok(rollout_line) => match rollout_line.item {
-                    RolloutItem::SessionMeta(session_meta_line) => {
-                        // Use the FIRST SessionMeta encountered in the file as the canonical
-                        // thread id and main session information. Keep all items intact.
-                        if thread_id.is_none() {
-                            thread_id = Some(session_meta_line.meta.id);
-                        }
-                        items.push(RolloutItem::SessionMeta(session_meta_line));
-                    }
-                    RolloutItem::ResponseItem(item) => {
-                        items.push(RolloutItem::ResponseItem(item));
-                    }
-                    RolloutItem::Compacted(item) => {
-                        items.push(RolloutItem::Compacted(item));
-                    }
-                    RolloutItem::TurnContext(item) => {
-                        items.push(RolloutItem::TurnContext(item));
-                    }
-                    RolloutItem::EventMsg(_ev) => {
-                        items.push(RolloutItem::EventMsg(_ev));
-                    }
-                },
+            match serde_json::from_value::<RolloutLine>(v) {
+                Ok(rollout_line) => {
+                    Self::collect_rollout_item(&mut items, &mut thread_id, rollout_line.item);
+                }
                 Err(e) => {
                     trace!("failed to parse rollout line: {e}");
                     parse_errors = parse_errors.saturating_add(1);
@@ -917,6 +912,21 @@ impl RolloutRecorder {
             parse_errors,
         );
         Ok((items, thread_id, parse_errors))
+    }
+
+    /// Record a parsed rollout item, capturing the FIRST SessionMeta encountered in
+    /// the file as the canonical thread id. All items are kept intact.
+    fn collect_rollout_item(
+        items: &mut Vec<RolloutItem>,
+        thread_id: &mut Option<ThreadId>,
+        item: RolloutItem,
+    ) {
+        if thread_id.is_none()
+            && let RolloutItem::SessionMeta(session_meta_line) = &item
+        {
+            *thread_id = Some(session_meta_line.meta.id);
+        }
+        items.push(item);
     }
 
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
@@ -964,6 +974,14 @@ impl RolloutRecorder {
     }
 }
 
+/// Literal type tag carried by legacy ghost snapshot payloads. Rollout lines are
+/// written by serde_json, which never escapes ASCII letters, so any line the legacy
+/// strip could apply to contains this literal string. That lets `load_rollout_items`
+/// skip the `Value` round-trip for the overwhelming majority of lines. (A hand-crafted
+/// line encoding the tag with unicode escapes would bypass the strip and surface as a
+/// `ResponseItem::Other`; such lines are not produced by any rollout writer.)
+const LEGACY_GHOST_SNAPSHOT_TYPE: &str = "ghost_snapshot";
+
 fn strip_legacy_ghost_snapshot_rollout_line(value: &mut Value) -> bool {
     match value.get("type").and_then(Value::as_str) {
         Some("response_item") => value
@@ -984,7 +1002,7 @@ fn strip_legacy_ghost_snapshot_rollout_line(value: &mut Value) -> bool {
 }
 
 fn is_legacy_ghost_snapshot_response_item(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("ghost_snapshot")
+    value.get("type").and_then(Value::as_str) == Some(LEGACY_GHOST_SNAPSHOT_TYPE)
 }
 
 fn truncate_fs_page(

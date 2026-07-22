@@ -103,10 +103,11 @@ impl LiveThread {
         mut params: ResumeThreadParams,
     ) -> ThreadStoreResult<Self> {
         let thread_id = params.thread_id;
-        let should_load_history = params.history.is_none();
         let include_archived = params.include_archived;
-        thread_store.resume_thread(params.clone()).await?;
-        if should_load_history {
+        if params.history.is_none() {
+            // History is cheap to clone while absent; load it after the store
+            // accepts the resume.
+            thread_store.resume_thread(params.clone()).await?;
             match thread_store
                 .load_history(LoadThreadHistoryParams {
                     thread_id,
@@ -120,8 +121,18 @@ impl LiveThread {
                     return Err(err);
                 }
             }
+            let metadata_sync = ThreadMetadataSync::for_resume(&params);
+            return Ok(Self {
+                thread_id,
+                thread_store,
+                metadata_sync: Arc::new(Mutex::new(metadata_sync)),
+            });
         }
+        // The caller supplied history: derive the metadata snapshot first so params
+        // (including the potentially large history vector) can be moved into the
+        // store call instead of deep-cloned.
         let metadata_sync = ThreadMetadataSync::for_resume(&params);
+        thread_store.resume_thread(params).await?;
         Ok(Self {
             thread_id,
             thread_store,

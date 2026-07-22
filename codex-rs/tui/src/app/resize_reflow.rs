@@ -119,9 +119,18 @@ impl App {
     /// When resize reflow is enabled, buffering here lets the same row cap used by resize rebuilds
     /// apply to the startup write. Starting this buffer while an overlay owns rendering would split
     /// transcript ownership, so overlay replay continues through the normal deferred-history path.
+    ///
+    /// When a row cap exists, only the rows the terminal would retain can survive the replay, so
+    /// per-cell rendering is skipped entirely and the resize-reflow tail renderer formats the
+    /// retained tail once at flush — the same strategy thread switches use. This keeps startup
+    /// resume cost proportional to the visible tail instead of the full transcript.
     pub(super) fn begin_initial_history_replay_buffer(&mut self) {
         if self.terminal_resize_reflow_enabled() && self.overlay.is_none() {
-            self.initial_history_replay_buffer = Some(Default::default());
+            self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
+                retained_lines: VecDeque::new(),
+                render_from_transcript_tail: self.resize_reflow_max_rows().is_some(),
+                transcript_tail_start: self.transcript_cells.len(),
+            });
         }
     }
 
@@ -138,6 +147,7 @@ impl App {
             self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
                 retained_lines: VecDeque::new(),
                 render_from_transcript_tail: true,
+                transcript_tail_start: self.transcript_cells.len(),
             });
         }
     }
@@ -155,13 +165,24 @@ impl App {
         if buffer.retained_lines.is_empty() {
             if buffer.render_from_transcript_tail {
                 let width = tui.terminal.last_known_screen_size.width;
-                let reflowed_lines = self.render_transcript_lines_for_reflow(width).lines;
-                if !reflowed_lines.is_empty() {
+                let had_emitted_history_lines = self.has_emitted_history_lines;
+                // Render only cells appended after the buffer began: earlier cells
+                // (session header, banners) were already written to scrollback and
+                // must not be duplicated by the tail flush.
+                let mut reflowed_lines = self
+                    .render_transcript_lines_for_reflow_from(width, buffer.transcript_tail_start)
+                    .lines;
+                let rendered_any = !reflowed_lines.is_empty();
+                if rendered_any {
+                    if had_emitted_history_lines {
+                        reflowed_lines.insert(/*index*/ 0, HyperlinkLine::new(Line::from("")));
+                    }
                     tui.insert_history_hyperlink_lines_with_wrap_policy(
                         reflowed_lines,
                         self.history_line_wrap_policy(),
                     );
                 }
+                self.has_emitted_history_lines = had_emitted_history_lines || rendered_any;
             }
             return;
         }
@@ -496,12 +517,24 @@ impl App {
     /// were a new top-level history item. The final row trim happens after separators are restored,
     /// so the returned rows obey the cap exactly.
     pub(super) fn render_transcript_lines_for_reflow(&mut self, width: u16) -> ReflowRenderResult {
+        self.render_transcript_lines_for_reflow_from(width, /*first_cell_index*/ 0)
+    }
+
+    /// Render transcript cells starting at `first_cell_index`, walking backward from the tail.
+    ///
+    /// Replay-buffer flushes pass the index captured when the buffer began so cells that were
+    /// already written to scrollback are not rendered (and inserted) a second time.
+    pub(super) fn render_transcript_lines_for_reflow_from(
+        &mut self,
+        width: u16,
+        first_cell_index: usize,
+    ) -> ReflowRenderResult {
         let row_cap = self.resize_reflow_max_rows();
         let mut cell_displays = VecDeque::new();
         let mut rendered_rows = 0usize;
         let mut start = self.transcript_cells.len();
 
-        while start > 0 {
+        while start > first_cell_index {
             start -= 1;
             let cell = self.transcript_cells[start].clone();
             let lines = cell
@@ -517,7 +550,7 @@ impl App {
             }
         }
 
-        while start > 0
+        while start > first_cell_index
             && cell_displays
                 .front()
                 .is_some_and(|display| display.is_stream_continuation)
