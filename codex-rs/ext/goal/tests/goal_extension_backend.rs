@@ -739,7 +739,9 @@ async fn create_goal_plan_echoes_full_objective_up_to_configured_cap() -> anyhow
             .count(),
         codex_core::config::DEFAULT_GOAL_PLAN_NODE_OBJECTIVE_CHARS
     );
-    assert_eq!(nodes[0]["objectiveTruncated"], false);
+    // `objective_truncated` is skipped when false, so an untruncated objective
+    // simply omits the flag (never reports `true`).
+    assert_ne!(nodes[0]["objectiveTruncated"], serde_json::json!(true));
     Ok(())
 }
 
