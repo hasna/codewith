@@ -1144,7 +1144,8 @@ impl App {
         Ok(())
     }
 
-    /// Validates receiver thread ids referenced by a collab notification.
+    /// Validates receiver thread ids referenced by a collab notification and, for spawn
+    /// notifications, seeds hierarchical render metadata for the freshly spawned children.
     ///
     /// This intentionally avoids app-server reads on the active-thread rendering path. During large
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
@@ -1171,6 +1172,56 @@ impl App {
                 continue;
             }
         }
+
+        // A spawn notification is the authoritative moment we learn that each receiver thread is a
+        // freshly spawned child of the sender. `handle_thread_event_now` calls this immediately
+        // before the sibling `handle_server_notification` renders the "Spawned" row, so seeding the
+        // lineage edge and a hierarchical tree path here means the row shows `root/agent/sub_agent`
+        // (or the child's nickname once its own `ThreadStarted` has landed) instead of a raw
+        // 8-character short id. Without this the row falls back to a short id, which additionally
+        // collides across siblings spawned within the same ~65s UUIDv7 timestamp window.
+        if let Some((sender_thread_id, spawn_receiver_thread_ids)) =
+            collab_spawn_lineage(notification)
+            && let Ok(parent_thread_id) = ThreadId::from_string(sender_thread_id)
+        {
+            for receiver_thread_id in spawn_receiver_thread_ids {
+                if collab_receiver_is_not_found(notification, receiver_thread_id) {
+                    continue;
+                }
+                let Ok(child_thread_id) = ThreadId::from_string(receiver_thread_id) else {
+                    continue;
+                };
+                self.seed_spawned_child_render_metadata(child_thread_id, parent_thread_id);
+            }
+        }
+    }
+
+    /// Records the authoritative spawn lineage edge for a freshly spawned child and refreshes the
+    /// `ChatWidget` render metadata so the "Spawned" row renders a hierarchical tree path instead of
+    /// a raw thread id.
+    ///
+    /// This deliberately records only the child -> parent edge and rendering metadata; it does not
+    /// call [`Self::upsert_agent_picker_thread`], so a receiver reference never fabricates an
+    /// `/agent` picker row before the child's own `ThreadStarted` confirms it. When that
+    /// `ThreadStarted` later lands it upgrades the resolution to the authoritative agent path and
+    /// nickname.
+    fn seed_spawned_child_render_metadata(
+        &mut self,
+        child_thread_id: ThreadId,
+        parent_thread_id: ThreadId,
+    ) {
+        self.agent_navigation
+            .set_parent(child_thread_id, parent_thread_id);
+        let tree_path = self.agent_tree_path(child_thread_id);
+        let existing = self.agent_navigation.get(&child_thread_id);
+        let agent_nickname = existing.and_then(|entry| entry.agent_nickname.clone());
+        let agent_role = existing.and_then(|entry| entry.agent_role.clone());
+        self.chat_widget.set_collab_agent_metadata(
+            child_thread_id,
+            agent_nickname,
+            agent_role,
+            Some(tree_path),
+        );
     }
 
     pub(super) async fn infer_session_for_thread_notification(

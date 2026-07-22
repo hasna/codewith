@@ -960,6 +960,111 @@ mod tests {
         );
     }
 
+    /// Builds a completed spawn row for the given child receiver and its cached render metadata,
+    /// exercising exactly the agent-label rendering the live "Spawned" row uses.
+    fn spawn_row(receiver: ThreadId, metadata: AgentMetadata) -> PlainHistoryCell {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-spawn".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver.to_string()],
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::from([(
+                    receiver.to_string(),
+                    agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
+                )]),
+            },
+            /*cached_spawn_request*/ None,
+            |thread_id| {
+                if thread_id == receiver {
+                    metadata.clone()
+                } else {
+                    AgentMetadata::default()
+                }
+            },
+        )
+        .expect("spawn row renders")
+    }
+
+    #[test]
+    fn spawn_cell_renders_tree_path_instead_of_uuid() {
+        let receiver = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
+            .expect("valid receiver thread id");
+        let cell = spawn_row(
+            receiver,
+            AgentMetadata {
+                agent_nickname: None,
+                agent_role: None,
+                tree_path: Some("root/backend_audit/db_check".to_string()),
+            },
+        );
+
+        let text = cell_to_text(&cell);
+        assert!(
+            text.starts_with("• Spawned root/backend_audit/db_check"),
+            "expected hierarchical tree path in the spawn row, got: {text}"
+        );
+        // The model/effort annotation from the spawn request is preserved.
+        assert!(
+            text.contains("(gpt-5 high)"),
+            "expected the spawn request model annotation, got: {text}"
+        );
+        assert!(
+            !text.contains("019f8894"),
+            "spawn row must render the path, not a short/raw thread id, got: {text}"
+        );
+        assert!(
+            !text.contains(&receiver.to_string()),
+            "must not leak the full receiver UUID, got: {text}"
+        );
+    }
+
+    #[test]
+    fn spawn_cell_renders_distinct_paths_for_distinct_children() {
+        // Two siblings spawned inside the same ~65s window share an 8-char UUIDv7 prefix, so the
+        // short-id fallback would render an identical label for both. A resolved tree path keeps
+        // them distinct.
+        let first = ThreadId::from_string("019f8894-89dc-70f2-ad8e-d74deba8ed9b")
+            .expect("valid first thread id");
+        let second = ThreadId::from_string("019f8894-89dc-70f2-ad8e-000000000002")
+            .expect("valid second thread id");
+        assert_eq!(
+            short_thread_id(first),
+            short_thread_id(second),
+            "sibling short ids are expected to collide, which is why the path matters"
+        );
+
+        let first_text = cell_to_text(&spawn_row(
+            first,
+            AgentMetadata {
+                agent_nickname: None,
+                agent_role: None,
+                tree_path: Some("root/reviewer".to_string()),
+            },
+        ));
+        let second_text = cell_to_text(&spawn_row(
+            second,
+            AgentMetadata {
+                agent_nickname: None,
+                agent_role: None,
+                tree_path: Some("root/explorer".to_string()),
+            },
+        ));
+
+        assert!(first_text.starts_with("• Spawned root/reviewer"));
+        assert!(second_text.starts_with("• Spawned root/explorer"));
+        assert_ne!(
+            first_text, second_text,
+            "distinct children must render distinct spawn rows"
+        );
+    }
+
     fn agent_state(status: CollabAgentStatus, message: Option<&str>) -> CollabAgentState {
         CollabAgentState {
             status,

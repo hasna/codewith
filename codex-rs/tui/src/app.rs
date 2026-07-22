@@ -308,6 +308,30 @@ fn collab_receiver_is_not_found(
     }
 }
 
+/// Extracts the `(sender_thread_id, receiver_thread_ids)` lineage from a **spawn** collab tool call.
+///
+/// Only `SpawnAgent` notifications establish authoritative parent -> child lineage: the sender is
+/// the parent of every freshly spawned receiver, and the receiver ids are the newly created child
+/// threads. Other collab tools (`Wait`, `SendInput`, `ResumeAgent`, `CloseAgent`) merely reference
+/// pre-existing agents, so their sender is *not* the receivers' parent and must never be treated as
+/// a spawn edge.
+fn collab_spawn_lineage(notification: &ServerNotification) -> Option<(&str, &[String])> {
+    let item = match notification {
+        ServerNotification::ItemStarted(notification) => &notification.item,
+        ServerNotification::ItemCompleted(notification) => &notification.item,
+        _ => return None,
+    };
+    match item {
+        ThreadItem::CollabAgentToolCall {
+            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+            sender_thread_id,
+            receiver_thread_ids,
+            ..
+        } => Some((sender_thread_id.as_str(), receiver_thread_ids.as_slice())),
+        _ => None,
+    }
+}
+
 fn default_exec_approval_decisions(
     network_approval_context: Option<&codex_app_server_protocol::NetworkApprovalContext>,
     proposed_execpolicy_amendment: Option<&codex_app_server_protocol::ExecPolicyAmendment>,
