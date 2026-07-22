@@ -9,10 +9,11 @@ const ANNOUNCEMENT_TIP_URL: &str =
 const IS_MACOS: bool = cfg!(target_os = "macos");
 const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
-const APP_TOOLTIP: &str = "Try the **Codewith App**. Run 'codewith app' or visit https://chatgpt.com/codex?app-landing-page=true";
+const APP_TOOLTIP: &str =
+    "Try the **Codewith App**. Run 'codewith app' or visit https://github.com/hasna/codewith";
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
-const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codewith App**. Run 'codewith app' or visit https://chatgpt.com/codex?app-landing-page=true";
+const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codewith App**. Run 'codewith app' or visit https://github.com/hasna/codewith";
 const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codewith.";
 const FREE_GO_TOOLTIP: &str =
     "*New* For a limited time, Codewith is included in your plan for free – let’s build together.";
@@ -569,5 +570,30 @@ target_oses = ["amiga"]
             Some("all operating systems".to_string()),
             parse_announcement_tip_toml(toml, /*plan*/ None)
         );
+    }
+
+    #[test]
+    fn tooltips_contain_no_provider_marketing_urls() {
+        // De-branding guard: Codewith startup tips (the promo constants plus the
+        // bundled `tooltips.txt`) must never point users at OpenAI/ChatGPT
+        // marketing destinations. Our announcements come only from our own
+        // announcement channel and these bundled tips.
+        let mut tips: Vec<&str> = vec![
+            APP_TOOLTIP,
+            FAST_TOOLTIP,
+            OTHER_TOOLTIP,
+            OTHER_TOOLTIP_NON_MAC,
+            FREE_GO_TOOLTIP,
+        ];
+        tips.extend(RAW_TOOLTIPS.lines());
+
+        for tip in tips {
+            for needle in ["openai.com", "chatgpt.com"] {
+                assert!(
+                    !tip.contains(needle),
+                    "tooltip must not contain provider marketing URL {needle:?}: {tip:?}"
+                );
+            }
+        }
     }
 }

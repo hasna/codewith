@@ -14,7 +14,7 @@ Use /mcp to list configured MCP tools.
 Run `codewith app` to open Codewith Desktop (it installs on macOS if needed).
 Use /personality to customize how Codewith communicates.
 Use /rename to rename your threads for easier thread resuming.
-Use the OpenAI docs MCP for API questions; enable it with `codewith mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp`.
+Add MCP servers to extend Codewith with `codewith mcp add <name> --url <url>`.
 Visit the Codewith repository: https://github.com/hasna/codewith
 Use /feedback to share Codewith issues with Hasna maintainers.
 You can run any shell command from Codewith using `!` (e.g. `!ls`)
