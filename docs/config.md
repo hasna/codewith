@@ -67,8 +67,8 @@ goal-plan node objective Codewith echoes back to the model (in `create_goal_plan
 tool responses, plan events, and completion reports). Larger values let a full,
 detailed objective show without being clipped.
 
-| Key                                 | Default | Behavior                                                                                                    |
-| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| Key                                  | Default | Behavior                                                                                                       |
+| ------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------- |
 | `max_goal_plan_node_objective_chars` | `4000`  | Max characters of a goal-plan node objective echoed to the model (~600 words). Clamped to a ceiling of `8000`. |
 
 ```toml
