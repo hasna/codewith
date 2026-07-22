@@ -1,11 +1,13 @@
 //! Auth profile picker for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::rate_limits::get_limits_duration;
 use crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::format_status_limit_summary;
 use codex_login::AuthProfile;
+use codex_login::AuthProfileLoginMethod;
 use codex_login::AuthProfileMetadata;
 use codex_login::AuthProfileMoveDirection;
 use codex_login::AuthProfileSubscriptionProvider;
@@ -113,7 +115,11 @@ impl ChatWidget {
         };
 
         let current = self.config.selected_auth_profile.as_deref();
-        let params = self.profile_selection_view_params(profiles, current, Some(selected_idx));
+        let mut params = self.profile_selection_view_params(profiles, current, Some(selected_idx));
+        // This is an in-place refresh (e.g. a usage heartbeat landing), so honor
+        // the user's current cursor instead of snapping back to the active
+        // profile row (Bug B).
+        params.prefer_initial_over_current = true;
         self.bottom_pane
             .replace_selection_view_if_active(AUTH_PROFILE_POPUP_VIEW_ID, params)
     }
@@ -161,9 +167,8 @@ impl ChatWidget {
         current: Option<&str>,
     ) -> SelectionItem {
         let profile_name = profile.name.clone();
-        let usage_hint = self.auth_profile_usage_hint(Some(profile.name.as_str()));
         let description = Some(auth_profile_description(&profile));
-        let selected_description = Some(usage_hint);
+        let selected_description = Some(self.named_auth_profile_detail(&profile));
         let reset_generation = self.rate_limit_reset_generation;
         let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::SwitchAuthProfile {
@@ -344,25 +349,140 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
+    /// Step 1 of the login chooser: pick a provider. The list is derived from
+    /// [`AuthProfileSubscriptionProvider::ALL`] so every provider (including
+    /// Claude.ai) is offered without a hardcoded UI list.
     pub(crate) fn open_auth_profile_login_prompt(&mut self, reset_generation: u64) {
         let mut header = ColumnRenderable::new();
-        header.push(Line::from("Choose subscription".bold()));
+        header.push(Line::from("Choose provider".bold()));
         header.push(Line::from(
-            "Create a profile tied to one provider subscription.".dim(),
+            "Pick who this profile signs in with; you'll choose a login method next.".dim(),
         ));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(standard_popup_hint_line()),
             header: Box::new(header),
-            items: auth_profile_subscription_provider_items(reset_generation),
+            items: self.auth_profile_subscription_provider_items(reset_generation),
             initial_selected_idx: Some(0),
             ..Default::default()
         });
     }
 
+    /// Step 2 of the login chooser: pick a login method for the chosen provider.
+    /// Only methods the provider supports (and that config permits via
+    /// `forced_login_method`) are shown. If exactly one method applies this is
+    /// never reached — the provider item skips straight to the name prompt.
+    pub(crate) fn open_auth_profile_method_prompt(
+        &mut self,
+        subscription_provider: AuthProfileSubscriptionProvider,
+        reset_generation: u64,
+    ) {
+        let methods = self.allowed_login_methods(subscription_provider);
+        if methods.len() <= 1 {
+            // Nothing to choose between — go straight to naming the profile.
+            let method = methods
+                .first()
+                .copied()
+                .unwrap_or(AuthProfileLoginMethod::SubscriptionLogin);
+            self.open_auth_profile_name_prompt(subscription_provider, method, reset_generation);
+            return;
+        }
+
+        let mut header = ColumnRenderable::new();
+        header.push(Line::from("Choose login method".bold()));
+        header.push(Line::from(
+            format!("Sign-in methods for {}.", subscription_provider.label()).dim(),
+        ));
+
+        let items = methods
+            .into_iter()
+            .map(|method| {
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAuthProfileNamePrompt {
+                        subscription_provider,
+                        login_method: method,
+                        reset_generation,
+                    });
+                })];
+                SelectionItem {
+                    name: method.label().to_string(),
+                    description: Some(method.description().to_string()),
+                    actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            header: Box::new(header),
+            items,
+            initial_selected_idx: Some(0),
+            ..Default::default()
+        });
+    }
+
+    /// The provider chooser items, derived from the provider capability model.
+    fn auth_profile_subscription_provider_items(
+        &self,
+        reset_generation: u64,
+    ) -> Vec<SelectionItem> {
+        AuthProfileSubscriptionProvider::ALL
+            .into_iter()
+            .map(|subscription_provider| {
+                // Decide up front whether this provider needs a method chooser:
+                // a single applicable method skips straight to the name prompt.
+                let methods = self.allowed_login_methods(subscription_provider);
+                let single_method = (methods.len() == 1).then(|| methods[0]);
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    if let Some(method) = single_method {
+                        tx.send(AppEvent::OpenAuthProfileNamePrompt {
+                            subscription_provider,
+                            login_method: method,
+                            reset_generation,
+                        });
+                    } else {
+                        tx.send(AppEvent::OpenAuthProfileMethodPrompt {
+                            subscription_provider,
+                            reset_generation,
+                        });
+                    }
+                })];
+                SelectionItem {
+                    name: subscription_provider.label().to_string(),
+                    description: Some(subscription_provider.description().to_string()),
+                    selected_description: Some(format!(
+                        "Create a profile tied to {}.",
+                        subscription_provider.label()
+                    )),
+                    actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+
+    /// The provider's supported login methods, filtered by any
+    /// `forced_login_method` restriction from config.
+    fn allowed_login_methods(
+        &self,
+        subscription_provider: AuthProfileSubscriptionProvider,
+    ) -> Vec<AuthProfileLoginMethod> {
+        let forced = self.config.forced_login_method;
+        subscription_provider
+            .supported_login_methods()
+            .iter()
+            .copied()
+            .filter(|method| login_method_allowed(*method, forced))
+            .collect()
+    }
+
     pub(crate) fn open_auth_profile_name_prompt(
         &mut self,
         subscription_provider: AuthProfileSubscriptionProvider,
+        login_method: AuthProfileLoginMethod,
         reset_generation: u64,
     ) {
         let tx = self.app_event_tx.clone();
@@ -376,6 +496,7 @@ impl ChatWidget {
                 tx.send(AppEvent::LoginNewAuthProfile {
                     profile: profile.trim().to_string(),
                     subscription_provider,
+                    login_method,
                     reset_generation,
                 });
             }),
@@ -548,6 +669,7 @@ impl ChatWidget {
         &mut self,
         profile: String,
         subscription_provider: AuthProfileSubscriptionProvider,
+        login_method: AuthProfileLoginMethod,
         reset_generation: u64,
     ) {
         if let Err(err) = codex_login::validate_auth_profile_name(&profile) {
@@ -555,16 +677,24 @@ impl ChatWidget {
             return;
         }
 
-        if subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
-            && matches!(
-                self.config.forced_login_method,
-                Some(ForcedLoginMethod::Api)
-            )
-        {
-            self.add_error_message(
-                "ChatGPT browser login is disabled. Use `codewith login --auth-profile <name> --with-api-key` for this profile.".to_string(),
-            );
-            return;
+        match (login_method, self.config.forced_login_method) {
+            (
+                AuthProfileLoginMethod::ChatgptBrowser | AuthProfileLoginMethod::ChatgptDeviceCode,
+                Some(ForcedLoginMethod::Api),
+            ) => {
+                self.add_error_message(format!(
+                    "ChatGPT browser login is disabled. Use `codewith login --auth-profile {profile} --with-api-key` for this profile."
+                ));
+                return;
+            }
+            (AuthProfileLoginMethod::ApiKey, Some(ForcedLoginMethod::Chatgpt)) => {
+                self.add_error_message(
+                    "API key login is disabled for this configuration; use ChatGPT sign-in instead."
+                        .to_string(),
+                );
+                return;
+            }
+            _ => {}
         }
 
         match list_auth_profiles(
@@ -595,14 +725,38 @@ impl ChatWidget {
             return;
         }
 
-        if subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
-            self.app_event_tx.send(AppEvent::AuthProfileLoginCompleted {
-                profile,
-                success: true,
-                error: None,
-                reset_generation,
-            });
-            return;
+        match login_method {
+            // Falls through to the in-session browser OAuth flow below.
+            AuthProfileLoginMethod::ChatgptBrowser => {}
+            // External subscription providers have no in-app flow: the metadata
+            // profile is enough for them to use their own login.
+            AuthProfileLoginMethod::SubscriptionLogin => {
+                self.app_event_tx.send(AppEvent::AuthProfileLoginCompleted {
+                    profile,
+                    success: true,
+                    error: None,
+                    reset_generation,
+                });
+                return;
+            }
+            // Device-code and API-key sign-in are completed out-of-band via the
+            // CLI (device code needs a second device; API keys must never be
+            // typed into the TUI). We create the profile and hand off the exact
+            // command that finishes it.
+            AuthProfileLoginMethod::ChatgptDeviceCode | AuthProfileLoginMethod::ApiKey => {
+                let cli_flag = match login_method {
+                    AuthProfileLoginMethod::ApiKey => "--with-api-key",
+                    _ => "--with-device-code",
+                };
+                self.add_info_message(
+                    format!(
+                        "Auth profile `{profile}` created. Finish {} sign-in with: codewith login --auth-profile {profile} {cli_flag}",
+                        login_method.label().to_lowercase(),
+                    ),
+                    /*hint*/ None,
+                );
+                return;
+            }
         }
 
         let auth_profile_home =
@@ -669,6 +823,32 @@ impl ChatWidget {
         });
     }
 
+    /// Detail line shown when a named profile is highlighted: its subscription
+    /// provider plus the weekly usage remaining. Never shows the account email.
+    /// Falls back to a loading placeholder (keeping the provider visible) until
+    /// the weekly rate-limit data is available.
+    fn named_auth_profile_detail(&self, profile: &AuthProfile) -> String {
+        let provider = profile.subscription_provider.label();
+        match self.auth_profile_weekly_usage_remaining(Some(profile.name.as_str())) {
+            Some(remaining) => {
+                format!(
+                    "{provider} · weekly {}",
+                    format_status_limit_summary(remaining)
+                )
+            }
+            None => format!("{provider} · usage loading…"),
+        }
+    }
+
+    /// Percent of the weekly usage window still remaining for `profile`, if the
+    /// weekly window has been observed in a rate-limit snapshot.
+    fn auth_profile_weekly_usage_remaining(&self, profile: Option<&str>) -> Option<f64> {
+        let snapshots = self.auth_profile_usage_snapshots(profile)?;
+        let snapshot = usage_snapshot_with_windows(snapshots)?;
+        let window = weekly_usage_window(snapshot)?;
+        Some((100.0 - window.used_percent).clamp(0.0, 100.0))
+    }
+
     fn auth_profile_usage_hint(&self, profile: Option<&str>) -> String {
         let Some(snapshots) = self.auth_profile_usage_snapshots(profile) else {
             return "usage unknown".to_string();
@@ -692,45 +872,20 @@ impl ChatWidget {
     }
 }
 
-fn auth_profile_subscription_provider_items(reset_generation: u64) -> Vec<SelectionItem> {
-    [
+/// Whether a login method is usable given a `forced_login_method` restriction.
+/// The restriction only constrains ChatGPT sign-in (browser/device-code vs API
+/// key); external subscription logins are unaffected.
+fn login_method_allowed(method: AuthProfileLoginMethod, forced: Option<ForcedLoginMethod>) -> bool {
+    !matches!(
+        (method, forced),
         (
-            AuthProfileSubscriptionProvider::ChatGpt,
-            "ChatGPT",
-            "Use Codewith browser login with your ChatGPT plan.",
-        ),
-        (
-            AuthProfileSubscriptionProvider::Cursor,
-            "Cursor",
-            "Tie this profile to your Cursor subscription login.",
-        ),
-        (
-            AuthProfileSubscriptionProvider::Grok,
-            "Grok",
-            "Tie this profile to your Grok subscription login.",
-        ),
-    ]
-    .into_iter()
-    .map(|(subscription_provider, name, description)| {
-        let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-            tx.send(AppEvent::OpenAuthProfileNamePrompt {
-                subscription_provider,
-                reset_generation,
-            });
-        })];
-        SelectionItem {
-            name: name.to_string(),
-            description: Some(description.to_string()),
-            selected_description: Some(format!(
-                "Create a profile tied to {}.",
-                subscription_provider.label()
-            )),
-            actions,
-            dismiss_on_select: true,
-            ..Default::default()
-        }
-    })
-    .collect()
+            AuthProfileLoginMethod::ChatgptBrowser | AuthProfileLoginMethod::ChatgptDeviceCode,
+            Some(ForcedLoginMethod::Api),
+        ) | (
+            AuthProfileLoginMethod::ApiKey,
+            Some(ForcedLoginMethod::Chatgpt)
+        )
+    )
 }
 
 fn cleanup_auth_profile_login(
@@ -741,6 +896,8 @@ fn cleanup_auth_profile_login(
     let _ = delete_auth_profile(codex_home, auth_credentials_store_mode, profile);
 }
 
+/// The always-visible sub-line for a profile row: its subscription provider and
+/// plan/auth-mode. The account email is intentionally omitted from the picker.
 fn auth_profile_description(profile: &AuthProfile) -> String {
     let mut account = profile.subscription_provider.to_string();
     if let Some(plan) = &profile.plan {
@@ -750,11 +907,7 @@ fn auth_profile_description(profile: &AuthProfile) -> String {
         account.push(' ');
         account.push_str(auth_profile_auth_mode_label(auth_mode));
     }
-    let mut parts = vec![account];
-    if let Some(email) = &profile.email {
-        parts.push(email.clone());
-    }
-    parts.join(" / ")
+    account
 }
 
 fn auth_profile_auth_mode_label(auth_mode: codex_app_server_protocol::AuthMode) -> &'static str {
@@ -862,6 +1015,23 @@ fn usage_snapshot_with_windows(
 
 fn usage_snapshot_has_windows(snapshot: &RateLimitSnapshotDisplay) -> bool {
     snapshot.primary.is_some() || snapshot.secondary.is_some()
+}
+
+/// The weekly usage window from a snapshot, identified by its window length
+/// (rather than assuming primary/secondary ordering).
+fn weekly_usage_window(snapshot: &RateLimitSnapshotDisplay) -> Option<&RateLimitWindowDisplay> {
+    [snapshot.primary.as_ref(), snapshot.secondary.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|window| is_weekly_usage_window(window))
+}
+
+fn is_weekly_usage_window(window: &RateLimitWindowDisplay) -> bool {
+    window
+        .window_minutes
+        .and_then(get_limits_duration)
+        .as_deref()
+        == Some(crate::legacy_core::usage_profile_health::WEEKLY_LIMIT_LABEL)
 }
 
 fn compact_usage_hint_for_window(window: &RateLimitWindowDisplay, is_secondary: bool) -> String {

@@ -798,3 +798,103 @@ fn rename_and_remove_auth_profiles_update_manual_order() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn all_subscription_providers_are_listed_in_display_order() {
+    // The chooser derives its provider list from `ALL`; it must cover every
+    // enum variant so no provider (e.g. Claude.ai) is silently dropped.
+    assert_eq!(
+        AuthProfileSubscriptionProvider::ALL,
+        [
+            AuthProfileSubscriptionProvider::ChatGpt,
+            AuthProfileSubscriptionProvider::ClaudeAi,
+            AuthProfileSubscriptionProvider::Cursor,
+            AuthProfileSubscriptionProvider::Grok,
+        ]
+    );
+
+    // Exhaustiveness guard: every variant must appear in `ALL`. If a new
+    // variant is added without updating `ALL`, this match fails to compile.
+    for provider in AuthProfileSubscriptionProvider::ALL {
+        match provider {
+            AuthProfileSubscriptionProvider::ChatGpt
+            | AuthProfileSubscriptionProvider::ClaudeAi
+            | AuthProfileSubscriptionProvider::Cursor
+            | AuthProfileSubscriptionProvider::Grok => {}
+        }
+    }
+}
+
+#[test]
+fn every_provider_exposes_at_least_one_login_method() {
+    for provider in AuthProfileSubscriptionProvider::ALL {
+        assert!(
+            !provider.supported_login_methods().is_empty(),
+            "{provider:?} must support at least one login method"
+        );
+        assert!(!provider.label().is_empty());
+        assert!(!provider.description().is_empty());
+    }
+}
+
+#[test]
+fn chatgpt_supports_all_three_login_methods() {
+    assert_eq!(
+        AuthProfileSubscriptionProvider::ChatGpt.supported_login_methods(),
+        &[
+            AuthProfileLoginMethod::ChatgptBrowser,
+            AuthProfileLoginMethod::ChatgptDeviceCode,
+            AuthProfileLoginMethod::ApiKey,
+        ]
+    );
+}
+
+#[test]
+fn external_subscription_providers_expose_only_subscription_login() {
+    for provider in [
+        AuthProfileSubscriptionProvider::ClaudeAi,
+        AuthProfileSubscriptionProvider::Cursor,
+        AuthProfileSubscriptionProvider::Grok,
+    ] {
+        assert_eq!(
+            provider.supported_login_methods(),
+            &[AuthProfileLoginMethod::SubscriptionLogin],
+            "{provider:?} should expose only its external subscription login"
+        );
+    }
+}
+
+#[test]
+fn login_methods_have_labels_and_descriptions() {
+    for method in [
+        AuthProfileLoginMethod::ChatgptBrowser,
+        AuthProfileLoginMethod::ChatgptDeviceCode,
+        AuthProfileLoginMethod::ApiKey,
+        AuthProfileLoginMethod::SubscriptionLogin,
+    ] {
+        assert!(!method.label().is_empty());
+        assert!(!method.description().is_empty());
+    }
+}
+
+#[test]
+fn auth_profile_exists_reflects_saved_profiles() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+
+    assert!(!auth_profile_exists(codex_home.path(), "work"));
+    // Malformed names are simply "not found" (so callers can offer to create).
+    assert!(!auth_profile_exists(codex_home.path(), "nested/work"));
+
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &auth_with_key("work-key"),
+    )
+    .expect("save auth profile");
+
+    assert!(auth_profile_exists(codex_home.path(), "work"));
+    assert!(!auth_profile_exists(codex_home.path(), "personal"));
+
+    Ok(())
+}

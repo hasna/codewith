@@ -5127,13 +5127,19 @@ fn profile_popup_workflow_events(reset_generation: u64) -> Vec<AppEvent> {
             reset_generation,
         },
         AppEvent::OpenAuthProfileLoginPrompt { reset_generation },
+        AppEvent::OpenAuthProfileMethodPrompt {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            reset_generation,
+        },
         AppEvent::OpenAuthProfileNamePrompt {
             subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            login_method: codex_login::AuthProfileLoginMethod::ChatgptBrowser,
             reset_generation,
         },
         AppEvent::LoginNewAuthProfile {
             profile: profile.clone(),
             subscription_provider: codex_login::AuthProfileSubscriptionProvider::ChatGpt,
+            login_method: codex_login::AuthProfileLoginMethod::ChatgptBrowser,
             reset_generation,
         },
         AppEvent::AuthProfileLoginCompleted {

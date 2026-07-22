@@ -1690,21 +1690,34 @@ impl App {
                 self.chat_widget
                     .open_auth_profile_login_prompt(reset_generation);
             }
-            AppEvent::OpenAuthProfileNamePrompt {
+            AppEvent::OpenAuthProfileMethodPrompt {
                 subscription_provider,
                 reset_generation,
             } => {
                 self.chat_widget
-                    .open_auth_profile_name_prompt(subscription_provider, reset_generation);
+                    .open_auth_profile_method_prompt(subscription_provider, reset_generation);
+            }
+            AppEvent::OpenAuthProfileNamePrompt {
+                subscription_provider,
+                login_method,
+                reset_generation,
+            } => {
+                self.chat_widget.open_auth_profile_name_prompt(
+                    subscription_provider,
+                    login_method,
+                    reset_generation,
+                );
             }
             AppEvent::LoginNewAuthProfile {
                 profile,
                 subscription_provider,
+                login_method,
                 reset_generation,
             } => {
                 self.chat_widget.start_auth_profile_login(
                     profile,
                     subscription_provider,
+                    login_method,
                     reset_generation,
                 );
             }

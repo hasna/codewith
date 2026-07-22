@@ -6,7 +6,7 @@ expression: popup
   Switch auth for this session.
 
   1. default             Root login
-› 2. personal            stale weekly 60% left, 5h 30% left
+› 2. personal            ChatGPT · weekly 60% left
   3. work (current)      ChatGPT API key
   4. Log in new profile  Create a saved auth profile
 

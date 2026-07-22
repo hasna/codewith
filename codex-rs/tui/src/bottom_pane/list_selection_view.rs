@@ -184,6 +184,13 @@ pub(crate) struct SelectionViewParams {
     pub header: Box<dyn Renderable>,
     pub initial_selected_idx: Option<usize>,
 
+    /// When set, `initial_selected_idx` takes precedence over the `is_current`
+    /// row for the initial highlight. Used when rebuilding a live view in place
+    /// (e.g. an in-place data refresh) so the caller's cursor is honored instead
+    /// of snapping back to the current row. Defaults to the historic behavior
+    /// (`is_current` wins) for a first open.
+    pub prefer_initial_over_current: bool,
+
     /// Rich content rendered beside (wide terminals) or below (narrow terminals)
     /// the list items, inside the bordered menu surface. Used by the theme picker
     /// to show a syntax-highlighted preview.
@@ -230,6 +237,7 @@ impl Default for SelectionViewParams {
             name_column_width: None,
             header: Box::new(()),
             initial_selected_idx: None,
+            prefer_initial_over_current: false,
             side_content: Box::new(()),
             side_content_width: SideContentWidth::default(),
             side_content_min_width: 0,
@@ -268,6 +276,7 @@ pub(crate) struct ListSelectionView {
     last_selected_actual_idx: Option<usize>,
     header: Box<dyn Renderable>,
     initial_selected_idx: Option<usize>,
+    prefer_initial_over_current: bool,
     side_content: Box<dyn Renderable>,
     side_content_width: SideContentWidth,
     side_content_min_width: u16,
@@ -343,6 +352,7 @@ impl ListSelectionView {
             last_selected_actual_idx: None,
             header,
             initial_selected_idx: params.initial_selected_idx,
+            prefer_initial_over_current: params.prefer_initial_over_current,
             side_content: params.side_content,
             side_content_width: params.side_content_width,
             side_content_min_width: params.side_content_min_width,
@@ -417,23 +427,31 @@ impl ListSelectionView {
     }
 
     fn apply_filter(&mut self) {
-        let previously_selected = self
+        // Live cursor (if still on an enabled row) always wins.
+        let live_cursor = self
             .selected_actual_idx()
-            .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some())
-            .or_else(|| {
-                (!self.is_searchable)
-                    .then(|| {
-                        self.active_items()
-                            .iter()
-                            .position(|item| item.is_current && Self::item_is_enabled(item))
-                    })
-                    .flatten()
+            .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some());
+        // The current row and the explicit initial index are the two defaults.
+        let is_current_idx = (!self.is_searchable)
+            .then(|| {
+                self.active_items()
+                    .iter()
+                    .position(|item| item.is_current && Self::item_is_enabled(item))
             })
-            .or_else(|| {
-                self.initial_selected_idx
-                    .take()
-                    .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some())
-            });
+            .flatten();
+        let initial_idx = self
+            .initial_selected_idx
+            .take()
+            .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some());
+        // Normally `is_current` wins; when the caller opts in (e.g. an in-place
+        // refresh) an explicit `initial_selected_idx` wins so the cursor stays
+        // put instead of snapping back to the current row.
+        let default_selected = if self.prefer_initial_over_current {
+            initial_idx.or(is_current_idx)
+        } else {
+            is_current_idx.or(initial_idx)
+        };
+        let previously_selected = live_cursor.or(default_selected);
 
         if self.is_searchable && !self.search_query.is_empty() {
             let query_lower = self.search_query.to_lowercase();

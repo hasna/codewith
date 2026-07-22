@@ -647,7 +647,7 @@ pub(crate) struct ChatWidget {
     manual_rate_limit_reset_authority: Option<ManualRateLimitResetAuthority>,
     rate_limit_reset_in_flight: Option<RateLimitResetAttempt>,
     rate_limit_reset_retry: Option<RateLimitResetAttempt>,
-    rate_limit_reset_generation: u64,
+    pub(crate) rate_limit_reset_generation: u64,
     pending_rate_limit_reset_picker: Option<u64>,
     pending_usage_limit_auto_reset_check: Option<u64>,
     pending_post_reset_refresh: Option<RateLimitResetAttempt>,

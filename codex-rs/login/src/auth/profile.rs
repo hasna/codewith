@@ -52,12 +52,83 @@ pub enum AuthProfileSubscriptionProvider {
 }
 
 impl AuthProfileSubscriptionProvider {
+    /// Every subscription provider a user can create an auth profile for, in
+    /// display order. This is the single source of truth for the provider
+    /// chooser: add a variant to the enum and to this array and it shows up in
+    /// every picker automatically (no per-UI hardcoded provider lists).
+    pub const ALL: [Self; 4] = [Self::ChatGpt, Self::ClaudeAi, Self::Cursor, Self::Grok];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::ChatGpt => "ChatGPT",
             Self::ClaudeAi => "Claude.ai",
             Self::Cursor => "Cursor",
             Self::Grok => "Grok",
+        }
+    }
+
+    /// One-line blurb shown beneath the provider name in the chooser.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ChatGpt => "Use Codewith browser login with your ChatGPT plan.",
+            Self::ClaudeAi => "Tie this profile to your Claude.ai (Anthropic) subscription login.",
+            Self::Cursor => "Tie this profile to your Cursor subscription login.",
+            Self::Grok => "Tie this profile to your Grok subscription login.",
+        }
+    }
+
+    /// The login methods this provider supports, in display order. The
+    /// per-provider method chooser derives its options from this list; callers
+    /// may filter it further by a `forced_login_method` restriction. Keeping the
+    /// capability here (rather than in the UI) means every entry point offers
+    /// the same, provider-accurate set of methods.
+    pub fn supported_login_methods(self) -> &'static [AuthProfileLoginMethod] {
+        match self {
+            Self::ChatGpt => &[
+                AuthProfileLoginMethod::ChatgptBrowser,
+                AuthProfileLoginMethod::ChatgptDeviceCode,
+                AuthProfileLoginMethod::ApiKey,
+            ],
+            Self::ClaudeAi | Self::Cursor | Self::Grok => {
+                &[AuthProfileLoginMethod::SubscriptionLogin]
+            }
+        }
+    }
+}
+
+/// A concrete way to authenticate a new auth profile. Which methods apply is
+/// provider-specific — see
+/// [`AuthProfileSubscriptionProvider::supported_login_methods`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthProfileLoginMethod {
+    /// ChatGPT OAuth completed in a local browser via the login server.
+    ChatgptBrowser,
+    /// ChatGPT OAuth via a short device code (headless / no local browser).
+    ChatgptDeviceCode,
+    /// Provider API key. Entered out-of-band through the `codewith login` CLI so
+    /// the secret never passes through the TUI.
+    ApiKey,
+    /// The provider's own external subscription login (Claude.ai / Cursor / Grok).
+    SubscriptionLogin,
+}
+
+impl AuthProfileLoginMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ChatgptBrowser => "Browser sign-in",
+            Self::ChatgptDeviceCode => "Device code",
+            Self::ApiKey => "API key",
+            Self::SubscriptionLogin => "Subscription login",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ChatgptBrowser => "Open a browser and sign in with your ChatGPT account.",
+            Self::ChatgptDeviceCode => "Sign in on another device using a short code.",
+            Self::ApiKey => "Finish with an API key via the `codewith login` CLI.",
+            Self::SubscriptionLogin => "Use this provider's own subscription login.",
         }
     }
 }
@@ -488,6 +559,17 @@ pub fn ensure_auth_profile_storage_dir(
     let profile_dir = auth_profile_storage_dir(codex_home, name)?;
     create_private_dir_all(&profile_dir)?;
     Ok(profile_dir)
+}
+
+/// Whether a saved auth profile named `name` already exists on disk. Existence
+/// is defined by the profile directory (independent of credential store mode),
+/// matching what [`list_auth_profiles`] enumerates. A malformed name is treated
+/// as non-existent rather than an error so callers can offer to create it.
+pub fn auth_profile_exists(codex_home: &Path, name: &str) -> bool {
+    if validate_auth_profile_name(name).is_err() {
+        return false;
+    }
+    auth_profile_dir(codex_home, name).is_dir()
 }
 
 pub fn load_auth_profile_metadata(
