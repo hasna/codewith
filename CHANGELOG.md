@@ -42,6 +42,33 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.75] - 2026-07-22
+
+Tag: `rust-v0.1.75`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.75>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.74...rust-v0.1.75>
+
+Release headlined by two new model providers — Google Gemini (with Gemini 3.6
+Flash and 3.5 Flash-Lite) and xAI Grok 4.5 — paired with multi-agent TUI and
+session-resume fixes: the Spawned cell now renders the agent path instead of a
+raw, duplicated thread id, `wait_agent` cell spam collapses into a single
+compact completed-agents cell, and resuming a session reloads the running
+sub-agent subtree.
+
+### Added
+
+- Models: added a Google Gemini provider with the latest Gemini models (Gemini
+  3.6 Flash and Gemini 3.5 Flash-Lite). (#367)
+- Models: added xAI Grok 4.5 to the known-provider model catalog. (#368)
+
+### Fixed
+
+- TUI: render the agent path in the Spawned cell instead of a raw, duplicated
+  thread id. (#371)
+- TUI: stop `wait_agent` cell spam; keep a single compact completed-agents
+  cell. (#366)
+- Core: reload the running sub-agent subtree on session resume. (#370)
+
 ## [0.1.74] - 2026-07-22
 
 Tag: `rust-v0.1.74`
