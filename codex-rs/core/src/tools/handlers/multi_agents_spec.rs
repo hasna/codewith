@@ -176,7 +176,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
+        description: "Send a message to an existing agent; it is injected into the target agent's session and delivered promptly. Works parent-to-child, child-to-parent, and between peers. Does not trigger a new turn."
             .to_string(),
         strict: false,
         defer_loading: None,
