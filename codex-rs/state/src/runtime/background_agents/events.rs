@@ -58,6 +58,7 @@ WHERE id = ?
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::runtime) async fn append_background_agent_lifecycle_receipt_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
