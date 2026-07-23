@@ -63,6 +63,15 @@ pub struct ThreadScheduleNowClaimParams<'a> {
     pub local_active_fresh_after: Option<DateTime<Utc>>,
 }
 
+pub struct ThreadScheduleRunForGoalFinishParams<'a> {
+    pub schedule_id: &'a str,
+    pub run_id: &'a str,
+    pub lease_id: &'a str,
+    pub completed_at: DateTime<Utc>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub expected_goal_id: &'a str,
+}
+
 struct ScheduleNesting {
     parent_schedule_id: Option<String>,
     nesting_depth: i64,
@@ -574,24 +583,43 @@ WHERE parent_schedule_id = ?
         &self,
         run_id: &str,
     ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
-        let row = sqlx::query(
+        let sql = run_returning(
             r#"
 SELECT
-    run_id,
-    schedule_id,
-    thread_id,
-    status,
-    lease_id,
-    turn_id,
-    error,
-    scheduled_for_ms,
-    started_at_ms,
-    completed_at_ms
-FROM thread_schedule_runs
-WHERE run_id = ?
             "#,
-        )
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{sql}FROM thread_schedule_runs WHERE run_id = ?"
+        )))
         .bind(run_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(|row| thread_schedule_run_from_row(&row))
+            .transpose()
+    }
+
+    pub async fn get_running_thread_schedule_run_for_turn(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
+        let sql = run_returning(
+            r#"
+SELECT
+"#,
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            r#"{sql}
+FROM thread_schedule_runs
+WHERE thread_id = ?
+  AND turn_id = ?
+  AND status = 'running'
+ORDER BY started_at_ms DESC
+LIMIT 1
+"#
+        )))
+        .bind(thread_id.to_string())
+        .bind(turn_id)
         .fetch_optional(self.pool.as_ref())
         .await?;
         row.map(|row| thread_schedule_run_from_row(&row))
@@ -868,6 +896,7 @@ RETURNING
     status,
     lease_id,
     turn_id,
+    goal_id,
     error,
     scheduled_for_ms,
     started_at_ms,
@@ -893,10 +922,46 @@ RETURNING
         lease_id: &str,
         turn_id: &str,
     ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
+        self.mark_thread_schedule_run_started_with_goal(
+            schedule_id,
+            run_id,
+            lease_id,
+            turn_id,
+            /*goal_id*/ None,
+        )
+        .await
+    }
+
+    pub async fn mark_thread_schedule_run_started_for_goal(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        turn_id: &str,
+        goal_id: &str,
+    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
+        self.mark_thread_schedule_run_started_with_goal(
+            schedule_id,
+            run_id,
+            lease_id,
+            turn_id,
+            Some(goal_id),
+        )
+        .await
+    }
+
+    async fn mark_thread_schedule_run_started_with_goal(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        turn_id: &str,
+        goal_id: Option<&str>,
+    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
         let sql = run_returning(
             r#"
 UPDATE thread_schedule_runs
-SET status = ?, turn_id = ?
+SET status = ?, turn_id = ?, goal_id = ?
 WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
 RETURNING
 "#,
@@ -904,6 +969,7 @@ RETURNING
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(crate::ThreadScheduleRunStatus::Running.as_str())
             .bind(turn_id)
+            .bind(goal_id)
             .bind(schedule_id)
             .bind(run_id)
             .bind(lease_id)
@@ -945,40 +1011,43 @@ WHERE schedule_id = ? AND lease_id = ?
         completed_at: DateTime<Utc>,
         next_run_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
             next_run_at,
-            /*expected_goal_id*/ None,
-            FinishScheduleRun::Completed {
+            expected_goal_id: None,
+            finish: FinishScheduleRun::Completed {
                 pause_schedule: false,
             },
-        )
+        })
         .await
     }
 
     pub async fn complete_thread_schedule_run_for_goal(
         &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-        next_run_at: Option<DateTime<Utc>>,
-        expected_goal_id: &str,
+        params: ThreadScheduleRunForGoalFinishParams<'_>,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        let ThreadScheduleRunForGoalFinishParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
             next_run_at,
-            Some(expected_goal_id),
-            FinishScheduleRun::Completed {
+            expected_goal_id,
+        } = params;
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            next_run_at,
+            expected_goal_id: Some(expected_goal_id),
+            finish: FinishScheduleRun::Completed {
                 pause_schedule: false,
             },
-        )
+        })
         .await
     }
 
@@ -989,17 +1058,17 @@ WHERE schedule_id = ? AND lease_id = ?
         lease_id: &str,
         completed_at: DateTime<Utc>,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
-            /*next_run_at*/ None,
-            /*expected_goal_id*/ None,
-            FinishScheduleRun::Completed {
+            next_run_at: None,
+            expected_goal_id: None,
+            finish: FinishScheduleRun::Completed {
                 pause_schedule: true,
             },
-        )
+        })
         .await
     }
 
@@ -1012,43 +1081,46 @@ WHERE schedule_id = ? AND lease_id = ?
         next_run_at: Option<DateTime<Utc>>,
         error: String,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
             next_run_at,
-            /*expected_goal_id*/ None,
-            FinishScheduleRun::Failed {
+            expected_goal_id: None,
+            finish: FinishScheduleRun::Failed {
                 error,
                 pause_schedule: false,
             },
-        )
+        })
         .await
     }
 
     pub async fn fail_thread_schedule_run_for_goal(
         &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-        next_run_at: Option<DateTime<Utc>>,
+        params: ThreadScheduleRunForGoalFinishParams<'_>,
         error: String,
-        expected_goal_id: &str,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        let ThreadScheduleRunForGoalFinishParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
             next_run_at,
-            Some(expected_goal_id),
-            FinishScheduleRun::Failed {
+            expected_goal_id,
+        } = params;
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            next_run_at,
+            expected_goal_id: Some(expected_goal_id),
+            finish: FinishScheduleRun::Failed {
                 error,
                 pause_schedule: false,
             },
-        )
+        })
         .await
     }
 
@@ -1060,18 +1132,18 @@ WHERE schedule_id = ? AND lease_id = ?
         completed_at: DateTime<Utc>,
         error: String,
     ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(
+        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
             schedule_id,
             run_id,
             lease_id,
             completed_at,
-            /*next_run_at*/ None,
-            /*expected_goal_id*/ None,
-            FinishScheduleRun::Failed {
+            next_run_at: None,
+            expected_goal_id: None,
+            finish: FinishScheduleRun::Failed {
                 error,
                 pause_schedule: true,
             },
-        )
+        })
         .await
     }
 
@@ -1171,38 +1243,27 @@ WHERE status = 'active'
 
     async fn finish_thread_schedule_run(
         &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-        next_run_at: Option<DateTime<Utc>>,
-        expected_goal_id: Option<&str>,
-        finish: FinishScheduleRun,
+        params: FinishThreadScheduleRunParams<'_>,
     ) -> anyhow::Result<bool> {
         crate::busy_retry::retry_on_busy("finish thread schedule run", || {
-            self.finish_thread_schedule_run_once(
-                schedule_id,
-                run_id,
-                lease_id,
-                completed_at,
-                next_run_at,
-                expected_goal_id,
-                finish.clone(),
-            )
+            self.finish_thread_schedule_run_once(params.clone())
         })
         .await
     }
 
     async fn finish_thread_schedule_run_once(
         &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-        next_run_at: Option<DateTime<Utc>>,
-        expected_goal_id: Option<&str>,
-        finish: FinishScheduleRun,
+        params: FinishThreadScheduleRunParams<'_>,
     ) -> anyhow::Result<bool> {
+        let FinishThreadScheduleRunParams {
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            next_run_at,
+            expected_goal_id,
+            finish,
+        } = params;
         let completed_at_ms = datetime_to_epoch_millis(completed_at);
         let next_run_at_ms = next_run_at.map(datetime_to_epoch_millis);
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -1211,10 +1272,23 @@ WHERE status = 'active'
 SELECT thread_id, schedule_kind
 FROM thread_schedules
 WHERE schedule_id = ? AND lease_id = ?
+  AND EXISTS (
+      SELECT 1
+      FROM thread_schedule_runs
+      WHERE thread_schedule_runs.schedule_id = thread_schedules.schedule_id
+        AND thread_schedule_runs.run_id = ?
+        AND thread_schedule_runs.lease_id = ?
+        AND thread_schedule_runs.status IN ('leased', 'running')
+        AND (? IS NULL OR thread_schedule_runs.goal_id IS NULL OR thread_schedule_runs.goal_id = ?)
+  )
             "#,
         )
         .bind(schedule_id)
         .bind(lease_id)
+        .bind(run_id)
+        .bind(lease_id)
+        .bind(expected_goal_id)
+        .bind(expected_goal_id)
         .fetch_optional(&mut *tx)
         .await?;
         let Some((thread_id, schedule_kind)) = schedule_context else {
@@ -1340,6 +1414,17 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
         }
         Ok(true)
     }
+}
+
+#[derive(Clone)]
+struct FinishThreadScheduleRunParams<'a> {
+    schedule_id: &'a str,
+    run_id: &'a str,
+    lease_id: &'a str,
+    completed_at: DateTime<Utc>,
+    next_run_at: Option<DateTime<Utc>>,
+    expected_goal_id: Option<&'a str>,
+    finish: FinishScheduleRun,
 }
 
 #[derive(Clone)]
@@ -1474,6 +1559,7 @@ const RUN_COLUMNS: &str = r#"
     status,
     lease_id,
     turn_id,
+    goal_id,
     error,
     scheduled_for_ms,
     started_at_ms,
@@ -2823,14 +2909,14 @@ mod tests {
         assert!(
             runtime
                 .thread_schedules()
-                .complete_thread_schedule_run_for_goal(
-                    &schedule.schedule_id,
-                    &claim.run.run_id,
-                    "lease-original-goal",
-                    now + chrono::Duration::seconds(5),
-                    Some(next_run_at),
-                    original_goal.goal_id.as_str(),
-                )
+                .complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-original-goal",
+                    completed_at: now + chrono::Duration::seconds(5),
+                    next_run_at: Some(next_run_at),
+                    expected_goal_id: original_goal.goal_id.as_str(),
+                },)
                 .await
                 .expect("run should complete")
         );
@@ -2886,14 +2972,14 @@ mod tests {
         assert!(
             runtime
                 .thread_schedules()
-                .complete_thread_schedule_run_for_goal(
-                    &schedule.schedule_id,
-                    &claim.run.run_id,
-                    "lease-once",
-                    now + chrono::Duration::seconds(5),
-                    /*next_run_at*/ None,
-                    goal.goal_id.as_str(),
-                )
+                .complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-once",
+                    completed_at: now + chrono::Duration::seconds(5),
+                    next_run_at: None,
+                    expected_goal_id: goal.goal_id.as_str(),
+                },)
                 .await
                 .expect("run should complete")
         );
@@ -2970,22 +3056,23 @@ mod tests {
         let next_run_at = Some(now + chrono::Duration::minutes(5));
         let primary_completion = runtime
             .thread_schedules()
-            .complete_thread_schedule_run_for_goal(
-                &schedule.schedule_id,
-                &claim.run.run_id,
-                "lease-contended",
+            .complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-contended",
                 completed_at,
                 next_run_at,
-                goal.goal_id.as_str(),
-            );
-        let contender_completion = contender.complete_thread_schedule_run_for_goal(
-            &schedule.schedule_id,
-            &claim.run.run_id,
-            "lease-contended",
-            completed_at,
-            next_run_at,
-            goal.goal_id.as_str(),
-        );
+                expected_goal_id: goal.goal_id.as_str(),
+            });
+        let contender_completion =
+            contender.complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-contended",
+                completed_at,
+                next_run_at,
+                expected_goal_id: goal.goal_id.as_str(),
+            });
         let (primary_result, contender_result) =
             tokio::join!(primary_completion, contender_completion);
         let completions = [

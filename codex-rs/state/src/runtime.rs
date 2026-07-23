@@ -238,6 +238,7 @@ pub use schedules::ThreadScheduleClaim;
 pub use schedules::ThreadScheduleCreateParams;
 pub use schedules::ThreadScheduleDueClaimParams;
 pub use schedules::ThreadScheduleNowClaimParams;
+pub use schedules::ThreadScheduleRunForGoalFinishParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
 pub use webhooks::DEFAULT_WEBHOOK_EVENT_LIST_LIMIT;
@@ -1295,6 +1296,119 @@ mod tests {
             table_name: base.table_name.clone(),
             create_schemas: base.create_schemas.clone(),
         }
+    }
+
+    #[tokio::test]
+    async fn thread_schedule_run_goal_migration_preserves_legacy_running_runs() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+        migrator_through(&STATE_MIGRATOR, /*version*/ 60)
+            .run(&pool)
+            .await
+            .expect("apply pre-goal-correlation state schema");
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode
+) VALUES ('00000000-0000-0000-0000-000000000001', '', 0, 0, 'cli', 'test-provider', '/', 'fixture', 'workspace-write', 'on-request')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy schedule thread");
+        sqlx::query(
+            r#"
+INSERT INTO thread_schedules (
+    schedule_id,
+    thread_id,
+    prompt_source,
+    prompt,
+    schedule_kind,
+    interval_amount,
+    interval_unit,
+    timezone,
+    status,
+    next_run_at_ms,
+    failure_count,
+    lease_id,
+    lease_expires_at_ms,
+    created_at_ms,
+    updated_at_ms
+) VALUES (
+    'schedule-1',
+    '00000000-0000-0000-0000-000000000001',
+    'inline',
+    '/goal fixture',
+    'interval',
+    1,
+    'minutes',
+    'UTC',
+    'active',
+    60000,
+    0,
+    'lease-1',
+    120000,
+    0,
+    0
+)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy schedule");
+        sqlx::query(
+            r#"
+INSERT INTO thread_schedule_runs (
+    run_id,
+    schedule_id,
+    thread_id,
+    status,
+    lease_id,
+    turn_id,
+    scheduled_for_ms,
+    started_at_ms
+) VALUES (
+    'run-1',
+    'schedule-1',
+    '00000000-0000-0000-0000-000000000001',
+    'running',
+    'lease-1',
+    'turn-1',
+    60000,
+    60000
+)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy running schedule run");
+        pool.close().await;
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("current state schema should migrate legacy schedule runs");
+        let run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run("run-1")
+            .await
+            .expect("read migrated schedule run")
+            .expect("legacy schedule run should remain");
+        assert_eq!(run.status, crate::ThreadScheduleRunStatus::Running);
+        assert_eq!(run.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(run.goal_id, None);
+
+        drop(runtime);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
