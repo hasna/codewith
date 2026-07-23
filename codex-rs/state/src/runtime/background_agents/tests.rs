@@ -932,7 +932,12 @@ async fn stale_supervisor_lease_is_orphaned_and_reclaimable() -> anyhow::Result<
             .into_iter()
             .map(|event| event.event_type)
             .collect::<Vec<_>>(),
-        vec!["agent.orphaned".to_string()]
+        vec![
+            "agent.claimed".to_string(),
+            "agent.heartbeat".to_string(),
+            "agent.orphaned".to_string(),
+            "agent.claimed".to_string()
+        ]
     );
     Ok(())
 }
@@ -997,7 +1002,7 @@ async fn orphaning_waiting_run_terminalizes_pending_interactions() -> anyhow::Re
         .expect("status snapshot should exist");
     assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Orphaned);
     assert_eq!(status_snapshot.pending_interaction_count, 0);
-    assert_eq!(status_snapshot.last_event_seq, 3);
+    assert_eq!(status_snapshot.last_event_seq, 5);
     assert_eq!(
         runtime
             .list_background_agent_events_after(
@@ -1008,6 +1013,8 @@ async fn orphaning_waiting_run_terminalizes_pending_interactions() -> anyhow::Re
             .map(|event| event.event_type)
             .collect::<Vec<_>>(),
         vec![
+            "agent.claimed".to_string(),
+            "agent.heartbeat".to_string(),
             "interaction.created".to_string(),
             "interaction.workerNoLongerWaiting".to_string(),
             "agent.orphaned".to_string()
@@ -1251,7 +1258,7 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 3);
+    assert_eq!(status_snapshot.last_event_seq, 5);
     let interaction = runtime
         .get_background_agent_pending_interaction("pending-1")
         .await?
@@ -1604,7 +1611,7 @@ async fn delete_request_for_claimed_run_becomes_stopping_and_stale_cancelled() -
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 1);
+    assert_eq!(status_snapshot.last_event_seq, 3);
 
     Ok(())
 }

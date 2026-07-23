@@ -544,7 +544,10 @@ mod tests {
                 .into_iter()
                 .map(|event| event.event_type)
                 .collect::<Vec<_>>(),
-            vec!["agent.workerStartFailed".to_string()]
+            vec![
+                "agent.claimed".to_string(),
+                "agent.workerStartFailed".to_string()
+            ]
         );
         Ok(())
     }
