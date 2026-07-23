@@ -11,8 +11,11 @@ use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window_for_sn
 use crate::chatwidget::usage_profile_broker::fallback_limit_label as broker_fallback_limit_label;
 use crate::chatwidget::usage_profile_broker::get_limits_duration as broker_get_limits_duration;
 use crate::chatwidget::usage_profile_broker::limit_label_for_window as broker_limit_label_for_window;
+use crate::chatwidget::usage_self_heal::parse_usage_limit_reset_timestamp;
 use crate::chatwidget::user_messages::QueueInsertionPosition;
+use crate::legacy_core::usage_profile_health::FIVE_HOUR_LIMIT_LABEL;
 use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
+use crate::legacy_core::usage_profile_health::WEEKLY_LIMIT_LABEL;
 use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_login::list_auth_profiles;
@@ -442,6 +445,83 @@ impl ChatWidget {
             return;
         };
         self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
+    }
+
+    /// Auto-switch away from the CURRENT profile in response to its own, authoritative
+    /// usage-limit / 429 turn failure.
+    ///
+    /// A usage-limit *turn error* is emitted by the app server rejecting *this* profile's
+    /// own turn, so — unlike a rolling `account/rateLimits/updated` snapshot, which #374
+    /// made display-only because a sibling agent spawned on a *different* account can emit
+    /// an identity-less 100%-usage snapshot that would be misattributed to the current
+    /// profile — it authoritatively identifies the current profile as exhausted. Switching
+    /// on it therefore cannot revive the cross-agent false-cascade #374 fixed: a foreign
+    /// snapshot never produces a usage-limit turn error on this widget's own profile.
+    ///
+    /// Prefers an authoritative exhausted snapshot already cached for the current profile
+    /// (which carries the exact limiting window). When none has been observed yet — the
+    /// common case, because the limit is usually crossed mid-turn, before the ~60s
+    /// authoritative heartbeat re-reads it — falls back to a window synthesized from the
+    /// operator's enabled auto-switch config so the failed turn still moves to another
+    /// configured profile instead of stalling until the (possibly days-away) reset.
+    pub(in crate::chatwidget) fn try_auth_profile_switch_for_usage_limit(
+        &mut self,
+        is_usage_limit: bool,
+        error_message: Option<&str>,
+    ) -> bool {
+        // Cached, account-verified exhaustion (populated only by `AccountUsage` reads,
+        // never by a rolling notification) takes priority and carries the exact window.
+        if self.try_auth_profile_switch_after_reset_unavailable() {
+            return true;
+        }
+        // Only a hard usage-limit block should synthesize a switch without a corroborating
+        // cached snapshot; a transient overload/429 must not rotate profiles.
+        if !is_usage_limit || !self.is_session_configured() {
+            return false;
+        }
+        let Some(window) = self.synthetic_usage_limit_auto_switch_window(error_message) else {
+            return false;
+        };
+        let Some((next_profile, trigger_key)) =
+            self.auth_profile_auto_switch_target("codex", &window)
+        else {
+            return false;
+        };
+        self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
+        true
+    }
+
+    /// Trigger window used to auto-switch on a genuine usage-limit turn error when no
+    /// authoritative exhausted snapshot has been cached yet.
+    ///
+    /// Honors the operator's enabled windows: a hard usage-limit block ("try again
+    /// <date>") is the weekly cap in practice, so weekly is preferred when enabled and the
+    /// 5h window is used otherwise. Returns `None` when auto-switch is disabled or both
+    /// windows are opted out, so a disabled window is never switched on. The reset instant
+    /// is parsed from the error text when present, keeping the trigger key distinct per
+    /// exhaustion so repeated genuine failures can cycle across profiles.
+    fn synthetic_usage_limit_auto_switch_window(
+        &self,
+        error_message: Option<&str>,
+    ) -> Option<UsageProfileAutoSwitchWindow> {
+        let config = &self.config.auth_profile_auto_switch;
+        if !config.enabled {
+            return None;
+        }
+        let label = if config.on_weekly_limit {
+            WEEKLY_LIMIT_LABEL
+        } else if config.on_5h_limit {
+            FIVE_HOUR_LIMIT_LABEL
+        } else {
+            return None;
+        };
+        let resets_at = error_message
+            .and_then(parse_usage_limit_reset_timestamp)
+            .map(|reset_at| reset_at.timestamp());
+        Some(UsageProfileAutoSwitchWindow {
+            label: label.to_string(),
+            resets_at,
+        })
     }
 
     pub(super) fn maybe_auto_switch_auth_profile_before_user_turn(
