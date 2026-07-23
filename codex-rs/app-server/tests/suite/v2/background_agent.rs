@@ -48,6 +48,9 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_app_server_protocol::WorktreeAttachResponse;
 use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeCleanupResponse;
@@ -153,7 +156,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         start.execution_snapshot.payload.get("approvalPolicy"),
         Some(&json!("never"))
     );
-    assert_eq!(start.event.seq, 1);
+    assert_eq!(start.event.seq, 2);
     assert_eq!(start.event.event_type, "agent.started");
     assert_eq!(
         start.event.payload.get("prompt"),
@@ -199,7 +202,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     let first_events_page =
         agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(1)).await?;
     assert_eq!(first_events_page.data.len(), 1);
-    assert_eq!(first_events_page.data[0].event_type, "agent.started");
+    assert_eq!(first_events_page.data[0].event_type, "agent.admitted");
     assert_eq!(first_events_page.next_cursor, Some("event:1".to_string()));
 
     let second_events_page = agent_events_page(
@@ -212,7 +215,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     assert_eq!(second_events_page.data.len(), 1);
     assert_eq!(
         second_events_page.data[0].event_type,
-        "agent.workerStarting"
+        "agent.started"
     );
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
     let all_events =
@@ -390,7 +393,6 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         codex_home.path(),
     );
     params.cwd = Some("/tmp/client-selected-cwd".to_string());
-    params.auth_profile_ref = Some("client-selected-auth-profile".to_string());
     let context = params
         .execution_context
         .as_mut()
@@ -454,6 +456,40 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         start.execution_snapshot.payload.get("serviceTier"),
         Some(&JsonValue::Null)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let mut profile_mismatch = start_params(
+        "reject mismatched profile",
+        Some("profile-mismatch".to_string()),
+        codex_home.path(),
+    );
+    profile_mismatch.auth_profile_ref = Some("client-selected-auth-profile".to_string());
+    let error = start_agent_error(&mut mcp, profile_mismatch).await?;
+    assert_eq!(
+        error.error.data.as_ref().and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH))
+    );
+
+    let mut schema_mismatch = start_params(
+        "reject mismatched schema",
+        Some("schema-mismatch".to_string()),
+        codex_home.path(),
+    );
+    schema_mismatch.version_fingerprint = Some("older-schema".to_string());
+    let error = start_agent_error(&mut mcp, schema_mismatch).await?;
+    assert_eq!(
+        error.error.data.as_ref().and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH))
+    );
+    assert!(agent_list(&mut mcp).await?.data.is_empty());
     Ok(())
 }
 
@@ -3331,7 +3367,7 @@ async fn seed_queued_agent_run(
             auth_profile_ref: None,
             status_reason: Some("queued by quota test".to_string()),
             config_fingerprint: Some("cfg-test".to_string()),
-            version_fingerprint: Some("version-test".to_string()),
+            version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
         })
         .await?;
     state_db
@@ -3371,7 +3407,7 @@ fn start_params(
         spawn_linkage: None,
         auth_profile_ref: None,
         config_fingerprint: Some("cfg-test".to_string()),
-        version_fingerprint: Some("version-test".to_string()),
+        version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
         execution_context: Some(Box::new(AgentExecutionContextParams {
             workspace_roots: Some(vec![codex_home.display().to_string()]),
             approval_policy: Some(AskForApproval::Never),

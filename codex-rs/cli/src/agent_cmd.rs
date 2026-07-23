@@ -4,9 +4,12 @@ use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::daemon::BackgroundAgentDaemon;
 use codex_background_agent::daemon::BackgroundAgentDaemonPaths;
 use codex_background_agent::daemon::background_agent_daemon_state_dir;
@@ -993,17 +996,6 @@ async fn start_agent(
     if prompt.is_empty() {
         anyhow::bail!("agent prompt must not be empty");
     }
-    if let Some(idempotency_key) = cmd.idempotency_key.as_deref()
-        && let Some(run) = retry_on_busy("load background agent idempotency key", || {
-            state_db.get_background_agent_run_by_idempotency_key(idempotency_key)
-        })
-        .await
-        .context("failed to load background agent idempotency key")?
-    {
-        let daemon = background_agent_daemon()?;
-        let daemon_output = daemon.start().await?;
-        return Ok(json!({ "agent": run_json(run), "created": false, "daemon": daemon_output }));
-    }
 
     ensure_background_agent_supported_platform()?;
 
@@ -1041,21 +1033,35 @@ async fn start_agent(
         auth_profile_ref: auth_profile_ref.clone(),
         status_reason: Some("queued by codewith agent start".to_string()),
         config_fingerprint: None,
-        version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
+        version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
     };
-    let run = retry_on_busy("create background agent run", || {
-        state_db.create_background_agent_run(&create_params)
+    retry_on_busy("reconcile stale background agents before admission", || {
+        state_db.orphan_stale_background_agent_runs(Duration::from_secs(30))
     })
     .await
-    .context("failed to create background agent")?;
+    .context("failed to reconcile stale background agents before admission")?;
+    let (run, created) = retry_on_busy("admit background agent run", || {
+        state_db.admit_background_agent_run(
+            &create_params,
+            DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+        )
+    })
+    .await
+    .context("failed to admit background agent")?;
+    if !created {
+        let daemon = background_agent_daemon()?;
+        let daemon_output = daemon.start().await?;
+        return Ok(json!({ "agent": run_json(run), "created": false, "daemon": daemon_output }));
+    }
+    let admitted_agent_id = run.id.clone();
     let start_event_payload = json!({
         "cwd": cwd.display().to_string(),
         "prompt": prompt,
-        "promptSnapshotRef": prompt_snapshot_ref,
+        "promptSnapshotRef": run.prompt_snapshot_ref,
     });
     let event = retry_on_busy("append background agent start event", || {
         state_db.append_background_agent_event(
-            agent_id.as_str(),
+            admitted_agent_id.as_str(),
             "agent.started",
             &start_event_payload,
         )
@@ -1063,7 +1069,7 @@ async fn start_agent(
     .await
     .context("failed to append background agent start event")?;
     let snapshot_params = BackgroundAgentExecutionSnapshotParams {
-        run_id: agent_id.clone(),
+        run_id: admitted_agent_id.clone(),
         snapshot_kind: "initial_execution_context".to_string(),
         payload_json: json!({
             "snapshotSource": "codewith agent start",
@@ -1088,7 +1094,7 @@ async fn start_agent(
     .await
     .context("failed to create background agent execution snapshot")?;
     let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
-        run_id: agent_id,
+        run_id: admitted_agent_id.clone(),
         seq: event.seq,
         status: BackgroundAgentRunStatus::Queued,
         desired_state: BackgroundAgentDesiredState::Running,
@@ -1104,6 +1110,11 @@ async fn start_agent(
     .context("failed to create background agent status snapshot")?;
     let daemon = background_agent_daemon()?;
     let daemon_output = daemon.start().await?;
+    let run = retry_on_busy("reload admitted background agent", || {
+        state_db.get_background_agent_run(admitted_agent_id.as_str())
+    })
+    .await?
+    .unwrap_or(run);
     Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
 }
 
@@ -1156,34 +1167,46 @@ async fn stop_agent(
     else {
         return Ok(None);
     };
-    state_db
-        .set_background_agent_desired_state(agent_id, BackgroundAgentDesiredState::Stopped)
-        .await
-        .context("failed to update background agent desired state")?;
     if !background_agent_status_is_terminal(run.status) {
-        let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
-        let status = if terminalize_immediately {
-            BackgroundAgentRunStatus::Cancelled
-        } else {
-            BackgroundAgentRunStatus::Stopping
-        };
-        let status_reason = if terminalize_immediately {
-            "stop requested by codewith agent stop before worker claim"
-        } else {
-            "stop requested by codewith agent stop"
-        };
-        state_db
-            .update_background_agent_run_status(agent_id, status, Some(status_reason))
+        let mut observed = run;
+        let mut stopped = false;
+        let stop_diagnostics = json!({"reason": "cli_requested_stop"});
+        for _ in 0..2 {
+            let status_reason = if should_terminalize_unclaimed_agent_run(&observed) {
+                "stop requested by codewith agent stop before worker claim"
+            } else {
+                "stop requested by codewith agent stop"
+            };
+            stopped = retry_on_busy("request fenced background agent stop", || {
+                state_db.request_background_agent_stop_for_generation(
+                    agent_id,
+                    observed.supervisor_id.as_deref(),
+                    observed.generation,
+                    status_reason,
+                    &stop_diagnostics,
+                )
+            })
             .await
-            .context("failed to update background agent status")?;
-        state_db
-            .append_background_agent_event(
-                agent_id,
-                "agent.stopRequested",
-                &json!({"reason": "cli_requested_stop"}),
-            )
-            .await
-            .context("failed to append background agent stop event")?;
+            .context("failed to request background agent stop")?;
+            if stopped {
+                break;
+            }
+            let Some(latest) = state_db
+                .get_background_agent_run(agent_id)
+                .await
+                .context("failed to reload background agent during stop")?
+            else {
+                return Ok(None);
+            };
+            if background_agent_status_is_terminal(latest.status) {
+                stopped = true;
+                break;
+            }
+            observed = latest;
+        }
+        if !stopped {
+            anyhow::bail!("background agent ownership changed during stop request");
+        }
     }
     state_db
         .get_background_agent_run(agent_id)
@@ -1200,7 +1223,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
         .count_background_agent_pending_interactions(/*status*/ None)
         .await
         .context("failed to count background agent pending interactions")?;
-    let max_active_runs_per_user = 8_i64;
+    let max_active_runs_per_user = DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
     let active_run_count = counts
         .iter()
         .filter(|(status, _)| {
@@ -1212,6 +1235,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
                     | BackgroundAgentRunStatus::WaitingOnApproval
                     | BackgroundAgentRunStatus::WaitingOnUser
                     | BackgroundAgentRunStatus::Stopping
+                    | BackgroundAgentRunStatus::Orphaned
             )
         })
         .map(|(_, count)| *count)

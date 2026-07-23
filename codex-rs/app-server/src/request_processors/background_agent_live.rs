@@ -6,6 +6,7 @@ use super::worktree_paths::path_to_api_string;
 use super::worktree_paths::paths_equivalent;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
+use crate::error_code::invalid_request;
 use anyhow::Context;
 use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
@@ -53,6 +54,9 @@ use codex_app_server_protocol::WorktreeSessionMode;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionHandleParams;
@@ -329,6 +333,7 @@ impl ThreadRequestProcessor {
         &self,
         mut params: AgentStartParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.validate_agent_start_admission(&params)?;
         let managed_worktree = self
             .trusted_agent_start_managed_worktree(
                 params.cwd.as_deref(),
@@ -1664,6 +1669,37 @@ impl ThreadRequestProcessor {
 
     fn background_agent_state_processor(&self) -> BackgroundAgentRequestProcessor {
         BackgroundAgentRequestProcessor::new(self.state_db.clone())
+    }
+
+    fn validate_agent_start_admission(
+        &self,
+        params: &AgentStartParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if params.version_fingerprint.as_deref()
+            != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
+        {
+            let mut error = invalid_request("background agent admission schema is incompatible");
+            error.data = Some(json!({
+                "errorCode": BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH,
+                "requestedSchema": params.version_fingerprint.as_deref(),
+                "supportedSchema": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            }));
+            return Err(error);
+        }
+        if let Some(requested_profile) = params.auth_profile_ref.as_deref()
+            && self.config.selected_auth_profile.as_deref() != Some(requested_profile)
+        {
+            let mut error = invalid_request(
+                "background agent auth profile does not match the app-server profile",
+            );
+            error.data = Some(json!({
+                "errorCode": BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH,
+                "requestedProfile": requested_profile,
+                "selectedProfile": self.config.selected_auth_profile.as_deref(),
+            }));
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn freeze_start_execution_context(&self, params: &mut AgentStartParams) {
@@ -3131,6 +3167,11 @@ async fn resolve_background_agent_config(
     context: &BackgroundAgentWorkerContext,
     run: &BackgroundAgentRun,
 ) -> anyhow::Result<BackgroundAgentConfigResolution> {
+    if run.version_fingerprint.as_deref() != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION) {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted background agent admission schema is incompatible"
+        );
+    }
     let snapshot = context
         .state_db
         .get_latest_execution_snapshot(run.id.as_str())
@@ -3141,6 +3182,14 @@ async fn resolve_background_agent_config(
     let payload = snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.payload_json.as_object());
+    let snapshot_auth_profile_ref = payload
+        .and_then(|payload| payload.get("authProfileRef"))
+        .and_then(Value::as_str);
+    if snapshot_auth_profile_ref != run.auth_profile_ref.as_deref() {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: persisted execution snapshot auth profile does not match the admitted run"
+        );
+    }
     let cwd = payload
         .and_then(|payload| payload.get("cwd"))
         .and_then(Value::as_str)
@@ -3250,6 +3299,17 @@ async fn resolve_background_agent_config(
         .load_with_overrides(request_overrides.clone(), config_overrides.clone())
         .await
         .map_err(anyhow::Error::from)?;
+    if config.selected_auth_profile != run.auth_profile_ref {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: loaded worker auth profile does not match the admitted run"
+        );
+    }
+    if run.auth_profile_ref.is_some() {
+        return Ok(BackgroundAgentConfigResolution::Ready {
+            config: Box::new(config),
+            initial_execution_payload,
+        });
+    }
 
     let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
         &context.auth_manager,
@@ -5912,7 +5972,7 @@ done
                 auth_profile_ref: None,
                 status_reason: Some("queued by process supervisor test".to_string()),
                 config_fingerprint: Some("cfg-test".to_string()),
-                version_fingerprint: Some("version-test".to_string()),
+                version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
             })
             .await?;
         state_db
