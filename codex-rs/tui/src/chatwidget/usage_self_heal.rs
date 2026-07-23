@@ -349,7 +349,9 @@ fn select_model_fallback(
     })
 }
 
-fn parse_usage_limit_reset_timestamp(message: &str) -> Option<DateTime<Utc>> {
+pub(in crate::chatwidget) fn parse_usage_limit_reset_timestamp(
+    message: &str,
+) -> Option<DateTime<Utc>> {
     let marker = "try again at ";
     let start = message.to_ascii_lowercase().find(marker)? + marker.len();
     let candidate = message.get(start..)?.trim_start();

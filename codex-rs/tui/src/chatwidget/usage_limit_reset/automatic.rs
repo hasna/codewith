@@ -202,7 +202,12 @@ impl ChatWidget {
     }
 
     pub(super) fn fallback_auth_profile_switch_after_reset_unavailable(&mut self) {
-        if self.try_auth_profile_switch_after_reset_unavailable() {
+        // Reached only after a genuine usage-limit failure whose reset recovery is
+        // unavailable, so the current profile is authoritatively exhausted: switch even
+        // when the authoritative read has not yet cached the exhausted window.
+        if self.try_auth_profile_switch_for_usage_limit(
+            /*is_usage_limit*/ true, /*error_message*/ None,
+        ) {
             // A switch to a healthier profile is underway. Re-queue the interrupted turn so it
             // resumes automatically on the new profile once the switch is applied, instead of
             // being silently dropped (which forced the user to re-type `go`). The pending

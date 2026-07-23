@@ -1636,6 +1636,139 @@ async fn rolling_rate_limit_update_does_not_auto_switch_auth_profile() {
 }
 
 #[tokio::test]
+async fn genuine_usage_limit_error_auto_switches_without_a_cached_snapshot() {
+    // Regression (from #374): when the current profile is genuinely exhausted mid-turn the
+    // authoritative account read has not observed it yet, so no exhausted snapshot is
+    // cached. #374 made the rolling per-turn snapshot display-only, which used to be what
+    // drove the switch here — leaving the failed turn to just stall until the (days-away)
+    // reset. The profile's OWN usage-limit turn error is authoritative for it, so it must
+    // still auto-switch to another configured profile.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.on_weekly_limit = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    // No usage-limit reset flow available, so the switch must be driven directly by the
+    // authoritative turn failure rather than a reset attempt.
+    chat.config.usage_limit.auto_reset_enabled = false;
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // Deliberately no `on_rate_limit_snapshot(...)`: the switch map is empty, mirroring a
+    // limit crossed mid-turn before the authoritative heartbeat could re-read it.
+    assert!(
+        chat.auth_profile_auto_switch_snapshots_by_limit_id
+            .is_empty()
+    );
+    chat.on_rate_limit_error(
+        RateLimitErrorKind::UsageLimit,
+        "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Jul 28th, 2026 4:53 PM."
+            .to_string(),
+    );
+
+    let switches = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SwitchAuthProfile {
+                profile, reason, ..
+            } => Some((profile, reason)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        switches,
+        vec![(
+            Some("personal".to_string()),
+            crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                window: "weekly".to_string(),
+            },
+        )],
+        "genuine usage-limit error must auto-switch to the next configured profile"
+    );
+    // The failed turn is re-queued so it resumes on the freshly selected profile.
+    assert!(chat.pending_usage_self_heal_retry_id().is_none());
+}
+
+#[tokio::test]
+async fn rolling_snapshot_alone_never_switches_and_never_seeds_the_switch_map() {
+    // Preserves #374: a rolling `account/rateLimits/updated` notification carries no
+    // account identity, so under multi-agent spawning it can originate from a sibling on a
+    // *different* exhausted account. It must never switch profiles, and — unlike the
+    // authoritative turn-error path added for genuine exhaustion — it must never seed the
+    // switch map that a later user turn consumes, otherwise the #374 false-cascade returns.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    chat.on_rolling_rate_limit_snapshot(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100,
+        /*window_duration_mins*/ 7 * 24 * 60,
+        /*resets_at*/ chrono::Utc::now().timestamp() + 7 * 24 * 60 * 60,
+    ));
+
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+            "rolling snapshot must not auto-switch, got {event:?}"
+        );
+    }
+    assert!(
+        chat.auth_profile_auto_switch_snapshots_by_limit_id
+            .is_empty(),
+        "rolling snapshot must not seed the auth-profile auto-switch map"
+    );
+}
+
+#[tokio::test]
+async fn genuine_usage_limit_error_does_not_loop_when_all_profiles_exhausted() {
+    // Graceful degradation: when the only alternate profile is itself known-exhausted the
+    // switch must bail without emitting a switch, and repeating the failure must not loop.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.on_weekly_limit = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_limit.auto_reset_enabled = false;
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // The only alternate profile is already exhausted, so there is nowhere healthy to go.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100,
+            /*window_duration_mins*/ 7 * 24 * 60,
+            /*resets_at*/ chrono::Utc::now().timestamp() + 7 * 24 * 60 * 60,
+        )],
+    );
+    drain_insert_history(&mut rx);
+
+    for _ in 0..2 {
+        chat.on_rate_limit_error(
+            RateLimitErrorKind::UsageLimit,
+            "You've hit your usage limit. Try again at Jul 28th, 2026 4:53 PM.".to_string(),
+        );
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, AppEvent::SwitchAuthProfile { .. }),
+                "no profile has capacity, so no switch must be emitted, got {event:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");
