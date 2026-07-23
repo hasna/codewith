@@ -1046,26 +1046,51 @@ async fn start_agent(
     })
     .await
     .context("failed to admit background agent")?;
-    if !created {
-        let daemon = background_agent_daemon()?;
-        let daemon_output = daemon.start().await?;
-        return Ok(json!({ "agent": run_json(run), "created": false, "daemon": daemon_output }));
-    }
     let admitted_agent_id = run.id.clone();
     let start_event_payload = json!({
         "cwd": cwd.display().to_string(),
         "prompt": prompt,
         "promptSnapshotRef": run.prompt_snapshot_ref,
     });
-    let event = retry_on_busy("append background agent start event", || {
-        state_db.append_background_agent_event(
-            admitted_agent_id.as_str(),
-            "agent.started",
-            &start_event_payload,
-        )
-    })
-    .await
-    .context("failed to append background agent start event")?;
+    let existing_start_event = if created {
+        None
+    } else {
+        retry_on_busy("load background agent start event", || {
+            state_db.list_background_agent_events_after(
+                admitted_agent_id.as_str(),
+                /*after_seq*/ None,
+                Some(100),
+            )
+        })
+        .await
+        .context("failed to load background agent start event")?
+        .into_iter()
+        .find(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "agent.started" | "agent.startRecovered"
+            )
+        })
+    };
+    let event = match existing_start_event {
+        Some(event) => event,
+        None => {
+            let event_type = if created {
+                "agent.started"
+            } else {
+                "agent.startRecovered"
+            };
+            retry_on_busy("append background agent start event", || {
+                state_db.append_background_agent_event(
+                    admitted_agent_id.as_str(),
+                    event_type,
+                    &start_event_payload,
+                )
+            })
+            .await
+            .context("failed to append background agent start event")?
+        }
+    };
     let snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: admitted_agent_id.clone(),
         snapshot_kind: "initial_execution_context".to_string(),
@@ -1086,26 +1111,43 @@ async fn start_agent(
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
         config_fingerprint: None,
     };
-    retry_on_busy("create background agent execution snapshot", || {
-        state_db.create_background_agent_execution_snapshot(&snapshot_params)
+    let execution_snapshot_exists =
+        retry_on_busy("load background agent execution snapshot", || {
+            state_db.get_latest_background_agent_execution_snapshot(admitted_agent_id.as_str())
+        })
+        .await
+        .context("failed to load background agent execution snapshot")?
+        .is_some();
+    if !execution_snapshot_exists {
+        retry_on_busy("create background agent execution snapshot", || {
+            state_db.create_background_agent_execution_snapshot(&snapshot_params)
+        })
+        .await
+        .context("failed to create background agent execution snapshot")?;
+    }
+    let status_snapshot_exists = retry_on_busy("load background agent status snapshot", || {
+        state_db.get_background_agent_status_snapshot(admitted_agent_id.as_str())
     })
     .await
-    .context("failed to create background agent execution snapshot")?;
-    let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
-        run_id: admitted_agent_id.clone(),
-        seq: event.seq,
-        status: BackgroundAgentRunStatus::Queued,
-        desired_state: BackgroundAgentDesiredState::Running,
-        summary: Some("Queued".to_string()),
-        pending_interaction_count: 0,
-        last_event_seq: event.seq,
-        payload_json: json!({"phase": "queued"}),
-    };
-    retry_on_busy("create background agent status snapshot", || {
-        state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
-    })
-    .await
-    .context("failed to create background agent status snapshot")?;
+    .context("failed to load background agent status snapshot")?
+    .is_some();
+    if !status_snapshot_exists {
+        let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
+            run_id: admitted_agent_id.clone(),
+            seq: event.seq,
+            status: BackgroundAgentRunStatus::Queued,
+            desired_state: BackgroundAgentDesiredState::Running,
+            summary: Some("Queued".to_string()),
+            pending_interaction_count: 0,
+            last_event_seq: event.seq,
+            payload_json: json!({"phase": "queued"}),
+        };
+        retry_on_busy("create background agent status snapshot", || {
+            state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
+        })
+        .await
+        .context("failed to create background agent status snapshot")?;
+    }
     let daemon = background_agent_daemon()?;
     let daemon_output = daemon.start().await?;
     let run = retry_on_busy("reload admitted background agent", || {
@@ -1113,7 +1155,7 @@ async fn start_agent(
     })
     .await?
     .unwrap_or(run);
-    Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
+    Ok(json!({ "agent": run_json(run), "created": created, "daemon": daemon_output }))
 }
 
 fn agent_start_snapshot_workspace_roots(
