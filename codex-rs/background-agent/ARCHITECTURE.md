@@ -23,6 +23,22 @@ Those legacy records can be linked from a background-agent run for history and
 compatibility, but they are read-only linkage inputs from the background-agent
 system's perspective.
 
+## Admission Contract
+
+Admission is one `BEGIN IMMEDIATE` state transaction. The transaction first
+looks up an idempotency key, validates that it is bound to the same request,
+source, thread linkage, exact auth-profile alias, config fingerprint, and
+admission schema, then either adopts that run or counts live/recoverable rows
+and inserts exactly one new run. Stopped or terminal rows do not consume
+capacity; queued, owned, waiting, stopping, and recoverable orphaned rows do.
+
+The CLI, TUI, app server, persisted run, execution snapshot, and daemon pid
+record use `codewith.background-agent.admission.v1` as the fail-closed schema
+contract. A running daemon is reused only when package version, daemon protocol,
+admission schema, and required capability set all match. An explicitly admitted
+auth-profile alias must match the app-server profile and remains exact during
+recovery; it is never silently replaced by profile auto-switching.
+
 ## Run And Thread Relationship
 
 A background-agent run owns background execution. A thread owns transcript and
@@ -80,6 +96,20 @@ configured heartbeat timeout, then re-claim only runs whose `desired_state` is
 The app-server may host a live worker bridge, but app-server client connection
 lifetime is not liveness. Dropping a TUI or CLI connection detaches subscribers
 only; it must not delete the run or imply worker death.
+
+## Lifecycle Receipts And Fencing
+
+Lifecycle receipts live in `background_agent_events`, alongside progress
+events. Each receipt has a unique `(run_id, receipt_key)` identity and records
+the run, generation, attempt, timestamp, and bounded redacted diagnostics.
+Retries return the existing receipt instead of advancing the event cursor.
+Admission, claim/recovery, first heartbeat for a generation, status transitions,
+orphaning, stop, and cancellation all use deterministic receipt keys.
+
+Supervisor-owned heartbeat, status, stop, and process-finalization mutations
+compare both `supervisor_id` and `generation`. A stale owner cannot stop or
+complete a reclaimed generation. User-requested stop reloads and retries the
+current generation once if ownership changes while the request is in flight.
 
 ## Attach, Detach, Stop, Delete
 

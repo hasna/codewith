@@ -60,7 +60,11 @@ use codex_app_server_protocol::WorktreeReadResponse;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED;
 use codex_background_agent::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionSnapshot;
@@ -76,6 +80,7 @@ use codex_background_agent::BackgroundAgentStatusSnapshotParams;
 use codex_background_agent::LifecycleAction;
 use codex_background_agent::LifecycleEffect;
 use codex_background_agent::PendingInteractionLedger;
+use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::lifecycle_effect_for;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationAction;
@@ -90,14 +95,14 @@ use codex_state::ManagedWorktreeDetachParams;
 use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
 const MAX_AGENT_LIST_LIMIT: usize = 200;
-const DEFAULT_MAX_ACTIVE_AGENT_RUNS_PER_USER: i64 = 8;
+const AGENT_ADMISSION_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 const AGENT_BACKPRESSURE_ACTIVE_RUN_LIMIT: &str = "active_run_limit";
 const AGENT_EVENT_CURSOR_PREFIX: &str = "event:";
-static AGENT_START_ADMISSION_LOCK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Clone)]
 pub(crate) struct BackgroundAgentRequestProcessor {
@@ -114,6 +119,7 @@ impl BackgroundAgentRequestProcessor {
         params: AgentStartParams,
     ) -> Result<AgentStartResponse, JSONRPCErrorError> {
         let state_db = self.state_db()?;
+        validate_agent_start_schema(&params)?;
         let AgentStartParams {
             prompt,
             initial_goal_objective,
@@ -138,47 +144,15 @@ impl BackgroundAgentRequestProcessor {
         let execution_context = execution_context.map(|context| *context);
         let prompt = validate_agent_prompt(prompt)?;
         let initial_goal_objective = validate_agent_initial_goal_objective(initial_goal_objective)?;
-        let mut existing_run = match idempotency_key.as_deref() {
-            Some(idempotency_key) => state_db
-                .get_run_by_idempotency_key(idempotency_key)
-                .await
-                .map_err(|err| {
-                    internal_error(format!(
-                        "failed to load background agent idempotency key: {err}"
-                    ))
-                })?,
-            None => None,
-        };
-        let _admission_permit = if existing_run.is_none() {
-            let permit = AGENT_START_ADMISSION_LOCK.acquire().await.map_err(|err| {
-                internal_error(format!(
-                    "failed to acquire background agent admission permit: {err}"
-                ))
-            })?;
-            if let Some(idempotency_key) = idempotency_key.as_deref() {
-                existing_run = state_db
-                    .get_run_by_idempotency_key(idempotency_key)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!(
-                            "failed to load background agent idempotency key: {err}"
-                        ))
-                    })?;
-            }
-            Some(permit)
-        } else {
-            None
-        };
-        let new_run_requested = existing_run.is_none();
-        if new_run_requested {
-            let quota = load_agent_quota_snapshot(state_db.as_ref()).await?;
-            if !quota.admission_allowed() {
-                return Err(overloaded(format!(
-                    "background agent queue is overloaded: {} active run(s), max {}",
-                    quota.active_run_count, quota.max_active_runs_per_user
-                )));
-            }
-        }
+        retry_transient_sqlite_busy("reconcile stale background agents before admission", || {
+            state_db.orphan_stale_background_agent_runs(AGENT_ADMISSION_HEARTBEAT_TIMEOUT)
+        })
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to reconcile stale background agents before admission: {err}"
+            ))
+        })?;
         let agent_id = Uuid::now_v7().to_string();
         let prompt_snapshot_ref =
             prompt_snapshot_ref.unwrap_or_else(|| format!("inline:{agent_id}:prompt"));
@@ -194,34 +168,36 @@ impl BackgroundAgentRequestProcessor {
             .as_ref()
             .and_then(|context| context.recovery_policy.clone())
             .unwrap_or_else(|| "abort_mid_turn_resume_at_safe_boundary".to_string());
-        let run = match existing_run {
-            Some(run) => run,
-            None => state_db
-                .create_run(BackgroundAgentRunCreateParams {
-                    id: agent_id.clone(),
-                    idempotency_key,
-                    request_id,
-                    source,
-                    prompt_snapshot_ref,
-                    input_snapshot_ref,
-                    thread_id,
-                    thread_store_kind,
-                    thread_store_id,
-                    rollout_path,
-                    parent_thread_id,
-                    parent_agent_run_id,
-                    spawn_linkage_json: spawn_linkage,
-                    auth_profile_ref,
-                    status_reason: Some("queued for background-agent supervisor".to_string()),
-                    config_fingerprint,
-                    version_fingerprint,
-                })
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to create background agent: {err}"))
-                })?,
+        let create_params = BackgroundAgentRunCreateParams {
+            id: agent_id.clone(),
+            idempotency_key,
+            request_id,
+            source,
+            prompt_snapshot_ref,
+            input_snapshot_ref,
+            thread_id,
+            thread_store_kind,
+            thread_store_id,
+            rollout_path,
+            parent_thread_id,
+            parent_agent_run_id,
+            spawn_linkage_json: spawn_linkage,
+            auth_profile_ref,
+            status_reason: Some("queued for background-agent supervisor".to_string()),
+            config_fingerprint,
+            version_fingerprint,
         };
-        let created_new_run = run.id == agent_id;
+        let (run, created_new_run) = retry_transient_sqlite_busy(
+            "admit background agent",
+            || {
+                state_db.admit_run(
+                    create_params.clone(),
+                    DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+                )
+            },
+        )
+        .await
+        .map_err(map_background_agent_admission_error)?;
         let execution_payload = initial_execution_snapshot_payload(
             &run,
             InitialExecutionSnapshotPayloadParams {
@@ -289,13 +265,16 @@ impl BackgroundAgentRequestProcessor {
                 internal_error(format!("failed to append background agent event: {err}"))
             })?
         } else {
-            let mut events = state_db
-                .list_events_after(run.id.as_str(), /*after_seq*/ None, Some(1))
+            let events = state_db
+                .list_events_after(run.id.as_str(), /*after_seq*/ None, Some(100))
                 .await
                 .map_err(|err| {
                     internal_error(format!("failed to list background agent events: {err}"))
                 })?;
-            match events.pop() {
+            match events
+                .into_iter()
+                .find(|event| event.event_type == "agent.started")
+            {
                 Some(event) => event,
                 None => append_background_agent_event_with_retry(
                     state_db.as_ref(),
@@ -572,69 +551,74 @@ impl BackgroundAgentRequestProcessor {
                 agent: Some(api_agent_run_from_state(run)),
             });
         }
-        state_db
-            .set_desired_state(run.id.as_str(), BackgroundAgentDesiredState::Stopped)
-            .await
-            .map_err(|err| {
-                internal_error(format!(
-                    "failed to update background agent desired state: {err}"
-                ))
-            })?;
         if !is_terminal_agent_status(run.status) {
-            let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
-            let status = if terminalize_immediately {
-                BackgroundAgentRunStatus::Cancelled
-            } else {
-                BackgroundAgentRunStatus::Stopping
-            };
-            let status_reason = if terminalize_immediately {
-                "stop requested before worker claim"
-            } else {
-                "stop requested"
-            };
-            state_db
-                .update_run_status(run.id.as_str(), status, Some(status_reason))
-                .await
-                .map_err(|err| {
-                    internal_error(format!("failed to update background agent status: {err}"))
-                })?;
-            append_background_agent_event_with_retry(
-                state_db.as_ref(),
-                run.id.as_str(),
-                "agent.stopRequested",
-                &json!({
-                    "reason": "client_requested_stop",
-                }),
-            )
-            .await
-            .map_err(|err| {
-                internal_error(format!("failed to append background agent event: {err}"))
-            })?;
+            let mut observed = run.clone();
+            let mut stopped = false;
+            for _ in 0..2 {
+                let terminalize_immediately = should_terminalize_unclaimed_agent_run(&observed);
+                let status_reason = if terminalize_immediately {
+                    "stop requested before worker claim"
+                } else {
+                    "stop requested"
+                };
+                stopped = state_db
+                    .request_background_agent_stop_for_generation(
+                        observed.id.as_str(),
+                        observed.supervisor_id.as_deref(),
+                        observed.generation,
+                        status_reason,
+                        &json!({
+                            "reason": "client_requested_stop",
+                        }),
+                    )
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to request fenced background agent stop: {err}"
+                        ))
+                    })?;
+                if stopped {
+                    break;
+                }
+                let Some(latest) = self
+                    .load_agent_run(state_db.as_ref(), observed.id.as_str())
+                    .await?
+                else {
+                    break;
+                };
+                if is_terminal_agent_status(latest.status) {
+                    stopped = true;
+                    break;
+                }
+                observed = latest;
+            }
+            if !stopped {
+                return Err(internal_error(
+                    "background agent ownership changed during stop request",
+                ));
+            }
             cancel_active_pending_interactions_for_run(
                 state_db.as_ref(),
                 run.id.as_str(),
                 "client_requested_stop",
             )
             .await?;
-            if terminalize_immediately {
-                upsert_lifecycle_status_snapshot(
-                    state_db.as_ref(),
-                    run.id.as_str(),
-                    status,
-                    "Stopped",
-                    "client_requested_stop",
-                )
-                .await?;
-            } else {
-                upsert_lifecycle_status_snapshot(
-                    state_db.as_ref(),
-                    run.id.as_str(),
-                    status,
-                    "Stopping",
-                    "client_requested_stop",
-                )
-                .await?;
-            }
+            let latest = self
+                .load_agent_run(state_db.as_ref(), run.id.as_str())
+                .await?
+                .ok_or_else(|| internal_error("background agent disappeared during stop"))?;
+            upsert_lifecycle_status_snapshot(
+                state_db.as_ref(),
+                run.id.as_str(),
+                latest.status,
+                if latest.status == BackgroundAgentRunStatus::Cancelled {
+                    "Stopped"
+                } else {
+                    "Stopping"
+                },
+                "client_requested_stop",
+            )
+            .await?;
         }
         let run = self
             .load_agent_run(state_db.as_ref(), run.id.as_str())
@@ -839,7 +823,8 @@ impl BackgroundAgentRequestProcessor {
         &self,
     ) -> Result<AgentDaemonDiagnosticsResponse, JSONRPCErrorError> {
         let Some(state_db) = self.state_db.clone() else {
-            let quota = AgentQuotaSnapshot::empty(DEFAULT_MAX_ACTIVE_AGENT_RUNS_PER_USER);
+            let quota =
+                AgentQuotaSnapshot::empty(DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS);
             return Ok(AgentDaemonDiagnosticsResponse {
                 state_store_available: false,
                 active_run_count: quota.active_run_count,
@@ -1188,7 +1173,7 @@ async fn load_agent_quota_snapshot(
         .map_err(|err| internal_error(format!("failed to count background agents: {err}")))?;
     Ok(AgentQuotaSnapshot::from_status_counts(
         runs_by_status,
-        DEFAULT_MAX_ACTIVE_AGENT_RUNS_PER_USER,
+        DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
     ))
 }
 
@@ -1275,6 +1260,39 @@ fn validate_agent_prompt(prompt: String) -> Result<String, JSONRPCErrorError> {
         return Err(invalid_request("agent prompt must not be empty"));
     }
     Ok(prompt)
+}
+
+fn validate_agent_start_schema(params: &AgentStartParams) -> Result<(), JSONRPCErrorError> {
+    if params.version_fingerprint.as_deref() == Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION) {
+        return Ok(());
+    }
+    let mut error = invalid_request("background agent admission schema is incompatible");
+    error.data = Some(json!({
+        "errorCode": BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH,
+        "requestedSchema": params.version_fingerprint.as_deref(),
+        "supportedSchema": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+    }));
+    Err(error)
+}
+
+fn map_background_agent_admission_error(err: anyhow::Error) -> JSONRPCErrorError {
+    let message = err.to_string();
+    if message.contains(BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED) {
+        let mut error = overloaded("background agent admission capacity is exhausted");
+        error.data = Some(json!({
+            "errorCode": BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED,
+            "maxActiveRuns": DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+        }));
+        return error;
+    }
+    if message.contains(BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH) {
+        let mut error = invalid_request("background agent idempotency identity does not match");
+        error.data = Some(json!({
+            "errorCode": BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH,
+        }));
+        return error;
+    }
+    internal_error(format!("failed to admit background agent: {message}"))
 }
 
 fn validate_agent_initial_goal_objective(

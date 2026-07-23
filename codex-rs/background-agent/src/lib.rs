@@ -29,6 +29,21 @@ pub use codex_state::BackgroundAgentWorktreeLeaseCreateParams;
 pub use supervisor::DurableAgentSupervisor;
 pub use supervisor::DurableAgentSupervisorConfig;
 
+pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str =
+    "codewith.background-agent.admission.v1";
+pub const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
+    "background_agent_admission_capacity_exceeded";
+pub const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
+    "background_agent_admission_identity_mismatch";
+pub const BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH: &str =
+    "background_agent_admission_profile_mismatch";
+pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH: &str =
+    "background_agent_admission_schema_mismatch";
+pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str =
+    "background_agent_daemon_incompatible";
+pub const BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
+
 /// Durable run roster used by the background-agent supervisor.
 ///
 /// Implementations are expected to persist run identity, desired state, liveness
@@ -39,6 +54,12 @@ pub trait AgentRunStore {
         &self,
         params: BackgroundAgentRunCreateParams,
     ) -> impl Future<Output = anyhow::Result<BackgroundAgentRun>> + Send;
+
+    fn admit_run(
+        &self,
+        params: BackgroundAgentRunCreateParams,
+        max_active_runs: i64,
+    ) -> impl Future<Output = anyhow::Result<(BackgroundAgentRun, bool)>> + Send;
 
     fn get_run(
         &self,
@@ -75,6 +96,15 @@ pub trait AgentRunStore {
     fn request_delete_run(&self, run_id: &str)
     -> impl Future<Output = anyhow::Result<bool>> + Send;
 
+    fn request_stop_run(
+        &self,
+        run_id: &str,
+        expected_supervisor_id: Option<&str>,
+        expected_generation: i64,
+        status_reason: &str,
+        diagnostics_json: &serde_json::Value,
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send;
+
     fn orphan_stale_runs(
         &self,
         heartbeat_timeout: Duration,
@@ -106,6 +136,15 @@ impl AgentRunStore for codex_state::StateRuntime {
         params: BackgroundAgentRunCreateParams,
     ) -> anyhow::Result<BackgroundAgentRun> {
         self.create_background_agent_run(&params).await
+    }
+
+    async fn admit_run(
+        &self,
+        params: BackgroundAgentRunCreateParams,
+        max_active_runs: i64,
+    ) -> anyhow::Result<(BackgroundAgentRun, bool)> {
+        self.admit_background_agent_run(&params, max_active_runs)
+            .await
     }
 
     async fn get_run(&self, run_id: &str) -> anyhow::Result<Option<BackgroundAgentRun>> {
@@ -149,6 +188,24 @@ impl AgentRunStore for codex_state::StateRuntime {
 
     async fn request_delete_run(&self, run_id: &str) -> anyhow::Result<bool> {
         self.request_background_agent_delete(run_id).await
+    }
+
+    async fn request_stop_run(
+        &self,
+        run_id: &str,
+        expected_supervisor_id: Option<&str>,
+        expected_generation: i64,
+        status_reason: &str,
+        diagnostics_json: &serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        self.request_background_agent_stop_for_generation(
+            run_id,
+            expected_supervisor_id,
+            expected_generation,
+            status_reason,
+            diagnostics_json,
+        )
+        .await
     }
 
     async fn orphan_stale_runs(&self, heartbeat_timeout: Duration) -> anyhow::Result<usize> {

@@ -1,6 +1,9 @@
 use super::*;
 use crate::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 
+const MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_BYTES: usize = 4 * 1024;
+const MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_PREVIEW_CHARS: usize = 1_024;
+
 pub(in crate::runtime) async fn append_background_agent_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
@@ -55,6 +58,93 @@ WHERE id = ?
     })
 }
 
+pub(in crate::runtime) async fn append_background_agent_lifecycle_receipt_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    event_type: &str,
+    receipt_key: &str,
+    generation: i64,
+    attempt: Option<i64>,
+    diagnostics_json: &serde_json::Value,
+    now: i64,
+) -> anyhow::Result<BackgroundAgentEvent> {
+    if let Some(row) = sqlx::query_as::<_, BackgroundAgentEventRow>(
+        r#"
+SELECT id, run_id, seq, event_type, payload_json, created_at
+FROM background_agent_events
+WHERE run_id = ? AND receipt_key = ?
+        "#,
+    )
+    .bind(run_id)
+    .bind(receipt_key)
+    .fetch_optional(&mut **tx)
+    .await?
+    {
+        return BackgroundAgentEvent::try_from(row);
+    }
+
+    let diagnostics_json = bounded_background_agent_receipt_diagnostics(diagnostics_json)?;
+    let payload_json = crate::redacted_local_state_json(&serde_json::json!({
+        "receiptKey": receipt_key,
+        "runId": run_id,
+        "generation": generation,
+        "attempt": attempt,
+        "occurredAt": now,
+        "diagnostics": diagnostics_json,
+    }));
+    let serialized_payload = serde_json::to_string(&payload_json)?;
+    let seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_events WHERE run_id = ?",
+    )
+    .bind(run_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let id = sqlx::query(
+        r#"
+INSERT INTO background_agent_events (
+    run_id,
+    seq,
+    event_type,
+    payload_json,
+    created_at,
+    receipt_key
+) VALUES (?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(run_id)
+    .bind(seq)
+    .bind(event_type)
+    .bind(serialized_payload)
+    .bind(now)
+    .bind(receipt_key)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_rowid();
+
+    sqlx::query(
+        r#"
+UPDATE background_agent_runs
+SET last_event_seq = ?, updated_at = ?
+WHERE id = ?
+        "#,
+    )
+    .bind(seq)
+    .bind(now)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await?;
+    let created_at = DateTime::<Utc>::from_timestamp(now, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {now}"))?;
+    Ok(BackgroundAgentEvent {
+        id,
+        run_id: run_id.to_string(),
+        seq,
+        event_type: event_type.to_string(),
+        payload_json,
+        created_at,
+    })
+}
+
 impl StateRuntime {
     pub async fn append_background_agent_event(
         &self,
@@ -67,6 +157,32 @@ impl StateRuntime {
         let event =
             append_background_agent_event_in_tx(&mut tx, run_id, event_type, payload_json, now)
                 .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
+    pub async fn append_background_agent_lifecycle_receipt(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        receipt_key: &str,
+        generation: i64,
+        attempt: Option<i64>,
+        diagnostics_json: &serde_json::Value,
+    ) -> anyhow::Result<BackgroundAgentEvent> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let event = append_background_agent_lifecycle_receipt_in_tx(
+            &mut tx,
+            run_id,
+            event_type,
+            receipt_key,
+            generation,
+            attempt,
+            diagnostics_json,
+            now,
+        )
+        .await?;
         tx.commit().await?;
         Ok(event)
     }
@@ -157,4 +273,23 @@ GROUP BY r.id
         }
         Ok(())
     }
+}
+
+fn bounded_background_agent_receipt_diagnostics(
+    diagnostics_json: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let diagnostics_json = crate::redacted_local_state_json(diagnostics_json);
+    let serialized = serde_json::to_string(&diagnostics_json)?;
+    if serialized.len() <= MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_BYTES {
+        return Ok(diagnostics_json);
+    }
+    let preview = serialized
+        .chars()
+        .take(MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_PREVIEW_CHARS)
+        .collect::<String>();
+    Ok(serde_json::json!({
+        "truncated": true,
+        "originalBytes": serialized.len(),
+        "preview": preview,
+    }))
 }

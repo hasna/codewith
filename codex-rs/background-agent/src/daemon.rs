@@ -20,6 +20,9 @@ use crate::process_lifecycle::WorkerProcessHandle;
 use crate::process_lifecycle::WorkerProcessLogTail;
 use crate::process_lifecycle::WorkerProcessStatus;
 use crate::process_lifecycle::WorkerProcessStopReport;
+use crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use crate::BACKGROUND_AGENT_DAEMON_INCOMPATIBLE;
+use crate::BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION;
 
 const DAEMON_STATE_DIR_NAME: &str = "background-agent-daemon";
 const DAEMON_PID_FILE_NAME: &str = "daemon.json";
@@ -31,6 +34,12 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_STOP_GRACE_PERIOD: Duration = Duration::from_secs(35);
 const DAEMON_HARD_KILL_TIMEOUT: Duration = Duration::from_secs(15);
+const DAEMON_CAPABILITIES: &[&str] = &[
+    "durable-admission",
+    "exact-auth-profile",
+    "generation-fencing",
+    "lifecycle-receipts",
+];
 
 pub fn background_agent_daemon_state_dir(codex_home: &Path) -> PathBuf {
     codex_home.join(DAEMON_STATE_DIR_NAME)
@@ -101,6 +110,7 @@ impl BackgroundAgentDaemon {
         if let Some(record) = read_pid_record(&self.paths.pid_file()).await? {
             match self.controller.status(&record.handle).await? {
                 WorkerProcessStatus::Running => {
+                    ensure_daemon_record_compatible(&record)?;
                     return self
                         .output(
                             BackgroundAgentDaemonStatus::AlreadyRunning,
@@ -126,6 +136,9 @@ impl BackgroundAgentDaemon {
         let record = BackgroundAgentDaemonPidRecord {
             handle,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION,
+            admission_schema_version: BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+            capabilities: daemon_capabilities(),
         };
         if let Err(publication_error) = write_pid_record(&self.paths.pid_file(), &record).await {
             return match self.controller.stop(&record.handle).await {
@@ -214,11 +227,23 @@ impl BackgroundAgentDaemon {
             None => None,
         };
         let handle = record.as_ref().map(|record| &record.handle);
+        let version = record.as_ref().map(|record| record.version.clone());
+        let protocol_version = record.as_ref().map(|record| record.protocol_version);
+        let admission_schema_version = record
+            .as_ref()
+            .map(|record| record.admission_schema_version.clone());
+        let capabilities = record
+            .as_ref()
+            .map(|record| record.capabilities.clone())
+            .unwrap_or_default();
         Ok(BackgroundAgentDaemonOutput {
             status,
             pid: handle.map(|handle| handle.pid),
             pgid: handle.and_then(|handle| handle.pgid),
-            version: record.map(|record| record.version),
+            version,
+            protocol_version,
+            admission_schema_version,
+            capabilities,
             state_dir: self.paths.state_dir.clone(),
             pid_file: self.paths.pid_file(),
             stderr_log_path: self.paths.stderr_log_path(),
@@ -247,6 +272,9 @@ pub struct BackgroundAgentDaemonOutput {
     pub pid: Option<u32>,
     pub pgid: Option<u32>,
     pub version: Option<String>,
+    pub protocol_version: Option<u32>,
+    pub admission_schema_version: Option<String>,
+    pub capabilities: Vec<String>,
     pub state_dir: PathBuf,
     pub pid_file: PathBuf,
     pub stderr_log_path: PathBuf,
@@ -259,6 +287,34 @@ pub struct BackgroundAgentDaemonOutput {
 struct BackgroundAgentDaemonPidRecord {
     handle: WorkerProcessHandle,
     version: String,
+    #[serde(default)]
+    protocol_version: u32,
+    #[serde(default)]
+    admission_schema_version: String,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+fn daemon_capabilities() -> Vec<String> {
+    DAEMON_CAPABILITIES
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect()
+}
+
+fn ensure_daemon_record_compatible(record: &BackgroundAgentDaemonPidRecord) -> Result<()> {
+    let compatible = record.version == env!("CARGO_PKG_VERSION")
+        && record.protocol_version == BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION
+        && record.admission_schema_version == BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION
+        && DAEMON_CAPABILITIES
+            .iter()
+            .all(|capability| record.capabilities.iter().any(|value| value == capability));
+    if !compatible {
+        bail!(
+            "{BACKGROUND_AGENT_DAEMON_INCOMPATIBLE}: running daemon package/protocol/schema or capabilities do not match this client"
+        );
+    }
+    Ok(())
 }
 
 async fn read_pid_record(path: &Path) -> Result<Option<BackgroundAgentDaemonPidRecord>> {
@@ -430,7 +486,10 @@ mod tests {
             .await?;
         let record = BackgroundAgentDaemonPidRecord {
             handle: existing.clone(),
-            version: "test".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION,
+            admission_schema_version: BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+            capabilities: daemon_capabilities(),
         };
         let daemon = BackgroundAgentDaemon::new(BackgroundAgentDaemonPaths::new(
             "/bin/false",
@@ -442,6 +501,47 @@ mod tests {
 
         assert_eq!(output.status, BackgroundAgentDaemonStatus::AlreadyRunning);
         assert_eq!(output.pid, Some(existing.pid));
+        let _ = controller.stop(&existing).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn daemon_start_rejects_incompatible_running_pid_record() -> Result<()> {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let controller = WorkerProcessController::with_timeouts(
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+        );
+        let existing = controller
+            .spawn(
+                WorkerProcessCommand::new("/bin/sh", temp_dir.path().join("existing.stderr.log"))
+                    .arg("-c")
+                    .arg("sleep 60"),
+            )
+            .await?;
+        let record = BackgroundAgentDaemonPidRecord {
+            handle: existing.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION,
+            admission_schema_version: "older-schema".to_string(),
+            capabilities: daemon_capabilities(),
+        };
+        let daemon = BackgroundAgentDaemon::new(BackgroundAgentDaemonPaths::new(
+            "/bin/false",
+            temp_dir.path(),
+        ));
+        write_pid_record(&daemon.paths.pid_file(), &record).await?;
+
+        let error = daemon
+            .start()
+            .await
+            .expect_err("incompatible daemon must not be reused");
+
+        assert!(error.to_string().contains(BACKGROUND_AGENT_DAEMON_INCOMPATIBLE));
+        assert_eq!(
+            controller.status(&existing).await?,
+            WorkerProcessStatus::Running
+        );
         let _ = controller.stop(&existing).await;
         Ok(())
     }
@@ -601,6 +701,9 @@ mod tests {
                 stderr_log_path: temp_dir.path().join("stale.stderr.log"),
             },
             version: "test".to_string(),
+            protocol_version: 0,
+            admission_schema_version: String::new(),
+            capabilities: Vec::new(),
         };
         write_pid_record(&daemon.paths.pid_file(), &record).await?;
 

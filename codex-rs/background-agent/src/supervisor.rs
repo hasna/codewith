@@ -185,43 +185,37 @@ where
         ) {
             return Ok(true);
         }
-        self.store()
-            .set_desired_state(run_id, BackgroundAgentDesiredState::Stopped)
-            .await?;
-        if !is_terminal_agent_status(run.status) {
-            let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
-            let status = if terminalize_immediately {
-                BackgroundAgentRunStatus::Cancelled
-            } else {
-                BackgroundAgentRunStatus::Stopping
-            };
-            let status_reason = if terminalize_immediately {
-                "stop requested before worker claim"
-            } else {
-                "stop requested"
-            };
-            self.store()
-                .update_run_status(run_id, status, Some(status_reason))
-                .await?;
-            self.store()
-                .append_event(
-                    run_id,
-                    "agent.stopRequested",
-                    &json!({
-                        "reason": "supervisor_requested_stop",
-                    }),
-                )
-                .await?;
-            if terminalize_immediately {
-                cancel_active_pending_interactions_for_run(
-                    self.store(),
-                    run_id,
-                    "supervisor_requested_stop",
-                )
-                .await?;
-            }
+        if is_terminal_agent_status(run.status) {
+            return Ok(true);
         }
-        Ok(true)
+        let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
+        let status_reason = if terminalize_immediately {
+            "stop requested before worker claim"
+        } else {
+            "stop requested"
+        };
+        let stopped = self
+            .store()
+            .request_stop_run(
+                run_id,
+                run.supervisor_id.as_deref(),
+                run.generation,
+                status_reason,
+                &json!({
+                    "reason": "supervisor_requested_stop",
+                    "supervisorId": self.config.supervisor_id,
+                }),
+            )
+            .await?;
+        if stopped && terminalize_immediately {
+            cancel_active_pending_interactions_for_run(
+                self.store(),
+                run_id,
+                "supervisor_requested_stop",
+            )
+            .await?;
+        }
+        Ok(stopped)
     }
 
     async fn start_run(&self, run: BackgroundAgentRun) -> anyhow::Result<bool> {

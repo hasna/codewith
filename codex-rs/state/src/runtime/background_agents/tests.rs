@@ -80,6 +80,32 @@ async fn create_run_with_id(
         .await
 }
 
+fn admission_params(
+    id: &str,
+    idempotency_key: &str,
+    auth_profile_ref: &str,
+) -> BackgroundAgentRunCreateParams {
+    BackgroundAgentRunCreateParams {
+        id: id.to_string(),
+        idempotency_key: Some(idempotency_key.to_string()),
+        request_id: Some(format!("request-{idempotency_key}")),
+        source: "admission-test".to_string(),
+        prompt_snapshot_ref: format!("inline:{id}:prompt"),
+        input_snapshot_ref: None,
+        thread_id: Some(format!("thread-{idempotency_key}")),
+        thread_store_kind: "background-agent".to_string(),
+        thread_store_id: Some("state.sqlite".to_string()),
+        rollout_path: None,
+        parent_thread_id: Some("parent-thread".to_string()),
+        parent_agent_run_id: Some("parent-run".to_string()),
+        spawn_linkage_json: Some(json!({"agentPath": ["worker"]})),
+        auth_profile_ref: Some(auth_profile_ref.to_string()),
+        status_reason: Some("queued by admission test".to_string()),
+        config_fingerprint: Some("config-v1".to_string()),
+        version_fingerprint: Some("codewith.background-agent.admission.v1".to_string()),
+    }
+}
+
 #[tokio::test]
 async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -88,21 +114,21 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
         .create_background_agent_run(&BackgroundAgentRunCreateParams {
             id: "run-duplicate".to_string(),
             idempotency_key: Some("idem-1".to_string()),
-            request_id: Some("req-duplicate".to_string()),
+            request_id: Some("req-1".to_string()),
             source: "cli".to_string(),
             prompt_snapshot_ref: "prompt://duplicate".to_string(),
-            input_snapshot_ref: None,
-            thread_id: None,
+            input_snapshot_ref: Some("input://run-1".to_string()),
+            thread_id: Some("thread-1".to_string()),
             thread_store_kind: "local".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
+            thread_store_id: Some("state_5.sqlite".to_string()),
+            rollout_path: Some("/tmp/rollout.jsonl".to_string()),
+            parent_thread_id: Some("parent-thread".to_string()),
             parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: None,
+            spawn_linkage_json: Some(json!({"agentPath": ["reviewer"]})),
+            auth_profile_ref: Some("profile:default".to_string()),
             status_reason: None,
-            config_fingerprint: None,
-            version_fingerprint: None,
+            config_fingerprint: Some("cfg-1".to_string()),
+            version_fingerprint: Some("version-1".to_string()),
         })
         .await?;
 
@@ -110,6 +136,160 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
     assert_eq!(
         runtime.list_background_agent_runs(/*limit*/ None).await?,
         vec![first]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let first_params = admission_params("admitted-1", "admission-key", "profile-a");
+    let (first, created) = runtime
+        .admit_background_agent_run(&first_params, /*max_active_runs*/ 2)
+        .await?;
+    assert!(created);
+
+    let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
+    let (retry, created) = runtime
+        .admit_background_agent_run(&retry_params, /*max_active_runs*/ 2)
+        .await?;
+    assert!(!created);
+    assert_eq!(retry.id, first.id);
+    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    let events = runtime
+        .list_background_agent_events_after(first.id.as_str(), None, None)
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "agent.admitted");
+    assert_eq!(
+        events[0].payload_json.get("receiptKey"),
+        Some(&json!("admission:admission-key"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_rejects_idempotency_identity_mismatch()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    runtime
+        .admit_background_agent_run(
+            &admission_params("admitted-1", "admission-key", "profile-a"),
+            2,
+        )
+        .await?;
+
+    let error = runtime
+        .admit_background_agent_run(
+            &admission_params("admitted-2", "admission-key", "profile-b"),
+            2,
+        )
+        .await
+        .expect_err("profile mismatch must not adopt the existing run");
+
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_identity_mismatch")
+    );
+    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_counts_only_live_or_recoverable_runs()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let (first, _) = runtime
+        .admit_background_agent_run(
+            &admission_params("admitted-1", "admission-key-1", "profile-a"),
+            1,
+        )
+        .await?;
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                first.id.as_str(),
+                None,
+                0,
+                "capacity test stop",
+                &json!({"reason": "capacity_test"}),
+            )
+            .await?
+    );
+    let (_, created) = runtime
+        .admit_background_agent_run(
+            &admission_params("admitted-2", "admission-key-2", "profile-a"),
+            1,
+        )
+        .await?;
+    assert!(created);
+
+    runtime
+        .update_background_agent_run_status(
+            "admitted-2",
+            BackgroundAgentRunStatus::Orphaned,
+            Some("recoverable orphan"),
+        )
+        .await?;
+    let error = runtime
+        .admit_background_agent_run(
+            &admission_params("admitted-3", "admission-key-3", "profile-a"),
+            1,
+        )
+        .await
+        .expect_err("recoverable orphan must consume capacity");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let run = create_run(runtime.as_ref()).await?;
+    let diagnostics = json!({
+        "apiKey": "sk-secret-test-value",
+        "blob": "x".repeat(8 * 1024),
+    });
+
+    let first = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(1),
+            &diagnostics,
+        )
+        .await?;
+    let retry = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(2),
+            &diagnostics,
+        )
+        .await?;
+
+    assert_eq!(retry.id, first.id);
+    assert_eq!(retry.seq, first.seq);
+    let serialized = serde_json::to_string(&retry.payload_json)?;
+    assert!(!serialized.contains("sk-secret-test-value"));
+    assert!(serialized.len() < 2 * 1024);
+    assert_eq!(
+        retry
+            .payload_json
+            .pointer("/diagnostics/truncated")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
     );
     Ok(())
 }
@@ -921,6 +1101,63 @@ async fn stale_generation_cannot_update_status_or_create_interactions_after_recl
             .await?,
         Vec::<BackgroundAgentPendingInteraction>::new()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_generation_cannot_cancel_reclaimed_run() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let first_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+    let second_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-2", "lease-2")
+        .await?
+        .expect("orphaned run should be reclaimed");
+
+    assert!(
+        !runtime
+            .request_background_agent_stop_for_generation(
+                "run-1",
+                Some("supervisor-1"),
+                first_generation,
+                "stale stop",
+                &json!({"reason": "stale_stop"}),
+            )
+            .await?
+    );
+    let running = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(running.desired_state, BackgroundAgentDesiredState::Running);
+    assert_eq!(running.supervisor_id.as_deref(), Some("supervisor-2"));
+
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                "run-1",
+                Some("supervisor-2"),
+                second_generation,
+                "current stop",
+                &json!({"reason": "current_stop"}),
+            )
+            .await?
+    );
+    let stopped = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(stopped.desired_state, BackgroundAgentDesiredState::Stopped);
+    assert_eq!(stopped.status, BackgroundAgentRunStatus::Stopping);
     Ok(())
 }
 
