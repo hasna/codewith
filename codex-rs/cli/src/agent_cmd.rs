@@ -21,7 +21,6 @@ use codex_state::BackgroundAgentPendingInteractionStatus;
 use codex_state::BackgroundAgentRun;
 use codex_state::BackgroundAgentRunCreateParams;
 use codex_state::BackgroundAgentRunStatus;
-use codex_state::BackgroundAgentStatusSnapshotParams;
 use codex_state::StateRuntime;
 use codex_state::busy_retry::retry_on_busy;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -358,37 +357,10 @@ pub(crate) async fn run_agent_command(
             )
         }
         AgentSubcommand::Delete(cmd) => {
-            let existing_run = state_db
-                .get_background_agent_run(cmd.agent_id.as_str())
-                .await
-                .context("failed to read background agent before delete")?;
             let deleted = state_db
                 .request_background_agent_delete(cmd.agent_id.as_str())
                 .await
                 .context("failed to request background agent delete")?;
-            if deleted {
-                if existing_run.as_ref().is_some_and(|run| {
-                    !background_agent_status_is_terminal(run.status)
-                        && should_terminalize_unclaimed_agent_run(run)
-                }) {
-                    state_db
-                        .update_background_agent_run_status(
-                            cmd.agent_id.as_str(),
-                            BackgroundAgentRunStatus::Cancelled,
-                            Some("delete requested by codewith agent delete before worker claim"),
-                        )
-                        .await
-                        .context("failed to update background agent status after delete")?;
-                }
-                state_db
-                    .append_background_agent_event(
-                        cmd.agent_id.as_str(),
-                        "agent.deleteRequested",
-                        &json!({"reason": "cli_requested_delete"}),
-                    )
-                    .await
-                    .context("failed to append background agent delete event")?;
-            }
             let run = state_db
                 .get_background_agent_run(cmd.agent_id.as_str())
                 .await
@@ -997,6 +969,7 @@ async fn start_agent(
     }
 
     ensure_background_agent_supported_platform()?;
+    let daemon_output = background_agent_daemon()?.start().await?;
 
     let agent_id = new_agent_id();
     let explicit_cwd = cmd.cwd.is_some();
@@ -1011,13 +984,64 @@ async fn start_agent(
         .and_then(|context| context.auth_profile_ref.as_deref())
         .or(auth_profile)
         .map(str::to_string);
-    let prompt_snapshot_ref = format!("inline:{agent_id}:prompt");
+    let idempotency_key = cmd.idempotency_key;
+    let prompt_snapshot_identity = idempotency_key
+        .as_deref()
+        .map(|key| StateRuntime::background_agent_identity_sha256(key.as_bytes()))
+        .unwrap_or_else(|| agent_id.clone());
+    let prompt_snapshot_ref = format!("inline:{prompt_snapshot_identity}:prompt");
+    let config_identity = json!({
+        "cwd": cwd.display().to_string(),
+        "workspaceRoots": &workspace_roots,
+        "authProfileRef": &auth_profile_ref,
+        "approvalPolicy": runtime_context.and_then(|context| context.approval_policy.as_ref()),
+        "permissionProfile": &permission_profile,
+        "model": runtime_context.and_then(|context| context.model.as_deref()),
+        "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+        "serviceTier": runtime_context.and_then(|context| context.service_tier.as_deref()),
+        "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+    });
+    let config_fingerprint = StateRuntime::background_agent_identity_sha256(
+        serde_json::to_vec(&config_identity)?.as_slice(),
+    );
+    let start_event_payload = json!({
+        "cwd": cwd.display().to_string(),
+        "prompt": prompt,
+        "promptSha256": StateRuntime::background_agent_identity_sha256(prompt.as_bytes()),
+        "promptSnapshotRef": prompt_snapshot_ref.as_str(),
+    });
+    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.clone(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "snapshotSource": "codewith agent start",
+            "cwd": cwd.display().to_string(),
+            "workspaceRoots": workspace_roots,
+            "approvalPolicy": runtime_context
+                .and_then(|context| context.approval_policy.as_ref()),
+            "permissionProfile": permission_profile,
+            "model": runtime_context.and_then(|context| context.model.as_deref()),
+            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+            "serviceTier": runtime_context
+                .and_then(|context| context.service_tier.as_deref()),
+            "configFingerprint": config_fingerprint.as_str(),
+            "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            "packageFingerprint": format!(
+                "{}:{}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ),
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: Some(config_fingerprint.clone()),
+    };
     // The state DB is shared across many concurrent processes; every write
     // below retries transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT contention
     // with backoff instead of failing the whole `agent start` invocation.
     let create_params = BackgroundAgentRunCreateParams {
         id: agent_id.clone(),
-        idempotency_key: cmd.idempotency_key,
+        idempotency_key,
         request_id: None,
         source: "cli".to_string(),
         prompt_snapshot_ref: prompt_snapshot_ref.clone(),
@@ -1031,7 +1055,7 @@ async fn start_agent(
         spawn_linkage_json: None,
         auth_profile_ref: auth_profile_ref.clone(),
         status_reason: Some("queued by codewith agent start".to_string()),
-        config_fingerprint: None,
+        config_fingerprint: Some(config_fingerprint),
         version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
     };
     retry_on_busy("reconcile stale background agents before admission", || {
@@ -1039,128 +1063,17 @@ async fn start_agent(
     })
     .await
     .context("failed to reconcile stale background agents before admission")?;
-    let (run, created) = retry_on_busy("admit background agent run", || {
-        state_db
-            .admit_background_agent_run(&create_params, DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS)
-    })
-    .await
-    .context("failed to admit background agent")?;
-    let admitted_agent_id = run.id.clone();
-    let start_event_payload = json!({
-        "cwd": cwd.display().to_string(),
-        "prompt": prompt,
-        "promptSnapshotRef": run.prompt_snapshot_ref,
-    });
-    let existing_start_event = if created {
-        None
-    } else {
-        retry_on_busy("load background agent start event", || {
-            state_db.list_background_agent_events_after(
-                admitted_agent_id.as_str(),
-                /*after_seq*/ None,
-                Some(100),
+    let (run, created, _event, _execution_snapshot, _status_snapshot) =
+        retry_on_busy("admit background agent run", || {
+            state_db.admit_background_agent_run(
+                &create_params,
+                &start_event_payload,
+                &snapshot_params,
+                DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
             )
         })
         .await
-        .context("failed to load background agent start event")?
-        .into_iter()
-        .find(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "agent.started" | "agent.startRecovered"
-            )
-        })
-    };
-    let event = match existing_start_event {
-        Some(event) => event,
-        None => {
-            let event_type = if created {
-                "agent.started"
-            } else {
-                "agent.startRecovered"
-            };
-            retry_on_busy("append background agent start event", || {
-                state_db.append_background_agent_event(
-                    admitted_agent_id.as_str(),
-                    event_type,
-                    &start_event_payload,
-                )
-            })
-            .await
-            .context("failed to append background agent start event")?
-        }
-    };
-    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
-        run_id: admitted_agent_id.clone(),
-        snapshot_kind: "initial_execution_context".to_string(),
-        payload_json: json!({
-            "snapshotSource": "codewith agent start",
-            "cwd": cwd.display().to_string(),
-            "workspaceRoots": workspace_roots,
-            "authProfileRef": auth_profile_ref,
-            "approvalPolicy": runtime_context
-                .and_then(|context| context.approval_policy.as_ref()),
-            "permissionProfile": permission_profile,
-            "model": runtime_context.and_then(|context| context.model.as_deref()),
-            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
-            "serviceTier": runtime_context
-                .and_then(|context| context.service_tier.as_deref()),
-            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-        }),
-        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-        config_fingerprint: None,
-    };
-    let execution_snapshot_exists =
-        retry_on_busy("load background agent execution snapshot", || {
-            state_db.get_latest_background_agent_execution_snapshot(admitted_agent_id.as_str())
-        })
-        .await
-        .context("failed to load background agent execution snapshot")?
-        .is_some();
-    if !execution_snapshot_exists {
-        retry_on_busy("create background agent execution snapshot", || {
-            state_db.create_background_agent_execution_snapshot(&snapshot_params)
-        })
-        .await
-        .context("failed to create background agent execution snapshot")?;
-    }
-    let status_snapshot_exists = retry_on_busy("load background agent status snapshot", || {
-        state_db.get_background_agent_status_snapshot(admitted_agent_id.as_str())
-    })
-    .await
-    .context("failed to load background agent status snapshot")?
-    .is_some();
-    if !status_snapshot_exists {
-        let snapshot_run = retry_on_busy("reload background agent for status snapshot", || {
-            state_db.get_background_agent_run(admitted_agent_id.as_str())
-        })
-        .await
-        .context("failed to reload background agent for status snapshot")?
-        .unwrap_or_else(|| run.clone());
-        let last_event_seq = snapshot_run.last_event_seq.max(event.seq);
-        let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
-            run_id: admitted_agent_id.clone(),
-            seq: last_event_seq,
-            status: snapshot_run.status,
-            desired_state: snapshot_run.desired_state,
-            summary: Some(snapshot_run.status.as_str().to_string()),
-            pending_interaction_count: 0,
-            last_event_seq,
-            payload_json: json!({"phase": snapshot_run.status.as_str()}),
-        };
-        retry_on_busy("create background agent status snapshot", || {
-            state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
-        })
-        .await
-        .context("failed to create background agent status snapshot")?;
-    }
-    let daemon = background_agent_daemon()?;
-    let daemon_output = daemon.start().await?;
-    let run = retry_on_busy("reload admitted background agent", || {
-        state_db.get_background_agent_run(admitted_agent_id.as_str())
-    })
-    .await?
-    .unwrap_or(run);
+        .context("failed to admit background agent")?;
     Ok(json!({ "agent": run_json(run), "created": created, "daemon": daemon_output }))
 }
 
@@ -1213,6 +1126,13 @@ async fn stop_agent(
     else {
         return Ok(None);
     };
+    if matches!(
+        run.retention_state,
+        codex_state::BackgroundAgentRetentionState::DeleteRequested
+            | codex_state::BackgroundAgentRetentionState::Deleted
+    ) {
+        return Ok(Some(run));
+    }
     if !background_agent_status_is_terminal(run.status) {
         let mut observed = run;
         let mut stopped = false;

@@ -82,6 +82,8 @@ use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -251,7 +253,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_start_records_initial_goal_objective() -> Result<()> {
+async fn agent_start_binds_prompt_and_initial_goal_to_idempotency_identity() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     write_config(codex_home.path(), server.uri().as_str())?;
@@ -262,6 +264,7 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         codex_home.path(),
     );
     params.initial_goal_objective = Some("Investigate flaky regression".to_string());
+    let exact_retry_params = params.clone();
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let start = start_agent(&mut mcp, params).await?;
@@ -275,7 +278,7 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         Some(&json!("Investigate flaky regression"))
     );
 
-    let retry = start_agent(
+    let conflicting_retry = start_agent_error(
         &mut mcp,
         start_params(
             "retry with different params",
@@ -284,8 +287,18 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         ),
     )
     .await?;
+    assert_eq!(
+        conflicting_retry
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!("background_agent_admission_identity_mismatch"))
+    );
 
+    let retry = start_agent(&mut mcp, exact_retry_params).await?;
     assert_eq!(retry.agent.agent_id, start.agent.agent_id);
+    assert_eq!(retry.event, start.event);
     assert_eq!(
         retry.execution_snapshot.payload.get("initialGoalObjective"),
         Some(&json!("Investigate flaky regression"))
@@ -413,10 +426,7 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         start.execution_snapshot.payload.get("workspaceRoots"),
         Some(&json!(["/tmp/client-root"]))
     );
-    assert_eq!(
-        start.execution_snapshot.payload.get("authProfileRef"),
-        Some(&JsonValue::Null)
-    );
+    assert_eq!(start.execution_snapshot.payload.get("authProfileRef"), None);
     assert_eq!(
         start.execution_snapshot.payload.get("approvalPolicy"),
         Some(&json!("never"))
@@ -478,6 +488,24 @@ async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() ->
             .as_ref()
             .and_then(|data| data.get("errorCode")),
         Some(&json!(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH))
+    );
+    assert_eq!(
+        error.error.data,
+        Some(json!({
+            "errorCode": BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH,
+        }))
+    );
+
+    let mut omitted_schema = start_params(
+        "accept omitted schema",
+        Some("omitted-schema".to_string()),
+        codex_home.path(),
+    );
+    omitted_schema.version_fingerprint = None;
+    let compatible = start_agent(&mut mcp, omitted_schema).await?;
+    assert_eq!(
+        compatible.agent.version_fingerprint.as_deref(),
+        Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
     );
 
     let mut schema_mismatch = start_params(
@@ -3364,36 +3392,71 @@ async fn seed_queued_agent_run(
     idempotency_key: Option<String>,
     prompt: &str,
 ) -> Result<()> {
+    let start_event_payload = json!({
+        "cwd": null,
+        "prompt": prompt,
+        "promptSha256": format!("{:x}", Sha256::digest(prompt.as_bytes())),
+        "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
+        "initialGoalObjective": null,
+    });
+    let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.to_string(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "snapshotSource": "agent/start",
+            "cwd": null,
+            "initialGoalObjective": null,
+            "workspaceRoots": null,
+            "approvalPolicy": null,
+            "permissionProfile": null,
+            "sandboxPolicy": null,
+            "networkPolicy": null,
+            "model": null,
+            "provider": null,
+            "serviceTier": null,
+            "mcpToolAllowlist": null,
+            "envSnapshotPolicy": "inherit-minimal",
+            "shellSnapshot": null,
+            "configSourceHashes": null,
+            "maxRuntimeSeconds": null,
+            "maxTokens": null,
+            "configFingerprint": "cfg-test",
+            "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            "packageFingerprint": format!(
+                "{}:{}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ),
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+            "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: Some("cfg-test".to_string()),
+    };
     state_db
-        .create_background_agent_run(&BackgroundAgentRunCreateParams {
-            id: agent_id.to_string(),
-            idempotency_key,
-            request_id: None,
-            source: "quota-test".to_string(),
-            prompt_snapshot_ref: format!("inline:{agent_id}:prompt"),
-            input_snapshot_ref: None,
-            thread_id: None,
-            thread_store_kind: "background-agent".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
-            parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: None,
-            status_reason: Some("queued by quota test".to_string()),
-            config_fingerprint: Some("cfg-test".to_string()),
-            version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
-        })
-        .await?;
-    state_db
-        .append_background_agent_event(
-            agent_id,
-            "agent.started",
-            &json!({
-                "cwd": null,
-                "prompt": prompt,
-                "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
-            }),
+        .admit_background_agent_run(
+            &BackgroundAgentRunCreateParams {
+                id: agent_id.to_string(),
+                idempotency_key,
+                request_id: None,
+                source: "quota-test".to_string(),
+                prompt_snapshot_ref: format!("inline:{agent_id}:prompt"),
+                input_snapshot_ref: None,
+                thread_id: None,
+                thread_store_kind: "background-agent".to_string(),
+                thread_store_id: None,
+                rollout_path: None,
+                parent_thread_id: None,
+                parent_agent_run_id: None,
+                spawn_linkage_json: None,
+                auth_profile_ref: None,
+                status_reason: Some("queued by quota test".to_string()),
+                config_fingerprint: Some("cfg-test".to_string()),
+                version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
+            },
+            &start_event_payload,
+            &execution_snapshot_params,
+            /*max_active_runs*/ 1_000,
         )
         .await?;
     Ok(())

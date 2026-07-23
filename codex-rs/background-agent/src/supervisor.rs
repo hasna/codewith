@@ -11,10 +11,10 @@ use crate::AgentSnapshotStore;
 use crate::AgentSupervisor;
 use crate::BackgroundAgentDesiredState;
 use crate::BackgroundAgentExecutionHandleParams;
+use crate::BackgroundAgentExecutionSnapshotParams;
 use crate::BackgroundAgentPendingInteractionStatus;
 use crate::BackgroundAgentRun;
 use crate::BackgroundAgentRunStatus;
-use crate::BackgroundAgentStatusSnapshotParams;
 use crate::PendingInteractionLedger;
 use crate::SupervisorReconcileReport;
 
@@ -232,6 +232,7 @@ where
                 run_id.as_str(),
                 self.config.supervisor_id.as_str(),
                 process_lease_id.as_str(),
+                crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
             )
             .await?
         else {
@@ -262,59 +263,62 @@ where
                     self.execution.stop(handle).await?;
                     return Ok(false);
                 }
-                self.store()
-                    .update_run_status(
-                        run_id.as_str(),
-                        BackgroundAgentRunStatus::Running,
-                        Some("worker started"),
+                let event_payload = json!({
+                    "processLeaseId": handle.process_lease_id,
+                    "pid": handle.pid,
+                    "pgid": handle.pgid,
+                    "jobId": handle.job_id,
+                    "generation": generation,
+                });
+                let running = self
+                    .store()
+                    .append_status_event_for_supervisor(
+                        crate::BackgroundAgentStatusEventForSupervisorParams {
+                            run_id: run_id.as_str(),
+                            supervisor_id: self.config.supervisor_id.as_str(),
+                            generation,
+                            status: BackgroundAgentRunStatus::Running,
+                            status_reason: Some("worker started"),
+                            event_type: "agent.workerStarted",
+                            event_payload_json: &event_payload,
+                            summary: Some("Running"),
+                            pending_interaction_count: 0,
+                            status_payload_json: &json!({
+                                "phase": "running",
+                            }),
+                        },
                     )
                     .await?;
-                self.store()
-                    .append_event(
-                        run_id.as_str(),
-                        "agent.workerStarted",
-                        &json!({
-                            "processLeaseId": handle.process_lease_id,
-                            "pid": handle.pid,
-                            "pgid": handle.pgid,
-                            "jobId": handle.job_id,
-                            "generation": generation,
-                        }),
-                    )
-                    .await?;
-                self.store()
-                    .upsert_status_snapshot(BackgroundAgentStatusSnapshotParams {
-                        run_id: run_id.clone(),
-                        seq: generation,
-                        status: BackgroundAgentRunStatus::Running,
-                        desired_state: BackgroundAgentDesiredState::Running,
-                        summary: Some("Running".to_string()),
-                        pending_interaction_count: 0,
-                        last_event_seq: 0,
-                        payload_json: json!({
-                            "phase": "running",
-                        }),
-                    })
-                    .await?;
+                if running.is_none() {
+                    self.execution.stop(handle).await?;
+                    return Ok(false);
+                }
                 Ok(true)
             }
             Err(err) => {
                 let reason = format!("worker start failed: {err}");
-                self.store()
-                    .update_run_status(
-                        run_id.as_str(),
-                        BackgroundAgentRunStatus::Failed,
-                        Some(reason.as_str()),
-                    )
-                    .await?;
-                self.store()
-                    .append_event(
-                        run_id.as_str(),
-                        "agent.workerStartFailed",
-                        &json!({
-                            "generation": generation,
-                            "error": err.to_string(),
-                        }),
+                let event_payload = json!({
+                    "generation": generation,
+                    "error": err.to_string(),
+                });
+                let _failed = self
+                    .store()
+                    .append_status_event_for_supervisor(
+                        crate::BackgroundAgentStatusEventForSupervisorParams {
+                            run_id: run_id.as_str(),
+                            supervisor_id: self.config.supervisor_id.as_str(),
+                            generation,
+                            status: BackgroundAgentRunStatus::Failed,
+                            status_reason: Some(reason.as_str()),
+                            event_type: "agent.workerStartFailed",
+                            event_payload_json: &event_payload,
+                            summary: Some(reason.as_str()),
+                            pending_interaction_count: 0,
+                            status_payload_json: &json!({
+                                "phase": "failed",
+                                "reason": reason,
+                            }),
+                        },
                     )
                     .await?;
                 Ok(false)
@@ -782,26 +786,43 @@ mod tests {
     }
 
     async fn create_run(runtime: &StateRuntime, id: &str) -> anyhow::Result<BackgroundAgentRun> {
-        runtime
-            .create_background_agent_run(&BackgroundAgentRunCreateParams {
-                id: id.to_string(),
-                idempotency_key: None,
-                request_id: None,
-                source: "test".to_string(),
-                prompt_snapshot_ref: format!("prompt://{id}"),
-                input_snapshot_ref: None,
-                thread_id: None,
-                thread_store_kind: "local".to_string(),
-                thread_store_id: None,
-                rollout_path: None,
-                parent_thread_id: None,
-                parent_agent_run_id: None,
-                spawn_linkage_json: None,
-                auth_profile_ref: None,
-                status_reason: Some("created".to_string()),
-                config_fingerprint: None,
-                version_fingerprint: None,
-            })
-            .await
+        let (run, _, _, _, _) = runtime
+            .admit_background_agent_run(
+                &BackgroundAgentRunCreateParams {
+                    id: id.to_string(),
+                    idempotency_key: None,
+                    request_id: None,
+                    source: "test".to_string(),
+                    prompt_snapshot_ref: format!("prompt://{id}"),
+                    input_snapshot_ref: None,
+                    thread_id: None,
+                    thread_store_kind: "local".to_string(),
+                    thread_store_id: None,
+                    rollout_path: None,
+                    parent_thread_id: None,
+                    parent_agent_run_id: None,
+                    spawn_linkage_json: None,
+                    auth_profile_ref: None,
+                    status_reason: Some("created".to_string()),
+                    config_fingerprint: None,
+                    version_fingerprint: Some(
+                        crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+                    ),
+                },
+                &json!({
+                    "prompt": format!("prompt for {id}"),
+                    "promptSnapshotRef": format!("prompt://{id}"),
+                }),
+                &BackgroundAgentExecutionSnapshotParams {
+                    run_id: id.to_string(),
+                    snapshot_kind: "initial_execution_context".to_string(),
+                    payload_json: json!({"cwd": "/tmp"}),
+                    recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+                    config_fingerprint: None,
+                },
+                /*max_active_runs*/ 8,
+            )
+            .await?;
+        Ok(run)
     }
 }

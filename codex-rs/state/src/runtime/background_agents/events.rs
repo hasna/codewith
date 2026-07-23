@@ -1,8 +1,13 @@
 use super::*;
 use crate::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
+use sha2::Digest;
+use sha2::Sha256;
 
 const MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_BYTES: usize = 4 * 1024;
 const MAX_BACKGROUND_AGENT_RECEIPT_DIAGNOSTICS_PREVIEW_CHARS: usize = 1_024;
+const MAX_BACKGROUND_AGENT_RECEIPT_KEY_BYTES: usize = 256;
+const BACKGROUND_AGENT_RECEIPT_IDENTITY_MISMATCH: &str =
+    "background agent lifecycle receipt identity mismatch";
 
 pub(in crate::runtime) async fn append_background_agent_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
@@ -69,22 +74,29 @@ pub(in crate::runtime) async fn append_background_agent_lifecycle_receipt_in_tx(
     diagnostics_json: &serde_json::Value,
     now: i64,
 ) -> anyhow::Result<BackgroundAgentEvent> {
-    if let Some(row) = sqlx::query_as::<_, BackgroundAgentEventRow>(
-        r#"
-SELECT id, run_id, seq, event_type, payload_json, created_at
-FROM background_agent_events
-WHERE run_id = ? AND receipt_key = ?
-        "#,
+    validate_background_agent_receipt_key(receipt_key)?;
+    let operation_identity_sha256 = background_agent_receipt_operation_identity_sha256(
+        event_type,
+        generation,
+        attempt,
+        diagnostics_json,
+    )?;
+    let diagnostics_json = bounded_background_agent_receipt_diagnostics(diagnostics_json)?;
+    if let Some(event) = get_background_agent_lifecycle_receipt_in_tx(
+        tx,
+        run_id,
+        event_type,
+        receipt_key,
+        generation,
+        attempt,
+        &diagnostics_json,
+        operation_identity_sha256.as_str(),
     )
-    .bind(run_id)
-    .bind(receipt_key)
-    .fetch_optional(&mut **tx)
     .await?
     {
-        return BackgroundAgentEvent::try_from(row);
+        return Ok(event);
     }
 
-    let diagnostics_json = bounded_background_agent_receipt_diagnostics(diagnostics_json)?;
     let payload_json = crate::redacted_local_state_json(&serde_json::json!({
         "receiptKey": receipt_key,
         "runId": run_id,
@@ -115,12 +127,40 @@ INSERT INTO background_agent_events (
     .bind(run_id)
     .bind(seq)
     .bind(event_type)
-    .bind(serialized_payload)
+    .bind(serialized_payload.as_str())
     .bind(now)
     .bind(receipt_key)
     .execute(&mut **tx)
     .await?
     .last_insert_rowid();
+    sqlx::query(
+        r#"
+INSERT INTO background_agent_lifecycle_receipts (
+    run_id,
+    receipt_key,
+    event_id,
+    event_seq,
+    event_type,
+    generation,
+    attempt,
+    operation_identity_sha256,
+    payload_json,
+    created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(run_id)
+    .bind(receipt_key)
+    .bind(id)
+    .bind(seq)
+    .bind(event_type)
+    .bind(generation)
+    .bind(attempt)
+    .bind(operation_identity_sha256)
+    .bind(serialized_payload)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
 
     sqlx::query(
         r#"
@@ -146,6 +186,76 @@ WHERE id = ?
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(in crate::runtime) async fn get_background_agent_lifecycle_receipt_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    event_type: &str,
+    receipt_key: &str,
+    generation: i64,
+    attempt: Option<i64>,
+    diagnostics_json: &serde_json::Value,
+    operation_identity_sha256: &str,
+) -> anyhow::Result<Option<BackgroundAgentEvent>> {
+    validate_background_agent_receipt_key(receipt_key)?;
+    let row = sqlx::query_as::<_, (i64, i64, String, i64, Option<i64>, String, String, i64)>(
+        r#"
+SELECT
+    event_id,
+    event_seq,
+    event_type,
+    generation,
+    attempt,
+    operation_identity_sha256,
+    payload_json,
+    created_at
+FROM background_agent_lifecycle_receipts
+WHERE run_id = ? AND receipt_key = ?
+        "#,
+    )
+    .bind(run_id)
+    .bind(receipt_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((
+        event_id,
+        event_seq,
+        stored_event_type,
+        stored_generation,
+        stored_attempt,
+        stored_operation_identity_sha256,
+        payload_json,
+        created_at,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let payload_json: serde_json::Value = serde_json::from_str(payload_json.as_str())?;
+    let legacy_identity_matches = stored_operation_identity_sha256.is_empty()
+        && payload_json.get("diagnostics") == Some(diagnostics_json);
+    if stored_event_type != event_type
+        || stored_generation != generation
+        || stored_attempt != attempt
+        || (stored_operation_identity_sha256 != operation_identity_sha256
+            && !legacy_identity_matches)
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_RECEIPT_IDENTITY_MISMATCH}: \
+             receipt key is already bound to a different lifecycle operation"
+        );
+    }
+    let created_at = DateTime::<Utc>::from_timestamp(created_at, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {created_at}"))?;
+    Ok(Some(BackgroundAgentEvent {
+        id: event_id,
+        run_id: run_id.to_string(),
+        seq: event_seq,
+        event_type: stored_event_type,
+        payload_json,
+        created_at,
+    }))
+}
+
 impl StateRuntime {
     pub async fn append_background_agent_event(
         &self,
@@ -160,6 +270,55 @@ impl StateRuntime {
                 .await?;
         tx.commit().await?;
         Ok(event)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_background_agent_event_for_supervisor(
+        &self,
+        run_id: &str,
+        supervisor_id: &str,
+        generation: i64,
+        event_type: &str,
+        payload_json: &serde_json::Value,
+        allow_terminal_current: bool,
+    ) -> anyhow::Result<Option<BackgroundAgentEvent>> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current: Option<i64> = sqlx::query_scalar(
+            r#"
+SELECT 1
+FROM background_agent_runs
+WHERE
+    id = ?
+    AND supervisor_id = ?
+    AND generation = ?
+    AND (
+        ? = 1
+        OR status IN (
+            'starting',
+            'running',
+            'waiting_on_approval',
+            'waiting_on_user',
+            'stopping'
+        )
+    )
+            "#,
+        )
+        .bind(run_id)
+        .bind(supervisor_id)
+        .bind(generation)
+        .bind(allow_terminal_current)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(_) = current else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let event =
+            append_background_agent_event_in_tx(&mut tx, run_id, event_type, payload_json, now)
+                .await?;
+        tx.commit().await?;
+        Ok(Some(event))
     }
 
     pub async fn append_background_agent_lifecycle_receipt(
@@ -276,7 +435,35 @@ GROUP BY r.id
     }
 }
 
-fn bounded_background_agent_receipt_diagnostics(
+fn validate_background_agent_receipt_key(receipt_key: &str) -> anyhow::Result<()> {
+    if receipt_key.len() > MAX_BACKGROUND_AGENT_RECEIPT_KEY_BYTES {
+        anyhow::bail!(
+            "background agent lifecycle receipt key exceeds \
+             {MAX_BACKGROUND_AGENT_RECEIPT_KEY_BYTES} bytes"
+        );
+    }
+    Ok(())
+}
+
+pub(in crate::runtime) fn background_agent_receipt_operation_identity_sha256(
+    event_type: &str,
+    generation: i64,
+    attempt: Option<i64>,
+    diagnostics_json: &serde_json::Value,
+) -> anyhow::Result<String> {
+    let identity = serde_json::json!({
+        "eventType": event_type,
+        "generation": generation,
+        "attempt": attempt,
+        "diagnostics": diagnostics_json,
+    });
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&identity)?)
+    ))
+}
+
+pub(in crate::runtime) fn bounded_background_agent_receipt_diagnostics(
     diagnostics_json: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
     let diagnostics_json = crate::redacted_local_state_json(diagnostics_json);
