@@ -42,6 +42,43 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.77] - 2026-07-23
+
+Tag: `rust-v0.1.77`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.77>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.76...rust-v0.1.77>
+
+Release headlined by multi-agent orchestration upgrades: the parent agent is
+now auto-notified when a sub-agent completes (wake-if-idle, with an honest wait
+and follow-up guidance), `spawn_agent` can pick any model, provider, and
+reasoning effort per sub-agent, and a running goal can be paused and resumed. It
+is paired with TUI polish — per-reset expiry in the banked-reset menu and a
+status line that wraps across up to three rows — plus fixes for friendly agent
+names in the tree path, compaction on over-window history, platform-independent
+`fleet_comms` hash checks, and ref-scoped release concurrency.
+
+### Added
+
+- Core: auto-notify the parent agent when a sub-agent completes (wake-if-idle),
+  with an honest wait and follow-up guidance. (#364)
+- Core: let `spawn_agent` choose any model, provider, and reasoning effort for
+  sub-agents. (#385)
+- Goal: pause and resume a running goal (model-callable and via the `/goal`
+  command). (#384)
+- TUI: show the expiry for each banked reset in the interactive menu. (#382)
+- TUI: wrap the status line across up to 3 rows before truncating. (#386)
+
+### Fixed
+
+- TUI/Core: give spawned agents friendly names in the tree path (`root/name`
+  instead of `root/uuid`). (#387)
+- Core: don't let compaction fail on over-window history; chunk and truncate
+  before summarizing. (#383)
+- Hooks: make `fleet_comms` trusted-hash checks platform-independent to fix a
+  red Windows Bazel build. (#381)
+- CI/Release: ref-scope the `rust-release` concurrency group so re-tags and
+  releases don't cancel each other. (#380)
+
 ## [0.1.76] - 2026-07-22
 
 Tag: `rust-v0.1.76`
