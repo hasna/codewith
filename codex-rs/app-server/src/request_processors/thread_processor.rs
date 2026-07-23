@@ -453,22 +453,8 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     const DYNAMIC_TOOL_NAME_MAX_LEN: usize = 128;
     const DYNAMIC_TOOL_NAMESPACE_MAX_LEN: usize = 64;
     const DYNAMIC_TOOL_IDENTIFIER_PATTERN: &str = "^[a-zA-Z0-9_-]+$";
-    const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
-        "api_tool",
-        "browser",
-        "computer",
-        "container",
-        "file_search",
-        "functions",
-        "image_gen",
-        "multi_tool_use",
-        "python",
-        "python_user_visible",
-        "submodel_delegator",
-        "terminal",
-        "tool_search",
-        "web",
-    ];
+    // Single source of truth: codex_tools::RESERVED_RESPONSES_NAMESPACES.
+    let reserved_responses_namespaces = codex_tools::RESERVED_RESPONSES_NAMESPACES;
 
     fn escape_identifier_for_error(value: &str) -> String {
         value.escape_default().to_string()
@@ -537,7 +523,7 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
                     "dynamic tool namespace is reserved for {name}: {namespace}"
                 ));
             }
-            if RESERVED_RESPONSES_NAMESPACES.contains(&namespace) {
+            if reserved_responses_namespaces.contains(&namespace) {
                 return Err(format!(
                     "dynamic tool namespace collides with a reserved Responses API namespace for {name}: {namespace}",
                 ));

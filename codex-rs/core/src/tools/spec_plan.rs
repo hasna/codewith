@@ -349,9 +349,45 @@ fn build_model_visible_specs_and_registry(
         .filter(|spec| {
             namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
         })
+        .filter(namespace_spec_is_safe_for_wire)
         .collect();
 
     (model_visible_specs, registry)
+}
+
+/// Defense-in-depth guard against a first-party namespace tool being assembled
+/// under a Responses-API-reserved built-in namespace.
+///
+/// This is the durable regression guard for the `image_gen.imagegen` 400: the
+/// standalone image tool must live under the non-reserved `images` namespace,
+/// never `image_gen`. If a future refactor (or a second registration path)
+/// reintroduces a reserved namespace, this fails loudly in debug/test builds
+/// and, in release builds, drops the offending tool so the request still ships
+/// (minus one tool) instead of the API rejecting the entire turn.
+///
+/// `web` is intentionally allowlisted (see
+/// `codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES`): standalone web
+/// search advertises the built-in `web.run` schema on purpose.
+fn namespace_spec_is_safe_for_wire(spec: &ToolSpec) -> bool {
+    let ToolSpec::Namespace(namespace) = spec else {
+        return true;
+    };
+    let forbidden = codex_tools::is_forbidden_first_party_namespace(&namespace.name);
+    debug_assert!(
+        !forbidden,
+        "first-party tool assembled under Responses-API-reserved namespace `{namespace}` \
+         (wire name `{namespace}.*`); rename it to a non-reserved namespace, or add it to \
+         codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES if it matches the built-in schema",
+        namespace = namespace.name,
+    );
+    if forbidden {
+        warn!(
+            namespace = %namespace.name,
+            "dropping first-party tool under reserved Responses namespace to avoid a runtime 400",
+        );
+        return false;
+    }
+    true
 }
 
 fn spec_for_model_request(
