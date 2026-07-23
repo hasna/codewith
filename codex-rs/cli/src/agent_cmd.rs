@@ -16,7 +16,6 @@ use codex_background_agent::daemon::background_agent_daemon_state_dir;
 use codex_background_agent::daemon::ensure_supported_platform as ensure_background_agent_supported_platform;
 use codex_core::config::find_codex_home;
 use codex_protocol::models::PermissionProfile;
-use codex_state::BackgroundAgentDesiredState;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
 use codex_state::BackgroundAgentPendingInteractionStatus;
 use codex_state::BackgroundAgentRun;
