@@ -18,8 +18,8 @@ use crate::wrapping::adaptive_wrap_lines;
 /// boundary unless the user invokes the interrupt binding to send them
 /// immediately. The edit hint at the bottom only appears when there are actual
 /// queued user inputs to pop back into the composer. Because some terminals
-/// intercept certain modifier-key combinations, the displayed binding is
-/// configurable via [`set_edit_binding`](Self::set_edit_binding).
+/// intercept certain modifier-key combinations, the displayed bindings are
+/// supplied by the resolved runtime keymap.
 pub(crate) struct PendingInputPreview {
     pub pending_steers: Vec<String>,
     pub rejected_steers: Vec<String>,
@@ -27,6 +27,8 @@ pub(crate) struct PendingInputPreview {
     /// Key combination rendered in the hint line.  Defaults to Alt+Up but may
     /// be overridden for terminals where that chord is unavailable.
     edit_binding: Option<key_hint::KeyBinding>,
+    /// Key combination rendered for submitting all queued follow-ups now.
+    flush_binding: Option<key_hint::KeyBinding>,
     /// Key combination rendered for immediately interrupting and sending steers.
     interrupt_binding: Option<key_hint::KeyBinding>,
 }
@@ -40,6 +42,7 @@ impl PendingInputPreview {
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
             edit_binding: Some(key_hint::alt(KeyCode::Up)),
+            flush_binding: None,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc)),
         }
     }
@@ -49,6 +52,10 @@ impl PendingInputPreview {
     /// corresponding key event handler.
     pub(crate) fn set_edit_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
         self.edit_binding = binding;
+    }
+
+    pub(crate) fn set_flush_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
+        self.flush_binding = binding;
     }
 
     pub(crate) fn set_interrupt_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
@@ -151,6 +158,19 @@ impl PendingInputPreview {
             }
         }
 
+        if (!self.rejected_steers.is_empty() || !self.queued_messages.is_empty())
+            && let Some(flush_binding) = self.flush_binding
+        {
+            lines.push(
+                Line::from(vec![
+                    "    ".into(),
+                    flush_binding.into(),
+                    " submit all now".into(),
+                ])
+                .dim(),
+            );
+        }
+
         if !self.queued_messages.is_empty()
             && let Some(edit_binding) = self.edit_binding
         {
@@ -205,6 +225,7 @@ mod tests {
     fn render_one_message() {
         let mut queue = PendingInputPreview::new();
         queue.queued_messages.push("Hello, world!".to_string());
+        queue.set_flush_binding(Some(key_hint::shift(KeyCode::Enter)));
         let width = 40;
         let height = queue.desired_height(width);
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -302,7 +323,7 @@ mod tests {
         let height = queue.desired_height(width);
         assert_eq!(
             height, 3,
-            "expected header, one message row, and hint row for URL-like token"
+            "expected header, one message row, and one hint row for URL-like token"
         );
 
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -344,6 +365,21 @@ mod tests {
         queue.render(Rect::new(0, 0, width, height), &mut buf);
         assert_snapshot!(
             "render_one_pending_steer_with_remapped_interrupt_binding",
+            format!("{buf:?}")
+        );
+    }
+
+    #[test]
+    fn render_queued_message_with_remapped_flush_binding() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_messages.push("Please continue.".to_string());
+        queue.set_flush_binding(Some(key_hint::plain(KeyCode::F(12))));
+        let width = 48;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!(
+            "render_queued_message_with_remapped_flush_binding",
             format!("{buf:?}")
         );
     }

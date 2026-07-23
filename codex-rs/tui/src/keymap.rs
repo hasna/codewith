@@ -84,6 +84,8 @@ pub(crate) struct AppKeymap {
 pub(crate) struct ChatKeymap {
     /// Interrupt the active turn.
     pub(crate) interrupt_turn: Vec<KeyBinding>,
+    /// Flush all queued follow-up messages into the active turn as one steer.
+    pub(crate) flush_queued_messages: Vec<KeyBinding>,
     /// Decrease the active reasoning effort.
     pub(crate) decrease_reasoning_effort: Vec<KeyBinding>,
     /// Increase the active reasoning effort.
@@ -437,6 +439,11 @@ impl RuntimeKeymap {
                 &defaults.chat.interrupt_turn,
                 "tui.keymap.chat.interrupt_turn",
             )?,
+            flush_queued_messages: resolve_bindings(
+                keymap.chat.flush_queued_messages.as_ref(),
+                &defaults.chat.flush_queued_messages,
+                "tui.keymap.chat.flush_queued_messages",
+            )?,
             decrease_reasoning_effort: resolve_bindings(
                 keymap.chat.decrease_reasoning_effort.as_ref(),
                 &defaults.chat.decrease_reasoning_effort,
@@ -761,6 +768,12 @@ impl RuntimeKeymap {
             chat.increase_reasoning_effort
                 .retain(|binding| *binding != key_hint::shift(KeyCode::Up));
         }
+        if keymap.chat.flush_queued_messages.is_none()
+            && configured_main_surface_alias_is_used(keymap, "shift-enter")
+        {
+            chat.flush_queued_messages
+                .retain(|binding| *binding != key_hint::shift(KeyCode::Enter));
+        }
 
         let pager = PagerKeymap {
             scroll_up: resolve_local!(keymap, defaults, pager, scroll_up),
@@ -931,6 +944,7 @@ impl RuntimeKeymap {
             },
             chat: ChatKeymap {
                 interrupt_turn: default_bindings![plain(KeyCode::Esc)],
+                flush_queued_messages: default_bindings![shift(KeyCode::Enter)],
                 decrease_reasoning_effort: default_bindings![
                     alt(KeyCode::Char(',')),
                     shift(KeyCode::Down)
@@ -1190,6 +1204,10 @@ impl RuntimeKeymap {
                 ("cycle_permissions", self.app.cycle_permissions.as_slice()),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
+                    "chat.flush_queued_messages",
+                    self.chat.flush_queued_messages.as_slice(),
+                ),
+                (
                     "chat.decrease_reasoning_effort",
                     self.chat.decrease_reasoning_effort.as_slice(),
                 ),
@@ -1233,6 +1251,10 @@ impl RuntimeKeymap {
                 ("toggle_raw_output", self.app.toggle_raw_output.as_slice()),
                 ("cycle_permissions", self.app.cycle_permissions.as_slice()),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
+                (
+                    "chat.flush_queued_messages",
+                    self.chat.flush_queued_messages.as_slice(),
+                ),
                 (
                     "chat.decrease_reasoning_effort",
                     self.chat.decrease_reasoning_effort.as_slice(),
@@ -1345,6 +1367,10 @@ impl RuntimeKeymap {
                 ("clear_terminal", self.app.clear_terminal.as_slice()),
                 ("chat.interrupt_turn", self.chat.interrupt_turn.as_slice()),
                 (
+                    "chat.flush_queued_messages",
+                    self.chat.flush_queued_messages.as_slice(),
+                ),
+                (
                     "chat.decrease_reasoning_effort",
                     self.chat.decrease_reasoning_effort.as_slice(),
                 ),
@@ -1411,11 +1437,18 @@ impl RuntimeKeymap {
                 ("editor.kill_line_end", self.editor.kill_line_end.as_slice()),
                 ("editor.yank", self.editor.yank.as_slice()),
             ],
-            [(
-                "composer.submit",
-                "editor.insert_newline",
-                key_hint::plain(KeyCode::Enter),
-            )],
+            [
+                (
+                    "composer.submit",
+                    "editor.insert_newline",
+                    key_hint::plain(KeyCode::Enter),
+                ),
+                (
+                    "chat.flush_queued_messages",
+                    "editor.insert_newline",
+                    key_hint::shift(KeyCode::Enter),
+                ),
+            ],
         )?;
 
         validate_unique(
@@ -2110,6 +2143,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_default_flush_queued_messages_editor_overlap() {
+        let mut keymap = TuiKeymap::default();
+        keymap.chat.flush_queued_messages = Some(one("alt-enter"));
+
+        let err = RuntimeKeymap::from_config(&keymap).expect_err("expected shadowing conflict");
+        assert!(err.contains("chat.flush_queued_messages"));
+        assert!(err.contains("editor.insert_newline"));
+    }
+
+    #[test]
     fn rejects_shadowing_editor_binding_from_outer_main_handler() {
         let mut keymap = TuiKeymap::default();
         keymap.global.copy = Some(one("ctrl-y"));
@@ -2339,6 +2382,33 @@ mod tests {
             runtime.chat.increase_reasoning_effort,
             vec![key_hint::alt(KeyCode::Char('.'))]
         );
+    }
+
+    #[test]
+    fn configured_main_surface_binding_prunes_flush_queued_messages_fallback_alias() {
+        // Shift+Enter is only a fallback default for the flush action: an explicit binding on
+        // the same main-surface input path keeps the key. `composer.submit` cannot be used here
+        // because binding it to Shift+Enter shadows `editor.insert_newline` and is rejected
+        // outright, so exercise the alias through the editor binding that owns the key.
+        let mut keymap = TuiKeymap::default();
+        keymap.editor.insert_newline = Some(one("shift-enter"));
+
+        let runtime = RuntimeKeymap::from_config(&keymap).expect("config should parse");
+
+        assert_eq!(
+            runtime.editor.insert_newline,
+            vec![key_hint::shift(KeyCode::Enter)]
+        );
+        assert!(runtime.chat.flush_queued_messages.is_empty());
+    }
+
+    #[test]
+    fn explicit_flush_queued_messages_binding_still_conflicts_with_composer_binding() {
+        let mut keymap = TuiKeymap::default();
+        keymap.composer.submit = Some(one("shift-enter"));
+        keymap.chat.flush_queued_messages = Some(one("shift-enter"));
+
+        expect_conflict(&keymap, "chat.flush_queued_messages", "composer.submit");
     }
 
     #[test]
@@ -2882,6 +2952,23 @@ mod tests {
                 key_hint::shift(KeyCode::Enter),
                 key_hint::alt(KeyCode::Enter),
             ]
+        );
+    }
+
+    #[test]
+    fn default_flush_queued_messages_uses_allowed_shift_enter_overlap() {
+        let runtime =
+            RuntimeKeymap::from_config(&TuiKeymap::default()).expect("default keymap should parse");
+
+        assert_eq!(
+            runtime.chat.flush_queued_messages,
+            vec![key_hint::shift(KeyCode::Enter)]
+        );
+        assert!(
+            runtime
+                .editor
+                .insert_newline
+                .contains(&key_hint::shift(KeyCode::Enter))
         );
     }
 

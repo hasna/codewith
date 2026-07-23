@@ -114,8 +114,28 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn enqueue_rejected_steer_matching_items(&mut self, items: &[UserInput]) -> bool {
+        let compare_key = Self::pending_steer_compare_key_from_items(items);
+        let Some(index) = self
+            .input_queue
+            .pending_steers
+            .iter()
+            .position(|pending| pending.compare_key == compare_key)
+        else {
+            tracing::warn!(
+                "received active-turn-not-steerable response without a matching pending steer"
+            );
+            return false;
+        };
+        self.enqueue_rejected_steer_at(index)
+    }
+
     pub(crate) fn enqueue_rejected_steer(&mut self) -> bool {
-        let Some(pending_steer) = self.input_queue.pending_steers.pop_front() else {
+        self.enqueue_rejected_steer_at(/*index*/ 0)
+    }
+
+    fn enqueue_rejected_steer_at(&mut self, index: usize) -> bool {
+        let Some(pending_steer) = self.input_queue.pending_steers.remove(index) else {
             tracing::warn!(
                 "received active-turn-not-steerable error without a matching pending steer"
             );

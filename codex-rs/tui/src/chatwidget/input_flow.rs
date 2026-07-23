@@ -99,6 +99,106 @@ impl ChatWidget {
         }
     }
 
+    /// Merge every queued follow-up visible at this keypress into one active-turn steer.
+    ///
+    /// Rejected steers retain dequeue priority, followed by locally queued messages in FIFO
+    /// order. Queued slash and shell actions are intentionally literalized into the merged steer,
+    /// and shell escape handling stays disabled so no queued text executes locally. Cloning all
+    /// four deques preserves their message/history alignment until the merged submission is
+    /// accepted, while leaving already-submitted pending steers and the live composer draft
+    /// untouched.
+    pub(super) fn flush_queued_messages(&mut self) {
+        let queued_message_count = self.input_queue.queued_user_messages.len();
+        let queued_history_count = self.input_queue.queued_user_message_history_records.len();
+        let rejected_messages = self
+            .input_queue
+            .rejected_steers_queue
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rejected_history_records = self
+            .input_queue
+            .rejected_steer_history_records
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        rejected_history_records.resize(
+            rejected_messages.len(),
+            UserMessageHistoryRecord::UserMessageText,
+        );
+
+        let queued_messages = self
+            .input_queue
+            .queued_user_messages
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut queued_history_records = self
+            .input_queue
+            .queued_user_message_history_records
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        queued_history_records.resize(
+            queued_messages.len(),
+            UserMessageHistoryRecord::UserMessageText,
+        );
+
+        let mut messages = rejected_messages
+            .into_iter()
+            .zip(rejected_history_records)
+            .collect::<Vec<_>>();
+        messages.extend(
+            queued_messages
+                .into_iter()
+                .zip(queued_history_records)
+                .map(|(message, history_record)| (message.into_user_message(), history_record)),
+        );
+        let (message, history_record) = merge_user_messages_with_history_record(messages);
+        let actual_chars = message.text.chars().count();
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+            self.add_error_message(format!(
+                "Queued messages exceed the maximum combined length of \
+                 {MAX_USER_INPUT_TEXT_CHARS} characters ({actual_chars} provided). \
+                 Edit or remove queued messages before submitting them together."
+            ));
+            return;
+        }
+        let composer_snapshot = self.bottom_pane.composer_draft_snapshot();
+        let accepted = self.resubmit_queued_user_message_with_history_record(
+            message,
+            history_record,
+            ShellEscapePolicy::Disallow,
+        );
+        if accepted {
+            self.input_queue.rejected_steers_queue.clear();
+            self.input_queue.rejected_steer_history_records.clear();
+            // A successful resubmit can queue the merged message at the front while session,
+            // auth, or usage-limit state is being resolved. Remove only the original entries
+            // from the back so that accepted replacement survives.
+            let queued_message_retained_count = self
+                .input_queue
+                .queued_user_messages
+                .len()
+                .saturating_sub(queued_message_count);
+            self.input_queue
+                .queued_user_messages
+                .truncate(queued_message_retained_count);
+            let queued_history_retained_count = self
+                .input_queue
+                .queued_user_message_history_records
+                .len()
+                .saturating_sub(queued_history_count);
+            self.input_queue
+                .queued_user_message_history_records
+                .truncate(queued_history_retained_count);
+        } else {
+            self.bottom_pane
+                .restore_composer_draft_snapshot(composer_snapshot);
+        }
+        self.refresh_pending_input_preview();
+    }
+
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
         if self.input_queue.suppress_queue_autosend {

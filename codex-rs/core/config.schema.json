@@ -3161,6 +3161,7 @@
             "chat": {
               "decrease_reasoning_effort": null,
               "edit_queued_message": null,
+              "flush_queued_messages": null,
               "increase_reasoning_effort": null,
               "interrupt_turn": null
             },
@@ -3492,6 +3493,14 @@
             }
           ],
           "description": "Edit the most recently queued message."
+        },
+        "flush_queued_messages": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Flush all queued follow-up messages into the active turn as one steer."
         },
         "increase_reasoning_effort": {
           "anyOf": [
@@ -3827,6 +3836,7 @@
           "default": {
             "decrease_reasoning_effort": null,
             "edit_queued_message": null,
+            "flush_queued_messages": null,
             "increase_reasoning_effort": null,
             "interrupt_turn": null
           }

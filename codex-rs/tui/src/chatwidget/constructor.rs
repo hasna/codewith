@@ -301,6 +301,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_queued_message_edit_binding(widget.queued_message_edit_hint_binding);
+        widget.bottom_pane.set_queued_message_flush_binding(
+            widget.chat_keymap.flush_queued_messages.first().copied(),
+        );
         #[cfg(target_os = "windows")]
         widget.bottom_pane.set_windows_degraded_sandbox_active(
             crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED

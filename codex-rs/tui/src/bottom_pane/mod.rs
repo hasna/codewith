@@ -473,6 +473,12 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Update the key hint for immediately submitting every queued follow-up.
+    pub(crate) fn set_queued_message_flush_binding(&mut self, binding: Option<KeyBinding>) {
+        self.pending_input_preview.set_flush_binding(binding);
+        self.request_redraw();
+    }
+
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
         self.composer.set_vim_enabled(enabled);
         self.request_redraw();
@@ -856,6 +862,14 @@ impl BottomPane {
 
     pub(crate) fn composer_draft_snapshot(&self) -> chat_composer::ComposerDraftSnapshot {
         self.composer.draft_snapshot()
+    }
+
+    pub(crate) fn restore_composer_draft_snapshot(
+        &mut self,
+        snapshot: chat_composer::ComposerDraftSnapshot,
+    ) {
+        self.composer.restore_draft_snapshot(snapshot);
+        self.request_redraw();
     }
 
     #[cfg(test)]

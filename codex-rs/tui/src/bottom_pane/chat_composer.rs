@@ -418,6 +418,7 @@ pub(crate) struct ComposerDraftSnapshot {
     pub(crate) remote_image_urls: Vec<String>,
     pub(crate) mention_bindings: Vec<MentionBinding>,
     pub(crate) pending_pastes: Vec<(String, String)>,
+    cursor: usize,
 }
 
 const FOOTER_SPACING_HEIGHT: u16 = 0;
@@ -1484,7 +1485,24 @@ impl ChatComposer {
             remote_image_urls: self.remote_image_urls(),
             mention_bindings: self.mention_bindings(),
             pending_pastes: self.pending_pastes(),
+            cursor: self.current_cursor(),
         }
+    }
+
+    pub(crate) fn restore_draft_snapshot(&mut self, snapshot: ComposerDraftSnapshot) {
+        self.restore_draft(ComposerDraft {
+            text: snapshot.text,
+            text_elements: snapshot.text_elements,
+            local_image_paths: snapshot
+                .local_images
+                .into_iter()
+                .map(|image| image.path)
+                .collect(),
+            remote_image_urls: snapshot.remote_image_urls,
+            mention_bindings: snapshot.mention_bindings,
+            pending_pastes: snapshot.pending_pastes,
+            cursor: snapshot.cursor,
+        });
     }
 
     #[cfg(test)]
