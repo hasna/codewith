@@ -74,6 +74,17 @@ pub struct ThreadScheduleRunForGoalFinishParams<'a> {
     pub expected_goal_id: &'a str,
 }
 
+#[derive(Clone)]
+pub struct ThreadScheduleRunStartParams<'a> {
+    pub schedule_id: &'a str,
+    pub run_id: &'a str,
+    pub lease_id: &'a str,
+    pub turn_id: &'a str,
+    pub goal_id: Option<&'a str>,
+    pub now: DateTime<Utc>,
+    pub lease_duration: Duration,
+}
+
 struct ScheduleNesting {
     parent_schedule_id: Option<String>,
     nesting_depth: i64,
@@ -1044,52 +1055,67 @@ RETURNING
 
     pub async fn mark_thread_schedule_run_started(
         &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        turn_id: &str,
+        params: ThreadScheduleRunStartParams<'_>,
     ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
-        self.mark_thread_schedule_run_started_with_goal(
+        crate::busy_retry::retry_on_busy("mark thread schedule run started", || {
+            self.mark_thread_schedule_run_started_once(params.clone())
+        })
+        .await
+    }
+
+    async fn mark_thread_schedule_run_started_once(
+        &self,
+        params: ThreadScheduleRunStartParams<'_>,
+    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
+        let ThreadScheduleRunStartParams {
             schedule_id,
             run_id,
             lease_id,
             turn_id,
-            /*goal_id*/ None,
+            goal_id,
+            now,
+            lease_duration,
+        } = params;
+        let now_ms = datetime_to_epoch_millis(now);
+        let lease_expires_at_ms =
+            datetime_to_epoch_millis(now + chrono::Duration::from_std(lease_duration)?);
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let schedule_result = sqlx::query(
+            r#"
+UPDATE thread_schedules
+SET lease_expires_at_ms = MAX(lease_expires_at_ms, ?),
+    updated_at_ms = ?
+WHERE schedule_id = ?
+  AND lease_id = ?
+  AND lease_expires_at_ms > ?
+  AND EXISTS (
+      SELECT 1
+      FROM thread_schedule_runs
+      WHERE thread_schedule_runs.schedule_id = thread_schedules.schedule_id
+        AND thread_schedule_runs.run_id = ?
+        AND thread_schedule_runs.lease_id = ?
+        AND thread_schedule_runs.status = 'leased'
+  )
+            "#,
         )
-        .await
-    }
-
-    pub async fn mark_thread_schedule_run_started_for_goal(
-        &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        turn_id: &str,
-        goal_id: &str,
-    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
-        self.mark_thread_schedule_run_started_with_goal(
-            schedule_id,
-            run_id,
-            lease_id,
-            turn_id,
-            Some(goal_id),
-        )
-        .await
-    }
-
-    async fn mark_thread_schedule_run_started_with_goal(
-        &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        turn_id: &str,
-        goal_id: Option<&str>,
-    ) -> anyhow::Result<Option<crate::ThreadScheduleRun>> {
+        .bind(lease_expires_at_ms)
+        .bind(now_ms)
+        .bind(schedule_id)
+        .bind(lease_id)
+        .bind(now_ms)
+        .bind(run_id)
+        .bind(lease_id)
+        .execute(&mut *tx)
+        .await?;
+        if schedule_result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
         let sql = run_returning(
             r#"
 UPDATE thread_schedule_runs
 SET status = ?, turn_id = ?, goal_id = ?
-WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
+WHERE schedule_id = ? AND run_id = ? AND lease_id = ? AND status = 'leased'
 RETURNING
 "#,
         );
@@ -1100,10 +1126,15 @@ RETURNING
             .bind(schedule_id)
             .bind(run_id)
             .bind(lease_id)
-            .fetch_optional(self.pool.as_ref())
+            .fetch_optional(&mut *tx)
             .await?;
-        row.map(|row| thread_schedule_run_from_row(&row))
-            .transpose()
+        let Some(row) = row else {
+            tx.rollback().await?;
+            return Ok(None);
+        };
+        let run = thread_schedule_run_from_row(&row)?;
+        tx.commit().await?;
+        Ok(Some(run))
     }
 
     pub async fn extend_thread_schedule_lease(
@@ -2482,12 +2513,15 @@ mod tests {
             .expect("one-time schedule should claim");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &claim.run.run_id,
-                "lease-once",
-                "turn-once",
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-once",
+                turn_id: "turn-once",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("run should update")
             .expect("run should exist");
@@ -2613,12 +2647,15 @@ mod tests {
             .expect("schedule should claim");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &original_claim.run.run_id,
-                "lease-before-restart",
-                "turn-before-restart",
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &original_claim.run.run_id,
+                lease_id: "lease-before-restart",
+                turn_id: "turn-before-restart",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(30),
+            })
             .await
             .expect("run should start")
             .expect("run should still exist");
@@ -2710,13 +2747,15 @@ mod tests {
             .expect("schedule should claim");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started_for_goal(
-                &schedule.schedule_id,
-                &original_claim.run.run_id,
-                "lease-goal-restart",
-                "turn-goal-restart",
-                &goal.goal_id,
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &original_claim.run.run_id,
+                lease_id: "lease-goal-restart",
+                turn_id: "turn-goal-restart",
+                goal_id: Some(&goal.goal_id),
+                now,
+                lease_duration: Duration::from_secs(30),
+            })
             .await
             .expect("goal run should start")
             .expect("goal run should still exist");
@@ -3427,12 +3466,15 @@ mod tests {
             .expect("schedule should claim");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &claim.run.run_id,
-                "lease-terminal-race",
-                "turn-terminal-race",
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-terminal-race",
+                turn_id: "turn-terminal-race",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(30),
+            })
             .await
             .expect("run should start")
             .expect("run should still exist");
@@ -3483,6 +3525,112 @@ mod tests {
         assert_eq!(0, stats.running_runs);
         assert_eq!(i64::from(replacement.is_some()), stats.leased_runs);
         assert_eq!(if replacement.is_some() { 2 } else { 1 }, stats.total_runs);
+    }
+
+    #[tokio::test]
+    async fn expired_lease_reaper_prevents_delayed_start_resurrection() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = test_thread_id(/*id*/ 47);
+        upsert_test_thread(runtime.as_ref(), thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(runtime.as_ref(), thread_id, "delayed start", Some(now)).await;
+        let original_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-delayed-start", Duration::from_secs(30))
+            .await
+            .expect("initial claim should succeed")
+            .expect("schedule should claim");
+        let contender = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("contending state runtime should initialize");
+        let retry_at = now + chrono::Duration::seconds(31);
+
+        let delayed_start = runtime.thread_schedules().mark_thread_schedule_run_started(
+            ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &original_claim.run.run_id,
+                lease_id: "lease-delayed-start",
+                turn_id: "turn-delayed-start",
+                goal_id: None,
+                now: retry_at,
+                lease_duration: Duration::from_secs(30),
+            },
+        );
+        let replacement = contender.thread_schedules().claim_due_thread_schedule(
+            retry_at,
+            "lease-replacement",
+            Duration::from_secs(30),
+        );
+        let (delayed_start, replacement) = tokio::join!(delayed_start, replacement);
+        assert!(
+            delayed_start
+                .expect("delayed start should not error")
+                .is_none(),
+            "a reaped expired run must never become dispatchable"
+        );
+        let replacement = replacement
+            .expect("expired lease reaper should not error")
+            .expect("expired run should produce one replacement claim");
+
+        let original_run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&original_claim.run.run_id)
+            .await
+            .expect("original run should load")
+            .expect("original run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Failed, original_run.status);
+        assert_eq!(Some(retry_at), original_run.completed_at);
+        assert_eq!(
+            Some("scheduled run lease expired before terminal completion".to_string()),
+            original_run.error
+        );
+        let replacement_started_at = retry_at + chrono::Duration::seconds(1);
+        let replacement_run = runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &replacement.run.run_id,
+                lease_id: "lease-replacement",
+                turn_id: "turn-replacement",
+                goal_id: None,
+                now: replacement_started_at,
+                lease_duration: Duration::from_secs(30),
+            })
+            .await
+            .expect("replacement start should not error")
+            .expect("replacement should remain the sole dispatchable run");
+        assert_eq!(
+            crate::ThreadScheduleRunStatus::Running,
+            replacement_run.status
+        );
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run(
+                    &schedule.schedule_id,
+                    &replacement.run.run_id,
+                    "lease-replacement",
+                    replacement_started_at + chrono::Duration::seconds(1),
+                    Some(now + chrono::Duration::hours(1)),
+                )
+                .await
+                .expect("replacement should remain finalizable")
+        );
+
+        let stats = runtime
+            .thread_schedules()
+            .get_thread_schedule_stats(&schedule.schedule_id)
+            .await
+            .expect("schedule stats should load");
+        assert_eq!(2, stats.total_runs);
+        assert_eq!(0, stats.leased_runs);
+        assert_eq!(0, stats.running_runs);
+        assert_eq!(1, stats.completed_runs);
+        assert_eq!(1, stats.failed_runs);
     }
 
     #[tokio::test]
@@ -3714,12 +3862,15 @@ mod tests {
 
         let running = runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &completed_schedule.schedule_id,
-                &completed_claim.run.run_id,
-                "lease-complete",
-                "turn-1",
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &completed_schedule.schedule_id,
+                run_id: &completed_claim.run.run_id,
+                lease_id: "lease-complete",
+                turn_id: "turn-1",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("run should update")
             .expect("run should exist");
@@ -4290,12 +4441,15 @@ mod tests {
             .expect("schedule should claim");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &claim.run.run_id,
-                "lease-live",
-                "turn-live",
-            )
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-live",
+                turn_id: "turn-live",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("run should update")
             .expect("run should exist");
