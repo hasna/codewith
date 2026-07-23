@@ -63,6 +63,7 @@ use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeReleaseResponse;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
@@ -216,7 +217,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     assert_eq!(second_events_page.data[0].event_type, "agent.started");
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
     let all_events =
-        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(200)).await?;
     let event_types = all_events
         .data
         .iter()
@@ -827,7 +828,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     assert_eq!(agent.agent_id, agent_id);
     assert!(agent.thread_id.is_some());
 
-    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(20)).await?;
+    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(200)).await?;
     let event_types = events
         .data
         .iter()
@@ -1264,7 +1265,7 @@ async fn worker_fails_when_turn_completes_without_agent_message() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()> {
+async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server =
         create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
@@ -1315,13 +1316,21 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
     )
     .await?;
     assert_eq!(rejected.error.code, -32001);
-    assert!(
+    assert_eq!(
         rejected
             .error
-            .message
-            .contains("background agent queue is overloaded"),
-        "unexpected overloaded error: {}",
-        rejected.error.message
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED))
+    );
+    assert_eq!(
+        rejected
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("maxActiveRuns")),
+        Some(&json!(full.max_active_runs_per_user))
     );
 
     state_db
