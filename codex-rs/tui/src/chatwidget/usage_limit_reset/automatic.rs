@@ -202,7 +202,12 @@ impl ChatWidget {
     }
 
     pub(super) fn fallback_auth_profile_switch_after_reset_unavailable(&mut self) {
-        if self.try_auth_profile_switch_after_reset_unavailable() {
+        // Reached only after a genuine usage-limit failure whose reset recovery is
+        // unavailable, so the current profile is authoritatively exhausted: switch even
+        // when the authoritative read has not yet cached the exhausted window.
+        if self.try_auth_profile_switch_for_usage_limit(
+            /*is_usage_limit*/ true, /*error_message*/ None,
+        ) {
             return;
         }
         let retry_delay = self.maybe_schedule_usage_self_heal_retry(
