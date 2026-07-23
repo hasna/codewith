@@ -1367,15 +1367,16 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
     )
     .await?;
 
-    let retry = start_agent(
-        &mut mcp,
-        start_params(
-            "idempotent retry is not new pressure",
-            Some("quota-idempotency-0".to_string()),
-            codex_home.path(),
-        ),
-    )
-    .await?;
+    let mut retry_params = start_params(
+        "quota run 0",
+        Some("quota-idempotency-0".to_string()),
+        codex_home.path(),
+    );
+    retry_params.source = Some("quota-test".to_string());
+    retry_params.prompt_snapshot_ref = Some("inline:quota-run-0:prompt".to_string());
+    retry_params.cwd = None;
+    retry_params.execution_context = None;
+    let retry = start_agent(&mut mcp, retry_params).await?;
     assert_eq!(retry.agent.agent_id, first_agent_id);
 
     Ok(())
