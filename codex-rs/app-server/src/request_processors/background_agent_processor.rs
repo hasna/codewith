@@ -61,10 +61,10 @@ use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED;
-use codex_background_agent::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionSnapshot;
@@ -77,10 +77,10 @@ use codex_background_agent::BackgroundAgentRunCreateParams;
 use codex_background_agent::BackgroundAgentRunStatus;
 use codex_background_agent::BackgroundAgentStatusSnapshot;
 use codex_background_agent::BackgroundAgentStatusSnapshotParams;
+use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::LifecycleAction;
 use codex_background_agent::LifecycleEffect;
 use codex_background_agent::PendingInteractionLedger;
-use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::lifecycle_effect_for;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationAction;
@@ -187,15 +187,12 @@ impl BackgroundAgentRequestProcessor {
             config_fingerprint,
             version_fingerprint,
         };
-        let (run, created_new_run) = retry_transient_sqlite_busy(
-            "admit background agent",
-            || {
-                state_db.admit_run(
-                    create_params.clone(),
-                    DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
-                )
-            },
-        )
+        let (run, created_new_run) = retry_transient_sqlite_busy("admit background agent", || {
+            state_db.admit_run(
+                create_params.clone(),
+                DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+            )
+        })
         .await
         .map_err(map_background_agent_admission_error)?;
         let execution_payload = initial_execution_snapshot_payload(
@@ -823,8 +820,7 @@ impl BackgroundAgentRequestProcessor {
         &self,
     ) -> Result<AgentDaemonDiagnosticsResponse, JSONRPCErrorError> {
         let Some(state_db) = self.state_db.clone() else {
-            let quota =
-                AgentQuotaSnapshot::empty(DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS);
+            let quota = AgentQuotaSnapshot::empty(DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS);
             return Ok(AgentDaemonDiagnosticsResponse {
                 state_store_available: false,
                 active_run_count: quota.active_run_count,

@@ -48,9 +48,6 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
-use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
-use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
-use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_app_server_protocol::WorktreeAttachResponse;
 use codex_app_server_protocol::WorktreeCleanupPolicy;
 use codex_app_server_protocol::WorktreeCleanupResponse;
@@ -66,6 +63,9 @@ use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeReleaseResponse;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -213,10 +213,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     )
     .await?;
     assert_eq!(second_events_page.data.len(), 1);
-    assert_eq!(
-        second_events_page.data[0].event_type,
-        "agent.started"
-    );
+    assert_eq!(second_events_page.data[0].event_type, "agent.started");
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
     let all_events =
         agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
@@ -474,7 +471,11 @@ async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() ->
     profile_mismatch.auth_profile_ref = Some("client-selected-auth-profile".to_string());
     let error = start_agent_error(&mut mcp, profile_mismatch).await?;
     assert_eq!(
-        error.error.data.as_ref().and_then(|data| data.get("errorCode")),
+        error
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
         Some(&json!(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH))
     );
 
@@ -486,7 +487,11 @@ async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() ->
     schema_mismatch.version_fingerprint = Some("older-schema".to_string());
     let error = start_agent_error(&mut mcp, schema_mismatch).await?;
     assert_eq!(
-        error.error.data.as_ref().and_then(|data| data.get("errorCode")),
+        error
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
         Some(&json!(BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH))
     );
     assert!(agent_list(&mut mcp).await?.data.is_empty());

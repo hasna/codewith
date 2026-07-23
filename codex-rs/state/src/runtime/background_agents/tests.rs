@@ -141,8 +141,8 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted()
--> anyhow::Result<()> {
+async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() -> anyhow::Result<()>
+{
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     let first_params = admission_params("admitted-1", "admission-key", "profile-a");
     let (first, created) = runtime
@@ -170,8 +170,7 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted()
 }
 
 #[tokio::test]
-async fn background_agent_admission_rejects_idempotency_identity_mismatch()
--> anyhow::Result<()> {
+async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     runtime
         .admit_background_agent_run(
@@ -198,8 +197,7 @@ async fn background_agent_admission_rejects_idempotency_identity_mismatch()
 }
 
 #[tokio::test]
-async fn background_agent_admission_counts_only_live_or_recoverable_runs()
--> anyhow::Result<()> {
+async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
     let (first, _) = runtime
         .admit_background_agent_run(

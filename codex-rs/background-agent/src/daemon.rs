@@ -14,15 +14,15 @@ use tokio::time::Instant;
 #[cfg(unix)]
 use tokio::time::sleep;
 
+use crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use crate::BACKGROUND_AGENT_DAEMON_INCOMPATIBLE;
+use crate::BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION;
 use crate::process_lifecycle::WorkerProcessCommand;
 use crate::process_lifecycle::WorkerProcessController;
 use crate::process_lifecycle::WorkerProcessHandle;
 use crate::process_lifecycle::WorkerProcessLogTail;
 use crate::process_lifecycle::WorkerProcessStatus;
 use crate::process_lifecycle::WorkerProcessStopReport;
-use crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
-use crate::BACKGROUND_AGENT_DAEMON_INCOMPATIBLE;
-use crate::BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION;
 
 const DAEMON_STATE_DIR_NAME: &str = "background-agent-daemon";
 const DAEMON_PID_FILE_NAME: &str = "daemon.json";
@@ -537,7 +537,11 @@ mod tests {
             .await
             .expect_err("incompatible daemon must not be reused");
 
-        assert!(error.to_string().contains(BACKGROUND_AGENT_DAEMON_INCOMPATIBLE));
+        assert!(
+            error
+                .to_string()
+                .contains(BACKGROUND_AGENT_DAEMON_INCOMPATIBLE)
+        );
         assert_eq!(
             controller.status(&existing).await?,
             WorkerProcessStatus::Running

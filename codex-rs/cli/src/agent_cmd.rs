@@ -1041,10 +1041,8 @@ async fn start_agent(
     .await
     .context("failed to reconcile stale background agents before admission")?;
     let (run, created) = retry_on_busy("admit background agent run", || {
-        state_db.admit_background_agent_run(
-            &create_params,
-            DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
-        )
+        state_db
+            .admit_background_agent_run(&create_params, DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS)
     })
     .await
     .context("failed to admit background agent")?;
