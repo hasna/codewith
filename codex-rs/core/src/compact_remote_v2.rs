@@ -10,6 +10,8 @@ use crate::compact::compaction_status_from_result;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote::build_compact_request_log_data;
+use crate::compact_remote::drop_oldest_history_to_fit_context_window;
+use crate::compact_remote::estimate_tool_spec_tokens;
 use crate::compact_remote::log_remote_compact_failure;
 use crate::compact_remote::process_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
@@ -365,6 +367,16 @@ async fn run_remote_compact_v2_attempt(
         &CancellationToken::new(),
     )
     .await?;
+    let tools = tool_router.model_visible_specs();
+    // Guarantee the compaction request fits the context window even when tool-output rewriting
+    // above could not shrink it enough (a long thread dominated by prior summaries, retained user
+    // messages, or reasoning). Trims only this local request clone, never session history.
+    drop_oldest_history_to_fit_context_window(
+        &mut history,
+        turn_context.as_ref(),
+        &base_instructions,
+        estimate_tool_spec_tokens(&tools),
+    );
 
     let window_id = sess.runtime_model_client().current_window_id();
     let turn_metadata_header = turn_context
@@ -384,7 +396,7 @@ async fn run_remote_compact_v2_attempt(
     input.push(ResponseItem::CompactionTrigger);
     let prompt = Prompt {
         input,
-        tools: tool_router.model_visible_specs(),
+        tools,
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions: base_instructions.clone(),
         personality: turn_context.personality,

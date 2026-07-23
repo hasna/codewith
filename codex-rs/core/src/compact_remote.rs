@@ -38,6 +38,9 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
 use codex_rollout_trace::CompactionTraceContext;
+use codex_tools::ToolSpec;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::info;
@@ -335,18 +338,28 @@ async fn run_remote_compact_attempt(
         *active_context_tokens_before = (*active_context_tokens_before)
             .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens));
     }
-    let prompt_input = history
-        .clone()
-        .for_prompt(&turn_context.model_info.input_modalities);
     let tool_router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
         &CancellationToken::new(),
     )
     .await?;
+    let tools = tool_router.model_visible_specs();
+    // Guarantee the compaction request fits the context window even when tool-output rewriting
+    // above could not shrink it enough (a long thread dominated by prior summaries, retained user
+    // messages, or reasoning). Trims only this local request clone, never session history.
+    drop_oldest_history_to_fit_context_window(
+        &mut history,
+        turn_context.as_ref(),
+        &base_instructions,
+        estimate_tool_spec_tokens(&tools),
+    );
+    let prompt_input = history
+        .clone()
+        .for_prompt(&turn_context.model_info.input_modalities);
     let prompt = Prompt {
         input: prompt_input,
-        tools: tool_router.model_visible_specs(),
+        tools,
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         personality: turn_context.personality,
@@ -547,6 +560,102 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     }
 
     (rewritten_outputs, estimated_deleted_tokens)
+}
+
+/// Fraction of the model context window held back, when we must drop history to fit a
+/// compaction request, for the compaction output the model generates (summary + reasoning) and
+/// for slack in our lower-bound token estimate. Mirrors the 90%-of-window headroom convention in
+/// [`codex_protocol::openai_models::ModelInfo::auto_compact_token_limit`].
+const COMPACT_REQUEST_OUTPUT_RESERVE_DIVISOR: i64 = 10;
+
+/// Approximate the model-visible token cost of the request's tools.
+///
+/// [`ContextManager::estimate_token_count_with_base_instructions`] counts only history items plus
+/// base instructions; it does not account for the tool specs that ride along in every compaction
+/// request. On long threads with many tools that omission can be large enough to push the real
+/// request past the context window even when the history-only estimate looks safe, so it is folded
+/// into the drop-oldest budget below.
+pub(crate) fn estimate_tool_spec_tokens(tools: &[ToolSpec]) -> i64 {
+    let bytes = serde_json::to_string(tools)
+        .map(|serialized| i64::try_from(serialized.len()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    approx_tokens_from_byte_count_i64(bytes)
+}
+
+/// Last-resort bound that keeps a compaction request within the target model's context window.
+///
+/// [`trim_function_call_history_to_fit_context_window`] only rewrites oversized *tool outputs*.
+/// After a thread has been compacted a few times its history is dominated by items that cannot be
+/// rewritten (prior compaction summaries, retained user messages, reasoning), so a long thread
+/// grows into a state where even after output rewriting the request still exceeds the window.
+/// Sending it unbounded makes the compaction request itself fail with
+/// [`CodexErr::ContextWindowExceeded`] — precisely when compaction is needed most.
+///
+/// As a last resort this drops the oldest history items (preserving call/output pairs via
+/// [`ContextManager::remove_first_item`], matching the local compaction path) until the estimated
+/// request fits `context_window` minus room for the request tools and the compaction output.
+///
+/// Only the local request clone is trimmed, never session history, so a genuinely unrecoverable
+/// overflow still surfaces an error without destroying the user's thread. If base instructions
+/// alone already exceed the budget, dropping items cannot make the request fit, so the history is
+/// left untouched and the request proceeds (surfacing a graceful error instead of silently losing
+/// the whole thread). At least one item is always retained so there is something to summarize.
+/// Returns the number of history items dropped.
+pub(crate) fn drop_oldest_history_to_fit_context_window(
+    history: &mut ContextManager,
+    turn_context: &TurnContext,
+    base_instructions: &BaseInstructions,
+    request_tool_tokens: i64,
+) -> usize {
+    let Some(context_window) = turn_context.model_context_window() else {
+        return 0;
+    };
+    let output_reserve = (context_window / COMPACT_REQUEST_OUTPUT_RESERVE_DIVISOR).max(0);
+    let budget = context_window
+        .saturating_sub(request_tool_tokens.max(0))
+        .saturating_sub(output_reserve);
+
+    // Dropping items only reduces the estimate down toward the base-instructions floor. If that
+    // floor already meets or exceeds the budget (e.g. tiny or heavily over-subscribed context
+    // windows), trimming would destroy the whole thread without ever fitting, so leave it alone and
+    // let the request surface a graceful error instead of silently losing everything.
+    let base_tokens =
+        i64::try_from(approx_token_count(&base_instructions.text)).unwrap_or(i64::MAX);
+    if budget <= 0 || base_tokens >= budget {
+        return 0;
+    }
+
+    let mut dropped = 0usize;
+    while history.raw_items().len() > 1 {
+        let Some(estimate) = history.estimate_token_count_with_base_instructions(base_instructions)
+        else {
+            break;
+        };
+        if estimate <= budget {
+            break;
+        }
+        let before = history.raw_items().len();
+        history.remove_first_item();
+        let after = history.raw_items().len();
+        if after >= before {
+            // Defensive: guarantee forward progress so the loop always terminates even if a future
+            // `remove_first_item` change ever fails to shrink the history.
+            break;
+        }
+        dropped = dropped.saturating_add(before - after);
+    }
+
+    if dropped > 0 {
+        info!(
+            turn_id = %turn_context.sub_id,
+            dropped,
+            budget,
+            model_context_window_tokens = ?turn_context.model_context_window(),
+            "dropped oldest history to fit remote compaction request within the context window"
+        );
+    }
+
+    dropped
 }
 
 fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseItem> {

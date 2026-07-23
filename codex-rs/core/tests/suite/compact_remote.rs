@@ -1537,6 +1537,167 @@ async fn remote_compact_v1_context_overflow_does_not_delete_long_history() -> Re
     Ok(())
 }
 
+/// Builds a history whose user messages are large enough that the whole thread far exceeds a
+/// modest context window, so remote compaction must drop the oldest items to fit its request.
+fn big_injected_history(item_count: usize, filler_chars: usize) -> Vec<ResponseItem> {
+    (0..item_count)
+        .map(|index| ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!("BIG_HISTORY_{index:03} {}", "x".repeat(filler_chars)),
+            }],
+            phase: None,
+        })
+        .collect()
+}
+
+/// Regression: a v1 (`/responses/compact`) compaction whose history exceeds the model context
+/// window must trim the oldest items to fit and succeed, instead of erroring with
+/// `ContextWindowExceeded` exactly when compaction is needed most.
+#[cfg_attr(target_os = "windows", ignore)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v1_over_window_history_trims_request_and_succeeds() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let context_window = 40_000;
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config.model_context_window = Some(context_window);
+                config.model_auto_compact_token_limit = Some(1_000_000);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    // 50 user messages of ~1,500 tokens each (~75k tokens) dwarf the 40k window, so even after
+    // tool-output rewriting the compact request cannot fit and drop-oldest must trim it.
+    let item_count = 50usize;
+    codex
+        .inject_response_items(big_injected_history(item_count, 6_000))
+        .await?;
+
+    let compact_mock = responses::mount_compact_user_history_with_summary_once(
+        harness.server(),
+        "REMOTE_COMPACT_TRIMMED_SUMMARY",
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+
+    let mut compaction_error = None;
+    loop {
+        let event = codex.next_event().await.unwrap();
+        match event.msg {
+            EventMsg::Error(err) => compaction_error = Some(err.message),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert!(
+        compaction_error.is_none(),
+        "compaction over an over-window history must not error: {compaction_error:?}"
+    );
+
+    let compact_request = compact_mock.single_request();
+    let body = compact_request.body_json().to_string();
+    assert!(
+        !body.contains("BIG_HISTORY_000"),
+        "expected the oldest over-window history item to be trimmed from the compact request"
+    );
+    assert!(
+        body.contains(&format!("BIG_HISTORY_{:03}", item_count - 1)),
+        "expected the newest history item to be retained in the compact request"
+    );
+    assert!(
+        estimate_compact_payload_tokens(&compact_request) <= context_window,
+        "expected the trimmed compact request to fit within the model context window"
+    );
+
+    Ok(())
+}
+
+/// Regression: the same guarantee for the Responses Compaction V2 path.
+#[cfg_attr(target_os = "windows", ignore)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_over_window_history_trims_request_and_succeeds() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let context_window = 40_000;
+    let harness = TestCodexHarness::with_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                config.model_context_window = Some(context_window);
+                config.model_auto_compact_token_limit = Some(1_000_000);
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+            }),
+    )
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let item_count = 50usize;
+    codex
+        .inject_response_items(big_injected_history(item_count, 6_000))
+        .await?;
+
+    let responses_mock = responses::mount_sse_sequence(
+        harness.server(),
+        vec![responses::sse(vec![
+            serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "compaction",
+                    "encrypted_content": "REMOTE_COMPACT_V2_TRIMMED_SUMMARY",
+                }
+            }),
+            responses::ev_completed("resp-compact"),
+        ])],
+    )
+    .await;
+
+    codex.submit(Op::Compact).await?;
+
+    let mut compaction_error = None;
+    loop {
+        let event = codex.next_event().await.unwrap();
+        match event.msg {
+            EventMsg::Error(err) => compaction_error = Some(err.message),
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert!(
+        compaction_error.is_none(),
+        "v2 compaction over an over-window history must not error: {compaction_error:?}"
+    );
+
+    let response_requests = responses_mock.requests();
+    assert_eq!(
+        response_requests.len(),
+        1,
+        "expected exactly one v2 compaction request"
+    );
+    let compact_request = &response_requests[0];
+    let body = compact_request.body_json().to_string();
+    assert!(
+        !body.contains("BIG_HISTORY_000"),
+        "expected the oldest over-window history item to be trimmed from the v2 compact request"
+    );
+    assert!(
+        body.contains(&format!("BIG_HISTORY_{:03}", item_count - 1)),
+        "expected the newest history item to be retained in the v2 compact request"
+    );
+    assert!(
+        estimate_compact_payload_tokens(compact_request) <= context_window,
+        "expected the trimmed v2 compact request to fit within the model context window"
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_v2_accepts_additional_output_items_before_compaction() -> Result<()> {
     skip_if_no_network!(Ok(()));
