@@ -3,6 +3,7 @@ use codex_otel::GOAL_BUDGET_LIMITED_METRIC;
 use codex_otel::GOAL_COMPLETED_METRIC;
 use codex_otel::GOAL_CREATED_METRIC;
 use codex_otel::GOAL_DURATION_SECONDS_METRIC;
+use codex_otel::GOAL_PAUSED_METRIC;
 use codex_otel::GOAL_RESUMED_METRIC;
 use codex_otel::GOAL_TOKEN_COUNT_METRIC;
 use codex_otel::GOAL_USAGE_LIMITED_METRIC;
@@ -30,6 +31,25 @@ impl GoalMetrics {
             return;
         };
         let _ = metrics_client.counter(GOAL_RESUMED_METRIC, /*inc*/ 1, &[]);
+    }
+
+    pub(crate) fn record_paused(&self) {
+        let Some(metrics_client) = self.metrics_client.as_ref() else {
+            return;
+        };
+        let _ = metrics_client.counter(GOAL_PAUSED_METRIC, /*inc*/ 1, &[]);
+    }
+
+    pub(crate) fn record_paused_if_status_changed(
+        &self,
+        previous_status: Option<codex_state::ThreadGoalStatus>,
+        goal_status: codex_state::ThreadGoalStatus,
+    ) {
+        if goal_status == codex_state::ThreadGoalStatus::Paused
+            && previous_status != Some(codex_state::ThreadGoalStatus::Paused)
+        {
+            self.record_paused();
+        }
     }
 
     pub(crate) fn record_resumed_if_status_changed(

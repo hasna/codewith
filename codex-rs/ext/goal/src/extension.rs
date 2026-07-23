@@ -42,6 +42,7 @@ use crate::runtime::GoalRuntimeHandle;
 use crate::spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
+use crate::spec::PAUSE_GOAL_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
@@ -387,6 +388,7 @@ where
                     && matches!(
                         input.tool_name.name.as_str(),
                         UPDATE_GOAL_TOOL_NAME
+                            | PAUSE_GOAL_TOOL_NAME
                             | RESUME_GOAL_TOOL_NAME
                             | GET_GOAL_PLAN_TOOL_NAME
                             | CREATE_GOAL_PLAN_TOOL_NAME
@@ -486,6 +488,14 @@ where
                 runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::update(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config_handle(),
+            )),
+            Arc::new(GoalToolExecutor::pause(
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),

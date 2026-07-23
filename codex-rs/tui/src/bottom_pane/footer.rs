@@ -110,6 +110,10 @@ pub(crate) enum GoalStatusIndicator {
         total_elapsed_seconds: i64,
     },
     Paused,
+    PausedPlan {
+        current_goal: i64,
+        total_goals: i64,
+    },
     Blocked,
     UsageLimited,
     Deferred,
@@ -597,6 +601,10 @@ pub(crate) fn goal_status_indicator_line(
             }
         }
         GoalStatusIndicator::Paused => "Goal paused (/goal resume)".to_string(),
+        GoalStatusIndicator::PausedPlan {
+            current_goal,
+            total_goals,
+        } => format!("Goal paused {current_goal}/{total_goals} (/goal resume)"),
         GoalStatusIndicator::Blocked => "Goal blocked (/goal resume)".to_string(),
         GoalStatusIndicator::UsageLimited => "Goal hit usage limits (/goal resume)".to_string(),
         GoalStatusIndicator::Deferred => "Goal deferred (/goal resume)".to_string(),
@@ -1921,6 +1929,25 @@ mod tests {
             "goal_status_indicator_line_goal_plan_position",
             line_text(&line)
         );
+    }
+
+    #[test]
+    fn goal_status_indicator_line_formats_paused_goal_plan_position() {
+        let line = goal_status_indicator_line(Some(&GoalStatusIndicator::PausedPlan {
+            current_goal: 2,
+            total_goals: 4,
+        }))
+        .expect("paused goal status indicator should render");
+
+        assert_eq!(line_text(&line), "Goal paused 2/4 (/goal resume)");
+    }
+
+    #[test]
+    fn goal_status_indicator_line_formats_plain_paused_goal() {
+        let line = goal_status_indicator_line(Some(&GoalStatusIndicator::Paused))
+            .expect("paused goal status indicator should render");
+
+        assert_eq!(line_text(&line), "Goal paused (/goal resume)");
     }
 
     #[test]

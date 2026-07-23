@@ -146,6 +146,7 @@ async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
             "create_goal_plan".to_string(),
             "activate_goal_plan_node".to_string(),
             "update_goal".to_string(),
+            "pause_goal".to_string(),
             "resume_goal".to_string(),
         ],
         tool_names(&tools)
@@ -2589,6 +2590,307 @@ async fn resume_goal_rejects_active_and_complete_goals() -> anyhow::Result<()> {
                 .to_string()
         )
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_goal_pauses_active_goal_and_preserves_progress() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ Some(100),
+        )
+        .await?;
+    // Accrue progress before pausing so we can prove pause preserves it rather
+    // than resetting the goal.
+    let outcome = runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 30,
+            /*token_delta*/ 25,
+            codex_state::GoalAccountingMode::ActiveOnly,
+            /*expected_goal_id*/ None,
+        )
+        .await?;
+    let codex_state::GoalAccountingOutcome::Updated(active_goal) = outcome else {
+        panic!("active goal should accrue usage before pausing");
+    };
+    assert_eq!(codex_state::ThreadGoalStatus::Active, active_goal.status);
+    assert_eq!(25, active_goal.tokens_used);
+
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+    let invocation = tool_call("pause_goal", "call-pause-goal", json!({}));
+    let output = pause_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(result["goal"]["status"], "paused");
+    assert_eq!(result["goal"]["tokensUsed"], 25);
+    assert_eq!(result["goal"]["timeUsedSeconds"], 30);
+    assert_eq!(result["remainingTokens"], 75);
+    assert_eq!(
+        vec![CapturedGoalEvent {
+            event_id: "call-pause-goal".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            status: ThreadGoalStatus::Paused,
+            tokens_used: 25,
+        }],
+        harness.sink.goal_events()
+    );
+
+    // The paused goal keeps its accounted progress in durable storage so a later
+    // resume continues where it left off. `Paused` is also the state
+    // `continue_if_idle` treats as "do not auto-continue", so pausing halts the
+    // keep-going loop.
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
+    assert_eq!(25, goal.tokens_used);
+    assert_eq!(30, goal.time_used_seconds);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_goal_is_distinct_from_blocked() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+    let invocation = tool_call("pause_goal", "call-pause-goal", json!({}));
+    let output = pause_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["status"], "paused");
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
+    // A blocked goal records a Blocked pending interaction so the user is asked
+    // to resume; pausing is a clean intentional stop and must not record one.
+    let blocked_pending = pending_interactions_for_kind(
+        runtime.as_ref(),
+        thread_id,
+        codex_state::PendingInteractionKind::Blocked,
+    )
+    .await?;
+    assert!(
+        blocked_pending.is_empty(),
+        "pausing a goal must not record a blocked pending interaction"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_then_resume_reactivates_and_preserves_progress() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ Some(100),
+        )
+        .await?;
+    let outcome = runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 30,
+            /*token_delta*/ 25,
+            codex_state::GoalAccountingMode::ActiveOnly,
+            /*expected_goal_id*/ None,
+        )
+        .await?;
+    assert!(matches!(
+        outcome,
+        codex_state::GoalAccountingOutcome::Updated(_)
+    ));
+
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+    let pause = tool_call("pause_goal", "call-pause-goal", json!({}));
+    let output = pause_tool.handle(pause.clone()).await?;
+    assert_eq!(
+        output.code_mode_result(&pause.payload)["goal"]["status"],
+        "paused"
+    );
+
+    // Resume continues the same goal from where pause left off, keeping the
+    // accounted usage instead of starting a fresh goal.
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+    let resume = tool_call("resume_goal", "call-resume-goal", json!({}));
+    let output = resume_tool.handle(resume.clone()).await?;
+    let result = output.code_mode_result(&resume.payload);
+    assert_eq!(result["goal"]["status"], "active");
+    assert_eq!(result["goal"]["tokensUsed"], 25);
+    assert_eq!(result["goal"]["timeUsedSeconds"], 30);
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    assert_eq!(25, goal.tokens_used);
+    assert_eq!(30, goal.time_used_seconds);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_goal_rejects_when_no_active_goal_on_turn() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+
+    let err = match pause_tool
+        .handle(tool_call("pause_goal", "call-pause-goal", json!({})))
+        .await
+    {
+        Ok(_) => panic!("pausing without an active goal should fail"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cannot pause goal because there is no active goal on the current turn; only an active goal can be paused"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        None,
+        runtime.thread_goals().get_thread_goal(thread_id).await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pause_goal_halts_goal_plan_without_advancing() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    // `implement` depends on `investigate`, so pausing the active `investigate`
+    // node must not activate `implement`; the plan just holds on the paused node.
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-goal-plan",
+            json!({
+                "goals": [
+                    { "key": "investigate", "objective": "Investigate the work" },
+                    {
+                        "key": "implement",
+                        "objective": "Implement the work",
+                        "depends_on": ["investigate"]
+                    }
+                ]
+            }),
+        ))
+        .await?;
+
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+    let pause = tool_call("pause_goal", "call-pause-goal", json!({}));
+    let output = pause_tool.handle(pause.clone()).await?;
+    let result = output.code_mode_result(&pause.payload);
+
+    assert_eq!(result["goal"]["status"], "paused");
+    assert_eq!(result["goal"]["objective"], "Investigate the work");
+    // Pause never advances the plan to another node.
+    assert_eq!(result["activatedGoal"], serde_json::Value::Null);
+    let node_statuses = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
+        .iter()
+        .map(|node| node["status"].as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec!["paused".to_string(), "pending".to_string()],
+        node_statuses
+    );
+    assert_eq!(result["goalPlans"][0]["status"], "paused");
+    Ok(())
+}
+
+#[tokio::test]
+async fn paused_goal_survives_state_reload() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "ship goal extension backend",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ Some(100),
+        )
+        .await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+    let pause_tool = tool_by_name(&tools, "pause_goal");
+    let pause = tool_call("pause_goal", "call-pause-goal", json!({}));
+    let output = pause_tool.handle(pause.clone()).await?;
+    assert_eq!(
+        output.code_mode_result(&pause.payload)["goal"]["status"],
+        "paused"
+    );
+
+    // Reopen the durable state at the same location to emulate resuming the
+    // session in a fresh process; the paused status must persist.
+    let reloaded = codex_state::StateRuntime::init(
+        runtime.codex_home().to_path_buf(),
+        "test-provider".to_string(),
+    )
+    .await?;
+    let goal = reloaded
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("paused goal should persist across reload"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
     Ok(())
 }
 

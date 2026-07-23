@@ -12,6 +12,7 @@ pub const GET_GOAL_PLAN_TOOL_NAME: &str = "get_goal_plan";
 pub const CREATE_GOAL_PLAN_TOOL_NAME: &str = "create_goal_plan";
 pub const ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME: &str = "activate_goal_plan_node";
 pub const UPDATE_GOAL_TOOL_NAME: &str = "update_goal";
+pub const PAUSE_GOAL_TOOL_NAME: &str = "pause_goal";
 pub const RESUME_GOAL_TOOL_NAME: &str = "resume_goal";
 
 const ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT: &str = "Adversarial verification is required before completing any goal: use at least one adversarial agent to verify and validate the work even if the user did not ask for one, reconcile the result before calling update_goal with status complete, and if no adversarial agent can be spawned, explicitly perform and report an adversarial self-review with the same standards.";
@@ -301,7 +302,7 @@ If the user resumes a goal that was previously marked `blocked`, treat the resum
 Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.
 Do not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.
 Do not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work; use `deferred` only when the remaining work is intentionally being postponed.
-You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.
+You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal. To pause the active goal without abandoning it, call {PAUSE_GOAL_TOOL_NAME}; budget-limit and usage-limit status changes are controlled by the user or system.
 When marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.
 {ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
         ),
@@ -316,12 +317,30 @@ When marking a budgeted goal achieved with status `complete`, report the final t
     })
 }
 
+pub fn create_pause_goal_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: PAUSE_GOAL_TOOL_NAME.to_string(),
+        description: format!(
+            r#"Pause the active goal, halting automatic goal advancement while preserving all progress.
+Use this tool when the user asks to pause, hold, or temporarily stop the goal, or when you should stop automatically pursuing the goal without abandoning it.
+Pausing stops the goal from auto-advancing to further work and prevents keep-going continuations, but preserves the goal's objective, token usage, and elapsed time so it can be resumed exactly where it left off with {RESUME_GOAL_TOOL_NAME}.
+A paused goal is distinct from a blocked goal: `blocked` means the same blocking condition recurred across goal turns and you are at an impasse, while `pause` is an intentional stop that keeps the goal ready to resume. Do not use {UPDATE_GOAL_TOOL_NAME} with `blocked` when the user simply wants to pause.
+Only an active goal can be paused. Do not use this tool for completed, cancelled, budget-limited, or usage-limited goals.
+If the goal is part of a goal plan, pausing halts the plan on the current node; it does not advance to other ready nodes."#
+        ),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(BTreeMap::new(), Some(Vec::new()), Some(false.into())),
+        output_schema: None,
+    })
+}
+
 pub fn create_resume_goal_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: RESUME_GOAL_TOOL_NAME.to_string(),
         description: format!(
             r#"Resume an existing stopped goal by setting it back to active.
-Use this tool only when the user explicitly asks to resume a paused, blocked, or usage-limited goal.
+Use this tool only when the user explicitly asks to resume a paused, blocked, or usage-limited goal, including a goal that was paused with {PAUSE_GOAL_TOOL_NAME}.
 Do not use this tool for budget-limited goals because they cannot resume without changing the budget.
 Do not use this tool for completed or cancelled goals; create a new goal only when explicitly requested.
 After resuming a previously blocked goal, treat the resumed run as a fresh blocked audit before any later blocked update.

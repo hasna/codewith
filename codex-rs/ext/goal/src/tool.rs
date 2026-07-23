@@ -27,6 +27,7 @@ use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
+use crate::spec::PAUSE_GOAL_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::spec::create_activate_goal_plan_node_tool;
@@ -34,6 +35,7 @@ use crate::spec::create_create_goal_plan_tool;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_plan_tool;
 use crate::spec::create_get_goal_tool;
+use crate::spec::create_pause_goal_tool;
 use crate::spec::create_resume_goal_tool;
 use crate::spec::create_update_goal_tool;
 use crate::tool_plan::GoalPlanCompletionReport;
@@ -64,6 +66,7 @@ enum GoalToolKind {
     CreatePlan,
     ActivatePlanNode,
     Update,
+    Pause,
     Resume,
 }
 
@@ -236,6 +239,25 @@ impl GoalToolExecutor {
         }
     }
 
+    pub(crate) fn pause(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfigHandle,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::Pause,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
     pub(crate) fn resume(
         thread_id: ThreadId,
         state_db: Arc<codex_state::StateRuntime>,
@@ -275,6 +297,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::CreatePlan => CREATE_GOAL_PLAN_TOOL_NAME,
             GoalToolKind::ActivatePlanNode => ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
+            GoalToolKind::Pause => PAUSE_GOAL_TOOL_NAME,
             GoalToolKind::Resume => RESUME_GOAL_TOOL_NAME,
         })
     }
@@ -287,6 +310,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::CreatePlan => create_create_goal_plan_tool(),
             GoalToolKind::ActivatePlanNode => create_activate_goal_plan_node_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
+            GoalToolKind::Pause => create_pause_goal_tool(),
             GoalToolKind::Resume => create_resume_goal_tool(),
         }
     }
@@ -299,6 +323,7 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::CreatePlan => self.handle_create_plan(invocation).await,
             GoalToolKind::ActivatePlanNode => self.handle_activate_plan_node(invocation).await,
             GoalToolKind::Update => self.handle_update(invocation).await,
+            GoalToolKind::Pause => self.handle_pause(invocation).await,
             GoalToolKind::Resume => self.handle_resume(invocation).await,
         }
     }
@@ -605,6 +630,111 @@ impl GoalToolExecutor {
             },
             goal_plan_completion_report,
             context_lifecycle_report,
+        )
+    }
+
+    /// Pause the current active goal. This is the model-callable counterpart to
+    /// `resume_goal`: it stops the goal from auto-advancing and from triggering
+    /// keep-going continuations, but preserves the objective, accounted token
+    /// usage, and elapsed time so `resume_goal` can continue exactly where it
+    /// left off. Unlike `blocked`, pausing is an intentional, dependency-free
+    /// stop and does not record a blocked pending interaction; unlike
+    /// `deferred`, it does not advance the goal plan to other ready nodes.
+    async fn handle_pause(
+        &self,
+        invocation: ToolCall,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let _ = invocation.function_arguments()?;
+
+        let expected_goal_id = self
+            .accounting_state
+            .active_goal_id_for_current_turn(invocation.turn_id.as_str())
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot pause goal because there is no active goal on the current turn; only an active goal can be paused"
+                        .to_string(),
+                )
+            })?;
+
+        // Flush accounted progress for the active goal before stopping it so the
+        // paused goal preserves its token and elapsed-time usage. `ClearActive`
+        // detaches the goal from the current turn's accounting, mirroring how
+        // `update_goal` stops a blocked/deferred goal.
+        self.account_active_goal_progress_for_turn(
+            invocation.turn_id.as_str(),
+            codex_state::GoalAccountingMode::ActiveOrStopped,
+            invocation.call_id.as_str(),
+            BudgetLimitedGoalDisposition::ClearActive,
+        )
+        .await?;
+        let previous_status = self
+            .current_goal_status_for_metrics(Some(expected_goal_id.as_str()))
+            .await?;
+        let goal = self
+            .state_db
+            .thread_goals()
+            .update_thread_goal(
+                self.thread_id,
+                codex_state::GoalUpdate {
+                    objective: None,
+                    title: None,
+                    status: Some(codex_state::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: Some(expected_goal_id),
+                },
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to pause goal: {err}"))
+            })?
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "cannot pause goal because this thread has no goal".to_string(),
+                )
+            })?;
+        // The state layer keeps terminal and budget-limited goals sticky, so a
+        // concurrent transition (for example a goal that hit its budget) can
+        // leave the status unchanged. Only report success when the goal is now
+        // paused; otherwise surface the actual state.
+        if goal.status != codex_state::ThreadGoalStatus::Paused {
+            self.accounting_state.clear_active_goal();
+            return Err(FunctionCallError::RespondToModel(format!(
+                "cannot pause goal because it is {}; only an active goal can be paused",
+                goal.status.as_str()
+            )));
+        }
+        self.metrics
+            .record_paused_if_status_changed(previous_status, goal.status);
+        let plan_snapshot = self
+            .state_db
+            .thread_goals()
+            .sync_goal_plan_node_for_goal(self.thread_id, &goal)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to sync paused goal plan: {err}"))
+            })?;
+        let turn_id = self.accounting_state.clear_current_turn_goal();
+        let goal = protocol_goal_from_state(goal);
+        self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
+        let goal_plans = if let Some(snapshot) = plan_snapshot {
+            self.event_emitter.thread_goal_plan_updated(
+                format!("{}-goal-plan", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                snapshot.clone(),
+            );
+            vec![GoalPlanResponse::from_snapshot_for_thread(
+                snapshot,
+                self.thread_id,
+                self.plan_node_objective_char_limit(),
+            )]
+        } else {
+            Vec::new()
+        };
+        goal_response_with_plan(
+            Some(goal),
+            /*activated_goal*/ None,
+            goal_plans,
+            CompletionBudgetReport::Omit,
         )
     }
 
