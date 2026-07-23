@@ -742,6 +742,19 @@ WHERE thread_id = ?
             && observed_turns
                 .iter()
                 .any(|(observed_turn_id, _)| observed_turn_id == turn_id);
+        if !preserves_current_streak {
+            sqlx::query(
+                r#"
+DELETE FROM thread_goal_blocker_audit_turns
+WHERE thread_id = ?
+  AND goal_id = ?
+                "#,
+            )
+            .bind(thread_id_string.as_str())
+            .bind(expected_goal_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let (
             audit_fingerprint,
             first_turn_id,
@@ -791,7 +804,7 @@ WHERE thread_id = ?
         let status = if consecutive_turns >= required_consecutive_turns {
             crate::ThreadGoalStatus::Blocked
         } else {
-            crate::ThreadGoalStatus::Paused
+            crate::ThreadGoalStatus::Active
         };
         let goal_row = sqlx::query(
             r#"
@@ -828,7 +841,7 @@ RETURNING
             ));
         };
         let goal = thread_goal_from_row(&goal_row)?;
-        if goal.status == crate::ThreadGoalStatus::Paused {
+        if goal.status == crate::ThreadGoalStatus::Active {
             sqlx::query(
                 r#"
 INSERT INTO thread_goal_blocker_audits (
@@ -1296,26 +1309,8 @@ ORDER BY turn_id
         .expect("blocker audit turn ids should load")
     }
 
-    async fn resume_test_goal(runtime: &StateRuntime, thread_id: ThreadId, goal_id: &str) {
-        runtime
-            .thread_goals()
-            .update_thread_goal(
-                thread_id,
-                GoalUpdate {
-                    objective: None,
-                    title: None,
-                    status: Some(crate::ThreadGoalStatus::Active),
-                    token_budget: None,
-                    expected_goal_id: Some(goal_id.to_string()),
-                },
-            )
-            .await
-            .expect("goal should resume")
-            .expect("goal should still exist");
-    }
-
     #[tokio::test]
-    async fn blocker_audit_survives_resume_but_manual_pause_resets_it() {
+    async fn blocker_audit_keeps_goal_active_but_manual_pause_resets_it() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
@@ -1349,20 +1344,17 @@ ORDER BY turn_id
             }
         ));
 
-        runtime
-            .thread_goals()
-            .update_thread_goal(
-                thread_id,
-                GoalUpdate {
-                    objective: None,
-                    title: None,
-                    status: Some(crate::ThreadGoalStatus::Active),
-                    token_budget: None,
-                    expected_goal_id: Some(goal.goal_id.clone()),
-                },
-            )
-            .await
-            .expect("goal should resume");
+        assert_eq!(
+            crate::ThreadGoalStatus::Active,
+            runtime
+                .thread_goals()
+                .get_thread_goal(thread_id)
+                .await
+                .expect("goal should load")
+                .expect("goal should exist")
+                .status,
+            "a pre-threshold blocker observation must not create a resume gate"
+        );
         assert_eq!(
             Some((
                 goal.goal_id.clone(),
@@ -1372,7 +1364,7 @@ ORDER BY turn_id
                 1,
             )),
             blocker_audit(runtime.as_ref(), thread_id).await,
-            "the documented paused-to-active resume lifecycle preserves the audit"
+            "the active pre-threshold lifecycle preserves the audit"
         );
 
         runtime
@@ -1516,6 +1508,69 @@ ORDER BY turn_id
     }
 
     #[tokio::test]
+    async fn blocker_observations_keep_goal_active_until_the_third_distinct_turn() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "stay active during the blocker audit",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal should be created");
+
+        for (turn_id, expected_consecutive_turns) in [("turn-1", 1), ("turn-2", 2)] {
+            let outcome = runtime
+                .thread_goals()
+                .observe_active_thread_goal_blocker(
+                    thread_id,
+                    goal.goal_id.as_str(),
+                    turn_id,
+                    "codex_err:test_blocker",
+                    3,
+                )
+                .await
+                .expect("pre-threshold blocker observation should persist");
+            assert!(matches!(
+                outcome,
+                GoalBlockerAuditOutcome::Updated {
+                    goal: crate::ThreadGoal {
+                        status: crate::ThreadGoalStatus::Active,
+                        ..
+                    },
+                    consecutive_turns,
+                } if consecutive_turns == expected_consecutive_turns
+            ));
+        }
+
+        let third = runtime
+            .thread_goals()
+            .observe_active_thread_goal_blocker(
+                thread_id,
+                goal.goal_id.as_str(),
+                "turn-3",
+                "codex_err:test_blocker",
+                3,
+            )
+            .await
+            .expect("third blocker observation should persist");
+        assert!(matches!(
+            third,
+            GoalBlockerAuditOutcome::Updated {
+                goal: crate::ThreadGoal {
+                    status: crate::ThreadGoalStatus::Blocked,
+                    ..
+                },
+                consecutive_turns: 3,
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn blocker_audit_persists_only_the_bounded_current_streak_across_restarts() {
         let codex_home = unique_temp_dir();
         let thread_id = test_thread_id();
@@ -1546,7 +1601,6 @@ ORDER BY turn_id
                 )
                 .await
                 .expect("first blocker observation should persist");
-            resume_test_goal(runtime.as_ref(), thread_id, goal.goal_id.as_str()).await;
             let second = runtime
                 .thread_goals()
                 .observe_active_thread_goal_blocker(
@@ -1576,7 +1630,6 @@ ORDER BY turn_id
             let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
                 .await
                 .expect("state db should reopen for delayed replay");
-            resume_test_goal(runtime.as_ref(), thread_id, goal_id.as_str()).await;
             let delayed_replay = runtime
                 .thread_goals()
                 .observe_active_thread_goal_blocker(
@@ -1601,7 +1654,6 @@ ORDER BY turn_id
                 "a non-adjacent replay from the durable current streak must not advance it"
             );
 
-            resume_test_goal(runtime.as_ref(), thread_id, goal_id.as_str()).await;
             let new_fingerprint = runtime
                 .thread_goals()
                 .observe_active_thread_goal_blocker(
@@ -1630,7 +1682,6 @@ ORDER BY turn_id
         let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
             .await
             .expect("state db should reopen with the replacement streak");
-        resume_test_goal(runtime.as_ref(), thread_id, goal_id.as_str()).await;
         let reused_outside_current_streak = runtime
             .thread_goals()
             .observe_active_thread_goal_blocker(
