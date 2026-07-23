@@ -1132,15 +1132,22 @@ async fn start_agent(
     .context("failed to load background agent status snapshot")?
     .is_some();
     if !status_snapshot_exists {
+        let snapshot_run = retry_on_busy("reload background agent for status snapshot", || {
+            state_db.get_background_agent_run(admitted_agent_id.as_str())
+        })
+        .await
+        .context("failed to reload background agent for status snapshot")?
+        .unwrap_or_else(|| run.clone());
+        let last_event_seq = snapshot_run.last_event_seq.max(event.seq);
         let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
             run_id: admitted_agent_id.clone(),
-            seq: event.seq,
-            status: BackgroundAgentRunStatus::Queued,
-            desired_state: BackgroundAgentDesiredState::Running,
-            summary: Some("Queued".to_string()),
+            seq: last_event_seq,
+            status: snapshot_run.status,
+            desired_state: snapshot_run.desired_state,
+            summary: Some(snapshot_run.status.as_str().to_string()),
             pending_interaction_count: 0,
-            last_event_seq: event.seq,
-            payload_json: json!({"phase": "queued"}),
+            last_event_seq,
+            payload_json: json!({"phase": snapshot_run.status.as_str()}),
         };
         retry_on_busy("create background agent status snapshot", || {
             state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
