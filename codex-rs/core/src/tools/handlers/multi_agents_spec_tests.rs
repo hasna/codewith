@@ -197,7 +197,19 @@ fn spawn_agent_tool_v2_exposes_auth_profile_field() {
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION)
     );
-    // auth_profile stays optional so existing spawns remain backward compatible.
+    assert_eq!(
+        properties
+            .get("provider")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION)
+    );
+    assert_eq!(
+        properties
+            .get("reasoning_effort")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION)
+    );
+    // model/provider/effort stay optional so existing spawns remain backward compatible.
     assert_eq!(
         parameters.required.clone(),
         Some(vec!["task_name".to_string(), "message".to_string()])
@@ -282,6 +294,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
 
     assert!(!properties.contains_key("agent_type"));
     assert!(!properties.contains_key("model"));
+    assert!(!properties.contains_key("provider"));
     assert!(!properties.contains_key("reasoning_effort"));
     assert!(!properties.contains_key("service_tier"));
     assert!(!properties.contains_key("auth_profile"));

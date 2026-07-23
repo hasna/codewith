@@ -528,7 +528,7 @@ fn apply_model_provider_id(
     Ok(())
 }
 
-fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str> {
+pub(crate) fn default_model_for_provider_id(model_provider_id: &str) -> Option<&'static str> {
     if model_provider_id.eq_ignore_ascii_case(OPENAI_PROVIDER_ID) {
         Some("gpt-5.2-codex")
     } else {
