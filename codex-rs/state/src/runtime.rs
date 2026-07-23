@@ -598,7 +598,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
-            thread_schedules: ScheduleStore::new(Arc::clone(&pool)),
+            thread_schedules: ScheduleStore::new(Arc::clone(&pool), Arc::clone(&goals_pool)),
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
             local_active_sessions: LocalActiveSessionStore::new(Arc::clone(&pool)),
             webhook_events: WebhookEventStore::new(Arc::clone(&pool)),
