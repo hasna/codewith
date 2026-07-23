@@ -2302,3 +2302,101 @@ async fn infinity_agent_policy_removes_host_tools_from_plan() {
     // no in-binary tool surface whatsoever.
     infinity.assert_registered_lacks(&["update_plan", "rename_session"]);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: reserved Responses-API namespace guard (`image_gen.imagegen` 400)
+//
+// The standalone image tool once registered under the Responses-API-reserved
+// `image_gen` namespace (wire name `image_gen.imagegen`), which the model
+// rejects at runtime with a 400 that fails the *entire* turn. The tool now
+// lives under the non-reserved `images` namespace; these tests pin that the
+// assembled Responses-wire tool list can never carry a reserved `image_gen`
+// namespace, and that the assembly guard fires if one is ever reintroduced.
+// ---------------------------------------------------------------------------
+
+fn reserved_namespace_spec(namespace: &str) -> ToolSpec {
+    ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
+        name: namespace.to_string(),
+        description: codex_tools::default_namespace_description(namespace),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "imagegen".to_string(),
+            description: "reserved-namespace regression probe".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: codex_tools::JsonSchema::default(),
+            output_schema: None,
+        })],
+    })
+}
+
+#[tokio::test]
+async fn standalone_imagegen_never_uses_reserved_image_gen_namespace_on_responses_wire() {
+    let probe = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+            set_feature(turn, Feature::ImageGenExt, /*enabled*/ true);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // The standalone image tool is present under the non-reserved `images`
+    // namespace...
+    let serialized_tools = probe.serialized_tools();
+    assert!(
+        has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
+        "standalone imagegen should be exposed as images.imagegen: {serialized_tools:?}"
+    );
+    // ...and NEVER under the Responses-API-reserved `image_gen` namespace.
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "assembled Responses tool list must not contain reserved image_gen.imagegen: {serialized_tools:?}"
+    );
+    // No serialized namespace tool may carry a reserved (non-allowlisted) name.
+    for tool in &serialized_tools {
+        if tool.get("type").and_then(Value::as_str) != Some("namespace") {
+            continue;
+        }
+        let name = tool.get("name").and_then(Value::as_str).unwrap_or_default();
+        assert!(
+            !codex_tools::is_forbidden_first_party_namespace(name),
+            "assembled Responses tool list carries a reserved namespace `{name}`: {serialized_tools:?}"
+        );
+    }
+    probe.assert_registered_lacks(&["image_genimagegen"]);
+}
+
+#[test]
+fn namespace_guard_allows_non_reserved_and_allowlisted_namespaces() {
+    // Non-reserved first-party namespaces (e.g. the renamed image tool) pass.
+    assert!(super::namespace_spec_is_safe_for_wire(
+        &reserved_namespace_spec("images")
+    ));
+    // `web` is reserved but explicitly allowlisted (standalone web search).
+    assert!(super::namespace_spec_is_safe_for_wire(
+        &reserved_namespace_spec("web")
+    ));
+    // Non-namespace specs are never affected by the guard.
+    assert!(super::namespace_spec_is_safe_for_wire(
+        &ToolSpec::ImageGeneration {
+            output_format: "png".to_string(),
+        }
+    ));
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn namespace_guard_fails_loud_on_reserved_image_gen_namespace() {
+    // In debug/test builds the guard fires a debug_assert so a reintroduced
+    // reserved namespace (e.g. a second registration path) is caught in CI
+    // instead of shipping a request the API rejects.
+    let _ = super::namespace_spec_is_safe_for_wire(&reserved_namespace_spec("image_gen"));
+}

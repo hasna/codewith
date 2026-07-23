@@ -3471,22 +3471,7 @@ fn validate_multi_agent_v2_wait_timeout(label: &str, value: i64) -> std::io::Res
 fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::Result<()> {
     const LABEL: &str = "features.multi_agent_v2.tool_namespace";
     const MAX_LEN: usize = 64;
-    const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
-        "api_tool",
-        "browser",
-        "computer",
-        "container",
-        "file_search",
-        "functions",
-        "image_gen",
-        "multi_tool_use",
-        "python",
-        "python_user_visible",
-        "submodel_delegator",
-        "terminal",
-        "tool_search",
-        "web",
-    ];
+    // Single source of truth: codex_tools::RESERVED_RESPONSES_NAMESPACES.
 
     let Some(namespace) = namespace else {
         return Ok(());
@@ -3520,7 +3505,7 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
     }
     if namespace == "mcp"
         || namespace.starts_with("mcp__")
-        || RESERVED_RESPONSES_NAMESPACES.contains(&namespace)
+        || codex_tools::is_reserved_responses_namespace(namespace)
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
