@@ -239,6 +239,7 @@ pub use schedules::ThreadScheduleCreateParams;
 pub use schedules::ThreadScheduleDueClaimParams;
 pub use schedules::ThreadScheduleNowClaimParams;
 pub use schedules::ThreadScheduleRunForGoalFinishParams;
+pub use schedules::ThreadScheduleRunLeaseParams;
 pub use schedules::ThreadScheduleRunStartParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
