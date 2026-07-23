@@ -267,8 +267,7 @@ const MISSION_CONTROL_OVERVIEW_LIMIT: u32 = 50;
 const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
 // The TUI intentionally depends on the wire protocol rather than the server
 // implementation crate; the server validates this explicit contract value.
-const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str =
-    "codewith.background-agent.admission.v1";
+const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str = "codewith.background-agent.admission.v1";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
     color_eyre::eyre::eyre!("{context}: {err}")

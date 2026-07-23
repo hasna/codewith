@@ -39,8 +39,7 @@ pub const BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH: &str =
     "background_agent_admission_profile_mismatch";
 pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH: &str =
     "background_agent_admission_schema_mismatch";
-pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str =
-    "background_agent_daemon_incompatible";
+pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str = "background_agent_daemon_incompatible";
 pub const BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
 

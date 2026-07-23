@@ -1675,8 +1675,7 @@ impl ThreadRequestProcessor {
         &self,
         params: &AgentStartParams,
     ) -> Result<(), JSONRPCErrorError> {
-        if params.version_fingerprint.as_deref()
-            != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
+        if params.version_fingerprint.as_deref() != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
         {
             let mut error = invalid_request("background agent admission schema is incompatible");
             error.data = Some(json!({

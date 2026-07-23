@@ -32,12 +32,9 @@ impl StateRuntime {
         let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some(idempotency_key) = idempotency_key.as_deref()
-            && let Some(existing_id) = validate_existing_background_agent_admission_in_tx(
-                &mut tx,
-                idempotency_key,
-                params,
-            )
-            .await?
+            && let Some(existing_id) =
+                validate_existing_background_agent_admission_in_tx(&mut tx, idempotency_key, params)
+                    .await?
         {
             tx.commit().await?;
             let existing = self
@@ -602,7 +599,7 @@ WHERE
         .await?;
         let status = BackgroundAgentRunStatus::parse(status.as_str())?;
         let receipt_key = format!("stop:{expected_generation}");
-        let event = super::events::append_background_agent_lifecycle_receipt_in_tx(
+        super::events::append_background_agent_lifecycle_receipt_in_tx(
             &mut tx,
             run_id,
             "agent.stopRequested",
@@ -1568,11 +1565,7 @@ WHERE idempotency_key = ?
         .as_ref()
         .map(redact_state_json_string)
         .transpose()?;
-    let identity_matches = request_id
-        == params
-            .request_id
-            .as_deref()
-            .map(redact_state_string)
+    let identity_matches = request_id == params.request_id.as_deref().map(redact_state_string)
         && source == params.source
         && input_snapshot_ref
             == params
@@ -1586,11 +1579,7 @@ WHERE idempotency_key = ?
         && parent_thread_id == params.parent_thread_id
         && parent_agent_run_id == params.parent_agent_run_id
         && spawn_linkage_json == requested_spawn_linkage_json
-        && auth_profile_ref
-            == params
-                .auth_profile_ref
-                .as_deref()
-                .map(redact_state_string)
+        && auth_profile_ref == params.auth_profile_ref.as_deref().map(redact_state_string)
         && config_fingerprint == params.config_fingerprint
         && version_fingerprint == params.version_fingerprint;
     if !identity_matches {
