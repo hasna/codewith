@@ -239,6 +239,7 @@ pub use schedules::ThreadScheduleCreateParams;
 pub use schedules::ThreadScheduleDueClaimParams;
 pub use schedules::ThreadScheduleNowClaimParams;
 pub use schedules::ThreadScheduleRunForGoalFinishParams;
+pub use schedules::ThreadScheduleRunStartParams;
 pub use schedules::ThreadScheduleUpdate;
 pub use threads::ThreadFilterOptions;
 pub use webhooks::DEFAULT_WEBHOOK_EVENT_LIST_LIMIT;
