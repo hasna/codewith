@@ -3043,21 +3043,22 @@ async fn run_background_agent_worker(
         initial_execution_payload.as_ref(),
     )
     .await?;
+    let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: run.id.clone(),
+        snapshot_kind: "worker_thread_bound".to_string(),
+        payload_json: json!({
+            "threadId": thread_id.to_string(),
+            "sessionId": session_id_string,
+            "rolloutPath": rollout_path,
+        }),
+        recovery_policy: "resume_or_orphan".to_string(),
+        config_fingerprint: run.config_fingerprint.clone(),
+    };
     retry_transient_sqlite_busy("create background agent execution snapshot", || {
         context
             .state_db
             .create_background_agent_execution_snapshot_for_supervisor(
-                &BackgroundAgentExecutionSnapshotParams {
-                    run_id: run.id.clone(),
-                    snapshot_kind: "worker_thread_bound".to_string(),
-                    payload_json: json!({
-                        "threadId": thread_id.to_string(),
-                        "sessionId": session_id_string,
-                        "rolloutPath": rollout_path,
-                    }),
-                    recovery_policy: "resume_or_orphan".to_string(),
-                    config_fingerprint: run.config_fingerprint.clone(),
-                },
+                &execution_snapshot_params,
                 context.supervisor_id.as_str(),
                 generation,
             )
@@ -4263,35 +4264,34 @@ async fn upsert_interaction_status_snapshot(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_else(|| interaction.kind.as_str());
+    let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
+        run_id: run_id.to_string(),
+        seq: run.last_event_seq,
+        status,
+        desired_state: run.desired_state,
+        summary: Some(status_summary(status, "waiting for pending interaction").to_string()),
+        pending_interaction_count: pending_count,
+        last_event_seq: run.last_event_seq,
+        payload_json: status_snapshot_payload(
+            status,
+            waiting_reason,
+            generation,
+            &json!({
+                "interactionId": interaction.id,
+                "workerRequestId": interaction.worker_request_id,
+                "kind": interaction.kind.as_str(),
+                "waitingReason": waiting_reason,
+                "requestPayload": interaction.request_payload_json,
+                "timeoutAt": interaction.timeout_at.map(|value| value.timestamp()),
+            }),
+            execution_payload.as_ref(),
+        ),
+    };
     retry_transient_sqlite_busy("upsert background agent waiting status snapshot", || {
         context
             .state_db
             .upsert_background_agent_status_snapshot_for_supervisor(
-                &BackgroundAgentStatusSnapshotParams {
-                    run_id: run_id.to_string(),
-                    seq: run.last_event_seq,
-                    status,
-                    desired_state: run.desired_state,
-                    summary: Some(
-                        status_summary(status, "waiting for pending interaction").to_string(),
-                    ),
-                    pending_interaction_count: pending_count,
-                    last_event_seq: run.last_event_seq,
-                    payload_json: status_snapshot_payload(
-                        status,
-                        waiting_reason,
-                        generation,
-                        &json!({
-                            "interactionId": interaction.id,
-                            "workerRequestId": interaction.worker_request_id,
-                            "kind": interaction.kind.as_str(),
-                            "waitingReason": waiting_reason,
-                            "requestPayload": interaction.request_payload_json,
-                            "timeoutAt": interaction.timeout_at.map(|value| value.timestamp()),
-                        }),
-                        execution_payload.as_ref(),
-                    ),
-                },
+                &status_snapshot_params,
                 context.supervisor_id.as_str(),
                 generation,
             )
