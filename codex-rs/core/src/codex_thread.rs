@@ -691,6 +691,11 @@ impl CodexThread {
         self.codex.session.multi_agent_version()
     }
 
+    /// Returns the wire protocol of this thread's configured model provider.
+    pub(crate) async fn wire_api(&self) -> codex_model_provider_info::WireApi {
+        self.codex.session.provider().await.wire_api
+    }
+
     /// Refresh the thread's layer-backed user config state from a caller-supplied
     /// config snapshot. Thread-scoped layers and session-static settings remain
     /// unchanged.

@@ -566,6 +566,15 @@ pub enum Op {
         communication: InterAgentCommunication,
     },
 
+    /// Internal wake: ask the thread's submission loop to start a turn for any
+    /// pending trigger-turn mailbox work if it is idle.
+    ///
+    /// Used by callers that enqueue inter-agent mail synchronously (so a full
+    /// mailbox is reported to the sender) and then need the idle target woken
+    /// *on its own submission loop*, so the wake is serialized with the thread's
+    /// turn lifecycle instead of racing an in-flight turn start.
+    WakePendingWork,
+
     /// Approve a command execution
     ExecApproval {
         /// The id of the submission we are approving
@@ -787,6 +796,7 @@ impl Op {
             Self::ThreadSettings { .. } => "thread_settings",
             Self::AuthProfileSwitch { .. } => "auth_profile_switch",
             Self::InterAgentCommunication { .. } => "inter_agent_communication",
+            Self::WakePendingWork => "wake_pending_work",
             Self::ExecApproval { .. } => "exec_approval",
             Self::PatchApproval { .. } => "patch_approval",
             Self::ResolveElicitation { .. } => "resolve_elicitation",
