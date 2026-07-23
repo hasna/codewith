@@ -107,6 +107,12 @@ pub(super) fn goal_status_indicator_with_goal_plan(
     indicator: GoalStatusIndicator,
     goal_plan: Option<&AppThreadGoalPlan>,
 ) -> GoalStatusIndicator {
+    // A paused goal that belongs to a multi-node plan surfaces its position in
+    // the plan (`Goal paused N/M`) by reusing the same node ordering the active
+    // indicator uses, so the status line stays consistent across pause/resume.
+    if indicator == GoalStatusIndicator::Paused {
+        return paused_plan_indicator(goal_plan).unwrap_or(GoalStatusIndicator::Paused);
+    }
     let GoalStatusIndicator::Active {
         usage,
         elapsed_seconds,
@@ -153,6 +159,26 @@ pub(super) fn goal_status_indicator_with_goal_plan(
         current_elapsed_seconds,
         total_elapsed_seconds,
     }
+}
+
+/// Build the `Goal paused N/M` indicator for a paused goal that is part of a
+/// multi-node plan. Returns `None` (so the caller falls back to the plain
+/// `Paused` indicator) when there is no plan or no paused node to locate.
+fn paused_plan_indicator(goal_plan: Option<&AppThreadGoalPlan>) -> Option<GoalStatusIndicator> {
+    let goal_plan = goal_plan?;
+    if goal_plan.node_count <= 0 {
+        return None;
+    }
+    let (index, _paused_node) = goal_plan
+        .nodes
+        .iter()
+        .enumerate()
+        .find(|(_, node)| node.status == ThreadGoalPlanNodeStatus::Paused)?;
+    let current_goal = i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1);
+    Some(GoalStatusIndicator::PausedPlan {
+        current_goal,
+        total_goals: goal_plan.node_count.max(current_goal),
+    })
 }
 
 fn active_goal_usage(token_budget: Option<i64>, tokens_used: i64) -> Option<String> {
@@ -321,6 +347,42 @@ mod tests {
                 current_elapsed_seconds: 480,
                 total_elapsed_seconds: 600,
             }
+        );
+    }
+
+    #[test]
+    fn paused_goal_status_includes_goal_plan_position() {
+        let goal_plan = test_goal_plan(&[
+            ThreadGoalPlanNodeStatus::Complete,
+            ThreadGoalPlanNodeStatus::Paused,
+            ThreadGoalPlanNodeStatus::Pending,
+        ]);
+
+        assert_eq!(
+            goal_status_indicator_with_goal_plan(GoalStatusIndicator::Paused, Some(&goal_plan)),
+            GoalStatusIndicator::PausedPlan {
+                current_goal: 2,
+                total_goals: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn paused_goal_status_without_plan_node_stays_plain() {
+        // No plan at all falls back to the plain paused indicator.
+        assert_eq!(
+            goal_status_indicator_with_goal_plan(GoalStatusIndicator::Paused, None),
+            GoalStatusIndicator::Paused,
+        );
+        // A plan with no paused node (e.g. every node still pending) also falls
+        // back rather than inventing a position.
+        let goal_plan = test_goal_plan(&[
+            ThreadGoalPlanNodeStatus::Pending,
+            ThreadGoalPlanNodeStatus::Pending,
+        ]);
+        assert_eq!(
+            goal_status_indicator_with_goal_plan(GoalStatusIndicator::Paused, Some(&goal_plan)),
+            GoalStatusIndicator::Paused,
         );
     }
 
