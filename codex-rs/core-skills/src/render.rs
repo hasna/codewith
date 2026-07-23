@@ -16,17 +16,18 @@ use codex_utils_output_truncation::approx_token_count;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
 const SKILL_METADATA_CONTEXT_WINDOW_PERCENT: usize = 2;
+const MAX_STARTER_SKILLS: usize = 5;
 const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 100;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
-pub const SKILL_DESCRIPTION_TRUNCATED_WARNING: &str = "Skill descriptions were shortened to fit the skills context budget. Codewith can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.";
-pub const SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT: &str = "Skill descriptions were shortened to fit the 2% skills context budget. Codewith can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.";
+pub const SKILL_DESCRIPTION_TRUNCATED_WARNING: &str = "Starter skill descriptions were shortened to fit the skills context budget. The full catalog remains searchable, but some starter descriptions are shorter.";
+pub const SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT: &str = "Starter skill descriptions were shortened to fit the 2% skills context budget. The full catalog remains searchable, but some starter descriptions are shorter.";
 pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
     "Exceeded skills context budget. All skill descriptions were removed and";
-pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
-pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
-pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
+pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. The list below is a small starter or task-relevant subset, not the complete skills catalog. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
+pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. The list below is a small starter or task-relevant subset, not the complete skills catalog. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
+pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: Always consider whether a skill is relevant before acting. The list above is only a starter or task-relevant subset (name + description + file path); skill bodies live on disk at the listed paths. When the available tools include `skills.list`, use it to search the full catalog by task, then use `skills.read` with the returned opaque handles when needed.
+- Trigger rules: Explicit skill mentions win. If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a listed or discovered skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Missing/blocked: If a named skill isn't listed, search with `skills.list` when available. If it cannot be found or read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
@@ -41,9 +42,9 @@ pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The li
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
-pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The list above is the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
+pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: Always consider whether a skill is relevant before acting. The list above is only a starter or task-relevant subset (name + description + short path); skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`. When the available tools include `skills.list`, use it to search the full catalog by task, then use `skills.read` with the returned opaque handles when needed.
+- Trigger rules: Explicit skill mentions win. If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a listed or discovered skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Missing/blocked: If a named skill isn't listed, search with `skills.list` when available. If it cannot be found or read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, expand the listed short `path` with the matching alias from `### Skill roots`, then open its `SKILL.md`. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the directory containing that expanded `SKILL.md` first, and only consider other paths if needed.
@@ -119,6 +120,7 @@ fn approx_token_count_from_bytes(bytes: usize) -> usize {
 pub struct SkillRenderReport {
     pub total_count: usize,
     pub included_count: usize,
+    pub deferred_count: usize,
     pub omitted_count: usize,
     pub truncated_description_chars: usize,
     pub truncated_description_count: usize,
@@ -162,7 +164,13 @@ pub fn build_available_skills(
     budget: SkillMetadataBudget,
     side_effects: SkillRenderSideEffects<'_>,
 ) -> Option<AvailableSkills> {
-    let skills = outcome.allowed_skills_for_implicit_invocation();
+    let all_skills = outcome.allowed_skills_for_implicit_invocation();
+    let total_count = all_skills.len();
+    let skills = ordered_skills_for_budget(&all_skills)
+        .into_iter()
+        .take(MAX_STARTER_SKILLS)
+        .cloned()
+        .collect::<Vec<_>>();
     if skills.is_empty() {
         record_skill_render_side_effects(
             side_effects,
@@ -182,7 +190,7 @@ pub fn build_available_skills(
         SkillPathAliases::default(),
     )?;
 
-    let selected =
+    let mut selected =
         if absolute.report.omitted_count == 0 && absolute.report.truncated_description_chars == 0 {
             absolute
         } else if let Some(aliased) = build_aliased_available_skills(outcome, &skills, budget) {
@@ -195,6 +203,8 @@ pub fn build_available_skills(
             absolute
         };
 
+    selected.report.total_count = total_count;
+    selected.report.deferred_count = total_count.saturating_sub(skills.len());
     record_available_skills_side_effects(&selected, budget, side_effects);
     Some(selected)
 }
@@ -426,6 +436,7 @@ fn skill_render_report(
     SkillRenderReport {
         total_count,
         included_count,
+        deferred_count: 0,
         omitted_count,
         truncated_description_chars,
         truncated_description_count,
@@ -1073,7 +1084,7 @@ mod tests {
         assert_eq!(
             rendered.warning_message,
             Some(
-                "Skill descriptions were shortened to fit the skills context budget. Codewith can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."
+                "Starter skill descriptions were shortened to fit the skills context budget. The full catalog remains searchable, but some starter descriptions are shorter."
                     .to_string()
             )
         );
@@ -1204,6 +1215,45 @@ mod tests {
     }
 
     #[test]
+    fn outcome_rendering_keeps_a_stable_five_skill_starter_at_large_catalog_scale() {
+        let skills = (0..2_105)
+            .rev()
+            .map(|index| {
+                let name = format!("scale-skill-{index:04}");
+                skill_with_path(
+                    &name,
+                    &test_path_buf(&format!("/tmp/skills/{name}/SKILL.md")).abs(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let outcome = outcome_with_roots(skills, Vec::new());
+
+        let rendered = build_available_skills(
+            &outcome,
+            SkillMetadataBudget::Characters(usize::MAX),
+            SkillRenderSideEffects::None,
+        )
+        .expect("starter skills should render");
+
+        assert_eq!(rendered.report.total_count, 2_105);
+        assert_eq!(rendered.report.included_count, MAX_STARTER_SKILLS);
+        assert_eq!(rendered.report.deferred_count, 2_100);
+        assert_eq!(rendered.report.omitted_count, 0);
+        assert_eq!(rendered.warning_message, None);
+        let rendered_text = rendered.skill_lines.join("\n");
+        for index in 0..MAX_STARTER_SKILLS {
+            assert!(rendered_text.contains(&format!("scale-skill-{index:04}")));
+        }
+        assert!(!rendered_text.contains("scale-skill-0005"));
+
+        let body = render_available_skills_body(&rendered.skill_root_lines, &rendered.skill_lines);
+        assert!(body.contains("not the complete skills catalog"));
+        assert!(body.contains("Always consider whether a skill is relevant before acting"));
+        assert!(body.contains("`skills.list`"));
+        assert!(body.contains("`skills.read`"));
+    }
+
+    #[test]
     fn outcome_rendering_uses_aliases_when_they_allow_more_skills_to_fit() {
         let root = test_path_buf(
             "/Users/xl/.codewith/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix",
@@ -1216,18 +1266,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let outcome = outcome_with_roots(skills.clone(), vec![root]);
-        let absolute_minimum = skills.iter().fold(0usize, |cost, skill| {
+        let starter_skills = ordered_skills_for_budget(&skills)
+            .into_iter()
+            .take(MAX_STARTER_SKILLS)
+            .cloned()
+            .collect::<Vec<_>>();
+        let absolute_minimum = starter_skills.iter().fold(0usize, |cost, skill| {
             cost.saturating_add(
                 SkillLine::new(skill).minimum_cost(SkillMetadataBudget::Characters(usize::MAX)),
             )
         });
         let plan = build_alias_plan(
             &outcome,
-            &skills,
+            &starter_skills,
             SkillMetadataBudget::Characters(usize::MAX),
         )
         .expect("alias plan should build");
-        let alias_minimum = skills.iter().fold(plan.table_cost, |cost, skill| {
+        let alias_minimum = starter_skills.iter().fold(plan.table_cost, |cost, skill| {
             cost.saturating_add(
                 SkillLine::with_path(skill, render_skill_path_with_aliases(skill, &plan))
                     .minimum_cost(SkillMetadataBudget::Characters(usize::MAX)),
@@ -1245,7 +1300,12 @@ mod tests {
         )
         .expect("skills should render");
 
-        assert_eq!(rendered.report.included_count, skills.len());
+        assert_eq!(rendered.report.total_count, skills.len());
+        assert_eq!(rendered.report.included_count, MAX_STARTER_SKILLS);
+        assert_eq!(
+            rendered.report.deferred_count,
+            skills.len() - MAX_STARTER_SKILLS
+        );
         assert_eq!(rendered.report.omitted_count, 0);
         assert_eq!(
             rendered.skill_root_lines,
@@ -1262,6 +1322,7 @@ mod tests {
         let rendered_text = rendered.skill_lines.join("\n");
         assert!(rendered_text.contains("r0/skill-0/SKILL.md"));
         assert!(rendered_text.contains("r0/skill-11/SKILL.md"));
+        assert!(!rendered_text.contains("r0/skill-3/SKILL.md"));
     }
 
     #[test]

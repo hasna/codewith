@@ -1,4 +1,5 @@
 use codex_core_skills::model::SkillDependencies;
+use std::collections::HashSet;
 
 /// Source authority that owns a skill package and must be used to read it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -160,8 +161,15 @@ pub struct SkillCatalog {
 
 impl SkillCatalog {
     pub fn extend(&mut self, other: SkillCatalog) {
+        let mut existing = self
+            .entries
+            .iter()
+            .map(|entry| (entry.authority.clone(), entry.id.clone()))
+            .collect::<HashSet<_>>();
         for entry in other.entries {
-            self.push_entry(entry);
+            if existing.insert((entry.authority.clone(), entry.id.clone())) {
+                self.entries.push(entry);
+            }
         }
         self.warnings.extend(other.warnings);
     }

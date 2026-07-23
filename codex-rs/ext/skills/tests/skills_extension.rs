@@ -361,9 +361,7 @@ async fn installed_extension_injects_available_catalog_and_selected_entrypoint()
         )
         .await;
 
-    assert_eq!(1, next_fragments.len());
-    assert_eq!("developer", next_fragments[0].role());
-    assert!(next_fragments[0].render().contains("lint-fix"));
+    assert!(next_fragments.is_empty());
 
     Ok(())
 }
@@ -442,17 +440,13 @@ async fn deferred_skill_is_searchable_and_loadable_but_disabled_skill_is_not() -
         )
         .await;
 
-    assert_eq!(2, fragments.len());
-    let catalog_fragment = fragments[0].render();
-    assert!(catalog_fragment.contains("visible-skill"));
-    assert!(!catalog_fragment.contains("deferred-skill"));
-    assert!(!catalog_fragment.contains("disabled-skill"));
+    assert_eq!(1, fragments.len());
     assert!(
-        fragments[1]
+        fragments[0]
             .render()
             .contains("<name>deferred-skill</name>")
     );
-    assert!(!fragments[1].render().contains("disabled-skill"));
+    assert!(!fragments[0].render().contains("disabled-skill"));
     assert_eq!(
         vec![(
             SkillAuthority::new(SkillSourceKind::Host, "host"),
@@ -460,6 +454,25 @@ async fn deferred_skill_is_searchable_and_loadable_but_disabled_skill_is_not() -
             SkillResourceId("deferred-skill/SKILL.md".to_string()),
         )],
         read_request_keys(&read_requests)
+    );
+
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+    let list_output = call_tool(
+        list_tool,
+        "turn-1",
+        json!({ "query": "lint errors", "limit": 5 }),
+    )
+    .await?;
+    assert_eq!(list_output["matches"][0]["name"], "visible-skill");
+    assert!(
+        list_output["matches"]
+            .as_array()
+            .is_some_and(|matches| matches.len() == 1)
     );
 
     Ok(())
@@ -559,7 +572,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
             TurnInputContext {
                 turn_id: "turn-tools".to_string(),
                 user_input: vec![UserInput::Text {
-                    text: "inspect the package".to_string(),
+                    text: "inspect the custom package".to_string(),
                     text_elements: Vec::new(),
                 }],
                 environments: Vec::new(),
@@ -580,6 +593,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
             .map(|tool| tool.tool_name())
             .collect::<Vec<_>>(),
         vec![
+            ToolName::namespaced("skills", "list"),
             ToolName::namespaced("skills", "search"),
             ToolName::namespaced("skills", "read"),
         ]
@@ -594,8 +608,82 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
         assert_eq!(spec.tools.len(), 1);
     }
 
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+    let search_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "search"),
+    );
+    let read_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "read"),
+    );
+    let catalog_output = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "custom package", "limit": 5 }),
+    )
+    .await?;
+    assert_eq!(catalog_output["matches"][0]["name"], "custom-package");
+    assert_eq!(
+        catalog_output["matches"][0]["authority"],
+        json!({
+            "kind": { "type": "custom", "value": "host" },
+            "id": "custom-catalog"
+        })
+    );
+    assert_eq!(catalog_output["matches"][0]["package"], "custom-package");
+    assert_eq!(
+        catalog_output["matches"][0]["main_resource"],
+        "custom/SKILL.md"
+    );
+    let default_list_output = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package" }),
+    )
+    .await?;
+    assert!(
+        default_list_output["matches"]
+            .as_array()
+            .is_some_and(|matches| matches.len() <= 5)
+    );
+    let oversized_list_query = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "x".repeat(4_097) }),
+    )
+    .await;
+    assert_eq!(
+        oversized_list_query,
+        Err(FunctionCallError::RespondToModel(
+            "query must contain non-whitespace text, contain no control characters, and be at most 4096 bytes"
+                .to_string()
+        ))
+    );
+    let oversized_list_limit = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package", "limit": 6 }),
+    )
+    .await;
+    assert_eq!(
+        oversized_list_limit,
+        Err(FunctionCallError::RespondToModel(
+            "limit must be between 1 and 5".to_string()
+        ))
+    );
+
     let custom_output = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": {
@@ -621,7 +709,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let provider_search_error = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -638,7 +726,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let provider_read_error = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -655,7 +743,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let invalid_flood = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "invalid-catalog" },
@@ -668,7 +756,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     assert_eq!(invalid_flood["truncated"], true);
 
     let oversized_arguments = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -685,7 +773,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let wrong_resource = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -702,7 +790,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let search_output = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -741,7 +829,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let read_output = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -776,7 +864,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let unavailable = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-a" },
@@ -800,7 +888,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
         })
         .await;
     let stale_turn = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },

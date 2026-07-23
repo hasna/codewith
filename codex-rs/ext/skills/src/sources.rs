@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -76,7 +78,7 @@ pub struct SkillProviders {
 
 #[derive(Clone, Default)]
 pub(crate) struct SkillProviderRoutes {
-    routes: Vec<SkillProviderRoute>,
+    routes: HashMap<(SkillAuthority, SkillPackageId), Arc<dyn SkillProvider>>,
 }
 
 impl fmt::Debug for SkillProviderRoutes {
@@ -88,13 +90,6 @@ impl fmt::Debug for SkillProviderRoutes {
     }
 }
 
-#[derive(Clone)]
-struct SkillProviderRoute {
-    authority: SkillAuthority,
-    package: SkillPackageId,
-    provider: Arc<dyn SkillProvider>,
-}
-
 impl SkillProviderRoutes {
     fn push(
         &mut self,
@@ -102,18 +97,7 @@ impl SkillProviderRoutes {
         package: SkillPackageId,
         provider: Arc<dyn SkillProvider>,
     ) {
-        if self
-            .routes
-            .iter()
-            .any(|route| route.authority == authority && route.package == package)
-        {
-            return;
-        }
-        self.routes.push(SkillProviderRoute {
-            authority,
-            package,
-            provider,
-        });
+        self.routes.entry((authority, package)).or_insert(provider);
     }
 
     fn provider(
@@ -122,9 +106,8 @@ impl SkillProviderRoutes {
         package: &SkillPackageId,
     ) -> Option<Arc<dyn SkillProvider>> {
         self.routes
-            .iter()
-            .find(|route| &route.authority == authority && &route.package == package)
-            .map(|route| Arc::clone(&route.provider))
+            .get(&(authority.clone(), package.clone()))
+            .map(Arc::clone)
     }
 
     pub(crate) async fn read(
@@ -186,6 +169,7 @@ impl SkillProviders {
     ) -> (SkillCatalog, SkillProviderRoutes) {
         let mut catalog = SkillCatalog::default();
         let mut routes = SkillProviderRoutes::default();
+        let mut seen = HashSet::new();
 
         for source in self
             .sources
@@ -195,16 +179,13 @@ impl SkillProviders {
             match source.provider.list(query.clone()).await {
                 Ok(source_catalog) => {
                     for entry in source_catalog.entries {
-                        let entry_is_new = !catalog.entries.iter().any(|existing| {
-                            existing.authority == entry.authority && existing.id == entry.id
-                        });
-                        if entry_is_new {
+                        if seen.insert((entry.authority.clone(), entry.id.clone())) {
                             routes.push(
                                 entry.authority.clone(),
                                 entry.id.clone(),
                                 Arc::clone(&source.provider),
                             );
-                            catalog.push_entry(entry);
+                            catalog.entries.push(entry);
                         }
                     }
                     catalog.warnings.extend(source_catalog.warnings);

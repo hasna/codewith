@@ -24,6 +24,7 @@ use crate::catalog::SkillSourceKind;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsToolSnapshot;
 
+mod list;
 mod read;
 mod schema;
 mod search;
@@ -38,6 +39,9 @@ pub(crate) fn skill_tools(
 ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
     let context = SkillToolContext { thread_state };
     vec![
+        Arc::new(list::ListTool {
+            context: context.clone(),
+        }),
         Arc::new(search::SearchTool {
             context: context.clone(),
         }),
