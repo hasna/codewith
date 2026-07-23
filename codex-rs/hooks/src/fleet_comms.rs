@@ -218,6 +218,31 @@ mod tests {
     use super::fleet_comms_session_start_trusted_hash_for_command;
     use crate::engine::discovery::discover_handlers;
 
+    /// The canonical command hook discovery selects on the *current* platform:
+    /// the POSIX `/bin/sh` command on Unix, the PowerShell command on Windows
+    /// (see `discovery.rs`, which uses `command_windows` when `cfg!(windows)`).
+    /// Trust hashing runs over whichever command actually executes, so any test
+    /// asserting on the discovered identity must use the platform's command.
+    fn platform_command() -> &'static str {
+        if cfg!(windows) {
+            FLEET_COMMS_SESSION_START_COMMAND_WINDOWS
+        } else {
+            FLEET_COMMS_SESSION_START_COMMAND
+        }
+    }
+
+    /// The pinned trust hash matching [`platform_command`]. The two shells run
+    /// genuinely different command strings, so they hash to two different
+    /// values; a single hash cannot match both platforms. Each platform pins
+    /// the command it actually runs, which is what keeps the trust check sound.
+    fn platform_trusted_hash() -> &'static str {
+        if cfg!(windows) {
+            FLEET_COMMS_SESSION_START_TRUSTED_HASH_WINDOWS
+        } else {
+            FLEET_COMMS_SESSION_START_TRUSTED_HASH
+        }
+    }
+
     fn user_config_path() -> AbsolutePathBuf {
         AbsolutePathBuf::try_from(if cfg!(windows) {
             std::path::PathBuf::from("C:\\Users\\hasna\\.codewith\\config.toml")
@@ -250,11 +275,15 @@ mod tests {
     /// fleet trust state in the same change.
     #[test]
     fn pinned_trusted_hash_matches_discovery_identity() {
+        // `fleet_comms_session_start_trusted_hash()` hashes the platform's
+        // selected command (POSIX on Unix, PowerShell on Windows), so compare
+        // against the pinned hash for the same platform. Using the POSIX
+        // constant unconditionally is what kept the Windows Bazel leg red.
         assert_eq!(
             fleet_comms_session_start_trusted_hash(),
-            FLEET_COMMS_SESSION_START_TRUSTED_HASH,
-            "normalized hook identity computation changed; update \
-             FLEET_COMMS_SESSION_START_TRUSTED_HASH and re-roll fleet hook state"
+            platform_trusted_hash(),
+            "normalized hook identity computation changed; update the pinned \
+             fleet-comms trust hash for this platform and re-roll fleet hook state"
         );
     }
 
@@ -352,11 +381,7 @@ mod tests {
                 event_name: HookEventName::SessionStart,
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 matcher: None,
-                command: Some(if cfg!(windows) {
-                    FLEET_COMMS_SESSION_START_COMMAND_WINDOWS.to_string()
-                } else {
-                    FLEET_COMMS_SESSION_START_COMMAND.to_string()
-                }),
+                command: Some(platform_command().to_string()),
                 timeout_sec: super::FLEET_COMMS_SESSION_START_TIMEOUT_SEC,
                 status_message: Some(super::FLEET_COMMS_SESSION_START_STATUS_MESSAGE.to_string()),
                 source_path: config_path.clone(),
@@ -365,17 +390,15 @@ mod tests {
                 display_order: 0,
                 enabled: true,
                 is_managed: false,
-                current_hash: FLEET_COMMS_SESSION_START_TRUSTED_HASH.to_string(),
+                current_hash: platform_trusted_hash().to_string(),
                 trust_status: HookTrustStatus::Trusted,
             }]
         );
 
-        // The handler must actually be runnable (not just listed).
+        // The handler must actually be runnable (not just listed). Discovery
+        // hands back the platform-selected command, so assert against it.
         assert_eq!(discovered.handlers.len(), 1);
-        assert_eq!(
-            discovered.handlers[0].command,
-            FLEET_COMMS_SESSION_START_COMMAND
-        );
+        assert_eq!(discovered.handlers[0].command, platform_command());
         assert_eq!(discovered.handlers[0].matcher, None);
         assert_eq!(
             discovered.handlers[0].timeout_sec,
@@ -389,8 +412,11 @@ mod tests {
     #[test]
     fn snippet_with_wrong_trusted_hash_is_listed_but_not_runnable() {
         let config_path = user_config_path();
+        // The snippet embeds the platform's pinned hash (the Windows path in
+        // `user_config_path()` selects the Windows hash on Windows), so corrupt
+        // that same hash — replacing the POSIX constant is a no-op on Windows.
         let snippet = fleet_comms_config_toml_snippet(config_path.as_path()).replace(
-            FLEET_COMMS_SESSION_START_TRUSTED_HASH,
+            platform_trusted_hash(),
             "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         );
         let config: TomlValue = toml::from_str(&snippet).expect("snippet parses as TOML");
