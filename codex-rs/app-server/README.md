@@ -133,6 +133,7 @@ Example with notification opt-out:
 
 - `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread. When the request includes a `cwd` and the resolved sandbox is `workspace-write` or full access, app-server also marks that project as trusted in the user `config.toml`. Pass `sessionStartSource: "clear"` when starting a replacement thread after clearing the current session so `SessionStart` hooks receive `source: "clear"` instead of the default `"startup"`. To create a fresh child agent thread, pass `threadSource: "subagent"` with `parentThreadId`; the returned thread and `thread/started` notification include the subagent source and parent id. Experimental `runtimeWorkspaceRoots` replaces the thread-scoped runtime workspace roots used to materialize `:workspace_roots`; paths must be absolute. For permissions, prefer experimental `permissions` profile selection by id; the legacy `sandbox` shorthand is still accepted but cannot be combined with `permissions`. Experimental `environments` selects the sticky execution environments for turns on the thread; omit it to use the server default, pass `[]` to disable environments, or pass explicit environment ids with per-environment `cwd`.
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it. Accepts the same permission override rules as `thread/start`.
+- `thread/continue` — summarize the effective persisted history of a source thread into a different loaded, idle destination thread without resuming, forking, loading, or switching to the source. The destination's current model/provider/auth generates the recap, which is recorded once as model-visible assistant context and a replay-visible agent message.
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; if the source thread is currently mid-turn, the fork records the same interruption marker as `turn/interrupt` instead of inheriting an unmarked partial turn suffix. The returned `thread.forkedFromId` points at the source thread when known. Accepts `ephemeral: true` for an in-memory temporary fork, emits `thread/started` (including the current `thread.status`), and auto-subscribes you to turn/item events for the new thread. Experimental clients can pass `excludeTurns: true` when they plan to page fork history via `thread/turns/list` instead of receiving the full turn array immediately. Accepts the same permission override rules as `thread/start`.
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. Experimental clients can read `runtimeWorkspaceRoots` for the thread-scoped runtime roots and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known.
 - `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Subagent threads also include `parentThreadId` when the immediate control/spawn parent is known.
@@ -436,6 +437,18 @@ Example:
         "nextCursor": "older-turns-cursor-or-null",
         "backwardsCursor": "newer-turns-cursor-or-null"
     }
+} }
+```
+
+To bring another stored session's work into the currently loaded session without switching threads, call `thread/continue`. `destinationThreadId` must identify a loaded, idle thread; `sourceThreadId` may identify an archived source. App-server reads the source directly from the thread store with history enabled, reconstructs compaction and rollback markers, asks the destination's current model/auth context for a concise handoff recap, and appends that recap to the captured destination. If the destination becomes active before insertion, the request fails without injecting the recap.
+
+```json
+{ "method": "thread/continue", "id": 14, "params": {
+    "destinationThreadId": "thr_current",
+    "sourceThreadId": "thr_previous"
+} }
+{ "id": 14, "result": {
+    "summary": "The previous session implemented the parser and left the integration test failing on archived input; next, update the fixture and rerun the focused gate."
 } }
 ```
 

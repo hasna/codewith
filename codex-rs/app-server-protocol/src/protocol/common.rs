@@ -1093,6 +1093,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRecapResponse,
     },
+    ThreadContinue => "thread/continue" {
+        params: v2::ThreadContinueParams,
+        serialization: thread_id(params.destination_thread_id),
+        response: v2::ThreadContinueResponse,
+    },
     ThreadShellCommand => "thread/shellCommand" {
         params: v2::ThreadShellCommandParams,
         serialization: thread_id(params.thread_id),
@@ -2309,6 +2314,20 @@ mod tests {
         };
         assert_eq!(
             thread_resume_with_path.serialization_scope(),
+            Some(ClientRequestSerializationScope::Thread {
+                thread_id: thread_id.clone()
+            })
+        );
+
+        let thread_continue = ClientRequest::ThreadContinue {
+            request_id: request_id(),
+            params: v2::ThreadContinueParams {
+                destination_thread_id: thread_id.clone(),
+                source_thread_id: "thread-source".to_string(),
+            },
+        };
+        assert_eq!(
+            thread_continue.serialization_scope(),
             Some(ClientRequestSerializationScope::Thread {
                 thread_id: thread_id.clone()
             })
