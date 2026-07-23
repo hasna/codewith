@@ -4,13 +4,19 @@ use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
+use crate::session::session::default_model_for_provider_id;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_known_provider_models::fallback_models_for_provider;
+use codex_known_provider_models::provider_for_fallback_model;
 use codex_login::load_auth_profile;
 use codex_login::validate_auth_profile_name;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::model_gateway_for_provider;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -256,6 +262,7 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
 pub(crate) fn full_fork_ignored_overrides_notice(
     agent_type: Option<&str>,
     model: Option<&str>,
+    provider: Option<&str>,
     reasoning_effort: Option<&ReasoningEffort>,
 ) -> Option<String> {
     let mut ignored: Vec<&str> = Vec::new();
@@ -265,6 +272,9 @@ pub(crate) fn full_fork_ignored_overrides_notice(
     if model.is_some() {
         ignored.push("model");
     }
+    if provider.is_some() {
+        ignored.push("provider");
+    }
     if reasoning_effort.is_some() {
         ignored.push("reasoning_effort");
     }
@@ -272,7 +282,7 @@ pub(crate) fn full_fork_ignored_overrides_notice(
         return None;
     }
     Some(format!(
-        "Full-history forked agents inherit the parent agent type, model, and reasoning effort; ignoring the supplied {} override(s). Spawn without a full-history fork to choose a different agent type, model, or reasoning effort.",
+        "Full-history forked agents inherit the parent agent type, model, provider, and reasoning effort; ignoring the supplied {} override(s). Spawn without a full-history fork to choose a different agent type, model, provider, or reasoning effort.",
         ignored.join(", ")
     ))
 }
@@ -306,65 +316,194 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
+/// Applies caller-requested model, provider, and reasoning-effort overrides onto a child spawn
+/// config so a sub-agent can run on any model of any provider configured for the session.
+///
+/// * The provider is `requested_provider` when set and configured, otherwise it is inferred from
+///   the model slug (namespaced `provider/model` slugs and the known-provider catalog), and finally
+///   falls back to the parent provider when no other configured provider claims the model. Routing
+///   to a non-parent provider rewrites the child's `model_provider`, `model_provider_id`, and
+///   `model_gateway_id` exactly like the main-session model switch; per-provider credentials come
+///   from the shared auth manager (optionally scoped by `auth_profile`).
+/// * The model is validated against the effective provider's catalog — the bundled OpenAI catalog
+///   (models.json) plus the known-provider-models fallback catalog (Anthropic/Google/xAI/…). Unknown
+///   models fail fast with the list of available models rather than silently falling back.
+/// * The reasoning effort is validated against the selected model's supported reasoning levels.
+///
+/// Omitting all three overrides is a backward-compatible no-op that inherits the parent config.
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
     turn: &TurnContext,
     config: &mut Config,
     requested_model: Option<&str>,
+    requested_provider: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
-    if requested_model.is_none() && requested_reasoning_effort.is_none() {
+    let requested_model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    let requested_provider = requested_provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty());
+
+    if requested_model.is_none()
+        && requested_provider.is_none()
+        && requested_reasoning_effort.is_none()
+    {
         return Ok(());
     }
 
-    if let Some(requested_model) = requested_model {
-        let models_manager_config = config.to_models_manager_config();
-        let resolved_model = session
-            .services
-            .models_manager
-            .resolve_model_for_auth(requested_model, &models_manager_config);
-        let available_models = session
-            .services
-            .models_manager
-            .list_models(RefreshStrategy::Offline)
-            .await;
-        let selected_model_name =
-            if requested_model == "gpt-5.6" && config.model_provider_id == "openai" {
-                resolved_model
-            } else {
-                find_spawn_agent_model_name(&available_models, &resolved_model)?
-            };
-        let selected_model_info = session
-            .services
-            .models_manager
-            .get_model_info(&selected_model_name, &models_manager_config)
-            .await;
+    let parent_provider_id = config.model_provider_id.clone();
+    if let Some(provider_id) =
+        resolve_spawn_agent_provider_id(config, requested_model, requested_provider)?
+        && provider_id != parent_provider_id
+    {
+        apply_spawn_agent_provider_routing(config, &provider_id)?;
+    }
+    let provider_changed = config.model_provider_id != parent_provider_id;
 
-        config.model = Some(selected_model_name.clone());
+    // Effort-only override that keeps the inherited provider/model: validate against the parent
+    // model and return without touching model selection.
+    if requested_model.is_none() && !provider_changed {
         if let Some(reasoning_effort) = requested_reasoning_effort {
             validate_spawn_agent_reasoning_effort(
-                &selected_model_name,
-                &selected_model_info.supported_reasoning_levels,
+                &turn.model_info.slug,
+                &turn.model_info.supported_reasoning_levels,
                 &reasoning_effort,
             )?;
             config.model_reasoning_effort = Some(reasoning_effort);
-        } else {
-            config.model_reasoning_effort = selected_model_info.default_reasoning_level;
         }
-
         return Ok(());
     }
 
+    // Validate the model and read its metadata from the target provider's catalog. When the
+    // provider is unchanged we reuse the session's default manager to preserve existing behavior;
+    // a routed provider needs its own provider-scoped manager.
+    let models_manager: SharedModelsManager = if provider_changed {
+        session
+            .models_manager_for_config_provider_id(config, /*model_provider_id*/ None)
+            .await
+    } else {
+        session.services.models_manager.clone()
+    };
+    let models_manager_config = config.to_models_manager_config();
+
+    let selected_model_name = match requested_model {
+        Some(requested_model) => {
+            let resolved_model =
+                models_manager.resolve_model_for_auth(requested_model, &models_manager_config);
+            resolve_spawn_agent_model_name(
+                &models_manager,
+                &config.model_provider_id,
+                requested_model,
+                &resolved_model,
+            )
+            .await?
+        }
+        // A bare provider override with no explicit model runs the provider's default model.
+        None => default_model_for_provider_id(&config.model_provider_id)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(format!(
+                    "spawn_agent could not determine a default model for provider `{}`",
+                    config.model_provider_id
+                ))
+            })?,
+    };
+
+    let selected_model_info = models_manager
+        .get_model_info(&selected_model_name, &models_manager_config)
+        .await;
+    config.model = Some(selected_model_name.clone());
     if let Some(reasoning_effort) = requested_reasoning_effort {
         validate_spawn_agent_reasoning_effort(
-            &turn.model_info.slug,
-            &turn.model_info.supported_reasoning_levels,
+            &selected_model_name,
+            &selected_model_info.supported_reasoning_levels,
             &reasoning_effort,
         )?;
         config.model_reasoning_effort = Some(reasoning_effort);
+    } else {
+        config.model_reasoning_effort = selected_model_info.default_reasoning_level;
     }
 
     Ok(())
+}
+
+/// Resolves which provider a spawned agent should run on.
+///
+/// Returns `Some(provider_id)` to route the child to a specific configured provider, or `None` to
+/// inherit the parent provider. The inference mirrors the main-session model switch
+/// (`request_processors::infer_model_provider_from_model` / `SessionConfiguration::apply`).
+fn resolve_spawn_agent_provider_id(
+    config: &Config,
+    requested_model: Option<&str>,
+    requested_provider: Option<&str>,
+) -> Result<Option<String>, FunctionCallError> {
+    if let Some(requested_provider) = requested_provider {
+        if !config.model_providers.contains_key(requested_provider) {
+            return Err(unknown_spawn_agent_provider_error(config, requested_provider));
+        }
+        return Ok(Some(requested_provider.to_string()));
+    }
+
+    let Some(model) = requested_model else {
+        return Ok(None);
+    };
+
+    let current_provider = config.model_provider_id.as_str();
+    // A model already served by the parent provider stays on it.
+    if provider_for_fallback_model(model, [current_provider]).is_some() {
+        return Ok(None);
+    }
+    // Namespaced slugs (e.g. `anthropic/claude-...`) route to the named provider when configured,
+    // but never re-route an `openai/...` slug off a non-OpenAI parent.
+    if let Some((candidate, _)) = model.split_once('/') {
+        if current_provider != OPENAI_PROVIDER_ID && candidate == OPENAI_PROVIDER_ID {
+            return Ok(None);
+        }
+        if config.model_providers.contains_key(candidate) {
+            return Ok(Some(candidate.to_string()));
+        }
+    }
+    // Otherwise route to the single configured provider whose catalog lists this model.
+    Ok(
+        provider_for_fallback_model(model, config.model_providers.keys().map(String::as_str))
+            .map(str::to_string),
+    )
+}
+
+/// Points a child spawn config at a different configured provider.
+///
+/// Rewrites the model provider, provider id, and gateway exactly like the main-session provider
+/// switch (`apply_model_provider_id`) so the sub-agent authenticates and routes through the
+/// requested provider. Per-provider credentials are resolved by the shared auth manager; the auth
+/// profile is inherited unless the caller pins one via `auth_profile`.
+fn apply_spawn_agent_provider_routing(
+    config: &mut Config,
+    provider_id: &str,
+) -> Result<(), FunctionCallError> {
+    let provider = config
+        .model_providers
+        .get(provider_id)
+        .cloned()
+        .ok_or_else(|| unknown_spawn_agent_provider_error(config, provider_id))?;
+    config.model_gateway_id = model_gateway_for_provider(provider_id).to_string();
+    config.model_provider_id = provider_id.to_string();
+    config.model_provider = provider;
+    Ok(())
+}
+
+fn unknown_spawn_agent_provider_error(config: &Config, provider_id: &str) -> FunctionCallError {
+    let mut configured: Vec<&str> = config.model_providers.keys().map(String::as_str).collect();
+    configured.sort_unstable();
+    let configured = if configured.is_empty() {
+        "none".to_string()
+    } else {
+        configured.join(", ")
+    };
+    FunctionCallError::RespondToModel(format!(
+        "Unknown provider `{provider_id}` for spawn_agent. Configured providers: {configured}"
+    ))
 }
 
 pub(crate) async fn apply_spawn_agent_service_tier(
@@ -485,24 +624,61 @@ pub(crate) fn reject_forked_spawn_auth_profile(
     ))
 }
 
-fn find_spawn_agent_model_name(
-    available_models: &[codex_protocol::openai_models::ModelPreset],
+/// Validates a requested model against the effective provider's catalog and returns the slug to run.
+///
+/// Validation is catalog-driven across every configured provider: the provider-scoped manager's
+/// bundled/remote catalog (models.json for OpenAI-compatible providers) plus the
+/// known-provider-models fallback catalog (Anthropic/Google/xAI/Cerebras/…), which is the only
+/// source of truth for providers that ship no bundled catalog offline. Unknown models fail fast
+/// rather than silently falling back, so the spawning agent can trust the requested config.
+async fn resolve_spawn_agent_model_name(
+    models_manager: &SharedModelsManager,
+    provider_id: &str,
     requested_model: &str,
+    resolved_model: &str,
 ) -> Result<String, FunctionCallError> {
-    available_models
+    // The bare OpenAI flagship alias resolves to an auth-scoped slug (gpt-5.6-sol under ChatGPT
+    // auth); trust `resolve_model_for_auth` for it rather than requiring a catalog hit.
+    if requested_model == "gpt-5.6" && provider_id == OPENAI_PROVIDER_ID {
+        return Ok(resolved_model.to_string());
+    }
+
+    let available_models = models_manager.list_models(RefreshStrategy::Offline).await;
+    if available_models
         .iter()
-        .find(|model| model.model == requested_model)
+        .any(|model| model.model == resolved_model)
+    {
+        return Ok(resolved_model.to_string());
+    }
+
+    // Providers without a bundled catalog (Anthropic/Google/xAI/…) are validated against the
+    // known-provider-models fallback catalog instead.
+    if fallback_models_for_provider(provider_id)
+        .iter()
+        .any(|model| model.id == resolved_model)
+    {
+        return Ok(resolved_model.to_string());
+    }
+
+    let mut available: Vec<String> = available_models
+        .iter()
         .map(|model| model.model.clone())
-        .ok_or_else(|| {
-            let available = available_models
+        .chain(
+            fallback_models_for_provider(provider_id)
                 .iter()
-                .map(|model| model.model.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            FunctionCallError::RespondToModel(format!(
-                "Unknown model `{requested_model}` for spawn_agent. Available models: {available}"
-            ))
-        })
+                .map(|model| model.id.to_string()),
+        )
+        .collect();
+    available.sort();
+    available.dedup();
+    let available = if available.is_empty() {
+        "none".to_string()
+    } else {
+        available.join(", ")
+    };
+    Err(FunctionCallError::RespondToModel(format!(
+        "Unknown model `{requested_model}` for spawn_agent on provider `{provider_id}`. Available models: {available}"
+    )))
 }
 
 fn validate_spawn_agent_reasoning_effort(

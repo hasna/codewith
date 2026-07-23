@@ -13,7 +13,11 @@ const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and manag
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
-    "Model override for the new agent. Omit unless an explicit override is needed.";
+    "Model override for the new agent. May be any model slug from any provider configured for this session (for example `gpt-5.6-sol`, `claude-fable-5`, `gemini-3.5-flash`, or `grok-4.3`), not just the current provider's models. The provider is inferred from the slug (use `provider` to disambiguate); the child then authenticates under that provider's credentials. Unknown slugs are rejected with the list of available models. Omit to inherit the parent model.";
+const SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION: &str =
+    "Provider id the new agent should run on (for example `openai`, `anthropic`, `google`, or `xai`). Omit to infer the provider from `model`, or to inherit the parent provider. Must be a provider configured for this session; the child routes to that provider and authenticates with its credentials.";
+const SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION: &str =
+    "Reasoning effort override for the new agent (for example `minimal`, `low`, `medium`, `high`, or `xhigh`). Validated against the selected model's supported reasoning levels; unsupported values are rejected. Omit to inherit the parent effort.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION: &str = "Named Codewith auth profile (for example `account001`) the new agent should authenticate under. Omit to inherit the parent agent's auth profile.";
@@ -568,7 +572,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_context".to_string(),
             JsonSchema::boolean(Some(
-                "True forks the current thread history into the new agent; false or omitted starts with only the initial prompt. A full-history fork inherits the parent agent type, model, and reasoning effort, so agent_type, model, and reasoning_effort are ignored when fork_context is true; omit them, or spawn without a full-history fork to override them."
+                "True forks the current thread history into the new agent; false or omitted starts with only the initial prompt. A full-history fork inherits the parent agent type, model, provider, and reasoning effort, so agent_type, model, provider, and reasoning_effort are ignored when fork_context is true; omit them, or spawn without a full-history fork to override them."
                     .to_string(),
             )),
         ),
@@ -579,10 +583,15 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
             )),
         ),
         (
+            "provider".to_string(),
+            JsonSchema::string(Some(
+                SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION.to_string(),
+            )),
+        ),
+        (
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
-                "Reasoning effort override for the new agent. Omit to inherit the parent effort."
-                    .to_string(),
+                SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -614,7 +623,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns. A full-history fork (`all`) inherits the parent agent type, model, and reasoning effort, so agent_type, model, and reasoning_effort are ignored; use `none` or a positive integer to override them."
+                "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns. A full-history fork (`all`) inherits the parent agent type, model, provider, and reasoning effort, so agent_type, model, provider, and reasoning_effort are ignored; use `none` or a positive integer to override them."
                     .to_string(),
             )),
         ),
@@ -625,10 +634,15 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             )),
         ),
         (
+            "provider".to_string(),
+            JsonSchema::string(Some(
+                SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION.to_string(),
+            )),
+        ),
+        (
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
-                "Reasoning effort override for the new agent. Omit to inherit the parent effort."
-                    .to_string(),
+                SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -647,6 +661,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {
     properties.remove("agent_type");
     properties.remove("model");
+    properties.remove("provider");
     properties.remove("reasoning_effort");
     properties.remove("service_tier");
     properties.remove("auth_profile");

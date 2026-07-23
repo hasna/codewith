@@ -99,6 +99,7 @@ async fn handle_spawn_agent(
         if let Some(notice) = full_fork_ignored_overrides_notice(
             role_name,
             args.model.as_deref(),
+            args.provider.as_deref(),
             args.reasoning_effort.as_ref(),
         ) {
             tracing::warn!("{notice}");
@@ -110,6 +111,7 @@ async fn handle_spawn_agent(
             turn.as_ref(),
             &mut config,
             args.model.as_deref(),
+            args.provider.as_deref(),
             args.reasoning_effort.clone(),
         )
         .await?;
@@ -231,6 +233,7 @@ struct SpawnAgentArgs {
     items: Option<Vec<UserInput>>,
     agent_type: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
     auth_profile: Option<String>,

@@ -279,6 +279,7 @@ async fn spawn_agent_bare_gpt_5_6_override_applies_auth_scoped_resolution() {
         &chatgpt_turn,
         &mut chatgpt_child_config,
         Some("gpt-5.6"),
+        /*requested_provider*/ None,
         /*requested_reasoning_effort*/ None,
     )
     .await
@@ -294,6 +295,7 @@ async fn spawn_agent_bare_gpt_5_6_override_applies_auth_scoped_resolution() {
         &api_turn,
         &mut api_child_config,
         Some("gpt-5.6"),
+        /*requested_provider*/ None,
         /*requested_reasoning_effort*/ None,
     )
     .await
@@ -309,6 +311,7 @@ async fn spawn_agent_bare_gpt_5_6_override_applies_auth_scoped_resolution() {
         &chatgpt_turn,
         &mut custom_child_config,
         Some("gpt-5.6"),
+        /*requested_provider*/ None,
         /*requested_reasoning_effort*/ None,
     )
     .await
@@ -318,6 +321,182 @@ async fn spawn_agent_bare_gpt_5_6_override_applies_auth_scoped_resolution() {
         panic!("expected an unknown-model response, got {custom_error:?}");
     };
     assert!(message.contains("Unknown model `gpt-5.6` for spawn_agent"));
+}
+
+#[tokio::test]
+async fn spawn_agent_routes_inferred_cross_provider_model_and_effort() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let parent_provider_id = config.model_provider_id.clone();
+    assert_ne!(parent_provider_id, "google");
+    let expected_google = config
+        .model_providers
+        .get("google")
+        .cloned()
+        .expect("google provider should be configured");
+
+    apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("gemini-3.5-flash"),
+        /*requested_provider*/ None,
+        Some(ReasoningEffort::High),
+    )
+    .await
+    .expect("a cross-provider model with a supported effort should route the child");
+
+    assert_eq!(config.model_provider_id, "google");
+    assert_eq!(config.model.as_deref(), Some("gemini-3.5-flash"));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    // Routing pins the child to the target provider's connection + credential info (base_url,
+    // env_key, wire) rather than leaving it on the parent OpenAI provider.
+    assert_eq!(config.model_provider, expected_google);
+}
+
+#[tokio::test]
+async fn spawn_agent_infers_provider_from_model_without_effort() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let expected_xai = config
+        .model_providers
+        .get("xai")
+        .cloned()
+        .expect("xai provider should be configured");
+
+    apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("grok-4.3"),
+        /*requested_provider*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect("an xai model slug should infer the xai provider");
+
+    assert_eq!(config.model_provider_id, "xai");
+    assert_eq!(config.model.as_deref(), Some("grok-4.3"));
+    assert_eq!(config.model_provider, expected_xai);
+    // Grok exposes no reasoning-effort scale, so the child takes the provider default (none).
+    assert_eq!(config.model_reasoning_effort, None);
+}
+
+#[tokio::test]
+async fn spawn_agent_explicit_provider_override_routes_child() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+
+    apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("grok-4.3"),
+        Some("xai"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect("an explicit configured provider should route the child");
+
+    assert_eq!(config.model_provider_id, "xai");
+    assert_eq!(config.model.as_deref(), Some("grok-4.3"));
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_unknown_model() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+
+    let error = apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("totally-made-up-model-2099"),
+        /*requested_provider*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect_err("an unknown model should be rejected instead of silently falling back");
+
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("expected RespondToModel, got {error:?}");
+    };
+    assert!(
+        message.contains("Unknown model `totally-made-up-model-2099` for spawn_agent"),
+        "message: {message}"
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_unsupported_reasoning_effort() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+
+    let error = apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("gemini-3.5-flash"),
+        /*requested_provider*/ None,
+        Some(ReasoningEffort::XHigh),
+    )
+    .await
+    .expect_err("an unsupported reasoning effort should be rejected");
+
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("expected RespondToModel, got {error:?}");
+    };
+    assert!(message.contains("Reasoning effort"), "message: {message}");
+    assert!(message.contains("gemini-3.5-flash"), "message: {message}");
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_unknown_provider() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+
+    let error = apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        Some("grok-4.3"),
+        Some("definitely-not-configured"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect_err("an unconfigured provider should be rejected");
+
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("expected RespondToModel, got {error:?}");
+    };
+    assert!(
+        message.contains("Unknown provider `definitely-not-configured` for spawn_agent"),
+        "message: {message}"
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_without_overrides_preserves_parent_config() {
+    let (session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let parent_provider_id = config.model_provider_id.clone();
+    let parent_model = config.model.clone();
+    let parent_effort = config.model_reasoning_effort.clone();
+
+    apply_requested_spawn_agent_model_overrides(
+        &session,
+        &turn,
+        &mut config,
+        /*requested_model*/ None,
+        /*requested_provider*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await
+    .expect("omitting all overrides is a backward-compatible no-op");
+
+    assert_eq!(config.model_provider_id, parent_provider_id);
+    assert_eq!(config.model, parent_model);
+    assert_eq!(config.model_reasoning_effort, parent_effort);
 }
 
 #[tokio::test]
@@ -4784,7 +4963,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
 #[test]
 fn full_fork_ignored_overrides_notice_is_none_when_no_overrides_supplied() {
     let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
-        None, None, None,
+        None, None, None, None,
     );
     assert_eq!(notice, None);
 }
@@ -4794,11 +4973,13 @@ fn full_fork_ignored_overrides_notice_names_each_supplied_override() {
     let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
         Some("explorer"),
         Some("gpt-5-child-override"),
+        Some("anthropic"),
         Some(&ReasoningEffort::Low),
     )
     .expect("supplied overrides should produce a notice");
     assert!(notice.contains("agent_type"), "notice: {notice}");
     assert!(notice.contains("model"), "notice: {notice}");
+    assert!(notice.contains("provider"), "notice: {notice}");
     assert!(notice.contains("reasoning_effort"), "notice: {notice}");
     // The notice must not claim to be a hard error: the spawn proceeds.
     assert!(notice.contains("ignoring"), "notice: {notice}");
@@ -4809,6 +4990,7 @@ fn full_fork_ignored_overrides_notice_reports_only_supplied_fields() {
     let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
         None,
         Some("gpt-5-child-override"),
+        None,
         None,
     )
     .expect("supplied model override should produce a notice");
