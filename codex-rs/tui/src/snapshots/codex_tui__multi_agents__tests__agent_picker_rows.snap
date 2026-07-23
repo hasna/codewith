@@ -1,0 +1,7 @@
+---
+source: tui/src/multi_agents.rs
+expression: snapshot
+---
+● Main [default]  triage the failing suite   2m 05s · ↓ 69.7K tokens
+✓ Robie [explorer]  map the crate graph   42s · ↓ 12.8K tokens
+✗ Bob [worker]  run migrations   9s · ↓ 1.02K tokens
