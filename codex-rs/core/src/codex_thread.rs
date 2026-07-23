@@ -27,6 +27,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
@@ -303,6 +304,30 @@ impl CodexThread {
     /// Generate a lightweight, out-of-band recap of the current session.
     pub async fn generate_session_recap(&self, prompt: Option<String>) -> CodexResult<String> {
         crate::session_recap::generate_session_recap(self, prompt).await
+    }
+
+    /// Reconstruct source rollout history and summarize it with this thread's
+    /// current model, provider, and auth context.
+    pub async fn generate_session_continuation(
+        &self,
+        source_rollout_items: &[RolloutItem],
+    ) -> CodexResult<String> {
+        let turn_context = self.codex.session.new_default_turn().await;
+        let source_history = self
+            .codex
+            .session
+            .reconstruct_history_items_from_rollout(turn_context.as_ref(), source_rollout_items)
+            .await;
+        crate::session_recap::generate_session_continuation(self, &source_history).await
+    }
+
+    /// Records a continuation recap only if this thread can still be reserved
+    /// as idle. The recap is both model-visible and replay-visible.
+    pub async fn record_session_continuation_if_idle(&self, summary: String) -> CodexResult<()> {
+        self.codex
+            .session
+            .record_session_continuation_if_idle(summary)
+            .await
     }
 
     /// Returns the session telemetry handle for thread-scoped production instrumentation.

@@ -830,6 +830,15 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_continue(
+        &self,
+        params: ThreadContinueParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_continue_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &self,
         request_id: &ConnectionRequestId,
@@ -2058,6 +2067,62 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to generate recap: {err}")))?;
         Ok(ThreadRecapResponse { summary })
+    }
+
+    async fn thread_continue_inner(
+        &self,
+        params: ThreadContinueParams,
+    ) -> Result<ThreadContinueResponse, JSONRPCErrorError> {
+        let ThreadContinueParams {
+            destination_thread_id,
+            source_thread_id,
+        } = params;
+        let (destination_thread_id, destination_thread) =
+            self.load_thread(&destination_thread_id).await?;
+        let source_thread_id = ThreadId::from_string(&source_thread_id)
+            .map_err(|err| invalid_request(format!("invalid source thread id: {err}")))?;
+        if source_thread_id == destination_thread_id {
+            return Err(invalid_request(
+                "source and destination thread ids must differ".to_string(),
+            ));
+        }
+        if matches!(
+            destination_thread.agent_status().await,
+            AgentStatus::Running
+        ) {
+            return Err(invalid_request(format!(
+                "destination thread is active: {destination_thread_id}"
+            )));
+        }
+
+        let stored_source = self
+            .thread_store
+            .read_thread(StoreReadThreadParams {
+                thread_id: source_thread_id,
+                include_archived: true,
+                include_history: true,
+            })
+            .await
+            .map_err(thread_store_resume_read_error)?;
+        let source_history = stored_source.history.ok_or_else(|| {
+            internal_error(format!(
+                "thread store did not return history for source thread {source_thread_id}"
+            ))
+        })?;
+        let summary = destination_thread
+            .generate_session_continuation(&source_history.items)
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to generate continuation recap: {err}"))
+            })?;
+        destination_thread
+            .record_session_continuation_if_idle(summary.clone())
+            .await
+            .map_err(|err| match err {
+                CodexErr::InvalidRequest(message) => invalid_request(message),
+                err => internal_error(format!("failed to record continuation recap: {err}")),
+            })?;
+        Ok(ThreadContinueResponse { summary })
     }
 
     async fn thread_background_terminals_clean_inner(

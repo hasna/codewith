@@ -9,6 +9,9 @@ use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::user_input::UserInput;
@@ -16,6 +19,57 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 impl Session {
+    pub(crate) async fn record_session_continuation_if_idle(
+        self: &Arc<Self>,
+        summary: String,
+    ) -> CodexResult<()> {
+        if self.input_queue.has_trigger_turn_mailbox_items().await {
+            return Err(CodexErr::InvalidRequest(
+                "destination thread has pending work".to_string(),
+            ));
+        }
+
+        let turn_state = {
+            let mut active_turn = self.active_turn.lock().await;
+            if active_turn.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "destination thread became active before continuation was recorded".to_string(),
+                ));
+            }
+            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            Arc::clone(&active_turn.turn_state)
+        };
+
+        let result = async {
+            if self.input_queue.has_trigger_turn_mailbox_items().await {
+                return Err(CodexErr::InvalidRequest(
+                    "destination thread received pending work before continuation was recorded"
+                        .to_string(),
+                ));
+            }
+            let turn_context = self.new_default_turn().await;
+            if self.reference_context_item().await.is_none() {
+                self.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+                    .await;
+            }
+            let response_item = ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText { text: summary }],
+                phase: None,
+            };
+            self.record_response_item_and_emit_turn_item(turn_context.as_ref(), response_item)
+                .await;
+            self.flush_rollout().await?;
+            Ok(())
+        }
+        .await;
+
+        self.clear_reserved_idle_turn(&turn_state).await;
+        self.maybe_start_turn_for_pending_work().await;
+        result
+    }
+
     /// Returns the input if there is no active turn to inject into.
     #[expect(
         clippy::await_holding_invalid_type,

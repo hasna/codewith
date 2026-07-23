@@ -4017,6 +4017,23 @@
       ],
       "type": "object"
     },
+    "ThreadContinueParams": {
+      "properties": {
+        "destinationThreadId": {
+          "description": "Loaded destination thread that will receive the generated continuation recap.",
+          "type": "string"
+        },
+        "sourceThreadId": {
+          "description": "Persisted source thread whose effective history should be summarized.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "destinationThreadId",
+        "sourceThreadId"
+      ],
+      "type": "object"
+    },
     "ThreadExternalAgentMode": {
       "enum": [
         "plan",
@@ -7607,6 +7624,28 @@
         "params"
       ],
       "title": "Thread/recapRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "thread/continue",
+          "title": "Thread/continueRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ThreadContinueParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "Thread/continueRequest",
       "type": "object"
     },
     {

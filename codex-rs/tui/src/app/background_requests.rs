@@ -27,6 +27,8 @@ use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
 use codex_app_server_protocol::McpServerRefreshResponse;
+use codex_app_server_protocol::ThreadContinueParams;
+use codex_app_server_protocol::ThreadContinueResponse;
 use codex_app_server_protocol::ThreadRecapParams;
 use codex_app_server_protocol::ThreadRecapResponse;
 
@@ -185,6 +187,30 @@ impl App {
             app_event_tx.send(AppEvent::SessionRecapFinished {
                 thread_id,
                 automatic,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn request_session_continuation(
+        &mut self,
+        app_server: &AppServerSession,
+        destination_thread_id: ThreadId,
+        source_thread_id: String,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = fetch_session_continuation(
+                request_handle,
+                destination_thread_id,
+                source_thread_id.clone(),
+            )
+            .await
+            .map_err(|err| format!("{err:#}"));
+            app_event_tx.send(AppEvent::SessionContinuationFinished {
+                destination_thread_id,
+                source_thread_id,
                 result,
             });
         });
@@ -743,6 +769,27 @@ impl App {
         }
     }
 
+    pub(super) fn handle_session_continuation_finished(
+        &mut self,
+        destination_thread_id: ThreadId,
+        source_thread_id: String,
+        result: Result<String, String>,
+    ) {
+        if Some(destination_thread_id) != self.current_displayed_thread_id() {
+            return;
+        }
+
+        match result {
+            Ok(_) => self.chat_widget.add_info_message(
+                format!("Continued context from session {source_thread_id}."),
+                /*hint*/ None,
+            ),
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to continue session: {err}")),
+        }
+    }
+
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
         let Some(index) = self
             .transcript_cells
@@ -878,6 +925,25 @@ pub(super) async fn fetch_session_recap(
         })
         .await
         .wrap_err("thread/recap failed in TUI")?;
+    Ok(response.summary)
+}
+
+pub(super) async fn fetch_session_continuation(
+    request_handle: AppServerRequestHandle,
+    destination_thread_id: ThreadId,
+    source_thread_id: String,
+) -> Result<String> {
+    let request_id = RequestId::String(format!("session-continue-{}", Uuid::new_v4()));
+    let response: ThreadContinueResponse = request_handle
+        .request_typed(ClientRequest::ThreadContinue {
+            request_id,
+            params: ThreadContinueParams {
+                destination_thread_id: destination_thread_id.to_string(),
+                source_thread_id,
+            },
+        })
+        .await
+        .wrap_err("thread/continue failed in TUI")?;
     Ok(response.summary)
 }
 

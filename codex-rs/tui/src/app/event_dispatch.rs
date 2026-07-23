@@ -542,6 +542,27 @@ impl App {
             } => {
                 self.handle_session_recap_finished(thread_id, automatic, result);
             }
+            AppEvent::RequestSessionContinuation {
+                destination_thread_id,
+                source_thread_id,
+            } => {
+                self.request_session_continuation(
+                    app_server,
+                    destination_thread_id,
+                    source_thread_id,
+                );
+            }
+            AppEvent::SessionContinuationFinished {
+                destination_thread_id,
+                source_thread_id,
+                result,
+            } => {
+                self.handle_session_continuation_finished(
+                    destination_thread_id,
+                    source_thread_id,
+                    result,
+                );
+            }
             AppEvent::ThreadHistoryEntryResponse { thread_id, event } => {
                 self.enqueue_thread_history_entry_response(thread_id, event)
                     .await?;

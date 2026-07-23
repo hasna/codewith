@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "destinationThreadId": {
+      "description": "Loaded destination thread that will receive the generated continuation recap.",
+      "type": "string"
+    },
+    "sourceThreadId": {
+      "description": "Persisted source thread whose effective history should be summarized.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "destinationThreadId",
+    "sourceThreadId"
+  ],
+  "title": "ThreadContinueParams",
+  "type": "object"
+}

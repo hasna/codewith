@@ -297,6 +297,19 @@ pub(crate) enum AppEvent {
         result: Result<String, String>,
     },
 
+    /// Continue a persisted source session inside a loaded destination thread.
+    RequestSessionContinuation {
+        destination_thread_id: ThreadId,
+        source_thread_id: String,
+    },
+
+    /// Result of a background session-continuation request.
+    SessionContinuationFinished {
+        destination_thread_id: ThreadId,
+        source_thread_id: String,
+        result: Result<String, String>,
+    },
+
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
