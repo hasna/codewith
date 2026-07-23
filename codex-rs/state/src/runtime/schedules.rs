@@ -6,6 +6,8 @@ use uuid::Uuid;
 pub const MAX_THREAD_SCHEDULE_NESTING_DEPTH: i64 = 5;
 const DYNAMIC_LOOP_CADENCE_SECONDS: i64 = 60;
 const ONCE_SCHEDULE_KIND: &str = "once";
+const PAUSED_SCHEDULE_RUN_ERROR: &str = "scheduled run cancelled because schedule was paused";
+const EXPIRED_SCHEDULE_RUN_ERROR: &str = "scheduled run cancelled because schedule expired";
 
 #[derive(Clone)]
 pub struct ScheduleStore {
@@ -81,6 +83,15 @@ pub struct ThreadScheduleRunStartParams<'a> {
     pub lease_id: &'a str,
     pub turn_id: &'a str,
     pub goal_id: Option<&'a str>,
+    pub now: DateTime<Utc>,
+    pub lease_duration: Duration,
+}
+
+#[derive(Clone)]
+pub struct ThreadScheduleRunLeaseParams<'a> {
+    pub schedule_id: &'a str,
+    pub run_id: &'a str,
+    pub lease_id: &'a str,
     pub now: DateTime<Utc>,
     pub lease_duration: Duration,
 }
@@ -308,6 +319,9 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let prompt = redact_state_string(prompt);
         let timezone = redact_state_string(timezone);
         let cron_expression = spec.cron_expression.map(redact_state_string);
+        let now = Utc::now();
+        let now_ms = datetime_to_epoch_millis(now);
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let sql = schedule_returning(
             r#"
 UPDATE thread_schedules
@@ -320,9 +334,11 @@ SET
     cron_expression = ?,
     timezone = ?,
     status = ?,
-    next_run_at_ms = ?,
+    next_run_at_ms = CASE WHEN ? = 'expired' THEN NULL ELSE ? END,
     expires_at_ms = ?,
     failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,
+    lease_id = CASE WHEN ? = 'active' THEN lease_id ELSE NULL END,
+    lease_expires_at_ms = CASE WHEN ? = 'active' THEN lease_expires_at_ms ELSE NULL END,
     updated_at_ms = ?
 WHERE schedule_id = ?
 RETURNING
@@ -337,14 +353,42 @@ RETURNING
             .bind(cron_expression)
             .bind(timezone)
             .bind(status.as_str())
+            .bind(status.as_str())
             .bind(next_run_at.map(datetime_to_epoch_millis))
             .bind(expires_at.map(datetime_to_epoch_millis))
             .bind(reset_failure_count)
-            .bind(datetime_to_epoch_millis(Utc::now()))
+            .bind(status.as_str())
+            .bind(status.as_str())
+            .bind(now_ms)
             .bind(schedule_id)
-            .fetch_optional(self.pool.as_ref())
+            .fetch_optional(&mut *tx)
             .await?;
-        row.map(|row| thread_schedule_from_row(&row)).transpose()
+        if row.is_some() {
+            let terminal_error = match status {
+                crate::ThreadScheduleStatus::Active => None,
+                crate::ThreadScheduleStatus::Paused => Some(PAUSED_SCHEDULE_RUN_ERROR),
+                crate::ThreadScheduleStatus::Expired => Some(EXPIRED_SCHEDULE_RUN_ERROR),
+            };
+            if let Some(terminal_error) = terminal_error {
+                sqlx::query(
+                    r#"
+UPDATE thread_schedule_runs
+SET status = 'failed',
+    error = ?,
+    completed_at_ms = COALESCE(completed_at_ms, ?)
+WHERE schedule_id = ? AND status IN ('leased', 'running')
+                    "#,
+                )
+                .bind(redact_state_string(terminal_error))
+                .bind(now_ms)
+                .bind(schedule_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        let schedule = row.map(|row| thread_schedule_from_row(&row)).transpose()?;
+        tx.commit().await?;
+        Ok(schedule)
     }
 
     pub async fn set_thread_schedule_status(
@@ -1139,22 +1183,43 @@ RETURNING
 
     pub async fn extend_thread_schedule_lease(
         &self,
-        schedule_id: &str,
-        lease_id: &str,
-        now: DateTime<Utc>,
-        lease_duration: Duration,
+        params: ThreadScheduleRunLeaseParams<'_>,
     ) -> anyhow::Result<bool> {
+        let ThreadScheduleRunLeaseParams {
+            schedule_id,
+            run_id,
+            lease_id,
+            now,
+            lease_duration,
+        } = params;
+        let now_ms = datetime_to_epoch_millis(now);
         let lease_expires_at = now + chrono::Duration::from_std(lease_duration)?;
         let result = sqlx::query(
             r#"
 UPDATE thread_schedules
 SET lease_expires_at_ms = ?, updated_at_ms = ?
-WHERE schedule_id = ? AND lease_id = ?
+WHERE schedule_id = ?
+  AND status = 'active'
+  AND lease_id = ?
+  AND lease_expires_at_ms > ?
+  AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+  AND EXISTS (
+      SELECT 1
+      FROM thread_schedule_runs
+      WHERE thread_schedule_runs.schedule_id = thread_schedules.schedule_id
+        AND thread_schedule_runs.run_id = ?
+        AND thread_schedule_runs.lease_id = ?
+        AND thread_schedule_runs.status IN ('leased', 'running')
+  )
             "#,
         )
         .bind(datetime_to_epoch_millis(lease_expires_at))
-        .bind(datetime_to_epoch_millis(now))
+        .bind(now_ms)
         .bind(schedule_id)
+        .bind(lease_id)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(run_id)
         .bind(lease_id)
         .execute(self.pool.as_ref())
         .await?;
@@ -1377,11 +1442,40 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
 
     pub async fn expire_thread_schedules(&self, now: DateTime<Utc>) -> anyhow::Result<u64> {
         let now_ms = datetime_to_epoch_millis(now);
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query(
+            r#"
+UPDATE thread_schedule_runs
+SET status = 'failed',
+    error = ?,
+    completed_at_ms = COALESCE(completed_at_ms, ?)
+WHERE status IN ('leased', 'running')
+  AND EXISTS (
+      SELECT 1
+      FROM thread_schedules
+      WHERE thread_schedules.schedule_id = thread_schedule_runs.schedule_id
+        AND thread_schedules.status = 'active'
+        AND thread_schedules.expires_at_ms IS NOT NULL
+        AND thread_schedules.expires_at_ms <= ?
+        AND (
+            thread_schedules.lease_id IS NULL
+            OR thread_schedules.lease_expires_at_ms <= ?
+        )
+  )
+            "#,
+        )
+        .bind(redact_state_string(EXPIRED_SCHEDULE_RUN_ERROR))
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
         let result = sqlx::query(
             r#"
 UPDATE thread_schedules
 SET
     status = 'expired',
+    next_run_at_ms = NULL,
     lease_id = NULL,
     lease_expires_at_ms = NULL,
     updated_at_ms = ?
@@ -1394,8 +1488,9 @@ WHERE status = 'active'
         .bind(now_ms)
         .bind(now_ms)
         .bind(now_ms)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(result.rows_affected())
     }
 
@@ -3118,12 +3213,13 @@ mod tests {
         assert!(
             runtime
                 .thread_schedules()
-                .extend_thread_schedule_lease(
-                    &schedule.schedule_id,
-                    "lease-long",
-                    now + chrono::Duration::seconds(120),
-                    Duration::from_secs(300),
-                )
+                .extend_thread_schedule_lease(ThreadScheduleRunLeaseParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-long",
+                    now: now + chrono::Duration::seconds(120),
+                    lease_duration: Duration::from_secs(300),
+                })
                 .await
                 .expect("lease should extend")
         );
@@ -3140,15 +3236,78 @@ mod tests {
         assert!(
             !runtime
                 .thread_schedules()
-                .extend_thread_schedule_lease(
-                    &schedule.schedule_id,
-                    "wrong-lease",
-                    now + chrono::Duration::seconds(180),
-                    Duration::from_secs(300),
-                )
+                .extend_thread_schedule_lease(ThreadScheduleRunLeaseParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "wrong-lease",
+                    now: now + chrono::Duration::seconds(180),
+                    lease_duration: Duration::from_secs(300),
+                })
                 .await
                 .expect("wrong lease should not fail")
         );
+    }
+
+    #[tokio::test]
+    async fn expired_heartbeat_cannot_revive_schedule_lease() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 49);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "stale heartbeat", Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-stale", Duration::from_secs(30))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-stale",
+                turn_id: "turn-stale",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(30),
+            })
+            .await
+            .expect("run start should persist")
+            .expect("run should start");
+        let expired_at = now + chrono::Duration::seconds(31);
+
+        assert!(
+            !runtime
+                .thread_schedules()
+                .extend_thread_schedule_lease(ThreadScheduleRunLeaseParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-stale",
+                    now: expired_at,
+                    lease_duration: Duration::from_secs(30),
+                })
+                .await
+                .expect("expired heartbeat should fail closed")
+        );
+        assert_eq!(
+            Some(now + chrono::Duration::seconds(30)),
+            runtime
+                .thread_schedules()
+                .get_thread_schedule(&schedule.schedule_id)
+                .await
+                .expect("schedule should load")
+                .expect("schedule should exist")
+                .lease_expires_at
+        );
+        let replacement = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(expired_at, "lease-new", Duration::from_secs(30))
+            .await
+            .expect("reaper should not error")
+            .expect("expired run should be replaceable");
+        assert_ne!(claim.run.run_id, replacement.run.run_id);
     }
 
     #[tokio::test]
@@ -3634,7 +3793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn late_pause_completion_preserves_expired_schedule_with_active_lease() {
+    async fn explicit_expiry_terminalizes_active_run_before_late_completion() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 32);
         upsert_test_thread(&runtime, thread_id).await;
@@ -3655,10 +3814,10 @@ mod tests {
             .expect("schedule should expire")
             .expect("schedule should still exist");
         assert_eq!(crate::ThreadScheduleStatus::Expired, expired.status);
-        assert_eq!(Some("lease-expired".to_string()), expired.lease_id);
+        assert_eq!(None, expired.lease_id);
 
         assert!(
-            runtime
+            !runtime
                 .thread_schedules()
                 .complete_thread_schedule_run_and_pause(
                     &schedule.schedule_id,
@@ -3667,7 +3826,7 @@ mod tests {
                     now + chrono::Duration::seconds(5),
                 )
                 .await
-                .expect("late completion should finish the run")
+                .expect("late completion should fail closed")
         );
 
         let completed = runtime
@@ -3689,11 +3848,12 @@ mod tests {
             .await
             .expect("run should load")
             .expect("run should exist");
-        assert_eq!(crate::ThreadScheduleRunStatus::Completed, run.status);
+        assert_eq!(crate::ThreadScheduleRunStatus::Failed, run.status);
+        assert_eq!(Some(expired.updated_at), run.completed_at);
     }
 
     #[tokio::test]
-    async fn late_schedule_finalizers_preserve_existing_terminal_status_precedence() {
+    async fn terminal_schedule_status_rejects_late_finalizers() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 33);
         upsert_test_thread(&runtime, thread_id).await;
@@ -3706,6 +3866,13 @@ mod tests {
         .into_iter()
         .enumerate()
         {
+            let expected_next_run_at = match held_status {
+                crate::ThreadScheduleStatus::Active => {
+                    unreachable!("only terminal statuses tested")
+                }
+                crate::ThreadScheduleStatus::Paused => Some(now),
+                crate::ThreadScheduleStatus::Expired => None,
+            };
             let complete_lease = format!("lease-complete-{index}");
             let complete_schedule = create_interval_schedule(
                 &runtime,
@@ -3727,7 +3894,7 @@ mod tests {
                 .expect("complete schedule status should update")
                 .expect("complete schedule should exist");
             assert!(
-                runtime
+                !runtime
                     .thread_schedules()
                     .complete_thread_schedule_run(
                         &complete_schedule.schedule_id,
@@ -3737,7 +3904,7 @@ mod tests {
                         Some(now + chrono::Duration::hours(1)),
                     )
                     .await
-                    .expect("late completion should succeed")
+                    .expect("late completion should fail closed")
             );
             let after_complete = runtime
                 .thread_schedules()
@@ -3746,8 +3913,18 @@ mod tests {
                 .expect("complete schedule should load")
                 .expect("complete schedule should exist");
             assert_eq!(held_status, after_complete.status);
-            assert_eq!(None, after_complete.next_run_at);
+            assert_eq!(expected_next_run_at, after_complete.next_run_at);
             assert_eq!(None, after_complete.lease_id);
+            assert_eq!(
+                crate::ThreadScheduleRunStatus::Failed,
+                runtime
+                    .thread_schedules()
+                    .get_thread_schedule_run(&complete_claim.run.run_id)
+                    .await
+                    .expect("completed run should load")
+                    .expect("completed run should exist")
+                    .status
+            );
 
             let defer_lease = format!("lease-defer-{index}");
             let defer_schedule = create_interval_schedule(
@@ -3770,7 +3947,7 @@ mod tests {
                 .expect("deferred schedule status should update")
                 .expect("deferred schedule should exist");
             assert!(
-                runtime
+                !runtime
                     .thread_schedules()
                     .defer_thread_schedule_run(
                         &defer_schedule.schedule_id,
@@ -3781,7 +3958,7 @@ mod tests {
                         "held by goal status".to_string(),
                     )
                     .await
-                    .expect("late deferral should succeed")
+                    .expect("late deferral should fail closed")
             );
             let after_defer = runtime
                 .thread_schedules()
@@ -3790,7 +3967,7 @@ mod tests {
                 .expect("deferred schedule should load")
                 .expect("deferred schedule should exist");
             assert_eq!(held_status, after_defer.status);
-            assert_eq!(None, after_defer.next_run_at);
+            assert_eq!(expected_next_run_at, after_defer.next_run_at);
             assert_eq!(None, after_defer.lease_id);
             let deferred_run = runtime
                 .thread_schedules()
@@ -3798,10 +3975,7 @@ mod tests {
                 .await
                 .expect("deferred run should load")
                 .expect("deferred run should exist");
-            assert_eq!(
-                crate::ThreadScheduleRunStatus::Deferred,
-                deferred_run.status
-            );
+            assert_eq!(crate::ThreadScheduleRunStatus::Failed, deferred_run.status);
         }
 
         let failed_schedule =
@@ -3822,7 +3996,7 @@ mod tests {
             .expect("failed schedule should expire")
             .expect("failed schedule should exist");
         assert!(
-            runtime
+            !runtime
                 .thread_schedules()
                 .fail_thread_schedule_run_and_pause(
                     &failed_schedule.schedule_id,
@@ -3832,7 +4006,7 @@ mod tests {
                     "goal held".to_string(),
                 )
                 .await
-                .expect("late failure should succeed")
+                .expect("late failure should fail closed")
         );
         let after_failure = runtime
             .thread_schedules()
@@ -4538,5 +4712,120 @@ mod tests {
             .expect("schedule should exist");
         assert_eq!(crate::ThreadScheduleStatus::Expired, expired.status);
         assert_eq!(None, expired.lease_id);
+    }
+
+    #[tokio::test]
+    async fn pause_and_expiry_terminalize_active_schedule_runs() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 50);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+
+        let paused_schedule =
+            create_interval_schedule(&runtime, thread_id, "pause active run", Some(now)).await;
+        let paused_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-paused", Duration::from_secs(300))
+            .await
+            .expect("paused schedule claim should succeed")
+            .expect("paused schedule should claim");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &paused_schedule.schedule_id,
+                run_id: &paused_claim.run.run_id,
+                lease_id: "lease-paused",
+                turn_id: "turn-paused",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(300),
+            })
+            .await
+            .expect("paused run start should persist")
+            .expect("paused run should start");
+        let paused = runtime
+            .thread_schedules()
+            .set_thread_schedule_status(
+                &paused_schedule.schedule_id,
+                crate::ThreadScheduleStatus::Paused,
+            )
+            .await
+            .expect("pause should succeed")
+            .expect("paused schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Paused, paused.status);
+        assert_eq!(None, paused.lease_id);
+        let paused_run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&paused_claim.run.run_id)
+            .await
+            .expect("paused run should load")
+            .expect("paused run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Failed, paused_run.status);
+        assert_eq!(Some(paused.updated_at), paused_run.completed_at);
+
+        let expiring_schedule = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "expire active run".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: Some(now + chrono::Duration::seconds(10)),
+            })
+            .await
+            .expect("expiring schedule should create");
+        let expiring_claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-expiring", Duration::from_secs(30))
+            .await
+            .expect("expiring schedule claim should succeed")
+            .expect("expiring schedule should claim");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(ThreadScheduleRunStartParams {
+                schedule_id: &expiring_schedule.schedule_id,
+                run_id: &expiring_claim.run.run_id,
+                lease_id: "lease-expiring",
+                turn_id: "turn-expiring",
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(30),
+            })
+            .await
+            .expect("expiring run start should persist")
+            .expect("expiring run should start");
+        let expired_at = now + chrono::Duration::seconds(31);
+        assert_eq!(
+            1,
+            runtime
+                .thread_schedules()
+                .expire_thread_schedules(expired_at)
+                .await
+                .expect("expiry cleanup should succeed")
+        );
+        let expired_run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&expiring_claim.run.run_id)
+            .await
+            .expect("expired run should load")
+            .expect("expired run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Failed, expired_run.status);
+        assert_eq!(Some(expired_at), expired_run.completed_at);
+
+        for schedule_id in [
+            paused_schedule.schedule_id.as_str(),
+            expiring_schedule.schedule_id.as_str(),
+        ] {
+            let stats = runtime
+                .thread_schedules()
+                .get_thread_schedule_stats(schedule_id)
+                .await
+                .expect("schedule stats should load");
+            assert_eq!(0, stats.leased_runs);
+            assert_eq!(0, stats.running_runs);
+        }
     }
 }

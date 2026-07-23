@@ -235,6 +235,7 @@ pub use runtime::ThreadScheduleCreateParams;
 pub use runtime::ThreadScheduleDueClaimParams;
 pub use runtime::ThreadScheduleNowClaimParams;
 pub use runtime::ThreadScheduleRunForGoalFinishParams;
+pub use runtime::ThreadScheduleRunLeaseParams;
 pub use runtime::ThreadScheduleRunStartParams;
 pub use runtime::ThreadScheduleUpdate;
 pub use runtime::WEBHOOK_EVENT_DEDUPE_CONFLICT_MESSAGE;
