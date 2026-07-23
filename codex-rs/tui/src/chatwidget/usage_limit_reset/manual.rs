@@ -77,7 +77,8 @@ impl ChatWidget {
             );
             return;
         };
-        let credits = available_reset_credits(summary, Utc::now().timestamp());
+        let now = Utc::now().timestamp();
+        let credits = available_reset_credits(summary, now);
         if credits.is_empty() {
             self.add_info_message(
                 "No usable usage limit resets are available right now.".to_string(),
@@ -109,11 +110,7 @@ impl ChatWidget {
                 .title
                 .clone()
                 .unwrap_or_else(|| "Use a reset".to_string());
-            let description = credit.description.clone().or_else(|| {
-                credit
-                    .expires_at
-                    .map(|expires_at| format!("Expires at Unix time {expires_at}."))
-            });
+            let description = reset_credit_description(credit, now);
             let auth_profile = auth_profile.clone();
             let account_identity_fingerprint = account_identity_fingerprint.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {

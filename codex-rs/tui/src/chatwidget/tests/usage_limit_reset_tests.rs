@@ -44,6 +44,21 @@ fn exact_reset_summary() -> RateLimitResetCreditsSummary {
     }
 }
 
+/// Banked-reset summary whose single credit expires `seconds` from now, so the
+/// picker's relative countdown ("Expires in 3d 4h.") renders deterministically.
+/// Choose an offset comfortably inside a day+hour bucket to avoid boundary flake.
+fn reset_summary_expiring_in(seconds: i64) -> RateLimitResetCreditsSummary {
+    let mut summary = exact_reset_summary();
+    if let Some(credit) = summary
+        .credits
+        .as_mut()
+        .and_then(|credits| credits.first_mut())
+    {
+        credit.expires_at = Some(chrono::Utc::now().timestamp() + seconds);
+    }
+    summary
+}
+
 fn exhausted_weekly_snapshot() -> RateLimitSnapshot {
     RateLimitSnapshot {
         limit_id: Some("codex".to_string()),

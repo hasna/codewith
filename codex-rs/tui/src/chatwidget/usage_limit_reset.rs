@@ -221,6 +221,55 @@ pub(super) fn reset_label(count: i64) -> &'static str {
     }
 }
 
+/// Builds the menu description for one banked reset, folding in when the reset
+/// expires so the picker shows each credit's remaining window instead of hiding
+/// it. `now` is a Unix timestamp (seconds) so the relative countdown stays
+/// deterministic and testable.
+pub(super) fn reset_credit_description(credit: &RateLimitResetCredit, now: i64) -> Option<String> {
+    let expiry = reset_credit_expiry_clause(credit.expires_at, now);
+    match (credit.description.clone(), expiry) {
+        (Some(description), Some(expiry)) => Some(format!("{description} {expiry}")),
+        (Some(description), None) => Some(description),
+        (None, expiry) => expiry,
+    }
+}
+
+/// Human-readable expiry sentence for a banked reset, or `None` when the credit
+/// carries no expiry. Matches the capitalized, period-terminated style of the
+/// other picker descriptions (for example "Expires in 3d 4h.").
+fn reset_credit_expiry_clause(expires_at: Option<i64>, now: i64) -> Option<String> {
+    let expires_at = expires_at?;
+    let remaining = expires_at.saturating_sub(now);
+    if remaining <= 0 {
+        return Some("Expired.".to_string());
+    }
+    Some(format!(
+        "Expires in {}.",
+        format_remaining_duration(remaining)
+    ))
+}
+
+/// Renders a positive duration (seconds) as a compact "3d 4h" / "4h 5m" / "6m"
+/// countdown, mirroring the day+hour granularity used elsewhere in the TUI.
+fn format_remaining_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let minutes = seconds / 60;
+    if minutes < 1 {
+        return "under a minute".to_string();
+    }
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if days >= 1 {
+        let remaining_hours = hours % 24;
+        return format!("{days}d {remaining_hours}h");
+    }
+    let remaining_minutes = minutes % 60;
+    if hours >= 1 {
+        return format!("{hours}h {remaining_minutes}m");
+    }
+    format!("{minutes}m")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +331,79 @@ mod tests {
             title: None,
             description: None,
         }
+    }
+
+    fn described_credit(
+        expires_at: Option<i64>,
+        description: Option<&str>,
+    ) -> RateLimitResetCredit {
+        let mut credit = reset_credit("credit", expires_at, RateLimitResetCreditStatus::Available);
+        credit.description = description.map(str::to_string);
+        credit
+    }
+
+    #[test]
+    fn reset_credit_description_appends_relative_expiry() {
+        let now = 1_000_000;
+        let three_days_four_hours = now + 3 * 86_400 + 4 * 3_600 + 59 * 60;
+
+        // Description present: expiry is folded in instead of being hidden.
+        assert_eq!(
+            reset_credit_description(
+                &described_credit(Some(three_days_four_hours), Some("Earned reset credit.")),
+                now,
+            )
+            .as_deref(),
+            Some("Earned reset credit. Expires in 3d 4h."),
+        );
+
+        // No description: the expiry sentence stands alone.
+        assert_eq!(
+            reset_credit_description(
+                &described_credit(Some(now + 5 * 3_600 + 12 * 60), None),
+                now
+            )
+            .as_deref(),
+            Some("Expires in 5h 12m."),
+        );
+
+        // Sub-hour windows fall back to minutes.
+        assert_eq!(
+            reset_credit_description(&described_credit(Some(now + 30 * 60), None), now).as_deref(),
+            Some("Expires in 30m."),
+        );
+    }
+
+    #[test]
+    fn reset_credit_description_handles_expired_and_missing_expiry() {
+        let now = 1_000_000;
+
+        // Already expired.
+        assert_eq!(
+            reset_credit_description(&described_credit(Some(now - 1), Some("Earned.")), now)
+                .as_deref(),
+            Some("Earned. Expired."),
+        );
+
+        // No expiry, but a description: description is preserved unchanged.
+        assert_eq!(
+            reset_credit_description(&described_credit(None, Some("Earned reset credit.")), now)
+                .as_deref(),
+            Some("Earned reset credit."),
+        );
+
+        // No expiry and no description: nothing to show.
+        assert_eq!(
+            reset_credit_description(&described_credit(None, None), now),
+            None,
+        );
+
+        // A far-future sentinel does not overflow the countdown math.
+        assert!(
+            reset_credit_description(&described_credit(Some(i64::MAX), None), now)
+                .as_deref()
+                .is_some_and(|text| text.starts_with("Expires in "))
+        );
     }
 
     #[test]
