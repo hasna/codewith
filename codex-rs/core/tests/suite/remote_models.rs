@@ -403,6 +403,81 @@ async fn remote_models_long_model_slug_is_sent_with_custom_reasoning() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_models_sol_ultra_reasoning_is_sent_as_max() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = MockServer::start().await;
+    let requested_model = "gpt-5.6-sol";
+    let mut remote_model = test_remote_model_with_policy(
+        requested_model,
+        ModelVisibility::List,
+        /*priority*/ 1_000,
+        TruncationPolicyConfig::bytes(/*limit*/ 10_000),
+    );
+    let ultra_reasoning_effort = ReasoningEffort::Custom("ultra".to_string());
+    remote_model.supported_reasoning_levels = vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: ReasoningEffort::High.to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ultra_reasoning_effort.clone(),
+            description: ultra_reasoning_effort.to_string(),
+        },
+    ];
+    remote_model.supports_reasoning_summaries = true;
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model],
+        },
+    )
+    .await;
+
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config.model = Some(requested_model.to_string());
+            config.model_reasoning_effort = Some(ultra_reasoning_effort);
+        })
+        .build(&server)
+        .await?;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "check reasoning effort".into(),
+                text_elements: Vec::new(),
+            }],
+            environments: None,
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let body = response_mock.single_request().body_json();
+    let reasoning_effort = body
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(|value| value.as_str());
+    assert_eq!(body["model"].as_str(), Some(requested_model));
+    assert_eq!(reasoning_effort, Some("max"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn namespaced_model_slug_uses_catalog_metadata_without_fallback_warning() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));

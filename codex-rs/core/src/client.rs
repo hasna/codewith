@@ -705,6 +705,7 @@ impl ModelClient {
         let client =
             ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
+        let effort = Self::normalize_reasoning_effort_for_wire(model_info, effort);
 
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
@@ -825,14 +826,30 @@ impl ModelClient {
         request_telemetry
     }
 
+    fn normalize_reasoning_effort_for_wire(
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+    ) -> Option<ReasoningEffortConfig> {
+        match effort {
+            Some(ReasoningEffortConfig::Custom(effort))
+                if model_info.slug == "gpt-5.6-sol" && effort == "ultra" =>
+            {
+                Some(ReasoningEffortConfig::Custom("max".to_string()))
+            }
+            effort => effort,
+        }
+    }
+
     fn build_reasoning(
         model_info: &ModelInfo,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
     ) -> Option<Reasoning> {
         if model_info.supports_reasoning_summaries {
+            let effort = effort.or_else(|| model_info.default_reasoning_level.clone());
+            let effort = Self::normalize_reasoning_effort_for_wire(model_info, effort);
             Some(Reasoning {
-                effort: effort.or_else(|| model_info.default_reasoning_level.clone()),
+                effort,
                 summary: if summary == ReasoningSummaryConfig::None {
                     None
                 } else {
