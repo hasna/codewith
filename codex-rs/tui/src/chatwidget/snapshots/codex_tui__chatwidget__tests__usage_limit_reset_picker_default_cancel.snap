@@ -5,7 +5,7 @@ expression: "normalize_snapshot_paths(render_bottom_popup(&chat, 90))"
   Usage limit resets
   Choose one of 1 exact usage limit reset.
 
-  1. Banked reset      Earned reset credit.
+  1. Banked reset      Earned reset credit. Expires in 3d 4h.
 › 2. Cancel (default) (n)
 
   Press enter to confirm or esc to go back

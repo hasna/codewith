@@ -35,7 +35,11 @@ async fn usage_panel_shows_banked_reset_action() {
 #[tokio::test]
 async fn reset_picker_defaults_to_cancel() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    // Expire 3d 4h 30m out so the countdown renders a stable "Expires in 3d 4h."
+    // (the trailing 30m keeps the day+hour bucket clear of test-run drift).
+    chat.on_rate_limit_reset_credits(Some(reset_summary_expiring_in(
+        3 * 86_400 + 4 * 3_600 + 30 * 60,
+    )));
     chat.open_rate_limit_reset_confirm();
 
     assert_chatwidget_snapshot!(
