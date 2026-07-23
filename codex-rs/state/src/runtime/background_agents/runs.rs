@@ -1,4 +1,6 @@
 use super::*;
+use sha2::Digest;
+use sha2::Sha256;
 
 const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
     "background_agent_admission_capacity_exceeded";
@@ -6,11 +8,16 @@ const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
     "background_agent_admission_identity_mismatch";
 
 impl StateRuntime {
+    /// Returns a stable digest for opaque background-agent admission identity.
+    pub fn background_agent_identity_sha256(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
     pub async fn create_background_agent_run(
         &self,
         params: &BackgroundAgentRunCreateParams,
     ) -> anyhow::Result<BackgroundAgentRun> {
-        self.create_or_admit_background_agent_run(params, /*max_active_runs*/ None)
+        self.create_background_agent_run_row(params)
             .await
             .map(|(run, _created)| run)
     }
@@ -18,20 +25,136 @@ impl StateRuntime {
     pub async fn admit_background_agent_run(
         &self,
         params: &BackgroundAgentRunCreateParams,
+        start_event_payload_json: &serde_json::Value,
+        execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
         max_active_runs: i64,
-    ) -> anyhow::Result<(BackgroundAgentRun, bool)> {
-        self.create_or_admit_background_agent_run(params, Some(max_active_runs))
-            .await
+    ) -> anyhow::Result<(
+        BackgroundAgentRun,
+        bool,
+        BackgroundAgentEvent,
+        BackgroundAgentExecutionSnapshot,
+        BackgroundAgentStatusSnapshot,
+    )> {
+        let idempotency_key = params.idempotency_key.as_deref();
+        let mut execution_snapshot_params = execution_snapshot_params.clone();
+        execution_snapshot_params.run_id.clone_from(&params.id);
+        let admission_identity_sha256 = background_agent_admission_identity_sha256(
+            params,
+            start_event_payload_json,
+            &execution_snapshot_params,
+        )?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(idempotency_key) = idempotency_key
+            && let Some(existing_id) =
+                validate_existing_background_agent_admission_in_tx(&mut tx, idempotency_key, params)
+                    .await?
+        {
+            let (event, execution_snapshot_id) =
+                recover_or_validate_background_agent_initial_state_in_tx(
+                    &mut tx,
+                    existing_id.as_str(),
+                    admission_identity_sha256.as_str(),
+                    start_event_payload_json,
+                    &execution_snapshot_params,
+                )
+                .await?;
+            tx.commit().await?;
+            return self
+                .load_background_agent_admission_result(
+                    existing_id.as_str(),
+                    /*created*/ false,
+                    event,
+                    execution_snapshot_id,
+                )
+                .await;
+        }
+
+        ensure_background_agent_capacity_in_tx(&mut tx, max_active_runs).await?;
+        let now = Utc::now().timestamp();
+        insert_background_agent_run_in_tx(&mut tx, params, now).await?;
+        let receipt_identity = idempotency_key.unwrap_or(params.id.as_str());
+        let receipt_key = format!(
+            "admission:{:x}",
+            Sha256::digest(receipt_identity.as_bytes())
+        );
+        super::events::append_background_agent_lifecycle_receipt_in_tx(
+            &mut tx,
+            params.id.as_str(),
+            "agent.admitted",
+            receipt_key.as_str(),
+            /*generation*/ 0,
+            Some(1),
+            &serde_json::json!({
+                "source": params.source,
+                "requestId": params.request_id,
+                "versionFingerprint": params.version_fingerprint,
+            }),
+            now,
+        )
+        .await?;
+        let start_event_payload_json = background_agent_start_event_payload(
+            start_event_payload_json,
+            admission_identity_sha256.as_str(),
+        );
+        let event = super::events::append_background_agent_event_in_tx(
+            &mut tx,
+            params.id.as_str(),
+            "agent.started",
+            &start_event_payload_json,
+            now,
+        )
+        .await?;
+        let execution_snapshot_id = insert_background_agent_execution_snapshot_in_tx(
+            &mut tx,
+            &execution_snapshot_params,
+            now,
+        )
+        .await?;
+        super::snapshots::upsert_background_agent_status_snapshot_in_tx(
+            &mut tx,
+            &BackgroundAgentStatusSnapshotParams {
+                run_id: params.id.clone(),
+                seq: event.seq,
+                status: BackgroundAgentRunStatus::Queued,
+                desired_state: BackgroundAgentDesiredState::Running,
+                summary: Some("Queued".to_string()),
+                pending_interaction_count: 0,
+                last_event_seq: event.seq,
+                payload_json: serde_json::json!({"phase": "queued"}),
+            },
+            now,
+        )
+        .await?;
+        sqlx::query(
+            r#"
+UPDATE background_agent_runs
+SET admission_identity_sha256 = ?, admission_ready_at = ?, updated_at = ?
+WHERE id = ?
+            "#,
+        )
+        .bind(admission_identity_sha256)
+        .bind(now)
+        .bind(now)
+        .bind(params.id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.load_background_agent_admission_result(
+            params.id.as_str(),
+            /*created*/ true,
+            event,
+            execution_snapshot_id,
+        )
+        .await
     }
 
-    async fn create_or_admit_background_agent_run(
+    async fn create_background_agent_run_row(
         &self,
         params: &BackgroundAgentRunCreateParams,
-        max_active_runs: Option<i64>,
     ) -> anyhow::Result<(BackgroundAgentRun, bool)> {
-        let idempotency_key = params.idempotency_key.as_deref().map(redact_state_string);
+        let idempotency_key = params.idempotency_key.as_deref();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(idempotency_key) = idempotency_key.as_deref()
+        if let Some(idempotency_key) = idempotency_key
             && let Some(existing_id) =
                 validate_existing_background_agent_admission_in_tx(&mut tx, idempotency_key, params)
                     .await?
@@ -48,136 +171,48 @@ impl StateRuntime {
             return Ok((existing, false));
         }
 
-        if let Some(max_active_runs) = max_active_runs {
-            let active_run_count: i64 = sqlx::query_scalar(
-                r#"
-SELECT COUNT(*)
-FROM background_agent_runs
-WHERE
-    desired_state = 'running'
-    AND retention_state = 'active'
-    AND status IN (
-        'queued',
-        'starting',
-        'running',
-        'waiting_on_approval',
-        'waiting_on_user',
-        'stopping',
-        'orphaned'
-    )
-                "#,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
-            if active_run_count >= max_active_runs {
-                anyhow::bail!(
-                    "{BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED}: \
-                     {active_run_count} live or recoverable run(s), max {max_active_runs}"
-                );
-            }
-        }
-
         let now = Utc::now().timestamp();
-        let spawn_linkage_json = params
-            .spawn_linkage_json
-            .as_ref()
-            .map(redact_state_json_string)
-            .transpose()?;
-        let insert_result = sqlx::query(
-            r#"
-INSERT INTO background_agent_runs (
-    id,
-    idempotency_key,
-    request_id,
-    source,
-    prompt_snapshot_ref,
-    input_snapshot_ref,
-    thread_id,
-    thread_store_kind,
-    thread_store_id,
-    rollout_path,
-    parent_thread_id,
-    parent_agent_run_id,
-    spawn_linkage_json,
-    auth_profile_ref,
-    desired_state,
-    status,
-    status_reason,
-    config_fingerprint,
-    version_fingerprint,
-    retention_state,
-    created_at,
-    updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(params.id.as_str())
-        .bind(idempotency_key.as_deref())
-        .bind(params.request_id.as_deref().map(redact_state_string))
-        .bind(params.source.as_str())
-        .bind(redact_state_string(params.prompt_snapshot_ref.as_str()))
-        .bind(
-            params
-                .input_snapshot_ref
-                .as_deref()
-                .map(redact_state_string),
-        )
-        .bind(params.thread_id.as_deref())
-        .bind(params.thread_store_kind.as_str())
-        .bind(params.thread_store_id.as_deref())
-        .bind(params.rollout_path.as_deref())
-        .bind(params.parent_thread_id.as_deref())
-        .bind(params.parent_agent_run_id.as_deref())
-        .bind(spawn_linkage_json.as_deref())
-        .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
-        .bind(BackgroundAgentDesiredState::Running.as_str())
-        .bind(BackgroundAgentRunStatus::Queued.as_str())
-        .bind(params.status_reason.as_deref().map(redact_state_string))
-        .bind(params.config_fingerprint.as_deref())
-        .bind(params.version_fingerprint.as_deref())
-        .bind(crate::BackgroundAgentRetentionState::Active.as_str())
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await;
-        if let Err(err) = insert_result {
-            if is_background_agent_unique_constraint_violation(&err) {
-                anyhow::bail!(
-                    "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
-                     request identity conflicts with an existing background agent"
-                );
-            }
-            return Err(err.into());
-        }
-
-        if max_active_runs.is_some() {
-            let receipt_key = format!(
-                "admission:{}",
-                idempotency_key.as_deref().unwrap_or(params.id.as_str())
-            );
-            super::events::append_background_agent_lifecycle_receipt_in_tx(
-                &mut tx,
-                params.id.as_str(),
-                "agent.admitted",
-                receipt_key.as_str(),
-                /*generation*/ 0,
-                Some(1),
-                &serde_json::json!({
-                    "source": params.source,
-                    "requestId": params.request_id,
-                    "authProfileRef": params.auth_profile_ref,
-                    "versionFingerprint": params.version_fingerprint,
-                }),
-                now,
-            )
-            .await?;
-        }
+        insert_background_agent_run_in_tx(&mut tx, params, now).await?;
         tx.commit().await?;
         let run = self
             .get_background_agent_run(params.id.as_str())
             .await?
             .ok_or_else(|| anyhow::anyhow!("failed to load background agent run {}", params.id))?;
         Ok((run, true))
+    }
+
+    async fn load_background_agent_admission_result(
+        &self,
+        run_id: &str,
+        created: bool,
+        event: BackgroundAgentEvent,
+        execution_snapshot_id: i64,
+    ) -> anyhow::Result<(
+        BackgroundAgentRun,
+        bool,
+        BackgroundAgentEvent,
+        BackgroundAgentExecutionSnapshot,
+        BackgroundAgentStatusSnapshot,
+    )> {
+        let run = self
+            .get_background_agent_run(run_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("failed to load background agent run {run_id}"))?;
+        let execution_snapshot = self
+            .get_background_agent_execution_snapshot(execution_snapshot_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "failed to load background agent execution snapshot {execution_snapshot_id}"
+                )
+            })?;
+        let status_snapshot = self
+            .get_background_agent_status_snapshot(run_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("failed to load background agent status snapshot for run {run_id}")
+            })?;
+        Ok((run, created, event, execution_snapshot, status_snapshot))
     }
 
     pub async fn get_background_agent_run(
@@ -317,9 +352,7 @@ OFFSET ?
 SELECT status, COUNT(*) as count
 FROM background_agent_runs
 WHERE
-    retention_state = 'active'
-    AND desired_state = 'running'
-    AND status IN (
+    status IN (
         'queued',
         'starting',
         'running',
@@ -327,6 +360,20 @@ WHERE
         'waiting_on_user',
         'stopping',
         'orphaned'
+    )
+    AND (
+        status = 'stopping'
+        OR (
+            status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+            AND supervisor_id IS NOT NULL
+        )
+        OR (
+            status IN ('queued', 'orphaned')
+            AND desired_state = 'running'
+            AND retention_state = 'active'
+            AND admission_identity_sha256 IS NOT NULL
+            AND admission_ready_at IS NOT NULL
+        )
     )
 GROUP BY status
             "#,
@@ -356,7 +403,12 @@ SET
     updated_at = ?,
     started_at = COALESCE(started_at, ?),
     completed_at = COALESCE(?, completed_at)
-WHERE id = ?
+WHERE
+    id = ?
+    AND (
+        status NOT IN ('completed', 'failed', 'cancelled')
+        OR status = ?
+    )
             "#,
         )
         .bind(status.as_str())
@@ -365,6 +417,7 @@ WHERE id = ?
         .bind(started_at)
         .bind(completed_at)
         .bind(run_id)
+        .bind(status.as_str())
         .execute(self.pool.as_ref())
         .await?;
         Ok(result.rows_affected() > 0)
@@ -423,7 +476,76 @@ WHERE
     ) -> anyhow::Result<Option<BackgroundAgentEvent>> {
         let now = Utc::now().timestamp();
         let (started_at, completed_at) = background_agent_status_timestamps(params.status, now);
-        let mut tx = self.pool.begin().await?;
+        let receipt_key = format!(
+            "status:{}:{}:{}",
+            params.generation,
+            params.event_type,
+            params.status.as_str()
+        );
+        let operation_diagnostics_json = serde_json::json!({
+            "status": params.status.as_str(),
+            "statusReason": params.status_reason,
+            "eventPayload": params.event_payload_json,
+            "summary": params.summary,
+            "pendingInteractionCount": params.pending_interaction_count,
+            "statusPayload": params.status_payload_json,
+        });
+        let operation_identity_sha256 =
+            super::events::background_agent_receipt_operation_identity_sha256(
+                params.event_type,
+                params.generation,
+                /*attempt*/ None,
+                &operation_diagnostics_json,
+            )?;
+        let diagnostics_json = super::events::bounded_background_agent_receipt_diagnostics(
+            &operation_diagnostics_json,
+        )?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(event) = super::events::get_background_agent_lifecycle_receipt_in_tx(
+            &mut tx,
+            params.run_id,
+            params.event_type,
+            receipt_key.as_str(),
+            params.generation,
+            /*attempt*/ None,
+            &diagnostics_json,
+            operation_identity_sha256.as_str(),
+        )
+        .await?
+        {
+            let terminal_projection: Option<(String, Option<String>, Option<i64>)> =
+                sqlx::query_as(
+                    r#"
+SELECT
+    r.status,
+    s.status,
+    s.last_event_seq
+FROM background_agent_runs r
+LEFT JOIN background_agent_status_snapshots s ON s.run_id = r.id
+WHERE
+    r.id = ?
+    AND r.supervisor_id = ?
+    AND r.generation = ?
+                    "#,
+                )
+                .bind(params.run_id)
+                .bind(params.supervisor_id)
+                .bind(params.generation)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let projection_matches = terminal_projection.is_some_and(
+                |(run_status, snapshot_status, snapshot_last_event_seq)| {
+                    run_status == params.status.as_str()
+                        && snapshot_status.as_deref() == Some(params.status.as_str())
+                        && snapshot_last_event_seq == Some(event.seq)
+                },
+            );
+            if !projection_matches {
+                anyhow::bail!("background agent lifecycle receipt terminal projection mismatch");
+            }
+            tx.commit().await?;
+            return Ok(Some(event));
+        }
         let result = sqlx::query(
             r#"
 UPDATE background_agent_runs
@@ -463,12 +585,6 @@ WHERE
             return Ok(None);
         }
 
-        let receipt_key = format!(
-            "status:{}:{}:{}",
-            params.generation,
-            params.event_type,
-            params.status.as_str()
-        );
         let event = super::events::append_background_agent_lifecycle_receipt_in_tx(
             &mut tx,
             params.run_id,
@@ -476,7 +592,7 @@ WHERE
             receipt_key.as_str(),
             params.generation,
             /*attempt*/ None,
-            params.event_payload_json,
+            &operation_diagnostics_json,
             now,
         )
         .await?;
@@ -693,6 +809,83 @@ WHERE
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn create_background_agent_execution_snapshot_for_supervisor(
+        &self,
+        params: &BackgroundAgentExecutionSnapshotParams,
+        supervisor_id: &str,
+        generation: i64,
+    ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current: Option<i64> = sqlx::query_scalar(
+            r#"
+SELECT 1
+FROM background_agent_runs
+WHERE
+    id = ?
+    AND supervisor_id = ?
+    AND generation = ?
+    AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+            "#,
+        )
+        .bind(params.run_id.as_str())
+        .bind(supervisor_id)
+        .bind(generation)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current.is_none() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let snapshot_id =
+            insert_background_agent_execution_snapshot_in_tx(&mut tx, params, now).await?;
+        tx.commit().await?;
+        self.get_background_agent_execution_snapshot(snapshot_id)
+            .await
+    }
+
+    pub async fn upsert_background_agent_status_snapshot_for_supervisor(
+        &self,
+        params: &BackgroundAgentStatusSnapshotParams,
+        supervisor_id: &str,
+        generation: i64,
+    ) -> anyhow::Result<Option<BackgroundAgentStatusSnapshot>> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current_last_event_seq: Option<i64> = sqlx::query_scalar(
+            r#"
+SELECT last_event_seq
+FROM background_agent_runs
+WHERE
+    id = ?
+    AND supervisor_id = ?
+    AND generation = ?
+    AND status = ?
+    AND desired_state = ?
+    AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+            "#,
+        )
+        .bind(params.run_id.as_str())
+        .bind(supervisor_id)
+        .bind(generation)
+        .bind(params.status.as_str())
+        .bind(params.desired_state.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(current_last_event_seq) = current_last_event_seq else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let mut params = params.clone();
+        params.seq = params.seq.max(current_last_event_seq);
+        params.last_event_seq = current_last_event_seq;
+        super::snapshots::upsert_background_agent_status_snapshot_in_tx(&mut tx, &params, now)
+            .await?;
+        tx.commit().await?;
+        self.get_background_agent_status_snapshot(params.run_id.as_str())
+            .await
+    }
+
     pub async fn set_background_agent_desired_state(
         &self,
         run_id: &str,
@@ -716,40 +909,147 @@ WHERE id = ?
 
     pub async fn request_background_agent_delete(&self, run_id: &str) -> anyhow::Result<bool> {
         let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current: Option<(Option<String>, i64, String, String)> = sqlx::query_as(
+            r#"
+SELECT supervisor_id, generation, status, retention_state
+FROM background_agent_runs
+WHERE id = ?
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((supervisor_id, generation, status, retention_state)) = current else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        if matches!(retention_state.as_str(), "delete_requested" | "deleted") {
+            tx.commit().await?;
+            return Ok(true);
+        }
+        let current_status = BackgroundAgentRunStatus::parse(status.as_str())?;
+        let already_terminal = matches!(
+            current_status,
+            BackgroundAgentRunStatus::Completed
+                | BackgroundAgentRunStatus::Failed
+                | BackgroundAgentRunStatus::Cancelled
+        );
+        let terminalize_immediately = !already_terminal
+            && (supervisor_id.is_none() || matches!(status.as_str(), "queued" | "orphaned"));
+        let next_status = if already_terminal {
+            current_status
+        } else if terminalize_immediately {
+            BackgroundAgentRunStatus::Cancelled
+        } else {
+            BackgroundAgentRunStatus::Stopping
+        };
+        let status_reason = if already_terminal {
+            "delete requested for terminal run"
+        } else if terminalize_immediately {
+            "delete requested before worker claim"
+        } else {
+            "delete requested"
+        };
         let result = sqlx::query(
             r#"
 UPDATE background_agent_runs
 SET
     desired_state = ?,
     retention_state = ?,
-    status = CASE
-        WHEN supervisor_id IS NOT NULL
-          AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
-        THEN ?
-        ELSE status
-    END,
-    status_reason = CASE
-        WHEN supervisor_id IS NOT NULL
-          AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
-        THEN ?
-        ELSE status_reason
-    END,
+    status = ?,
+    status_reason = ?,
     delete_after = COALESCE(delete_after, ?),
-    updated_at = ?
-WHERE id = ? AND retention_state != ?
+    updated_at = ?,
+    completed_at = CASE
+        WHEN ? = ? THEN COALESCE(completed_at, ?)
+        ELSE completed_at
+    END
+WHERE
+    id = ?
+    AND generation = ?
+    AND (
+        (supervisor_id IS NULL AND ? IS NULL)
+        OR supervisor_id = ?
+    )
+    AND retention_state = ?
             "#,
         )
         .bind(BackgroundAgentDesiredState::Deleted.as_str())
         .bind(crate::BackgroundAgentRetentionState::DeleteRequested.as_str())
-        .bind(BackgroundAgentRunStatus::Stopping.as_str())
-        .bind("delete requested")
+        .bind(next_status.as_str())
+        .bind(status_reason)
         .bind(now)
+        .bind(now)
+        .bind(next_status.as_str())
+        .bind(BackgroundAgentRunStatus::Cancelled.as_str())
         .bind(now)
         .bind(run_id)
-        .bind(crate::BackgroundAgentRetentionState::Deleted.as_str())
-        .execute(self.pool.as_ref())
+        .bind(generation)
+        .bind(supervisor_id.as_deref())
+        .bind(supervisor_id.as_deref())
+        .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let diagnostics_json = serde_json::json!({"reason": "delete_requested"});
+        let receipt_key = format!("delete:{generation}");
+        let event = super::events::append_background_agent_lifecycle_receipt_in_tx(
+            &mut tx,
+            run_id,
+            "agent.deleteRequested",
+            receipt_key.as_str(),
+            generation,
+            /*attempt*/ None,
+            &diagnostics_json,
+            now,
+        )
+        .await?;
+        if terminalize_immediately {
+            super::interactions::terminalize_active_background_agent_pending_interactions_in_tx(
+                &mut tx,
+                run_id,
+                BackgroundAgentPendingInteractionStatus::Cancelled,
+                &diagnostics_json,
+                now,
+            )
+            .await?;
+        }
+        let pending_interaction_count: i64 = sqlx::query_scalar(
+            r#"
+SELECT COUNT(*)
+FROM background_agent_pending_interactions
+WHERE run_id = ? AND status IN (?, ?)
+            "#,
+        )
+        .bind(run_id)
+        .bind(BackgroundAgentPendingInteractionStatus::Pending.as_str())
+        .bind(BackgroundAgentPendingInteractionStatus::Delivered.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        super::snapshots::upsert_background_agent_status_snapshot_in_tx(
+            &mut tx,
+            &BackgroundAgentStatusSnapshotParams {
+                run_id: run_id.to_string(),
+                seq: event.seq,
+                status: next_status,
+                desired_state: BackgroundAgentDesiredState::Deleted,
+                summary: Some(status_reason.to_string()),
+                pending_interaction_count,
+                last_event_seq: event.seq,
+                payload_json: serde_json::json!({
+                    "phase": next_status.as_str(),
+                    "reason": "delete_requested",
+                }),
+            },
+            now,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn orphan_stale_background_agent_runs(
@@ -1118,25 +1418,145 @@ WHERE
         supervisor_id: &str,
         process_lease_id: &str,
     ) -> anyhow::Result<Option<i64>> {
-        let now = Utc::now().timestamp();
-        let mut tx = self.pool.begin().await?;
-        let current: Option<(i64, String, String, String)> = sqlx::query_as(
+        self.claim_background_agent_supervisor_inner(
+            run_id,
+            supervisor_id,
+            process_lease_id,
+            /*required_version_fingerprint*/ None,
+        )
+        .await
+    }
+
+    pub async fn claim_background_agent_supervisor_compatible(
+        &self,
+        run_id: &str,
+        supervisor_id: &str,
+        process_lease_id: &str,
+        required_version_fingerprint: &str,
+    ) -> anyhow::Result<Option<i64>> {
+        self.claim_background_agent_supervisor_inner(
+            run_id,
+            supervisor_id,
+            process_lease_id,
+            Some(required_version_fingerprint),
+        )
+        .await
+    }
+
+    pub async fn background_agent_admission_is_ready(
+        &self,
+        run_id: &str,
+        required_version_fingerprint: &str,
+    ) -> anyhow::Result<bool> {
+        let ready: Option<i64> = sqlx::query_scalar(
             r#"
-SELECT generation, desired_state, status, retention_state
+SELECT 1
 FROM background_agent_runs
-WHERE id = ?
+WHERE
+    id = ?
+    AND version_fingerprint = ?
+    AND admission_identity_sha256 IS NOT NULL
+    AND admission_ready_at IS NOT NULL
+    AND EXISTS (
+        SELECT 1
+        FROM background_agent_events e
+        WHERE
+            e.run_id = background_agent_runs.id
+            AND e.event_type IN ('agent.started', 'agent.startRecovered')
+    )
+    AND EXISTS (
+        SELECT 1
+        FROM background_agent_execution_snapshots s
+        WHERE
+            s.run_id = background_agent_runs.id
+            AND s.snapshot_kind = 'initial_execution_context'
+    )
+    AND EXISTS (
+        SELECT 1
+        FROM background_agent_status_snapshots s
+        WHERE s.run_id = background_agent_runs.id
+    )
             "#,
         )
         .bind(run_id)
-        .fetch_optional(&mut *tx)
+        .bind(required_version_fingerprint)
+        .fetch_optional(self.pool.as_ref())
         .await?;
-        let Some((current_generation, desired_state, status, retention_state)) = current else {
+        Ok(ready.is_some())
+    }
+
+    pub async fn get_background_agent_initial_execution_snapshot(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
+        let row = sqlx::query_as::<_, BackgroundAgentExecutionSnapshotRow>(
+            r#"
+SELECT
+    id,
+    run_id,
+    seq,
+    snapshot_kind,
+    payload_json,
+    recovery_policy,
+    config_fingerprint,
+    created_at
+FROM background_agent_execution_snapshots
+WHERE run_id = ? AND snapshot_kind = 'initial_execution_context'
+ORDER BY seq ASC
+LIMIT 1
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(BackgroundAgentExecutionSnapshot::try_from)
+            .transpose()
+    }
+
+    async fn claim_background_agent_supervisor_inner(
+        &self,
+        run_id: &str,
+        supervisor_id: &str,
+        process_lease_id: &str,
+        required_version_fingerprint: Option<&str>,
+    ) -> anyhow::Result<Option<i64>> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+        let current: Option<(i64, String, String, String, Option<String>, Option<i64>)> =
+            sqlx::query_as(
+                r#"
+SELECT
+    generation,
+    desired_state,
+    status,
+    retention_state,
+    admission_identity_sha256,
+    admission_ready_at
+FROM background_agent_runs
+WHERE id = ?
+            "#,
+            )
+            .bind(run_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some((
+            current_generation,
+            desired_state,
+            status,
+            retention_state,
+            admission_identity_sha256,
+            admission_ready_at,
+        )) = current
+        else {
             tx.rollback().await?;
             return Ok(None);
         };
+        let admission_ready = required_version_fingerprint.is_none()
+            || (admission_identity_sha256.is_some() && admission_ready_at.is_some());
         let eligible = desired_state == BackgroundAgentDesiredState::Running.as_str()
             && retention_state == crate::BackgroundAgentRetentionState::Active.as_str()
-            && matches!(status.as_str(), "queued" | "orphaned");
+            && matches!(status.as_str(), "queued" | "orphaned")
+            && admission_ready;
         if !eligible {
             tx.rollback().await?;
             return Ok(None);
@@ -1160,6 +1580,33 @@ WHERE
     AND desired_state = ?
     AND retention_state = ?
     AND status IN ('queued', 'orphaned')
+    AND (
+        ? IS NULL
+        OR (
+            version_fingerprint = ?
+            AND admission_identity_sha256 IS NOT NULL
+            AND admission_ready_at IS NOT NULL
+            AND EXISTS (
+                SELECT 1
+                FROM background_agent_events e
+                WHERE
+                    e.run_id = background_agent_runs.id
+                    AND e.event_type IN ('agent.started', 'agent.startRecovered')
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM background_agent_execution_snapshots s
+                WHERE
+                    s.run_id = background_agent_runs.id
+                    AND s.snapshot_kind = 'initial_execution_context'
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM background_agent_status_snapshots s
+                WHERE s.run_id = background_agent_runs.id
+            )
+        )
+    )
             "#,
         )
         .bind(supervisor_id)
@@ -1173,6 +1620,8 @@ WHERE
         .bind(current_generation)
         .bind(BackgroundAgentDesiredState::Running.as_str())
         .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+        .bind(required_version_fingerprint)
+        .bind(required_version_fingerprint)
         .execute(&mut *tx)
         .await?;
 
@@ -1298,6 +1747,11 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
                 /*attempt*/ None,
                 &serde_json::json!({
                     "supervisorId": params.supervisor_id,
+                    "pid": params.pid,
+                    "pgid": params.pgid,
+                    "jobId": params.job_id,
+                    "startToken": params.start_token,
+                    "stderrLogPath": params.stderr_log_path,
                 }),
                 now,
             )
@@ -1494,6 +1948,406 @@ WHERE idempotency_key = ?
     }
 }
 
+async fn ensure_background_agent_capacity_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    max_active_runs: i64,
+) -> anyhow::Result<()> {
+    let active_run_count: i64 = sqlx::query_scalar(
+        r#"
+SELECT COUNT(*)
+FROM background_agent_runs
+WHERE
+    status IN (
+        'queued',
+        'starting',
+        'running',
+        'waiting_on_approval',
+        'waiting_on_user',
+        'stopping',
+        'orphaned'
+    )
+    AND (
+        status = 'stopping'
+        OR (
+            status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+            AND supervisor_id IS NOT NULL
+        )
+        OR (
+            status IN ('queued', 'orphaned')
+            AND desired_state = 'running'
+            AND retention_state = 'active'
+            AND admission_identity_sha256 IS NOT NULL
+            AND admission_ready_at IS NOT NULL
+        )
+    )
+        "#,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if active_run_count >= max_active_runs {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED}: \
+             {active_run_count} live or recoverable run(s), max {max_active_runs}"
+        );
+    }
+    Ok(())
+}
+
+async fn insert_background_agent_run_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    params: &BackgroundAgentRunCreateParams,
+    now: i64,
+) -> anyhow::Result<()> {
+    let spawn_linkage_json = params
+        .spawn_linkage_json
+        .as_ref()
+        .map(redact_state_json_string)
+        .transpose()?;
+    let insert_result = sqlx::query(
+        r#"
+INSERT INTO background_agent_runs (
+    id,
+    idempotency_key,
+    request_id,
+    source,
+    prompt_snapshot_ref,
+    input_snapshot_ref,
+    thread_id,
+    thread_store_kind,
+    thread_store_id,
+    rollout_path,
+    parent_thread_id,
+    parent_agent_run_id,
+    spawn_linkage_json,
+    auth_profile_ref,
+    desired_state,
+    status,
+    status_reason,
+    config_fingerprint,
+    version_fingerprint,
+    retention_state,
+    created_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(params.id.as_str())
+    .bind(params.idempotency_key.as_deref())
+    .bind(params.request_id.as_deref().map(redact_state_string))
+    .bind(params.source.as_str())
+    .bind(params.prompt_snapshot_ref.as_str())
+    .bind(
+        params
+            .input_snapshot_ref
+            .as_deref()
+            .map(redact_state_string),
+    )
+    .bind(params.thread_id.as_deref())
+    .bind(params.thread_store_kind.as_str())
+    .bind(params.thread_store_id.as_deref())
+    .bind(params.rollout_path.as_deref())
+    .bind(params.parent_thread_id.as_deref())
+    .bind(params.parent_agent_run_id.as_deref())
+    .bind(spawn_linkage_json.as_deref())
+    .bind(params.auth_profile_ref.as_deref())
+    .bind(BackgroundAgentDesiredState::Running.as_str())
+    .bind(BackgroundAgentRunStatus::Queued.as_str())
+    .bind(params.status_reason.as_deref().map(redact_state_string))
+    .bind(params.config_fingerprint.as_deref())
+    .bind(params.version_fingerprint.as_deref())
+    .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await;
+    if let Err(err) = insert_result {
+        if is_background_agent_unique_constraint_violation(&err) {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
+                 request identity conflicts with an existing background agent"
+            );
+        }
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+fn background_agent_admission_identity_sha256(
+    params: &BackgroundAgentRunCreateParams,
+    start_event_payload_json: &serde_json::Value,
+    execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+) -> anyhow::Result<String> {
+    let identity = serde_json::json!({
+        "idempotencyKey": params.idempotency_key,
+        "requestId": params.request_id,
+        "source": params.source,
+        "promptSnapshotRef": params.prompt_snapshot_ref,
+        "inputSnapshotRef": params.input_snapshot_ref,
+        "threadId": params.thread_id,
+        "threadStoreKind": params.thread_store_kind,
+        "threadStoreId": params.thread_store_id,
+        "rolloutPath": params.rollout_path,
+        "parentThreadId": params.parent_thread_id,
+        "parentAgentRunId": params.parent_agent_run_id,
+        "spawnLinkage": params.spawn_linkage_json,
+        "authProfileRef": params.auth_profile_ref,
+        "configFingerprint": params.config_fingerprint,
+        "versionFingerprint": params.version_fingerprint,
+        "startEvent": start_event_payload_json,
+        "executionSnapshot": {
+            "snapshotKind": execution_snapshot_params.snapshot_kind,
+            "payload": execution_snapshot_params.payload_json,
+            "recoveryPolicy": execution_snapshot_params.recovery_policy,
+            "configFingerprint": execution_snapshot_params.config_fingerprint,
+        },
+    });
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&identity)?)
+    ))
+}
+
+fn background_agent_start_event_payload(
+    payload_json: &serde_json::Value,
+    admission_identity_sha256: &str,
+) -> serde_json::Value {
+    let mut payload_json = payload_json.clone();
+    if let Some(payload) = payload_json.as_object_mut() {
+        payload.insert(
+            "admissionIdentitySha256".to_string(),
+            serde_json::Value::String(admission_identity_sha256.to_string()),
+        );
+    }
+    payload_json
+}
+
+async fn insert_background_agent_execution_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    params: &BackgroundAgentExecutionSnapshotParams,
+    now: i64,
+) -> anyhow::Result<i64> {
+    let payload_json = redact_state_json_string(&params.payload_json)?;
+    let seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
+    )
+    .bind(params.run_id.as_str())
+    .fetch_one(&mut **tx)
+    .await?;
+    let id = sqlx::query(
+        r#"
+INSERT INTO background_agent_execution_snapshots (
+    run_id,
+    seq,
+    snapshot_kind,
+    payload_json,
+    recovery_policy,
+    config_fingerprint,
+    created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(params.run_id.as_str())
+    .bind(seq)
+    .bind(params.snapshot_kind.as_str())
+    .bind(payload_json)
+    .bind(params.recovery_policy.as_str())
+    .bind(params.config_fingerprint.as_deref())
+    .bind(now)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_rowid();
+    sqlx::query(
+        r#"
+UPDATE background_agent_runs
+SET last_snapshot_seq = ?, updated_at = ?
+WHERE id = ?
+        "#,
+    )
+    .bind(seq)
+    .bind(now)
+    .bind(params.run_id.as_str())
+    .execute(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+async fn recover_or_validate_background_agent_initial_state_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    admission_identity_sha256: &str,
+    start_event_payload_json: &serde_json::Value,
+    execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+) -> anyhow::Result<(BackgroundAgentEvent, i64)> {
+    let mut execution_snapshot_params = execution_snapshot_params.clone();
+    execution_snapshot_params.run_id = run_id.to_string();
+    let stored_identity: Option<String> = sqlx::query_scalar(
+        "SELECT admission_identity_sha256 FROM background_agent_runs WHERE id = ?",
+    )
+    .bind(run_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if let Some(stored_identity) = stored_identity.as_deref()
+        && stored_identity != admission_identity_sha256
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
+             idempotency key is already bound to different prompt or execution context"
+        );
+    }
+
+    let existing_event = sqlx::query_as::<_, BackgroundAgentEventRow>(
+        r#"
+SELECT id, run_id, seq, event_type, payload_json, created_at
+FROM background_agent_events
+WHERE
+    run_id = ?
+    AND event_type IN ('agent.started', 'agent.startRecovered')
+ORDER BY
+    CASE WHEN event_type = 'agent.started' THEN 0 ELSE 1 END,
+    seq ASC
+LIMIT 1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .map(BackgroundAgentEvent::try_from)
+    .transpose()?;
+    let proposed_event_payload =
+        background_agent_start_event_payload(start_event_payload_json, admission_identity_sha256);
+    let now = Utc::now().timestamp();
+    let event = match existing_event {
+        Some(event)
+            if stored_identity.is_some()
+                || legacy_background_agent_start_event_matches(
+                    &event.payload_json,
+                    start_event_payload_json,
+                ) =>
+        {
+            event
+        }
+        Some(_) => {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
+                 idempotency key is already bound to a different start event"
+            );
+        }
+        None => {
+            super::events::append_background_agent_event_in_tx(
+                tx,
+                run_id,
+                "agent.started",
+                &proposed_event_payload,
+                now,
+            )
+            .await?
+        }
+    };
+
+    let existing_snapshot = sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+        r#"
+SELECT id, payload_json, recovery_policy, config_fingerprint
+FROM background_agent_execution_snapshots
+WHERE run_id = ? AND snapshot_kind = 'initial_execution_context'
+ORDER BY seq DESC
+LIMIT 1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let execution_snapshot_id = match existing_snapshot {
+        Some((id, payload_json, recovery_policy, config_fingerprint)) => {
+            let payload_json: serde_json::Value = serde_json::from_str(payload_json.as_str())?;
+            if stored_identity.is_none()
+                && (!legacy_background_agent_execution_snapshot_matches(
+                    &payload_json,
+                    &execution_snapshot_params.payload_json,
+                ) || recovery_policy != execution_snapshot_params.recovery_policy
+                    || (config_fingerprint.is_some()
+                        && config_fingerprint != execution_snapshot_params.config_fingerprint))
+            {
+                anyhow::bail!(
+                    "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
+                     idempotency key is already bound to a different execution snapshot"
+                );
+            }
+            id
+        }
+        None => {
+            insert_background_agent_execution_snapshot_in_tx(tx, &execution_snapshot_params, now)
+                .await?
+        }
+    };
+
+    let status_snapshot_exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM background_agent_status_snapshots WHERE run_id = ?")
+            .bind(run_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if status_snapshot_exists.is_none() {
+        let run_state = sqlx::query_as::<_, (String, String)>(
+            "SELECT status, desired_state FROM background_agent_runs WHERE id = ?",
+        )
+        .bind(run_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        let status = BackgroundAgentRunStatus::parse(run_state.0.as_str())?;
+        super::snapshots::upsert_background_agent_status_snapshot_in_tx(
+            tx,
+            &BackgroundAgentStatusSnapshotParams {
+                run_id: run_id.to_string(),
+                seq: event.seq,
+                status,
+                desired_state: BackgroundAgentDesiredState::parse(run_state.1.as_str())?,
+                summary: Some(status.as_str().to_string()),
+                pending_interaction_count: 0,
+                last_event_seq: event.seq,
+                payload_json: serde_json::json!({"phase": status.as_str()}),
+            },
+            now,
+        )
+        .await?;
+    }
+    sqlx::query(
+        r#"
+UPDATE background_agent_runs
+SET admission_identity_sha256 = ?, admission_ready_at = COALESCE(admission_ready_at, ?)
+WHERE id = ?
+        "#,
+    )
+    .bind(admission_identity_sha256)
+    .bind(now)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok((event, execution_snapshot_id))
+}
+
+fn legacy_background_agent_start_event_matches(
+    stored: &serde_json::Value,
+    proposed: &serde_json::Value,
+) -> bool {
+    ["prompt", "cwd", "promptSnapshotRef", "initialGoalObjective"]
+        .into_iter()
+        .all(|key| stored.get(key) == proposed.get(key))
+}
+
+fn legacy_background_agent_execution_snapshot_matches(
+    stored: &serde_json::Value,
+    proposed: &serde_json::Value,
+) -> bool {
+    let (Some(stored), Some(proposed)) = (stored.as_object(), proposed.as_object()) else {
+        return stored == proposed;
+    };
+    stored.iter().all(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "authProfileRef" | "packageFingerprint" | "configFingerprint" | "versionFingerprint"
+        ) || proposed.get(key) == Some(value)
+    })
+}
+
 async fn validate_existing_background_agent_admission_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     idempotency_key: &str,
@@ -1504,6 +2358,7 @@ async fn validate_existing_background_agent_admission_in_tx(
         (
             String,
             Option<String>,
+            String,
             String,
             Option<String>,
             Option<String>,
@@ -1523,6 +2378,7 @@ SELECT
     id,
     request_id,
     source,
+    prompt_snapshot_ref,
     input_snapshot_ref,
     thread_id,
     thread_store_kind,
@@ -1545,6 +2401,7 @@ WHERE idempotency_key = ?
         existing_id,
         request_id,
         source,
+        prompt_snapshot_ref,
         input_snapshot_ref,
         thread_id,
         thread_store_kind,
@@ -1567,6 +2424,7 @@ WHERE idempotency_key = ?
         .transpose()?;
     let identity_matches = request_id == params.request_id.as_deref().map(redact_state_string)
         && source == params.source
+        && prompt_snapshot_ref == params.prompt_snapshot_ref
         && input_snapshot_ref
             == params
                 .input_snapshot_ref
@@ -1579,7 +2437,7 @@ WHERE idempotency_key = ?
         && parent_thread_id == params.parent_thread_id
         && parent_agent_run_id == params.parent_agent_run_id
         && spawn_linkage_json == requested_spawn_linkage_json
-        && auth_profile_ref == params.auth_profile_ref.as_deref().map(redact_state_string)
+        && auth_profile_ref == params.auth_profile_ref
         && config_fingerprint == params.config_fingerprint
         && version_fingerprint == params.version_fingerprint;
     if !identity_matches {

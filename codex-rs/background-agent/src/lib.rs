@@ -54,12 +54,6 @@ pub trait AgentRunStore {
         params: BackgroundAgentRunCreateParams,
     ) -> impl Future<Output = anyhow::Result<BackgroundAgentRun>> + Send;
 
-    fn admit_run(
-        &self,
-        params: BackgroundAgentRunCreateParams,
-        max_active_runs: i64,
-    ) -> impl Future<Output = anyhow::Result<(BackgroundAgentRun, bool)>> + Send;
-
     fn get_run(
         &self,
         run_id: &str,
@@ -85,6 +79,11 @@ pub trait AgentRunStore {
         status: BackgroundAgentRunStatus,
         status_reason: Option<&str>,
     ) -> impl Future<Output = anyhow::Result<bool>> + Send;
+
+    fn append_status_event_for_supervisor(
+        &self,
+        params: BackgroundAgentStatusEventForSupervisorParams<'_>,
+    ) -> impl Future<Output = anyhow::Result<Option<BackgroundAgentEvent>>> + Send;
 
     fn set_desired_state(
         &self,
@@ -114,6 +113,7 @@ pub trait AgentRunStore {
         run_id: &str,
         supervisor_id: &str,
         process_lease_id: &str,
+        required_version_fingerprint: &str,
     ) -> impl Future<Output = anyhow::Result<Option<i64>>> + Send;
 
     fn record_execution_handle(
@@ -135,15 +135,6 @@ impl AgentRunStore for codex_state::StateRuntime {
         params: BackgroundAgentRunCreateParams,
     ) -> anyhow::Result<BackgroundAgentRun> {
         self.create_background_agent_run(&params).await
-    }
-
-    async fn admit_run(
-        &self,
-        params: BackgroundAgentRunCreateParams,
-        max_active_runs: i64,
-    ) -> anyhow::Result<(BackgroundAgentRun, bool)> {
-        self.admit_background_agent_run(&params, max_active_runs)
-            .await
     }
 
     async fn get_run(&self, run_id: &str) -> anyhow::Result<Option<BackgroundAgentRun>> {
@@ -173,6 +164,14 @@ impl AgentRunStore for codex_state::StateRuntime {
         status_reason: Option<&str>,
     ) -> anyhow::Result<bool> {
         self.update_background_agent_run_status(run_id, status, status_reason)
+            .await
+    }
+
+    async fn append_status_event_for_supervisor(
+        &self,
+        params: BackgroundAgentStatusEventForSupervisorParams<'_>,
+    ) -> anyhow::Result<Option<BackgroundAgentEvent>> {
+        self.append_background_agent_status_event_for_supervisor(params)
             .await
     }
 
@@ -217,9 +216,15 @@ impl AgentRunStore for codex_state::StateRuntime {
         run_id: &str,
         supervisor_id: &str,
         process_lease_id: &str,
+        required_version_fingerprint: &str,
     ) -> anyhow::Result<Option<i64>> {
-        self.claim_background_agent_supervisor(run_id, supervisor_id, process_lease_id)
-            .await
+        self.claim_background_agent_supervisor_compatible(
+            run_id,
+            supervisor_id,
+            process_lease_id,
+            required_version_fingerprint,
+        )
+        .await
     }
 
     async fn record_execution_handle(

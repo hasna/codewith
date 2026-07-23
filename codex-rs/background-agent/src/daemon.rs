@@ -168,7 +168,10 @@ impl BackgroundAgentDaemon {
                 .await;
         };
         let status = match self.controller.status(&record.handle).await? {
-            WorkerProcessStatus::Running => BackgroundAgentDaemonStatus::Running,
+            WorkerProcessStatus::Running => {
+                ensure_daemon_record_compatible(&record)?;
+                BackgroundAgentDaemonStatus::Running
+            }
             WorkerProcessStatus::Missing | WorkerProcessStatus::StalePidRecord => {
                 BackgroundAgentDaemonStatus::StalePidRecord
             }
@@ -536,9 +539,18 @@ mod tests {
             .start()
             .await
             .expect_err("incompatible daemon must not be reused");
+        let status_error = daemon
+            .status()
+            .await
+            .expect_err("incompatible daemon must not be reported as running");
 
         assert!(
             error
+                .to_string()
+                .contains(BACKGROUND_AGENT_DAEMON_INCOMPATIBLE)
+        );
+        assert!(
+            status_error
                 .to_string()
                 .contains(BACKGROUND_AGENT_DAEMON_INCOMPATIBLE)
         );

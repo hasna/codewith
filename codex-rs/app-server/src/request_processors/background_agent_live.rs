@@ -333,7 +333,7 @@ impl ThreadRequestProcessor {
         &self,
         mut params: AgentStartParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.validate_agent_start_admission(&params)?;
+        self.validate_agent_start_admission(&mut params)?;
         let managed_worktree = self
             .trusted_agent_start_managed_worktree(
                 params.cwd.as_deref(),
@@ -1673,9 +1673,13 @@ impl ThreadRequestProcessor {
 
     fn validate_agent_start_admission(
         &self,
-        params: &AgentStartParams,
+        params: &mut AgentStartParams,
     ) -> Result<(), JSONRPCErrorError> {
-        if params.version_fingerprint.as_deref() != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
+        if params.version_fingerprint.is_none() {
+            params.version_fingerprint =
+                Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string());
+        } else if params.version_fingerprint.as_deref()
+            != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
         {
             let mut error = invalid_request("background agent admission schema is incompatible");
             error.data = Some(json!({
@@ -1693,8 +1697,6 @@ impl ThreadRequestProcessor {
             );
             error.data = Some(json!({
                 "errorCode": BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH,
-                "requestedProfile": requested_profile,
-                "selectedProfile": self.config.selected_auth_profile.as_deref(),
             }));
             return Err(error);
         }
@@ -1868,6 +1870,16 @@ async fn reconcile_background_agents(
         if !should_start_background_run(&run) {
             continue;
         }
+        if !context
+            .state_db
+            .background_agent_admission_is_ready(
+                run.id.as_str(),
+                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            )
+            .await?
+        {
+            continue;
+        }
         let token = CancellationToken::new();
         {
             let mut active = context.active_workers.lock().await;
@@ -1951,6 +1963,16 @@ async fn reconcile_background_agent_worker_processes(
             }
         }
         if !should_start_background_run(&run) {
+            continue;
+        }
+        if !context
+            .state_db
+            .background_agent_admission_is_ready(
+                run.id.as_str(),
+                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            )
+            .await?
+        {
             continue;
         }
         if context
@@ -2841,6 +2863,7 @@ async fn worker_process_start_token(_worker_process: bool) -> anyhow::Result<Opt
 
 fn should_start_background_run(run: &BackgroundAgentRun) -> bool {
     if run.desired_state != BackgroundAgentDesiredState::Running
+        || run.version_fingerprint.as_deref() != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
         || !matches!(
             run.status,
             BackgroundAgentRunStatus::Queued | BackgroundAgentRunStatus::Orphaned
@@ -2884,11 +2907,14 @@ async fn run_background_agent_worker(
         run.generation.saturating_add(1)
     );
     let Some(generation) = retry_transient_sqlite_busy("claim background agent supervisor", || {
-        context.state_db.claim_background_agent_supervisor(
-            run.id.as_str(),
-            context.supervisor_id.as_str(),
-            process_lease_id.as_str(),
-        )
+        context
+            .state_db
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                context.supervisor_id.as_str(),
+                process_lease_id.as_str(),
+                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            )
     })
     .await?
     else {
@@ -2896,23 +2922,11 @@ async fn run_background_agent_worker(
         return Ok(());
     };
 
-    let (config, initial_execution_payload) =
-        match resolve_background_agent_config(&context, &run).await? {
-            BackgroundAgentConfigResolution::Ready {
-                config,
-                initial_execution_payload,
-            } => (*config, initial_execution_payload),
-            BackgroundAgentConfigResolution::UsageProfileWait { retry_at } => {
-                defer_background_agent_for_usage_profile_wait(
-                    &context,
-                    run.id.as_str(),
-                    generation,
-                    retry_at,
-                )
-                .await?;
-                return Ok(());
-            }
-        };
+    let BackgroundAgentConfigResolution::Ready {
+        config,
+        initial_execution_payload,
+    } = resolve_background_agent_config(&context, &run).await?;
+    let config = *config;
 
     let pid_value = i64::from(std::process::id());
     let pid = Some(pid_value);
@@ -3023,6 +3037,8 @@ async fn run_background_agent_worker(
     insert_initial_goal_for_background_thread(
         &context.state_db,
         run.id.as_str(),
+        context.supervisor_id.as_str(),
+        generation,
         thread_id,
         initial_execution_payload.as_ref(),
     )
@@ -3030,19 +3046,24 @@ async fn run_background_agent_worker(
     retry_transient_sqlite_busy("create background agent execution snapshot", || {
         context
             .state_db
-            .create_execution_snapshot(BackgroundAgentExecutionSnapshotParams {
-                run_id: run.id.clone(),
-                snapshot_kind: "worker_thread_bound".to_string(),
-                payload_json: json!({
-                    "threadId": thread_id.to_string(),
-                    "sessionId": session_id_string,
-                    "rolloutPath": rollout_path,
-                }),
-                recovery_policy: "resume_or_orphan".to_string(),
-                config_fingerprint: run.config_fingerprint.clone(),
-            })
+            .create_background_agent_execution_snapshot_for_supervisor(
+                &BackgroundAgentExecutionSnapshotParams {
+                    run_id: run.id.clone(),
+                    snapshot_kind: "worker_thread_bound".to_string(),
+                    payload_json: json!({
+                        "threadId": thread_id.to_string(),
+                        "sessionId": session_id_string,
+                        "rolloutPath": rollout_path,
+                    }),
+                    recovery_policy: "resume_or_orphan".to_string(),
+                    config_fingerprint: run.config_fingerprint.clone(),
+                },
+                context.supervisor_id.as_str(),
+                generation,
+            )
     })
-    .await?;
+    .await?
+    .ok_or_else(|| background_agent_ownership_lost(run.id.as_str(), generation))?;
     append_status(
         &context,
         run.id.as_str(),
@@ -3157,9 +3178,6 @@ enum BackgroundAgentConfigResolution {
         config: Box<codex_core::config::Config>,
         initial_execution_payload: Option<Value>,
     },
-    UsageProfileWait {
-        retry_at: DateTime<Utc>,
-    },
 }
 
 async fn resolve_background_agent_config(
@@ -3173,22 +3191,15 @@ async fn resolve_background_agent_config(
     }
     let snapshot = context
         .state_db
-        .get_latest_execution_snapshot(run.id.as_str())
-        .await?;
-    let initial_execution_payload = snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.payload_json.clone());
-    let payload = snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.payload_json.as_object());
-    let snapshot_auth_profile_ref = payload
-        .and_then(|payload| payload.get("authProfileRef"))
-        .and_then(Value::as_str);
-    if snapshot_auth_profile_ref != run.auth_profile_ref.as_deref() {
-        anyhow::bail!(
-            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: persisted execution snapshot auth profile does not match the admitted run"
-        );
-    }
+        .get_background_agent_initial_execution_snapshot(run.id.as_str())
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "background agent admission is missing its initial execution context snapshot"
+            )
+        })?;
+    let initial_execution_payload = Some(snapshot.payload_json.clone());
+    let payload = snapshot.payload_json.as_object();
     let cwd = payload
         .and_then(|payload| payload.get("cwd"))
         .and_then(Value::as_str)
@@ -3278,7 +3289,7 @@ async fn resolve_background_agent_config(
     }
     let request_overrides = (!request_overrides.is_empty()).then_some(request_overrides);
 
-    let mut config_overrides = ConfigOverrides {
+    let config_overrides = ConfigOverrides {
         model,
         model_provider,
         service_tier,
@@ -3293,9 +3304,9 @@ async fn resolve_background_agent_config(
         main_execve_wrapper_exe: context.arg0_paths.main_execve_wrapper_exe.clone(),
         ..Default::default()
     };
-    let config = context
+    let mut config = context
         .config_manager
-        .load_with_overrides(request_overrides.clone(), config_overrides.clone())
+        .load_with_overrides(request_overrides, config_overrides)
         .await
         .map_err(anyhow::Error::from)?;
     if config.selected_auth_profile != run.auth_profile_ref {
@@ -3303,49 +3314,8 @@ async fn resolve_background_agent_config(
             "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: loaded worker auth profile does not match the admitted run"
         );
     }
-    if run.auth_profile_ref.is_some() {
-        return Ok(BackgroundAgentConfigResolution::Ready {
-            config: Box::new(config),
-            initial_execution_payload,
-        });
-    }
-
-    let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
-        &context.auth_manager,
-        &config,
-        config_overrides.auth_profile.clone(),
-    )
-    .await;
-    if let Some(profile) = broker_decision.selected_profile.as_ref() {
-        tracing::debug!(
-            run_id = %run.id,
-            auth_profile = %profile,
-            reason = ?broker_decision.reason,
-            "usage profile broker selected auth profile for background agent"
-        );
-        config_overrides.auth_profile = Some(Some(profile.clone()));
-        return context
-            .config_manager
-            .load_with_overrides(request_overrides, config_overrides)
-            .await
-            .map(Box::new)
-            .map(|config| BackgroundAgentConfigResolution::Ready {
-                config,
-                initial_execution_payload,
-            })
-            .map_err(anyhow::Error::from);
-    }
-    if let Some(retry_at) = broker_decision.retry_at
-        && let Some(retry_at) = background_agent_broker_retry_at(&config, retry_at)
-    {
-        tracing::debug!(
-            run_id = %run.id,
-            retry_at = %retry_at.to_rfc3339(),
-            reason = ?broker_decision.reason,
-            "usage profile broker deferred background agent"
-        );
-        return Ok(BackgroundAgentConfigResolution::UsageProfileWait { retry_at });
-    }
+    config.auth_profile_auto_switch.enabled = false;
+    config.usage_self_heal.enabled = false;
     Ok(BackgroundAgentConfigResolution::Ready {
         config: Box::new(config),
         initial_execution_payload,
@@ -3355,6 +3325,8 @@ async fn resolve_background_agent_config(
 async fn insert_initial_goal_for_background_thread(
     state_db: &codex_state::StateRuntime,
     run_id: &str,
+    supervisor_id: &str,
+    generation: i64,
     thread_id: codex_protocol::ThreadId,
     initial_execution_payload: Option<&Value>,
 ) -> anyhow::Result<()> {
@@ -3381,9 +3353,17 @@ async fn insert_initial_goal_for_background_thread(
         "objective": goal.objective,
     });
     retry_transient_sqlite_busy("append background agent initial goal event", || {
-        state_db.append_background_agent_event(run_id, "agent.initialGoalCreated", &event_payload)
+        state_db.append_background_agent_event_for_supervisor(
+            run_id,
+            supervisor_id,
+            generation,
+            "agent.initialGoalCreated",
+            &event_payload,
+            /*allow_terminal_current*/ false,
+        )
     })
-    .await?;
+    .await?
+    .ok_or_else(|| background_agent_ownership_lost(run_id, generation))?;
     Ok(())
 }
 
@@ -3394,49 +3374,6 @@ fn initial_goal_objective_from_execution_payload(payload: &Value) -> Option<Stri
         .map(str::trim)
         .filter(|objective| !objective.is_empty())
         .map(str::to_string)
-}
-
-async fn defer_background_agent_for_usage_profile_wait(
-    context: &BackgroundAgentWorkerContext,
-    run_id: &str,
-    generation: i64,
-    retry_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let status_reason = background_agent_usage_profile_wait_reason(retry_at);
-    append_status(
-        context,
-        run_id,
-        generation,
-        BackgroundAgentRunStatus::Queued,
-        status_reason.as_str(),
-        "agent.usageProfileWait",
-        json!({
-            "retryAt": retry_at.timestamp(),
-        }),
-    )
-    .await?;
-    retry_transient_sqlite_busy("finish background agent usage profile wait lease", || {
-        context.state_db.finish_background_agent_process_lease(
-            run_id,
-            context.supervisor_id.as_str(),
-            generation,
-            /*exit_code*/ None,
-            /*exit_signal*/ None,
-            Some("usage profile wait"),
-        )
-    })
-    .await?;
-    Ok(())
-}
-
-fn background_agent_broker_retry_at(
-    config: &codex_core::config::Config,
-    retry_at: i64,
-) -> Option<DateTime<Utc>> {
-    let retry_at = DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0)?;
-    let buffer_secs = i64::try_from(config.usage_self_heal.reset_retry_buffer_secs).ok()?;
-    let retry_at = retry_at + ChronoDuration::seconds(buffer_secs);
-    (retry_at > Utc::now()).then_some(retry_at)
 }
 
 fn background_agent_usage_profile_wait_reason(retry_at: DateTime<Utc>) -> String {
@@ -3485,7 +3422,16 @@ async fn load_background_agent_prompt(
         .await?;
     events
         .into_iter()
-        .find(|event| event.event_type == "agent.started")
+        .find(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "agent.started" | "agent.startRecovered"
+            ) && event
+                .payload_json
+                .get("prompt")
+                .and_then(Value::as_str)
+                .is_some()
+        })
         .and_then(|event| {
             event
                 .payload_json
@@ -4320,33 +4266,38 @@ async fn upsert_interaction_status_snapshot(
     retry_transient_sqlite_busy("upsert background agent waiting status snapshot", || {
         context
             .state_db
-            .upsert_status_snapshot(BackgroundAgentStatusSnapshotParams {
-                run_id: run_id.to_string(),
-                seq: run.last_event_seq,
-                status,
-                desired_state: run.desired_state,
-                summary: Some(
-                    status_summary(status, "waiting for pending interaction").to_string(),
-                ),
-                pending_interaction_count: pending_count,
-                last_event_seq: run.last_event_seq,
-                payload_json: status_snapshot_payload(
+            .upsert_background_agent_status_snapshot_for_supervisor(
+                &BackgroundAgentStatusSnapshotParams {
+                    run_id: run_id.to_string(),
+                    seq: run.last_event_seq,
                     status,
-                    waiting_reason,
-                    generation,
-                    &json!({
-                        "interactionId": interaction.id,
-                        "workerRequestId": interaction.worker_request_id,
-                        "kind": interaction.kind.as_str(),
-                        "waitingReason": waiting_reason,
-                        "requestPayload": interaction.request_payload_json,
-                        "timeoutAt": interaction.timeout_at.map(|value| value.timestamp()),
-                    }),
-                    execution_payload.as_ref(),
-                ),
-            })
+                    desired_state: run.desired_state,
+                    summary: Some(
+                        status_summary(status, "waiting for pending interaction").to_string(),
+                    ),
+                    pending_interaction_count: pending_count,
+                    last_event_seq: run.last_event_seq,
+                    payload_json: status_snapshot_payload(
+                        status,
+                        waiting_reason,
+                        generation,
+                        &json!({
+                            "interactionId": interaction.id,
+                            "workerRequestId": interaction.worker_request_id,
+                            "kind": interaction.kind.as_str(),
+                            "waitingReason": waiting_reason,
+                            "requestPayload": interaction.request_payload_json,
+                            "timeoutAt": interaction.timeout_at.map(|value| value.timestamp()),
+                        }),
+                        execution_payload.as_ref(),
+                    ),
+                },
+                context.supervisor_id.as_str(),
+                generation,
+            )
     })
-    .await?;
+    .await?
+    .ok_or_else(|| background_agent_ownership_lost(run_id, generation))?;
     Ok(())
 }
 
@@ -4371,14 +4322,20 @@ async fn append_background_agent_event_with_retry(
     payload_json: &Value,
     allow_terminal_current: bool,
 ) -> anyhow::Result<BackgroundAgentEvent> {
-    ensure_background_agent_worker_current(context, run_id, generation, allow_terminal_current)
-        .await?;
-    retry_transient_sqlite_busy("append background agent event", || {
+    let event = retry_transient_sqlite_busy("append background agent event", || {
         context
             .state_db
-            .append_event(run_id, event_type, payload_json)
+            .append_background_agent_event_for_supervisor(
+                run_id,
+                context.supervisor_id.as_str(),
+                generation,
+                event_type,
+                payload_json,
+                allow_terminal_current,
+            )
     })
-    .await
+    .await?;
+    event.ok_or_else(|| background_agent_ownership_lost(run_id, generation))
 }
 
 async fn ensure_background_agent_worker_current(
@@ -5466,6 +5423,10 @@ done
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
                 .await?;
         seed_queued_run(state_db.as_ref(), "goal-run").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor("goal-run", "goal-supervisor", "goal-process-lease")
+            .await?
+            .expect("seeded run should be claimable");
         let thread_id = codex_protocol::ThreadId::new();
         let initial_execution_payload = json!({
             "initialGoalObjective": "  Investigate flaky test  ",
@@ -5474,6 +5435,8 @@ done
         insert_initial_goal_for_background_thread(
             state_db.as_ref(),
             "goal-run",
+            "goal-supervisor",
+            generation,
             thread_id,
             Some(&initial_execution_payload),
         )
@@ -5514,6 +5477,8 @@ done
         insert_initial_goal_for_background_thread(
             state_db.as_ref(),
             "goal-run",
+            "goal-supervisor",
+            generation,
             thread_id,
             Some(&initial_execution_payload),
         )
@@ -5953,36 +5918,49 @@ done
         state_db: &codex_state::StateRuntime,
         run_id: &str,
     ) -> anyhow::Result<()> {
+        let start_event_payload = json!({
+            "cwd": null,
+            "prompt": "process supervisor test",
+            "promptSnapshotRef": format!("inline:{run_id}:prompt"),
+        });
+        let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+            run_id: run_id.to_string(),
+            snapshot_kind: "initial_execution_context".to_string(),
+            payload_json: json!({
+                "cwd": null,
+                "configFingerprint": "cfg-test",
+                "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+            }),
+            recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+            config_fingerprint: Some("cfg-test".to_string()),
+        };
         state_db
-            .create_background_agent_run(&codex_state::BackgroundAgentRunCreateParams {
-                id: run_id.to_string(),
-                idempotency_key: None,
-                request_id: None,
-                source: "process-supervisor-test".to_string(),
-                prompt_snapshot_ref: format!("inline:{run_id}:prompt"),
-                input_snapshot_ref: None,
-                thread_id: None,
-                thread_store_kind: "background-agent".to_string(),
-                thread_store_id: None,
-                rollout_path: None,
-                parent_thread_id: None,
-                parent_agent_run_id: None,
-                spawn_linkage_json: None,
-                auth_profile_ref: None,
-                status_reason: Some("queued by process supervisor test".to_string()),
-                config_fingerprint: Some("cfg-test".to_string()),
-                version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
-            })
-            .await?;
-        state_db
-            .append_background_agent_event(
-                run_id,
-                "agent.started",
-                &json!({
-                    "cwd": null,
-                    "prompt": "process supervisor test",
-                    "promptSnapshotRef": format!("inline:{run_id}:prompt"),
-                }),
+            .admit_background_agent_run(
+                &codex_state::BackgroundAgentRunCreateParams {
+                    id: run_id.to_string(),
+                    idempotency_key: None,
+                    request_id: None,
+                    source: "process-supervisor-test".to_string(),
+                    prompt_snapshot_ref: format!("inline:{run_id}:prompt"),
+                    input_snapshot_ref: None,
+                    thread_id: None,
+                    thread_store_kind: "background-agent".to_string(),
+                    thread_store_id: None,
+                    rollout_path: None,
+                    parent_thread_id: None,
+                    parent_agent_run_id: None,
+                    spawn_linkage_json: None,
+                    auth_profile_ref: None,
+                    status_reason: Some("queued by process supervisor test".to_string()),
+                    config_fingerprint: Some("cfg-test".to_string()),
+                    version_fingerprint: Some(
+                        BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+                    ),
+                },
+                &start_event_payload,
+                &execution_snapshot_params,
+                DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
             )
             .await?;
         Ok(())
