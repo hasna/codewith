@@ -1997,7 +1997,25 @@ async fn delete_request_for_claimed_run_becomes_stopping_and_stale_cancelled() -
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 3);
+    let events = runtime
+        .list_background_agent_events_after("run-1", /*after_seq*/ None, /*limit*/ None)
+        .await?;
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "agent.claimed",
+            "agent.heartbeat",
+            "agent.deleteRequested",
+            "agent.cancelled",
+        ]
+    );
+    assert_eq!(
+        status_snapshot.last_event_seq,
+        events.last().expect("terminal event should exist").seq
+    );
 
     Ok(())
 }
