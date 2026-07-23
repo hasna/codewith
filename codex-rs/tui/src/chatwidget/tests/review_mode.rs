@@ -722,6 +722,155 @@ async fn steer_enter_during_final_stream_preserves_follow_up_prompts_in_order() 
 }
 
 #[tokio::test]
+async fn shift_enter_flushes_queued_messages_as_one_steer_during_final_stream() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.on_agent_message_delta("Final answer line\n".to_string());
+
+    chat.bottom_pane
+        .set_composer_text("first queued".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    chat.bottom_pane
+        .set_composer_text("second queued".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    let expected_text = "first queued\nsecond queued";
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: expected_text.to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected one merged queued-message steer, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.input_queue.rejected_steers_queue.is_empty());
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_eq!(
+        chat.input_queue
+            .pending_steers
+            .front()
+            .unwrap()
+            .user_message
+            .text,
+        expected_text
+    );
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn shift_enter_flushes_rejected_before_queued_and_preserves_existing_pending_steers() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.input_queue.pending_steers.push_back(PendingSteer {
+        user_message: UserMessage::from("already pending"),
+        history_record: UserMessageHistoryRecord::UserMessageText,
+        compare_key: PendingSteerCompareKey {
+            message: "already pending".to_string(),
+            image_count: 0,
+        },
+    });
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("rejected first"));
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("queued second").into());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "rejected first\nqueued second".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected one merged queued-message steer, got {other:?}"),
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.input_queue.rejected_steers_queue.is_empty());
+    assert!(chat.input_queue.rejected_steer_history_records.is_empty());
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert!(
+        chat.input_queue
+            .queued_user_message_history_records
+            .is_empty()
+    );
+    assert_eq!(
+        chat.input_queue
+            .pending_steers
+            .iter()
+            .map(|pending| pending.user_message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["already pending", "rejected first\nqueued second"]
+    );
+}
+
+#[tokio::test]
+async fn shift_enter_repeat_and_release_do_not_flush_queued_messages() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("queued").into());
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+
+    for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+        chat.handle_key_event(KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT,
+            kind,
+        ));
+    }
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+}
+
+#[tokio::test]
+async fn shift_enter_without_queued_messages_still_inserts_newline() {
+    let (mut active_chat, _active_rx, mut active_op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    active_chat.thread_id = Some(ThreadId::new());
+    active_chat.on_task_started();
+    active_chat
+        .bottom_pane
+        .set_composer_text("active".to_string(), Vec::new(), Vec::new());
+
+    active_chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    assert_no_submit_op(&mut active_op_rx);
+    assert_eq!(active_chat.bottom_pane.composer_text(), "active\n");
+
+    let (mut idle_chat, _idle_rx, mut idle_op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    idle_chat
+        .bottom_pane
+        .set_composer_text("idle".to_string(), Vec::new(), Vec::new());
+
+    idle_chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    assert_no_submit_op(&mut idle_op_rx);
+    assert_eq!(idle_chat.bottom_pane.composer_text(), "idle\n");
+}
+
+#[tokio::test]
 async fn manual_interrupt_restores_pending_steers_to_composer() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

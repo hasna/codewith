@@ -1015,6 +1015,7 @@ mod tests {
             vec![
                 "Composer.submit",
                 "Chat.interrupt_turn",
+                "Chat.flush_queued_messages",
                 "Editor.insert_newline",
                 "Composer.queue",
                 "Global.cycle_permissions",

@@ -124,6 +124,19 @@ impl ChatWidget {
             return;
         }
 
+        if self.turn_lifecycle.agent_turn_running
+            && self.chat_keymap.flush_queued_messages.is_pressed(key_event)
+            && self.bottom_pane.no_modal_or_popup_active()
+        {
+            if key_event.kind == KeyEventKind::Repeat {
+                return;
+            }
+            if key_event.kind == KeyEventKind::Press && self.has_queued_follow_up_messages() {
+                self.flush_queued_messages();
+                return;
+            }
+        }
+
         if self.chat_keymap.interrupt_turn.is_pressed(key_event)
             && !self.input_queue.pending_steers.is_empty()
             && self.bottom_pane.is_task_running()

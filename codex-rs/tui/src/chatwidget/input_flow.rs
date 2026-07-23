@@ -99,6 +99,47 @@ impl ChatWidget {
         }
     }
 
+    /// Merge every queued follow-up visible at this keypress into one active-turn steer.
+    ///
+    /// Rejected steers retain dequeue priority, followed by locally queued messages in FIFO
+    /// order. Taking all four deques together preserves their message/history alignment while
+    /// leaving already-submitted pending steers and the live composer draft untouched.
+    pub(super) fn flush_queued_messages(&mut self) {
+        let rejected_messages = std::mem::take(&mut self.input_queue.rejected_steers_queue);
+        let mut rejected_history_records =
+            std::mem::take(&mut self.input_queue.rejected_steer_history_records);
+        rejected_history_records.resize(
+            rejected_messages.len(),
+            UserMessageHistoryRecord::UserMessageText,
+        );
+
+        let queued_messages = std::mem::take(&mut self.input_queue.queued_user_messages);
+        let mut queued_history_records =
+            std::mem::take(&mut self.input_queue.queued_user_message_history_records);
+        queued_history_records.resize(
+            queued_messages.len(),
+            UserMessageHistoryRecord::UserMessageText,
+        );
+
+        let mut messages = rejected_messages
+            .into_iter()
+            .zip(rejected_history_records)
+            .collect::<Vec<_>>();
+        messages.extend(
+            queued_messages
+                .into_iter()
+                .zip(queued_history_records)
+                .map(|(message, history_record)| (message.into_user_message(), history_record)),
+        );
+        let (message, history_record) = merge_user_messages_with_history_record(messages);
+        self.resubmit_queued_user_message_with_history_record(
+            message,
+            history_record,
+            ShellEscapePolicy::Disallow,
+        );
+        self.refresh_pending_input_preview();
+    }
+
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
         if self.input_queue.suppress_queue_autosend {
