@@ -5960,7 +5960,7 @@ done
                 },
                 &start_event_payload,
                 &execution_snapshot_params,
-                DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+                codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
             )
             .await?;
         Ok(())
