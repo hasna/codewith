@@ -441,7 +441,10 @@ fn resolve_spawn_agent_provider_id(
 ) -> Result<Option<String>, FunctionCallError> {
     if let Some(requested_provider) = requested_provider {
         if !config.model_providers.contains_key(requested_provider) {
-            return Err(unknown_spawn_agent_provider_error(config, requested_provider));
+            return Err(unknown_spawn_agent_provider_error(
+                config,
+                requested_provider,
+            ));
         }
         return Ok(Some(requested_provider.to_string()));
     }

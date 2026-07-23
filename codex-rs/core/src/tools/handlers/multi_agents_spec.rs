@@ -12,12 +12,9 @@ pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
-const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
-    "Model override for the new agent. May be any model slug from any provider configured for this session (for example `gpt-5.6-sol`, `claude-fable-5`, `gemini-3.5-flash`, or `grok-4.3`), not just the current provider's models. The provider is inferred from the slug (use `provider` to disambiguate); the child then authenticates under that provider's credentials. Unknown slugs are rejected with the list of available models. Omit to inherit the parent model.";
-const SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION: &str =
-    "Provider id the new agent should run on (for example `openai`, `anthropic`, `google`, or `xai`). Omit to infer the provider from `model`, or to inherit the parent provider. Must be a provider configured for this session; the child routes to that provider and authenticates with its credentials.";
-const SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION: &str =
-    "Reasoning effort override for the new agent (for example `minimal`, `low`, `medium`, `high`, or `xhigh`). Validated against the selected model's supported reasoning levels; unsupported values are rejected. Omit to inherit the parent effort.";
+const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str = "Model override for the new agent. May be any model slug from any provider configured for this session (for example `gpt-5.6-sol`, `claude-fable-5`, `gemini-3.5-flash`, or `grok-4.3`), not just the current provider's models. The provider is inferred from the slug (use `provider` to disambiguate); the child then authenticates under that provider's credentials. Unknown slugs are rejected with the list of available models. Omit to inherit the parent model.";
+const SPAWN_AGENT_PROVIDER_OVERRIDE_DESCRIPTION: &str = "Provider id the new agent should run on (for example `openai`, `anthropic`, `google`, or `xai`). Omit to infer the provider from `model`, or to inherit the parent provider. Must be a provider configured for this session; the child routes to that provider and authenticates with its credentials.";
+const SPAWN_AGENT_REASONING_EFFORT_OVERRIDE_DESCRIPTION: &str = "Reasoning effort override for the new agent (for example `minimal`, `low`, `medium`, `high`, or `xhigh`). Validated against the selected model's supported reasoning levels; unsupported values are rejected. Omit to inherit the parent effort.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const SPAWN_AGENT_AUTH_PROFILE_DESCRIPTION: &str = "Named Codewith auth profile (for example `account001`) the new agent should authenticate under. Omit to inherit the parent agent's auth profile.";
