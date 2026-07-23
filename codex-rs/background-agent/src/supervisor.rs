@@ -11,7 +11,6 @@ use crate::AgentSnapshotStore;
 use crate::AgentSupervisor;
 use crate::BackgroundAgentDesiredState;
 use crate::BackgroundAgentExecutionHandleParams;
-use crate::BackgroundAgentExecutionSnapshotParams;
 use crate::BackgroundAgentPendingInteractionStatus;
 use crate::BackgroundAgentRun;
 use crate::BackgroundAgentRunStatus;
@@ -416,6 +415,7 @@ mod tests {
 
     use super::*;
     use crate::AgentExecutionHandle;
+    use crate::BackgroundAgentExecutionSnapshotParams;
 
     #[derive(Debug, Clone, Default)]
     struct RecordingExecution {
@@ -549,6 +549,8 @@ mod tests {
                 .map(|event| event.event_type)
                 .collect::<Vec<_>>(),
             vec![
+                "agent.admitted".to_string(),
+                "agent.started".to_string(),
                 "agent.claimed".to_string(),
                 "agent.workerStartFailed".to_string()
             ]
@@ -654,7 +656,7 @@ mod tests {
             delivered.status,
             BackgroundAgentPendingInteractionStatus::Delivered
         );
-        assert_eq!(snapshot.run.last_event_seq, 2);
+        assert_eq!(snapshot.run.last_event_seq, 4);
         assert_eq!(
             state
                 .runtime
@@ -666,6 +668,8 @@ mod tests {
                 .map(|event| event.event_type)
                 .collect::<Vec<_>>(),
             vec![
+                "agent.admitted".to_string(),
+                "agent.started".to_string(),
                 "interaction.created".to_string(),
                 "interaction.delivered".to_string()
             ]
@@ -762,6 +766,8 @@ mod tests {
                 .map(|event| event.event_type)
                 .collect::<Vec<_>>(),
             vec![
+                "agent.admitted".to_string(),
+                "agent.started".to_string(),
                 "interaction.created".to_string(),
                 "agent.stopRequested".to_string(),
                 "interaction.cancelled".to_string()

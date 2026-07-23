@@ -7,6 +7,16 @@ const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
 const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
     "background_agent_admission_identity_mismatch";
 
+#[derive(sqlx::FromRow)]
+struct BackgroundAgentSupervisorClaimState {
+    generation: i64,
+    desired_state: String,
+    status: String,
+    retention_state: String,
+    admission_identity_sha256: Option<String>,
+    admission_ready_at: Option<i64>,
+}
+
 impl StateRuntime {
     /// Returns a stable digest for opaque background-agent admission identity.
     pub fn background_agent_identity_sha256(bytes: &[u8]) -> String {
@@ -1522,9 +1532,8 @@ LIMIT 1
     ) -> anyhow::Result<Option<i64>> {
         let now = Utc::now().timestamp();
         let mut tx = self.pool.begin().await?;
-        let current: Option<(i64, String, String, String, Option<String>, Option<i64>)> =
-            sqlx::query_as(
-                r#"
+        let current = sqlx::query_as::<_, BackgroundAgentSupervisorClaimState>(
+            r#"
 SELECT
     generation,
     desired_state,
@@ -1535,18 +1544,18 @@ SELECT
 FROM background_agent_runs
 WHERE id = ?
             "#,
-            )
-            .bind(run_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some((
-            current_generation,
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(BackgroundAgentSupervisorClaimState {
+            generation: current_generation,
             desired_state,
             status,
             retention_state,
             admission_identity_sha256,
             admission_ready_at,
-        )) = current
+        }) = current
         else {
             tx.rollback().await?;
             return Ok(None);
