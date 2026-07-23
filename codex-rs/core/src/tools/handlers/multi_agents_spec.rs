@@ -259,7 +259,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. Does not return the content; returns either a summary of which agents have updates (if any), or a timeout summary if no mailbox update arrives before the deadline."
+        description: "Block until a mailbox update arrives or the timeout elapses. You rarely need this: when a spawned agent finishes, its final answer is delivered to you automatically and a new turn starts if you are idle. Only call it when you genuinely cannot proceed without a specific result. NEVER call wait_agent repeatedly in a loop. Returns a short summary plus the current status of your live sub-agents (agent_statuses); the agents' final content arrives separately as mailbox notifications."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -491,11 +491,35 @@ fn wait_output_schema_v2() -> Value {
         "properties": {
             "message": {
                 "type": "string",
-                "description": "Brief wait summary without the agent's final content."
+                "description": "Brief wait summary. On timeout it reminds you that completion is push-based and you must not re-poll."
             },
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+            },
+            "agent_statuses": {
+                "type": "array",
+                "description": "Current status of your live sub-agents when the wait returned. Empty when there are no live sub-agents.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "thread_id": {
+                            "type": "string",
+                            "description": "Agent id."
+                        },
+                        "agent_nickname": {
+                            "type": ["string", "null"],
+                            "description": "Nickname assigned to the sub-agent, when available."
+                        },
+                        "agent_role": {
+                            "type": ["string", "null"],
+                            "description": "Role assigned to the sub-agent, when available."
+                        },
+                        "status": agent_status_output_schema()
+                    },
+                    "required": ["thread_id", "status"],
+                    "additionalProperties": false
+                }
             }
         },
         "required": ["message", "timed_out"],
@@ -759,7 +783,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}
-It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+It will be able to send you and other running agents messages. When it finishes you are notified automatically: its final answer is delivered to your mailbox and a new turn starts if you have already ended yours. Do not poll `wait_agent` after spawning — continue with other work or end your turn, and you will be woken with the result.
 The new agent's canonical task name will be provided to it along with the message.
 {concurrency_guidance}"#
     );

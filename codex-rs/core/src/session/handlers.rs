@@ -390,6 +390,10 @@ pub async fn inter_agent_communication(
     communication: InterAgentCommunication,
 ) -> CodexResult<()> {
     let trigger_turn = communication.trigger_turn;
+    // Completion notifications wake an idle recipient (`wake_if_idle`) but must
+    // NOT defer delivery out of a running turn: a busy parent should still
+    // consume the child's final answer within its current turn.
+    let wake_if_idle = communication.wake_if_idle;
     // Defer before enqueueing so the running turn cannot drain the trigger
     // message into the current turn between the two steps.
     let deferred_delivery = if trigger_turn {
@@ -413,7 +417,10 @@ pub async fn inter_agent_communication(
         }
         return Err(CodexErr::InvalidRequest(err.to_string()));
     }
-    if trigger_turn {
+    if trigger_turn || wake_if_idle {
+        // The wake helper is idempotent and only starts a turn when the session
+        // is idle and the pending mail is actually wake-worthy for this
+        // session's config, so a mid-turn `wake_if_idle` delivery is a no-op.
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }

@@ -861,6 +861,129 @@ async fn subagent_notification_is_included_without_wait() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_parent_auto_resumes_on_subagent_completion() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "task_name": "worker",
+    }))?;
+
+    // Turn 1: the parent spawns a child, then its follow-up completes so the
+    // parent turn ends (parent goes idle) while the delayed child still runs.
+    // Use the un-namespaced v2 `spawn_agent` so the child is a MultiAgentV2
+    // sub-agent whose terminal turn goes through the session forwarder that
+    // now sends a `wake_if_idle` completion notification.
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-turn1-1"),
+            ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+            ev_completed("resp-turn1-1"),
+        ]),
+    )
+    .await;
+
+    let _turn1_followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID) && !body_contains(req, "<subagent_notification>")
+        },
+        sse(vec![
+            ev_response_created("resp-turn1-2"),
+            ev_assistant_message("msg-turn1-2", "parent done"),
+            ev_completed("resp-turn1-2"),
+        ]),
+    )
+    .await;
+
+    // The child answers only after a delay, i.e. after the parent has already
+    // ended its turn and gone idle.
+    // The v2-spawned child forks the parent context, so its request carries
+    // TURN_1_PROMPT; distinguish it from parent requests by the absence of the
+    // spawn call id (the child forked before the spawn tool call).
+    let _child = mount_response_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_assistant_message("msg-child-1", "child final answer"),
+            ev_completed("resp-child-1"),
+        ]))
+        .set_delay(Duration::from_millis(300)),
+    )
+    .await;
+
+    // The completion notification must auto-start a NEW parent turn that carries
+    // the `<subagent_notification>` — without the parent submitting a second
+    // turn. This is the only request that contains the notification.
+    let auto_resume = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, "<subagent_notification>"),
+        sse(vec![
+            ev_response_created("resp-resume-1"),
+            ev_assistant_message("msg-resume-1", "acknowledged child result"),
+            ev_completed("resp-resume-1"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        assert!(
+            config.multi_agent_v2.auto_resume_on_subagent_completion,
+            "auto-resume should default to enabled"
+        );
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    // No second turn is submitted. Poll the server for the auto-resume request:
+    // once the delayed child completes, its completion notification wakes the
+    // idle parent, which starts a fresh turn whose request carries the
+    // `<subagent_notification>` (as an assistant-role mailbox fragment) and the
+    // child's final answer. Check the raw request body (zstd-aware) since the
+    // notification is not a user-role message.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut auto_resumed = false;
+    loop {
+        let requests = server.received_requests().await.unwrap_or_default();
+        auto_resumed = auto_resumed
+            || requests.iter().any(|req| {
+                body_contains(req, "<subagent_notification>")
+                    && body_contains(req, "child final answer")
+            });
+        if auto_resumed {
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    // Keep the mock referenced so it is not dropped before the auto-resume turn.
+    let _ = &auto_resume;
+    assert!(
+        auto_resumed,
+        "idle parent should auto-resume with the subagent notification carrying the child's final answer"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawned_child_receives_forked_parent_context() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

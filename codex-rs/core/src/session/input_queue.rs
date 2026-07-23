@@ -44,6 +44,18 @@ impl QueuedMailboxMessage {
     pub fn trigger_turn(&self) -> bool {
         self.communication.trigger_turn
     }
+
+    pub fn wake_if_idle(&self) -> bool {
+        self.communication.wake_if_idle
+    }
+
+    /// Whether this message should wake an idle session into a fresh turn,
+    /// either because it defers into a new turn (`trigger_turn`) or because it
+    /// is a completion notification that resumes an idle recipient
+    /// (`wake_if_idle`).
+    pub fn wake_worthy(&self) -> bool {
+        self.communication.trigger_turn || self.communication.wake_if_idle
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +144,17 @@ impl InputQueue {
             .await
             .iter()
             .any(QueuedMailboxMessage::trigger_turn)
+    }
+
+    /// Whether any pending mailbox item should wake an idle session, i.e. it
+    /// either defers into a new turn (`trigger_turn`) or is a completion
+    /// notification that resumes an idle recipient (`wake_if_idle`).
+    pub(crate) async fn has_wake_worthy_mailbox_items(&self) -> bool {
+        self.mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .any(QueuedMailboxMessage::wake_worthy)
     }
 
     pub(crate) async fn list_mailbox_messages(&self) -> Vec<QueuedMailboxMessage> {
@@ -535,6 +558,37 @@ mod tests {
             .await
             .expect("mailbox queue has room");
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_tracks_wake_if_idle_completion_mail_as_wake_worthy() {
+        let input_queue = InputQueue::new();
+
+        // A queue-only message (no trigger_turn, no wake_if_idle) is not wake-worthy.
+        input_queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "queued",
+                /*trigger_turn*/ false,
+            ))
+            .await
+            .expect("mailbox queue has room");
+        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
+        assert!(!input_queue.has_wake_worthy_mailbox_items().await);
+
+        // A completion notification (wake_if_idle) is wake-worthy but NOT a
+        // trigger-turn message (it must not defer delivery out of a live turn).
+        input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::completion_notification(
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                AgentPath::root(),
+                "<subagent_notification>done</subagent_notification>".to_string(),
+            ))
+            .await
+            .expect("mailbox queue has room");
+        assert!(!input_queue.has_trigger_turn_mailbox_items().await);
+        assert!(input_queue.has_wake_worthy_mailbox_items().await);
     }
 
     #[tokio::test]

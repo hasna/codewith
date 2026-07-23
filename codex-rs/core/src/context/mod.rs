@@ -53,6 +53,8 @@ pub use internal_model_context::InvalidInternalContextSource;
 pub(crate) use legacy_apply_patch_exec_command_warning::LegacyApplyPatchExecCommandWarning;
 pub(crate) use legacy_model_mismatch_warning::LegacyModelMismatchWarning;
 pub(crate) use legacy_unified_exec_process_limit_warning::LegacyUnifiedExecProcessLimitWarning;
+pub use mailbox_context::MAX_MAILBOX_CONTEXT_COMPLETION_ITEM_BYTES;
+pub use mailbox_context::MAX_MAILBOX_CONTEXT_COMPLETION_PAYLOAD_BYTES;
 pub use mailbox_context::MAX_MAILBOX_CONTEXT_ITEM_BYTES;
 pub use mailbox_context::MAX_MAILBOX_CONTEXT_PAYLOAD_BYTES;
 pub use mailbox_context::MAX_MAILBOX_CONTEXT_QUEUE_ITEMS;
