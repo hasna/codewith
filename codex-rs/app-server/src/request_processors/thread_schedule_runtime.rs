@@ -320,37 +320,24 @@ impl ThreadScheduleRuntime {
         );
         let turn_id = Uuid::now_v7().to_string();
 
-        let run_start = match scheduled_goal_id.as_deref() {
-            Some(goal_id) => {
-                state_db
-                    .thread_schedules()
-                    .mark_thread_schedule_run_started_for_goal(
-                        claim.schedule.schedule_id.as_str(),
-                        claim.run.run_id.as_str(),
-                        claim.run.lease_id.as_str(),
-                        turn_id.as_str(),
-                        goal_id,
-                    )
-                    .await
-            }
-            None => {
-                state_db
-                    .thread_schedules()
-                    .mark_thread_schedule_run_started(
-                        claim.schedule.schedule_id.as_str(),
-                        claim.run.run_id.as_str(),
-                        claim.run.lease_id.as_str(),
-                        turn_id.as_str(),
-                    )
-                    .await
-            }
-        };
+        let run_start = state_db
+            .thread_schedules()
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id: turn_id.as_str(),
+                goal_id: scheduled_goal_id.as_deref(),
+                now: Utc::now(),
+                lease_duration: SCHEDULE_LEASE_DURATION,
+            })
+            .await;
         let run = match run_start {
             Ok(Some(run)) => run,
             Ok(None) => {
                 return Err(ScheduleSubmitError {
                     error: anyhow::anyhow!(
-                        "claimed schedule run {} disappeared before it could start",
+                        "claimed schedule run {} no longer owns the current unexpired lease",
                         claim.run.run_id
                     ),
                     goal_id: scheduled_goal_id,
@@ -363,6 +350,11 @@ impl ThreadScheduleRuntime {
                 });
             }
         };
+        self.spawn_lease_heartbeat(
+            state_db.clone(),
+            claim.schedule.schedule_id.clone(),
+            claim.run.lease_id.clone(),
+        );
         {
             let mut thread_state = thread_state.lock().await;
             thread_state.track_scheduled_run(
@@ -403,11 +395,6 @@ impl ThreadScheduleRuntime {
                 goal_id: scheduled_goal_id,
             });
         }
-        self.spawn_lease_heartbeat(
-            state_db,
-            claim.schedule.schedule_id.clone(),
-            claim.run.lease_id.clone(),
-        );
         self.emit_schedule_run_updated(thread_id, run).await;
         Ok(())
     }
@@ -3156,13 +3143,15 @@ mod tests {
             .expect("schedule should claim");
         state_db
             .thread_schedules()
-            .mark_thread_schedule_run_started_for_goal(
-                schedule.schedule_id.as_str(),
-                claim.run.run_id.as_str(),
-                claim.run.lease_id.as_str(),
-                "turn-after-restart",
-                goal.goal_id.as_str(),
-            )
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id: "turn-after-restart",
+                goal_id: Some(goal.goal_id.as_str()),
+                now: scheduled_for,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("run start should persist")
             .expect("run should still exist");
