@@ -39,6 +39,16 @@ admission schema, and required capability set all match. An explicitly admitted
 auth-profile alias must match the app-server profile and remains exact during
 recovery; it is never silently replaced by profile auto-switching.
 
+Cross-system execution references remain a projection, not a second task or PR
+lifecycle store. Callers place the authoritative Todos root, PR group, leaf,
+worker-run, writer-generation, and attempt references in `spawn_linkage_json`;
+the Repos-owned lease remains `worktree_lease_id`. Both are reached from every
+lifecycle receipt through its foreign-keyed `runId`. The supervisor
+`generation` is only a local process-fencing counter and must never be
+interpreted as the projected writer generation. Auth-profile references are
+opaque validated aliases: state redaction runs before persistence, and
+credential or account payloads do not belong in either reference projection.
+
 ## Run And Thread Relationship
 
 A background-agent run owns background execution. A thread owns transcript and
@@ -105,6 +115,9 @@ the run, generation, attempt, timestamp, and bounded redacted diagnostics.
 Retries return the existing receipt instead of advancing the event cursor.
 Admission, claim/recovery, first heartbeat for a generation, status transitions,
 orphaning, stop, and cancellation all use deterministic receipt keys.
+Terminal receipts therefore replay with the same run projection and attempt
+binding, while receipt insertion and cursor advancement commit in one state
+transaction.
 
 Supervisor-owned heartbeat, status, stop, and process-finalization mutations
 compare both `supervisor_id` and `generation`. A stale owner cannot stop or

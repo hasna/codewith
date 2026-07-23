@@ -1288,16 +1288,16 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
             .bind(params.generation)
             .execute(&mut *tx)
             .await?;
-            let receipt_key = format!("heartbeat:{generation}");
+            let receipt_key = format!("heartbeat:{}", params.generation);
             super::events::append_background_agent_lifecycle_receipt_in_tx(
                 &mut tx,
-                run_id,
+                params.run_id,
                 "agent.heartbeat",
                 receipt_key.as_str(),
-                generation,
+                params.generation,
                 None,
                 &serde_json::json!({
-                    "supervisorId": supervisor_id,
+                    "supervisorId": params.supervisor_id,
                 }),
                 now,
             )
