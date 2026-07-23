@@ -132,6 +132,13 @@ const MODE_CYCLE_HINT: &str = "shift+tab to cycle";
 const FOOTER_CONTEXT_GAP_COLS: u16 = 1;
 const STATUS_LINE_SEPARATOR: &str = " · ";
 const STATUS_LINE_SEPARATOR_WIDTH: usize = 3;
+/// Maximum number of rows the passive status line may occupy before it must ellipsis-truncate.
+///
+/// The status line grows only as needed: it stays on a single row when everything fits and wraps
+/// onto additional rows (up to this cap) as the ` · `-separated content gets longer. Content that
+/// still does not fit once all `MAX_STATUS_LINE_ROWS` rows are used is ellipsis-truncated on the
+/// final row instead of growing the footer further.
+const MAX_STATUS_LINE_ROWS: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FooterKeyHints {
@@ -912,18 +919,22 @@ pub(crate) fn passive_footer_status_height(
     Some(u16::try_from(lines.len()).unwrap_or(u16::MAX))
 }
 
-/// Pack the configurable status-line `items` into rows, then pin the goal-pursuit `goal` inline to
-/// the trailing row.
+/// Pack the configurable status-line `line` items plus the goal-pursuit `goal` into rows.
 ///
-/// The configurable `/statusline` items wrap by whole items across rows (each non-final row is at
-/// most `row_width` wide; the final row is reserved to `final_row_width` so a right-aligned
-/// indicator can sit beside it). The goal indicator is deliberately **not** a wrappable item: it is
-/// appended to whatever row the trailing status item lands on so it renders on the SAME row as
-/// `model · account · session · …`. When width would force it off that row we truncate the goal
-/// text (it is the tail of the row, so the ellipsis lands on it) instead of dropping it onto a row
-/// of its own. This is the invariant that regressed after PRs #340/#357: the goal was appended into
-/// the packed line as just another item, so a long goal-plan segment (`Pursuing goal N/M (…)`)
-/// wrapped to a second row whenever it did not fit beside the other segments.
+/// All ` · `-separated segments — the configurable `/statusline` items AND the goal-pursuit
+/// indicator — form a single continuous flow. They are greedily packed by width across up to
+/// `MAX_STATUS_LINE_ROWS` rows: a row is filled until the next whole item would overflow, then the
+/// flow continues on the next row (each non-final row may use the full `row_width`; the final
+/// rendered row is limited to `final_row_width` so a right-aligned indicator can sit beside it).
+///
+/// The goal is deliberately treated as just another wrappable item at the tail of the flow — it
+/// keeps its dedicated accent (see `goal_status_line_style`) but wraps continuously with the rest
+/// instead of being pinned to, or dropped onto, a disconnected row of its own. When the content is
+/// short enough it stays on a single row; as it grows it flows onto row 2, then row 3. Only once all
+/// `MAX_STATUS_LINE_ROWS` rows are used and content still does not fit is the final row
+/// ellipsis-truncated — and because the goal is the tail of the flow, that ellipsis naturally lands
+/// on the goal text (the same in-place truncation semantics the goal had before, now reached only
+/// after wrapping is exhausted rather than immediately).
 fn pack_status_line_items(
     line: Option<Line<'static>>,
     goal: Option<Line<'static>>,
@@ -934,7 +945,16 @@ fn pack_status_line_items(
         return Vec::new();
     }
 
-    let items = line.map(status_line_items).unwrap_or_default();
+    // Build the continuous ` · ` flow: configurable /statusline items first, then the goal-pursuit
+    // indicator appended as one more item (kept whole so its distinct accent survives). The goal is
+    // not special-cased here; it wraps with the rest of the flow.
+    let mut items = line.map(status_line_items).unwrap_or_default();
+    if let Some(goal) = goal {
+        items.push(goal);
+    }
+    if items.is_empty() {
+        return Vec::new();
+    }
 
     let mut rows: Vec<Vec<Line<'static>>> = Vec::new();
     let mut current = Vec::new();
@@ -966,22 +986,30 @@ fn pack_status_line_items(
         rows.push(current);
     }
 
-    let final_row_width = final_row_width.min(row_width);
-    if let Some(goal) = goal {
-        // Pin the goal to the trailing status row (or make it the only row when the configurable
-        // status line is empty/disabled). It must never occupy a row of its own, so we intentionally
-        // skip the "move the last item onto its own row" reservation below: the goal-bearing row is
-        // truncated to `final_row_width` instead, which trims the goal (the row tail) rather than
-        // wrapping it to a new line.
+    // Cap the flow at MAX_STATUS_LINE_ROWS. Any items that greedily wrapped past the cap are folded
+    // back onto the final allowed row so nothing is silently dropped; that row is ellipsis-truncated
+    // to `final_row_width` below.
+    if rows.len() > MAX_STATUS_LINE_ROWS {
+        let overflow: Vec<Line<'static>> = rows
+            .split_off(MAX_STATUS_LINE_ROWS)
+            .into_iter()
+            .flatten()
+            .collect();
         if let Some(last) = rows.last_mut() {
-            last.push(goal);
-        } else {
-            rows.push(vec![goal]);
+            last.extend(overflow);
         }
-    } else if final_row_width < row_width {
-        while rows.last().is_some_and(|row| {
-            !row.is_empty() && status_items_width(row) > final_row_width as usize
-        }) {
+    }
+
+    // Reserve `final_row_width` on the trailing row for a right-aligned indicator by pushing trailing
+    // items down onto a fresh row — but never past the MAX_STATUS_LINE_ROWS cap. At the cap we leave
+    // the row as-is and let the truncation below trim it instead of growing another row.
+    let final_row_width = final_row_width.min(row_width);
+    if final_row_width < row_width {
+        while rows.len() < MAX_STATUS_LINE_ROWS
+            && rows.last().is_some_and(|row| {
+                !row.is_empty() && status_items_width(row) > final_row_width as usize
+            })
+        {
             if rows.last().is_some_and(|row| row.len() == 1) {
                 rows.push(Vec::new());
                 break;
@@ -2493,6 +2521,86 @@ mod tests {
         assert_eq!(line_text(&rows[2]), "");
     }
 
+    /// The goal is part of the continuous ` · ` flow: when the flow does not fit on one row it wraps
+    /// at separator boundaries, and the goal shares a row with the preceding item rather than being
+    /// pinned to a row of its own.
+    #[test]
+    fn status_line_wraps_goal_inline_across_rows() {
+        let line = Line::from(vec![
+            "alpha".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "beta".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "gamma".magenta(),
+        ]);
+        // Distinct goal accent so we can assert it survives the wrap.
+        let goal = Line::from(vec![Span::styled("goal", goal_status_line_style())]);
+
+        let rows = pack_status_line_items(
+            Some(line),
+            Some(goal),
+            /*row_width*/ 13,
+            /*final_row_width*/ 13,
+        );
+
+        assert_eq!(rows.len(), 2, "flow wraps to a second row: {rows:?}");
+        assert_eq!(line_text(&rows[0]), "alpha · beta");
+        // The goal flows onto row 2 sharing it with `gamma` — continuous, not a stray goal-only row.
+        assert_eq!(line_text(&rows[1]), "gamma · goal");
+        let goal_span = rows[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "goal")
+            .expect("goal span present on the wrapped row");
+        assert_eq!(
+            goal_span.style,
+            goal_status_line_style(),
+            "goal keeps its dedicated accent after wrapping"
+        );
+    }
+
+    /// The flow never exceeds `MAX_STATUS_LINE_ROWS`: items that greedily wrap past the cap are folded
+    /// onto the final row, which is then ellipsis-truncated.
+    #[test]
+    fn status_line_caps_flow_at_three_rows_and_truncates() {
+        let line = Line::from(vec![
+            "aa".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "bb".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "cc".magenta(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "dd".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "ee".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "ff".magenta(),
+        ]);
+        let goal = Line::from(vec![Span::styled("goalgoalgoal", goal_status_line_style())]);
+
+        // At width 7 each pair `xx · yy` (width 7) greedily fills a row, so the six base items alone
+        // want three rows and the goal a fourth — the cap folds it back onto row 3.
+        let rows = pack_status_line_items(
+            Some(line),
+            Some(goal),
+            /*row_width*/ 7,
+            /*final_row_width*/ 7,
+        );
+
+        assert_eq!(
+            rows.len(),
+            MAX_STATUS_LINE_ROWS,
+            "flow is capped at three rows: {rows:?}"
+        );
+        assert_eq!(line_text(&rows[0]), "aa · bb");
+        assert_eq!(line_text(&rows[1]), "cc · dd");
+        assert!(
+            line_text(&rows[2]).contains('…'),
+            "overflow beyond the cap truncates the final row: {}",
+            line_text(&rows[2])
+        );
+    }
+
     #[test]
     fn footer_status_line_truncates_to_keep_mode_indicator() {
         let props = FooterProps {
@@ -2734,12 +2842,100 @@ mod tests {
         );
     }
 
-    /// The packed status-line layout must pin an active goal plan to a single row: at a width where
-    /// `model · account · session` fits but the long goal-plan segment does NOT fit beside it, the
-    /// goal must be truncated in place rather than dropped onto a second row (the exact regression
-    /// #340/#357 missed). When width allows, the full goal renders inline with its distinct accent.
+    /// Shared `model · account · branch · profile` status line for the wrap snapshots below, whose
+    /// short segments let the goal share a row with a preceding item so the continuous flow is
+    /// visible in the snapshot (rather than the goal landing alone on its own row).
+    #[cfg(test)]
+    fn goal_wrap_status_line_value() -> Line<'static> {
+        Line::from(vec![
+            "gpt-5.2-codex".fg(crate::style::accent_color()),
+            STATUS_LINE_SEPARATOR.dim(),
+            "open-codewith".green(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "feature/wrap".magenta(),
+            STATUS_LINE_SEPARATOR.dim(),
+            "work".fg(crate::style::accent_color()),
+        ])
+    }
+
+    #[cfg(test)]
+    fn goal_wrap_props(goal: GoalStatusIndicator) -> FooterProps {
+        FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            queue_submissions: false,
+            collaboration_modes_enabled: false,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            status_line_value: Some(goal_wrap_status_line_value()),
+            status_line_enabled: true,
+            key_hints: FooterKeyHints::default_bindings(),
+            goal_status_indicator: Some(goal),
+        }
+    }
+
+    /// (a) Everything fits: the whole ` · ` flow (including the goal at the tail) renders on ONE row.
     #[test]
-    fn passive_footer_status_lines_pins_goal_plan_to_one_row() {
+    fn footer_status_line_wrap_fits_one_row() {
+        let props = goal_wrap_props(GoalStatusIndicator::Active {
+            usage: None,
+            elapsed_seconds: 8 * 60,
+        });
+        let goal_status = props
+            .goal_status_indicator
+            .clone()
+            .expect("goal status set by helper");
+
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_wrap_fits_one_row",
+            /*width*/ 76,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+    }
+
+    /// (b) Too wide for one row: the flow wraps CONTINUOUSLY onto row 2, where the goal shares the
+    /// row with the preceding items (` · ` separated) — not a stray goal-only row.
+    #[test]
+    fn footer_status_line_wrap_flows_to_two_rows() {
+        let props = goal_wrap_props(GoalStatusIndicator::Active {
+            usage: None,
+            elapsed_seconds: 8 * 60,
+        });
+        let goal_status = props
+            .goal_status_indicator
+            .clone()
+            .expect("goal status set by helper");
+
+        // Sanity-check the wrap keeps the goal inline on row 2 alongside a preceding item.
+        let area = Rect::new(0, 0, /*width*/ 42, 2);
+        let rows = passive_footer_status_lines(&props, area, /*right_width*/ 0)
+            .expect("a present goal must force a passive line");
+        assert_eq!(rows.len(), 2, "flow wraps to two rows: {rows:?}");
+        let row_two = line_text(&rows[1]);
+        assert!(
+            row_two.contains(" · ") && row_two.contains("Pursuing goal"),
+            "goal must share row 2 within the continuous flow: {row_two}"
+        );
+
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_wrap_flows_to_two_rows",
+            /*width*/ 42,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+    }
+
+    /// (c) Very long: the flow fills all three rows and only then ellipsis-truncates the final row,
+    /// with the goal still inline at the tail of the flow.
+    #[test]
+    fn footer_status_line_wrap_fills_three_rows_then_truncates() {
         let props = goal_inline_props(GoalStatusIndicator::ActivePlan {
             usage: None,
             current_goal: 7,
@@ -2747,29 +2943,93 @@ mod tests {
             current_elapsed_seconds: 2 * 60 * 60 + 41 * 60,
             total_elapsed_seconds: 3 * 60 * 60 + 60,
         });
+        let goal_status = props
+            .goal_status_indicator
+            .clone()
+            .expect("goal status set by helper");
 
-        // Width where the base items fit but base + goal does not: the goal must NOT wrap.
+        snapshot_footer_with_mode_indicator_goal_status_and_context(
+            "footer_status_line_wrap_fills_three_rows_then_truncates",
+            /*width*/ 35,
+            &props,
+            /*collaboration_mode_indicator*/ None,
+            Some(&goal_status),
+            context_window_line(/*percent*/ None, /*used_tokens*/ None),
+        );
+    }
+
+    /// The packed status-line layout must wrap an active goal plan as part of the continuous ` · `
+    /// flow rather than truncating it in place on a single row. At a width where the whole line does
+    /// not fit, the goal flows onto the next row (never dropped, never immediately truncated) while
+    /// the base items stay intact; it only ellipsis-truncates once all `MAX_STATUS_LINE_ROWS` rows
+    /// are exhausted. When width allows, the full goal still renders inline with its distinct accent.
+    #[test]
+    fn passive_footer_status_lines_wraps_goal_plan_across_rows() {
+        let props = goal_inline_props(GoalStatusIndicator::ActivePlan {
+            usage: None,
+            current_goal: 7,
+            total_goals: 12,
+            current_elapsed_seconds: 2 * 60 * 60 + 41 * 60,
+            total_elapsed_seconds: 3 * 60 * 60 + 60,
+        });
+        let goal_text = "Pursuing goal 7/12 (2h 41m current, 3h 1m total)";
+
+        // Width where the base items fill row 1 but base + goal does not fit on one row: the goal
+        // must WRAP (continuously) onto row 2, fully, rather than truncate on row 1.
         let narrow = Rect::new(0, 0, /*width*/ 90, 2);
         let rows = passive_footer_status_lines(&props, narrow, /*right_width*/ 0)
             .expect("a present goal must force a passive line");
         assert_eq!(
             rows.len(),
-            1,
-            "goal must stay on the same row, never wrap to a new one: {rows:?}"
+            2,
+            "goal must wrap onto a second row, not truncate on one: {rows:?}"
         );
-        let narrow_text = line_text(&rows[0]);
+        assert_eq!(
+            line_text(&rows[0]),
+            "gpt-5.6-sol max fast · account006 · EA cross-station remediation",
+            "base status items must remain intact on row 1"
+        );
+        // Row 1 is genuinely full: the goal wrapped because it did not fit, not because it was
+        // special-cased onto a row of its own (the #373 stray-row regression this must not revive).
+        let available = narrow.width as usize - FOOTER_INDENT_COLS;
         assert!(
-            narrow_text
-                .starts_with("gpt-5.6-sol max fast · account006 · EA cross-station remediation"),
-            "base status items must remain intact: {narrow_text}"
+            rows[0].width() + STATUS_LINE_SEPARATOR_WIDTH + rows[1].width() > available,
+            "row 1 must be full so the goal wrapped continuously: {rows:?}"
+        );
+        assert_eq!(
+            line_text(&rows[1]),
+            goal_text,
+            "goal must wrap in full onto row 2, not be truncated"
+        );
+        let goal_span = rows[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref().starts_with("Pursuing goal"))
+            .expect("goal span present on the wrapped row");
+        assert_eq!(
+            goal_span.style,
+            goal_status_line_style(),
+            "goal segment must keep its dedicated accent when it wraps"
+        );
+
+        // Very tight width: the flow fills all MAX_STATUS_LINE_ROWS rows, and only then does the
+        // trailing goal ellipsis-truncate on the final row (still inline, never dropped).
+        let tiny = Rect::new(0, 0, /*width*/ 35, 2);
+        let rows = passive_footer_status_lines(&props, tiny, /*right_width*/ 0)
+            .expect("a present goal must force a passive line");
+        assert_eq!(
+            rows.len(),
+            MAX_STATUS_LINE_ROWS,
+            "content must fill the row cap before truncating: {rows:?}"
+        );
+        let last_text = line_text(&rows[MAX_STATUS_LINE_ROWS - 1]);
+        assert!(
+            last_text.starts_with("Pursuing goal"),
+            "goal must remain inline on the final row: {last_text}"
         );
         assert!(
-            narrow_text.contains("Pursuing goal 7/12"),
-            "goal must remain inline on the row: {narrow_text}"
-        );
-        assert!(
-            narrow_text.contains('…'),
-            "goal text must truncate (not wrap) when width is tight: {narrow_text}"
+            last_text.contains('…'),
+            "goal must ellipsis-truncate only after the row cap is reached: {last_text}"
         );
 
         // Wide enough for the whole line: one row, full goal text, goal keeps its distinct accent.
@@ -2779,7 +3039,9 @@ mod tests {
         assert_eq!(rows.len(), 1, "everything must fit on one row: {rows:?}");
         assert_eq!(
             line_text(&rows[0]),
-            "gpt-5.6-sol max fast · account006 · EA cross-station remediation · Pursuing goal 7/12 (2h 41m current, 3h 1m total)"
+            format!(
+                "gpt-5.6-sol max fast · account006 · EA cross-station remediation · {goal_text}"
+            )
         );
         let goal_span = rows[0]
             .spans
