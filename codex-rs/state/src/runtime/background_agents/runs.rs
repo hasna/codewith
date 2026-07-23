@@ -160,7 +160,7 @@ INSERT INTO background_agent_runs (
                 params.id.as_str(),
                 "agent.admitted",
                 receipt_key.as_str(),
-                0,
+                /*generation*/ 0,
                 Some(1),
                 &serde_json::json!({
                     "source": params.source,
@@ -475,7 +475,7 @@ WHERE
             params.event_type,
             receipt_key.as_str(),
             params.generation,
-            None,
+            /*attempt*/ None,
             params.event_payload_json,
             now,
         )
@@ -605,7 +605,7 @@ WHERE
             "agent.stopRequested",
             receipt_key.as_str(),
             expected_generation,
-            None,
+            /*attempt*/ None,
             diagnostics_json,
             now,
         )
@@ -1295,7 +1295,7 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
                 "agent.heartbeat",
                 receipt_key.as_str(),
                 params.generation,
-                None,
+                /*attempt*/ None,
                 &serde_json::json!({
                     "supervisorId": params.supervisor_id,
                 }),
@@ -1612,7 +1612,7 @@ async fn append_terminal_stale_background_agent_status_in_tx(
         event_type,
         receipt_key.as_str(),
         generation,
-        None,
+        /*attempt*/ None,
         event_payload_json,
         now,
     )
