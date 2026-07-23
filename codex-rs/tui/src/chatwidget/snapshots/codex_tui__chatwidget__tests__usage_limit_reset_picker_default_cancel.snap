@@ -8,4 +8,4 @@ expression: "normalize_snapshot_paths(render_bottom_popup(&chat, 90))"
   1. Banked reset      Earned reset credit. Expires in 3d 4h.
 › 2. Cancel (default) (n)
 
-  Press enter to confirm or esc to go back
+  Enter selects; Left or Esc goes back

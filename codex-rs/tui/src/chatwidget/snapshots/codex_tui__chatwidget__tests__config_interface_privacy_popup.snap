@@ -17,4 +17,4 @@ expression: interface_popup
   [*] Feedback                   Allow feedback collection from the TUI.
   [*] Unstable feature warnings  Show warnings for enabled under-development features.
 
-  Press space to toggle; esc to close
+  Right or Enter opens; Space toggles; Left or Esc goes back

@@ -157,9 +157,10 @@ impl ChatWidget {
                 selected,
                 reset_label(i64::try_from(selected).unwrap_or(i64::MAX))
             )),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(Line::from("Enter selects; Left or Esc goes back")),
             items,
             initial_selected_idx: Some(selected),
+            tree_navigation_enabled: true,
             on_cancel: Some(Box::new(move |tx| {
                 tx.send(AppEvent::CancelRateLimitResetCreditSelection { generation });
             })),

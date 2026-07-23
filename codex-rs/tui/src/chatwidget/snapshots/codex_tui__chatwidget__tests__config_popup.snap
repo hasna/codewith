@@ -14,4 +14,4 @@ expression: popup
                              the built-in default).
   5. Goal objective limit    Max characters echoed per goal objective (now 4000).
 
-  Press enter to open; esc to close
+  Right or Enter opens; Left or Esc closes

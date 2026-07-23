@@ -49,6 +49,78 @@ async fn reset_picker_defaults_to_cancel() {
 }
 
 #[tokio::test]
+async fn config_usage_limit_reset_left_and_escape_return_one_level() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_canonical_reset_provider(&mut chat);
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    while rx.try_recv().is_ok() {}
+
+    chat.open_config_popup();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenConfigSection {
+            section: crate::common_config_options::CommonConfigSection::AccountAutomation,
+        })
+    );
+    chat.open_config_section_popup(
+        crate::common_config_options::CommonConfigSection::AccountAutomation,
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenRateLimitResetConfirm));
+    let generation = chat.rate_limit_reset_generation;
+    chat.open_rate_limit_reset_confirm();
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let account_section = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        account_section.contains("Config: Account & automation"),
+        "{account_section}"
+    );
+    assert!(!account_section.contains("Usage limit resets"));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CancelRateLimitResetCreditSelection {
+            generation: cancelled_generation,
+        }) if cancelled_generation == generation
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenRateLimitResetConfirm));
+    chat.open_rate_limit_reset_confirm();
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    let account_section = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        account_section.contains("Config: Account & automation"),
+        "{account_section}"
+    );
+    assert!(!account_section.contains("Usage limit resets"));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CancelRateLimitResetCreditSelection {
+            generation: cancelled_generation,
+        }) if cancelled_generation == generation
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let root = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        root.contains("Choose a focused config.toml settings section."),
+        "{root}"
+    );
+}
+
+#[tokio::test]
 async fn idle_snapshots_never_consume_a_reset() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.usage_limit.auto_reset_enabled = true;

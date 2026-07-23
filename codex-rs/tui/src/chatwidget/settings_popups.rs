@@ -143,8 +143,9 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(Line::from("Press enter to open; esc to close")),
+            footer_hint: Some(Line::from("Right or Enter opens; Left or Esc closes")),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }
@@ -181,7 +182,8 @@ impl ChatWidget {
             is_disabled: multi_agent_v2,
             disabled_reason: multi_agent_v2.then(|| "Managed by multi_agent_v2.".to_string()),
             actions,
-            dismiss_on_select: true,
+            dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         }
     }
@@ -241,8 +243,9 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(Line::from("Enter selects; Left or Esc goes back")),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }
@@ -337,9 +340,12 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(Line::from("Press space to toggle; esc to close")),
+            footer_hint: Some(Line::from(
+                "Right or Enter opens; Space toggles; Left or Esc goes back",
+            )),
             items,
             is_searchable: true,
+            tree_navigation_enabled: true,
             search_placeholder: Some(format!("Search {} settings", section.label())),
             ..Default::default()
         });
@@ -627,7 +633,8 @@ fn config_section_item(
             section.description()
         )),
         actions,
-        dismiss_on_select: true,
+        dismiss_on_select: false,
+        dismiss_parent_on_child_accept: true,
         search_value: Some(format!(
             "{} {} {}",
             section.id(),
@@ -659,7 +666,8 @@ fn rate_limit_reset_config_item() -> SelectionItem {
         name: "Use a usage limit reset".to_string(),
         description: Some("Refresh and choose an exact banked reset.".to_string()),
         actions,
-        dismiss_on_select: true,
+        dismiss_on_select: false,
+        dismiss_parent_on_child_accept: true,
         search_value: Some("usage limit reset banked credit manual".to_string()),
         ..Default::default()
     }
