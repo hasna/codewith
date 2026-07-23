@@ -320,16 +320,32 @@ impl ThreadScheduleRuntime {
         );
         let turn_id = Uuid::now_v7().to_string();
 
-        let run = match state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(
-                claim.schedule.schedule_id.as_str(),
-                claim.run.run_id.as_str(),
-                claim.run.lease_id.as_str(),
-                turn_id.as_str(),
-            )
-            .await
-        {
+        let run_start = match scheduled_goal_id.as_deref() {
+            Some(goal_id) => {
+                state_db
+                    .thread_schedules()
+                    .mark_thread_schedule_run_started_for_goal(
+                        claim.schedule.schedule_id.as_str(),
+                        claim.run.run_id.as_str(),
+                        claim.run.lease_id.as_str(),
+                        turn_id.as_str(),
+                        goal_id,
+                    )
+                    .await
+            }
+            None => {
+                state_db
+                    .thread_schedules()
+                    .mark_thread_schedule_run_started(
+                        claim.schedule.schedule_id.as_str(),
+                        claim.run.run_id.as_str(),
+                        claim.run.lease_id.as_str(),
+                        turn_id.as_str(),
+                    )
+                    .await
+            }
+        };
+        let run = match run_start {
             Ok(Some(run)) => run,
             Ok(None) => {
                 return Err(ScheduleSubmitError {
@@ -352,10 +368,10 @@ impl ThreadScheduleRuntime {
             thread_state.track_scheduled_run(
                 turn_id.clone(),
                 crate::thread_state::ScheduledThreadScheduleRun {
-                    schedule_id: claim.schedule.schedule_id.clone(),
-                    run_id: claim.run.run_id.clone(),
-                    lease_id: claim.run.lease_id.clone(),
-                    goal_id: scheduled_goal_id.clone(),
+                    schedule_id: run.schedule_id.clone(),
+                    run_id: run.run_id.clone(),
+                    lease_id: run.lease_id.clone(),
+                    goal_id: run.goal_id.clone(),
                     state_db: state_db.clone(),
                 },
             );
@@ -1072,6 +1088,27 @@ pub(super) async fn finish_scheduled_run_after_turn(
     }
 }
 
+pub(super) async fn recover_scheduled_run_for_terminal_turn(
+    state_db: &StateDbHandle,
+    thread_id: ThreadId,
+    turn_id: &str,
+) -> anyhow::Result<Option<crate::thread_state::ScheduledThreadScheduleRun>> {
+    let Some(run) = state_db
+        .thread_schedules()
+        .get_running_thread_schedule_run_for_turn(thread_id, turn_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(crate::thread_state::ScheduledThreadScheduleRun {
+        schedule_id: run.schedule_id,
+        run_id: run.run_id,
+        lease_id: run.lease_id,
+        goal_id: run.goal_id,
+        state_db: state_db.clone(),
+    }))
+}
+
 /// Maximum consecutive failed runs before a recurring schedule stops
 /// re-arming itself (circuit breaker). The streak resets after a success.
 const MAX_CONSECUTIVE_SCHEDULE_FAILURES: i64 = 10;
@@ -1287,13 +1324,15 @@ async fn finish_scheduled_run_state(
             state_db
                 .thread_schedules()
                 .fail_thread_schedule_run_for_goal(
-                    schedule_id,
-                    run_id,
-                    lease_id,
-                    completed_at,
-                    next_run_at,
+                    codex_state::ThreadScheduleRunForGoalFinishParams {
+                        schedule_id,
+                        run_id,
+                        lease_id,
+                        completed_at,
+                        next_run_at,
+                        expected_goal_id: goal_id,
+                    },
                     error,
-                    goal_id,
                 )
                 .await?
         }
@@ -1314,12 +1353,14 @@ async fn finish_scheduled_run_state(
             state_db
                 .thread_schedules()
                 .complete_thread_schedule_run_for_goal(
-                    schedule_id,
-                    run_id,
-                    lease_id,
-                    completed_at,
-                    next_run_at,
-                    goal_id,
+                    codex_state::ThreadScheduleRunForGoalFinishParams {
+                        schedule_id,
+                        run_id,
+                        lease_id,
+                        completed_at,
+                        next_run_at,
+                        expected_goal_id: goal_id,
+                    },
                 )
                 .await?
         }
@@ -3054,6 +3095,141 @@ mod tests {
             .expect("goal read should succeed")
             .expect("goal should remain persisted");
         assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_goal_schedule_run_and_finishes_exactly_once() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let state_db = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut builder = ThreadMetadataBuilder::new(
+            thread_id,
+            temp_dir.path().join("thread.jsonl"),
+            at(/*seconds*/ 1_700_000_000),
+            SessionSource::Cli,
+        );
+        builder.cwd = temp_dir.path().join("workspace");
+        state_db
+            .upsert_thread(&builder.build("fallback-provider"))
+            .await
+            .expect("thread metadata should persist");
+        let goal = state_db
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "watch the release gate after restart",
+                codex_state::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should persist");
+        let scheduled_for = at(/*seconds*/ 1_700_000_000);
+        let schedule = state_db
+            .thread_schedules()
+            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "/goal watch the release gate after restart".to_string(),
+                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
+                schedule: codex_state::ThreadScheduleSpec::Interval(
+                    codex_state::ThreadScheduleInterval {
+                        amount: 1,
+                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
+                    },
+                ),
+                timezone: "UTC".to_string(),
+                status: codex_state::ThreadScheduleStatus::Active,
+                next_run_at: Some(scheduled_for),
+                expires_at: None,
+            })
+            .await
+            .expect("schedule should create");
+        let claim = state_db
+            .thread_schedules()
+            .claim_due_thread_schedule(scheduled_for, "lease-restart", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        state_db
+            .thread_schedules()
+            .mark_thread_schedule_run_started_for_goal(
+                schedule.schedule_id.as_str(),
+                claim.run.run_id.as_str(),
+                claim.run.lease_id.as_str(),
+                "turn-after-restart",
+                goal.goal_id.as_str(),
+            )
+            .await
+            .expect("run start should persist")
+            .expect("run should still exist");
+        drop(state_db);
+
+        let reopened = codex_state::StateRuntime::init(
+            temp_dir.path().to_path_buf(),
+            "fallback-provider".to_string(),
+        )
+        .await
+        .expect("state db should reopen");
+        let recovered =
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart")
+                .await
+                .expect("run recovery should succeed")
+                .expect("running schedule should recover after restart");
+        assert_eq!(schedule.schedule_id, recovered.schedule_id);
+        assert_eq!(claim.run.run_id, recovered.run_id);
+        assert_eq!(claim.run.lease_id, recovered.lease_id);
+        assert_eq!(Some(goal.goal_id), recovered.goal_id);
+
+        let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        let finished = finish_scheduled_run_state(
+            &reopened,
+            recovered.schedule_id.as_str(),
+            recovered.run_id.as_str(),
+            recovered.lease_id.as_str(),
+            recovered.goal_id.as_deref(),
+            None,
+            completed_at,
+        )
+        .await
+        .expect("recovered run should finish")
+        .expect("recovered run should update exactly once");
+        assert_eq!(codex_state::ThreadScheduleStatus::Paused, finished.0.status);
+        assert_eq!(
+            codex_state::ThreadScheduleRunStatus::Completed,
+            finished.1.status
+        );
+        assert_eq!(Some(completed_at), finished.1.completed_at);
+        assert!(
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart",)
+                .await
+                .expect("completed run lookup should succeed")
+                .is_none()
+        );
+        let stats = reopened
+            .thread_schedules()
+            .get_thread_schedule_stats(schedule.schedule_id.as_str())
+            .await
+            .expect("schedule stats should load");
+        assert_eq!(1, stats.total_runs);
+        assert_eq!(0, stats.running_runs);
+        assert_eq!(1, stats.completed_runs);
+        assert!(
+            reopened
+                .thread_schedules()
+                .claim_due_thread_schedule(
+                    scheduled_for + chrono::Duration::minutes(10),
+                    "lease-duplicate",
+                    Duration::from_secs(300),
+                )
+                .await
+                .expect("post-restart claim should succeed")
+                .is_none(),
+            "terminal recovery must not leave a lease-generated duplicate run"
+        );
     }
 
     #[tokio::test]

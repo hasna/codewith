@@ -280,6 +280,7 @@ pub(super) async fn ensure_listener_task_running(
         thread_list_state_permit,
         fallback_model_provider,
         codex_home,
+        state_db,
         ..
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
@@ -320,24 +321,53 @@ pub(super) async fn ensure_listener_task_running(
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
-                    let (raw_events_enabled, terminal_scheduled_run) = {
+                    let terminal_event = matches!(
+                        event.msg,
+                        EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
+                    );
+                    let (raw_events_enabled, tracked_scheduled_run, turn_error) = {
                         let mut thread_state = thread_state.lock().await;
                         thread_state.track_current_turn_event(&event.id, &event.msg);
-                        let terminal_scheduled_run = if matches!(
-                            event.msg,
-                            EventMsg::TurnComplete(_)
-                                | EventMsg::TurnAborted(_)
-                                | EventMsg::Error(_)
-                        ) {
-                            thread_state
-                                .take_scheduled_run(&event.id)
-                                .map(|scheduled_run| {
-                                    (scheduled_run, thread_state.turn_summary.last_error.clone())
-                                })
+                        let tracked_scheduled_run = if terminal_event {
+                            thread_state.take_scheduled_run(&event.id)
                         } else {
                             None
                         };
-                        (thread_state.experimental_raw_events, terminal_scheduled_run)
+                        let turn_error = terminal_event
+                            .then(|| thread_state.turn_summary.last_error.clone())
+                            .flatten();
+                        (
+                            thread_state.experimental_raw_events,
+                            tracked_scheduled_run,
+                            turn_error,
+                        )
+                    };
+                    let terminal_scheduled_run = match (
+                        terminal_event,
+                        tracked_scheduled_run,
+                        state_db.as_ref(),
+                    ) {
+                        (true, Some(scheduled_run), _) => Some(scheduled_run),
+                        (true, None, Some(state_db)) => {
+                            match thread_schedule_runtime::recover_scheduled_run_for_terminal_turn(
+                                state_db,
+                                conversation_id,
+                                &event.id,
+                            )
+                            .await
+                            {
+                                Ok(scheduled_run) => scheduled_run,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        thread_id = %conversation_id,
+                                        turn_id = %event.id,
+                                        "failed to recover scheduled run for terminal turn: {err}"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        (false, _, _) | (true, None, None) => None,
                     };
                     let subscribed_connection_ids = thread_state_manager
                         .subscribed_connection_ids(conversation_id)
@@ -378,7 +408,7 @@ pub(super) async fn ensure_listener_task_running(
                         fallback_model_provider.clone(),
                     )
                     .await;
-                    if let Some((scheduled_run, turn_error)) = terminal_scheduled_run {
+                    if let Some(scheduled_run) = terminal_scheduled_run {
                         thread_schedule_runtime::finish_scheduled_run_after_turn(
                             conversation_id,
                             scheduled_run,
