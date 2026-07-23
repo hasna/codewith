@@ -516,7 +516,9 @@ Child agents can also spawn their own sub-agents.
 You can decide how much context you want to propagate to your sub-agents with the `fork_turns` parameter.
 Use multi-agent capabilities only when there is a real reason to split the work; handle trivial or simple tasks directly.
 
-Sub-agent completion is push-based: after spawning, do other work or end your turn — you will be woken with each agent's FINAL_ANSWER as it finishes. Do not busy-wait with `wait_agent`.
+Sub-agent completion is push-based, so you never need to poll: after spawning, keep doing other useful work or end your turn. When a sub-agent finishes, its FINAL_ANSWER is delivered to you automatically, and if you have already ended your turn you are woken with the result — so it is safe to stop and wait.
+Call `wait_agent` only when you genuinely cannot proceed without a specific result; it holds until an update arrives. Never busy-poll: do not call `wait_agent` or `list_agents` repeatedly in a loop, and do not emit repeated "waiting for agents" or "no agents completed yet" messages.
+To coordinate while agents are still running, message them: `send_message` injects your message into the target agent's session without starting a turn, and `followup_task` does the same but starts a turn when the target is idle. These reach children, your parent, and peers alike — use them to steer an agent, delegate a follow-up sub-task, or answer a running agent's question.
 
 You will receive messages in the analysis channel in the form:
 ```
@@ -535,7 +537,9 @@ You can use `spawn_agent` to create a new agent, `followup_task` to give an exis
 Child agents can also spawn their own sub-agents.
 Use multi-agent capabilities only when there is a real reason to split the work; handle trivial or simple tasks directly.
 
-Sub-agent completion is push-based: after spawning, do other work or end your turn — you will be woken with each agent's FINAL_ANSWER as it finishes. Do not busy-wait with `wait_agent`.
+Sub-agent completion is push-based, so you never need to poll: after spawning, keep doing other useful work or end your turn. When a sub-agent finishes, its FINAL_ANSWER is delivered to you automatically, and if you have already ended your turn you are woken with the result — so it is safe to stop and wait.
+Call `wait_agent` only when you genuinely cannot proceed without a specific result; it holds until an update arrives. Never busy-poll: do not call `wait_agent` or `list_agents` repeatedly in a loop, and do not emit repeated "waiting for agents" or "no agents completed yet" messages.
+To coordinate while agents are still running, message them: `send_message` injects your message into the target agent's session without starting a turn, and `followup_task` does the same but starts a turn when the target is idle. These reach children, your parent, and peers alike — use them to steer an agent, delegate a follow-up sub-task, or answer a running agent's question.
 
 When you provide a response in the final channel, that content is immediately delivered back to your parent agent.
 
