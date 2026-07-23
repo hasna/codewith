@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Agent subagent threads
+  Cap concurrent subagent threads per agent run; restart to apply.
+
+› 1. 1 (current)  Allow up to 1 concurrent subagent threads per agent run.
+  2. 2            Allow up to 2 concurrent subagent threads per agent run.
+  3. 3            Allow up to 3 concurrent subagent threads per agent run.
+  4. 4            Allow up to 4 concurrent subagent threads per agent run.
+  5. 6 (default)  Allow up to 6 concurrent subagent threads per agent run.
+  6. 8            Allow up to 8 concurrent subagent threads per agent run.
+  7. 12           Allow up to 12 concurrent subagent threads per agent run.
+
+  Enter selects; Left or Esc goes back

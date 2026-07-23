@@ -176,6 +176,7 @@ pub(crate) struct SelectionViewParams {
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
     pub is_searchable: bool,
+    pub tree_navigation_enabled: bool,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -231,6 +232,7 @@ impl Default for SelectionViewParams {
             tabs: Vec::new(),
             initial_tab_id: None,
             is_searchable: false,
+            tree_navigation_enabled: false,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -267,6 +269,7 @@ pub(crate) struct ListSelectionView {
     dismiss_after_child_accept: bool,
     app_event_tx: AppEventSender,
     is_searchable: bool,
+    tree_navigation_enabled: bool,
     search_query: String,
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
@@ -339,6 +342,7 @@ impl ListSelectionView {
             dismiss_after_child_accept: false,
             app_event_tx,
             is_searchable: params.is_searchable,
+            tree_navigation_enabled: params.tree_navigation_enabled,
             search_query: String::new(),
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
@@ -994,6 +998,31 @@ impl BottomPaneView for ListSelectionView {
                 && self.keymap.move_right.is_pressed(key_event) =>
             {
                 self.switch_tab(/*step*/ 1)
+            }
+            _ if allow_plain_char_navigation
+                && self.tree_navigation_enabled
+                && self.keymap.move_left.is_pressed(key_event) =>
+            {
+                self.on_ctrl_c();
+            }
+            _ if allow_plain_char_navigation
+                && self.tree_navigation_enabled
+                && self.keymap.move_right.is_pressed(key_event) =>
+            {
+                let selected_opens_child = self
+                    .state
+                    .selected_idx
+                    .and_then(|idx| self.filtered_indices.get(idx).copied())
+                    .and_then(|actual_idx| self.active_items().get(actual_idx))
+                    .is_some_and(|item| {
+                        !item.is_disabled
+                            && item.disabled_reason.is_none()
+                            && !item.actions.is_empty()
+                            && item.dismiss_parent_on_child_accept
+                    });
+                if selected_opens_child {
+                    self.accept();
+                }
             }
             KeyEvent {
                 code: KeyCode::Backspace,
