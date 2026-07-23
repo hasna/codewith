@@ -10881,7 +10881,10 @@ enabled = true
     assert_eq!(config.multi_agent_v2.max_concurrent_threads_per_session, 4);
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 10_000);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 3_600_000);
-    assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30_000);
+    // Push-based completion (see DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS)
+    // raised the default wait timeout from 30s to 10min; this test does not set
+    // it in TOML, so it observes the new default.
+    assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 600_000);
     assert_eq!(
         (
             config.agent_max_threads,

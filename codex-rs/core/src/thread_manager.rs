@@ -1112,11 +1112,12 @@ impl ThreadManagerState {
     /// mailbox enqueue inline and propagates the error, matching the app-server
     /// bridge delivery lane (`CodexThread::enqueue_inter_agent_communication_with_id`).
     ///
-    /// The wake for a `trigger_turn` message is deferred to the target's own
-    /// submission loop via `Op::WakePendingWork` rather than started inline: an
-    /// inline wake runs on the sender's task and can take over the target's
-    /// in-flight turn-start reservation (aborting a live turn); routing it through
-    /// the submission loop serializes it with the target's turn lifecycle.
+    /// The wake for a `trigger_turn` (or sub-agent completion `wake_if_idle`)
+    /// message is deferred to the target's own submission loop via
+    /// `Op::WakePendingWork` rather than started inline: an inline wake runs on the
+    /// sender's task and can take over the target's in-flight turn-start
+    /// reservation (aborting a live turn); routing it through the submission loop
+    /// serializes it with the target's turn lifecycle.
     ///
     /// The delivered op is recorded to the test ops log so delivery remains
     /// observable to tests.
@@ -1127,6 +1128,12 @@ impl ThreadManagerState {
     ) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;
         let trigger_turn = communication.trigger_turn;
+        // Sub-agent completion notifications set `wake_if_idle` (not
+        // `trigger_turn`): they never defer delivery out of a running turn, but an
+        // idle recipient must still be woken so it resumes and drains the child's
+        // final answer. Capture it before `communication` is moved into the
+        // mailbox enqueue below.
+        let wake_if_idle = communication.wake_if_idle;
         let message_id = uuid::Uuid::now_v7().to_string();
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
@@ -1143,10 +1150,12 @@ impl ThreadManagerState {
         thread
             .enqueue_inter_agent_communication_with_id(message_id.clone(), communication)
             .await?;
-        if trigger_turn {
+        if trigger_turn || wake_if_idle {
             // Best-effort wake on the target's submission loop; the message is
             // already durably enqueued, so a failed wake only delays delivery to
-            // the next turn/prompt.
+            // the next turn/prompt. `WakePendingWork` only starts a turn when the
+            // target is idle and the pending mail is wake-worthy for its config, so
+            // a mid-turn `wake_if_idle` completion is a no-op.
             let _ = thread.submit(Op::WakePendingWork).await;
         }
         Ok(message_id)

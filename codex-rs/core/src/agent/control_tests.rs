@@ -2078,15 +2078,16 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         tester_path.as_str(),
         &AgentStatus::Completed(Some("done".to_string())),
     );
+    // Sub-agent completion is push-based: the watcher emits a
+    // `completion_notification` (wake_if_idle=true, trigger_turn=false) so an
+    // idle direct parent auto-resumes and consumes the child's final answer.
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
+            communication: InterAgentCommunication::completion_notification(
                 tester_path.clone(),
                 worker_path.clone(),
-                Vec::new(),
                 expected_message.clone(),
-                /*trigger_turn*/ false,
             ),
         },
     );
@@ -2116,12 +2117,10 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         .to_vec();
     assert!(!history_contains_assistant_inter_agent_communication(
         &root_history_items,
-        &InterAgentCommunication::new(
+        &InterAgentCommunication::completion_notification(
             tester_path,
             AgentPath::root(),
-            Vec::new(),
             expected_message,
-            /*trigger_turn*/ false,
         )
     ));
 }
