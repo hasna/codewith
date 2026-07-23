@@ -1459,6 +1459,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                     codex_app_server_protocol::CollabAgentState {
                         status: codex_app_server_protocol::CollabAgentStatus::NotFound,
                         message: None,
+                        agent_path: None,
                     },
                 )]),
             },
@@ -1472,6 +1473,17 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 fn spawn_completed_notification(
     sender_thread_id: ThreadId,
     child_thread_id: ThreadId,
+) -> ServerNotification {
+    spawn_completed_notification_with_agent_path(sender_thread_id, child_thread_id, None)
+}
+
+/// Like [`spawn_completed_notification`], but stamps the child's authoritative agent path onto the
+/// per-agent `CollabAgentState`, matching what the app-server emits for a real spawn so the TUI can
+/// seed a hierarchical tree path without waiting for the child's own `ThreadStarted`.
+fn spawn_completed_notification_with_agent_path(
+    sender_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+    agent_path: Option<&str>,
 ) -> ServerNotification {
     ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
         thread_id: sender_thread_id.to_string(),
@@ -1491,6 +1503,7 @@ fn spawn_completed_notification(
                 codex_app_server_protocol::CollabAgentState {
                     status: codex_app_server_protocol::CollabAgentStatus::PendingInit,
                     message: None,
+                    agent_path: agent_path.map(str::to_string),
                 },
             )]),
         },
@@ -1567,6 +1580,82 @@ async fn spawn_notification_seeds_lineage_tree_path_without_prior_thread_started
     // The spawn edge is recorded for later resolution, but no `/agent` picker row is fabricated.
     assert_eq!(app.agent_navigation.parent(&child), Some(root));
     assert_eq!(app.agent_navigation.get(&child), None);
+}
+
+/// The regression this whole change targets: a spawn notification carries the child's authoritative
+/// agent path, so the "Spawned" row must render `root/<task>` immediately even though the child's own
+/// `ThreadStarted` (which would otherwise supply the path) has not been processed yet. Before this
+/// fix the path was dropped at the event -> `ThreadItem` boundary and the row froze on a raw
+/// thread-id prefix (`root/<short-id>`).
+#[tokio::test]
+async fn spawn_notification_seeds_authoritative_agent_path_from_notification() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid root");
+    // A real UUIDv7 whose 8-char short-id prefix would otherwise be the fallback label.
+    let child = ThreadId::from_string("019f8df2-89dc-70f2-ad8e-d74deba8ed9b").expect("valid child");
+    app.primary_thread_id = Some(root);
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification_with_agent_path(root, child, Some("/root/verify_statements")),
+    ));
+
+    let metadata = app.chat_widget.collab_agent_metadata_for_test(child);
+    assert_eq!(
+        metadata.tree_path.as_deref(),
+        Some("root/verify_statements"),
+        "spawn seeding must use the path carried on the notification, not a short-id fallback"
+    );
+    assert!(
+        !metadata
+            .tree_path
+            .as_deref()
+            .unwrap_or_default()
+            .contains("019f8df2"),
+        "seeded path must not leak the raw thread-id prefix"
+    );
+    // The path is recorded authoritatively, but seeding still never fabricates an `/agent` picker row.
+    assert_eq!(
+        app.agent_navigation.agent_path(&child),
+        Some("/root/verify_statements")
+    );
+    assert_eq!(app.agent_navigation.get(&child), None);
+}
+
+/// A nested spawn (the parent is itself a sub-agent) carries a multi-segment authoritative path, and
+/// the "Spawned" row must render every segment as a friendly name, for example
+/// `root/final_audit/deploy_check`, never a UUID at any node.
+#[tokio::test]
+async fn spawn_notification_seeds_nested_authoritative_agent_path() {
+    let mut app = make_test_app().await;
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid root");
+    let parent =
+        ThreadId::from_string("019f8df2-89dc-70f2-ad8e-d74deba8ed9b").expect("valid parent");
+    let child = ThreadId::from_string("019f8df3-89dc-70f2-ad8e-d74deba8ed9b").expect("valid child");
+    app.primary_thread_id = Some(root);
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        spawn_completed_notification_with_agent_path(
+            parent,
+            child,
+            Some("/root/final_audit/deploy_check"),
+        ),
+    ));
+
+    let metadata = app.chat_widget.collab_agent_metadata_for_test(child);
+    assert_eq!(
+        metadata.tree_path.as_deref(),
+        Some("root/final_audit/deploy_check"),
+        "nested spawn seeding must render every segment as a friendly name"
+    );
+    assert!(
+        !metadata
+            .tree_path
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .any(|c| c.is_ascii_digit()),
+        "no path node may be a raw thread-id prefix"
+    );
 }
 
 /// Two children of the same parent must seed distinct render metadata even when their 8-char
@@ -7190,6 +7279,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                                 codex_app_server_protocol::CollabAgentState {
                                     status: codex_app_server_protocol::CollabAgentStatus::Completed,
                                     message: None,
+                                    agent_path: None,
                                 },
                             )]),
                         },

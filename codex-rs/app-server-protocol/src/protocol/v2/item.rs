@@ -1021,39 +1021,32 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    /// Canonical, human-readable agent path for this agent (for example
+    /// `/root/verify_bcr_statement_emails`), when the emitting event knows it.
+    ///
+    /// Spawn notifications populate this so a client can render the freshly spawned child's
+    /// hierarchical tree path (`root/<task>`) in the "Spawned" row immediately, instead of falling
+    /// back to a raw thread-id prefix while it waits for the child's own `ThreadStarted` to land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_path: Option<String>,
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
     fn from(value: CoreAgentStatus) -> Self {
-        match value {
-            CoreAgentStatus::PendingInit => Self {
-                status: CollabAgentStatus::PendingInit,
-                message: None,
-            },
-            CoreAgentStatus::Running => Self {
-                status: CollabAgentStatus::Running,
-                message: None,
-            },
-            CoreAgentStatus::Interrupted => Self {
-                status: CollabAgentStatus::Interrupted,
-                message: None,
-            },
-            CoreAgentStatus::Completed(message) => Self {
-                status: CollabAgentStatus::Completed,
-                message,
-            },
-            CoreAgentStatus::Errored(message) => Self {
-                status: CollabAgentStatus::Errored,
-                message: Some(message),
-            },
-            CoreAgentStatus::Shutdown => Self {
-                status: CollabAgentStatus::Shutdown,
-                message: None,
-            },
-            CoreAgentStatus::NotFound => Self {
-                status: CollabAgentStatus::NotFound,
-                message: None,
-            },
+        let (status, message) = match value {
+            CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
+            CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Interrupted => (CollabAgentStatus::Interrupted, None),
+            CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
+            CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
+            CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+            CoreAgentStatus::NotFound => (CollabAgentStatus::NotFound, None),
+        };
+        Self {
+            status,
+            message,
+            agent_path: None,
         }
     }
 }

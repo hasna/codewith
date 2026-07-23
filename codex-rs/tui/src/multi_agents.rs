@@ -1069,6 +1069,7 @@ mod tests {
         CollabAgentState {
             status,
             message: message.map(str::to_string),
+            agent_path: None,
         }
     }
 

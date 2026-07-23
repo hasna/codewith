@@ -185,6 +185,13 @@
     },
     "CollabAgentState": {
       "properties": {
+        "agentPath": {
+          "description": "Canonical, human-readable agent path for this agent (for example\n`/root/verify_bcr_statement_emails`), when the emitting event knows it.\n\nSpawn notifications populate this so a client can render the freshly spawned child's\nhierarchical tree path (`root/<task>`) in the \"Spawned\" row immediately, instead of falling\nback to a raw thread-id prefix while it waits for the child's own `ThreadStarted` to land.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "type": [
             "string",
