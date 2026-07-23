@@ -11,9 +11,15 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::UserInput;
+use codex_protocol::ThreadId;
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -129,6 +135,11 @@ impl App {
                     self.note_session_recap_turn_completed(thread_id, &notification.turn);
                 }
 
+                // Fold this update into the live agent-metrics cache before routing so that main
+                // and every sub-agent picker row stay in sync regardless of which channel the
+                // notification is ultimately enqueued on.
+                self.note_agent_metrics_from_notification(thread_id, &notification);
+
                 let result = if self.primary_thread_id == Some(thread_id) {
                     self.enqueue_thread_notification(thread_id, notification)
                         .await
@@ -172,6 +183,49 @@ impl App {
 
         self.chat_widget
             .handle_server_notification(notification, /*replay_kind*/ None);
+    }
+
+    /// Folds a per-thread app-server notification into the live agent-metrics cache so the enriched
+    /// agent picker can render status, elapsed time, task, and token totals for main and every
+    /// sub-agent uniformly.
+    ///
+    /// This mirrors `codex_core`'s `agent_status_from_event`, but operates on the v2 app-server
+    /// notification stream the TUI actually receives rather than on core `EventMsg`s.
+    fn note_agent_metrics_from_notification(
+        &mut self,
+        thread_id: ThreadId,
+        notification: &ServerNotification,
+    ) {
+        match notification {
+            ServerNotification::TurnStarted(started) => {
+                let task = first_user_input_text(&started.turn);
+                self.agent_navigation.note_turn_started(thread_id, task);
+            }
+            ServerNotification::TurnCompleted(completed) => {
+                self.agent_navigation.note_turn_completed(
+                    thread_id,
+                    collab_status_from_turn_status(&completed.turn.status),
+                );
+            }
+            // A retrying error does not interrupt the turn, so the thread stays running.
+            ServerNotification::Error(error) if !error.will_retry => {
+                self.agent_navigation.note_error(thread_id);
+            }
+            ServerNotification::ThreadClosed(_) => {
+                self.agent_navigation
+                    .note_status(thread_id, CollabAgentStatus::Shutdown);
+            }
+            ServerNotification::ThreadStatusChanged(changed) => {
+                if let Some(status) = collab_status_from_thread_status(&changed.status) {
+                    self.agent_navigation.note_status(thread_id, status);
+                }
+            }
+            ServerNotification::ThreadTokenUsageUpdated(usage) => {
+                self.agent_navigation
+                    .note_token_usage(thread_id, usage.token_usage.total.total_tokens);
+            }
+            _ => {}
+        }
     }
 
     async fn handle_server_request_event(
@@ -232,4 +286,41 @@ impl App {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }
     }
+}
+
+/// Maps a completed turn's status onto the picker's `CollabAgentStatus` vocabulary.
+fn collab_status_from_turn_status(status: &TurnStatus) -> CollabAgentStatus {
+    match status {
+        TurnStatus::Completed => CollabAgentStatus::Completed,
+        TurnStatus::Interrupted => CollabAgentStatus::Interrupted,
+        TurnStatus::Failed => CollabAgentStatus::Errored,
+        TurnStatus::InProgress => CollabAgentStatus::Running,
+    }
+}
+
+/// Maps a thread-lifecycle status change onto the picker's `CollabAgentStatus` vocabulary.
+///
+/// `Idle` returns `None` so a completed agent keeps its terminal glyph between turns instead of
+/// flipping back to a neutral running/pending state.
+fn collab_status_from_thread_status(status: &ThreadStatus) -> Option<CollabAgentStatus> {
+    match status {
+        ThreadStatus::NotLoaded => Some(CollabAgentStatus::Shutdown),
+        ThreadStatus::SystemError => Some(CollabAgentStatus::Errored),
+        ThreadStatus::Active { .. } => Some(CollabAgentStatus::Running),
+        ThreadStatus::Idle => None,
+    }
+}
+
+/// Extracts a short task description from a turn's first textual user input, if present.
+fn first_user_input_text(turn: &Turn) -> Option<String> {
+    turn.items.iter().find_map(|item| match item {
+        ThreadItem::UserMessage { content, .. } => content.iter().find_map(|input| match input {
+            UserInput::Text { text, .. } => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            _ => None,
+        }),
+        _ => None,
+    })
 }

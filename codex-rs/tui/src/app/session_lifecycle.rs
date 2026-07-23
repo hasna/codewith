@@ -15,7 +15,7 @@ fn agent_picker_hint_line(can_create_agent: bool) -> Line<'static> {
         Line::from(vec![
             "Press ".into(),
             crate::key_hint::plain(KeyCode::Enter).into(),
-            " to select, ".into(),
+            " to switch, ".into(),
             crate::key_hint::plain(KeyCode::Char('n')).into(),
             " for new, ".into(),
             crate::key_hint::plain(KeyCode::Char('r')).into(),
@@ -27,7 +27,7 @@ fn agent_picker_hint_line(can_create_agent: bool) -> Line<'static> {
         Line::from(vec![
             "Press ".into(),
             crate::key_hint::plain(KeyCode::Enter).into(),
-            " to watch, ".into(),
+            " to switch, ".into(),
             crate::key_hint::plain(KeyCode::Char('r')).into(),
             " to rename, or ".into(),
             crate::key_hint::plain(KeyCode::Esc).into(),
@@ -58,10 +58,24 @@ impl App {
             });
         }
 
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        // Always render the primary ("Main") thread first, then the rest in stable spawn order.
+        // Spawn order already puts main first in the common case, but resume/backfill races can
+        // register a subagent before the primary lands, so hoist it explicitly.
+        let mut ordered_threads = self.agent_navigation.ordered_threads();
+        if let Some(primary_thread_id) = self.primary_thread_id
+            && let Some(primary_pos) = ordered_threads
+                .iter()
+                .position(|(thread_id, _)| *thread_id == primary_thread_id)
+        {
+            let primary_entry = ordered_threads.remove(primary_pos);
+            ordered_threads.insert(0, primary_entry);
+        }
+
+        for (thread_id, entry) in ordered_threads {
             let item_idx = items.len();
             first_agent_idx.get_or_insert(item_idx);
-            if self.active_thread_id == Some(thread_id) {
+            let is_active = self.active_thread_id == Some(thread_id);
+            if is_active {
                 initial_selected_idx = Some(item_idx);
             }
             let is_primary = self.primary_thread_id == Some(thread_id);
@@ -69,6 +83,21 @@ impl App {
             let current_name = entry.thread_name.clone();
             let uuid = thread_id.to_string();
             let rename_label = name.clone();
+
+            let metrics = self.agent_navigation.metrics(&thread_id);
+            let status = agent_picker_row_status(
+                entry.is_closed,
+                metrics.map(|metrics| metrics.status.clone()),
+            );
+            let elapsed_secs = metrics
+                .and_then(|metrics| metrics.started_at)
+                .map(|started_at| started_at.elapsed().as_secs());
+            let token_total = metrics.map(|metrics| metrics.token_total).unwrap_or(0);
+            let description = format_agent_picker_metrics(
+                metrics.and_then(|metrics| metrics.last_task_message.as_deref()),
+                elapsed_secs,
+                token_total,
+            );
             let mut shortcut_actions = Vec::new();
             if can_create_agent {
                 shortcut_actions.push(SelectionShortcutAction {
@@ -92,14 +121,16 @@ impl App {
             });
             items.push(SelectionItem {
                 name: name.clone(),
-                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                description: Some(uuid.clone()),
-                is_current: self.active_thread_id == Some(thread_id),
+                name_prefix_spans: agent_picker_status_dot_spans(status, is_active),
+                description,
+                is_current: is_active,
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::SelectAgentThread(thread_id));
                 })],
                 shortcut_actions,
                 dismiss_on_select: true,
+                // Keep the raw thread id searchable even though the visible description now shows
+                // live metrics instead of the UUID.
                 search_value: Some(format!("{name} {uuid}")),
                 ..Default::default()
             });

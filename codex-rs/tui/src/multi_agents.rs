@@ -6,6 +6,8 @@
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::status::format_tokens_compact;
+use crate::status_indicator_widget::fmt_elapsed_compact;
 use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentState;
@@ -29,6 +31,8 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+/// Max graphemes of the current-task preview shown in the agent picker description column.
+const COLLAB_PICKER_TASK_PREVIEW_GRAPHEMES: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
@@ -75,13 +79,92 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
-pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
-    let dot = if is_closed {
-        "•".into()
-    } else {
-        "•".green()
+/// Resolves the lifecycle status to render for an agent picker row.
+///
+/// Live telemetry (folded from the event stream) is authoritative when present, except that a
+/// picker entry the app has since marked closed downgrades a still-`Running`/`PendingInit` thread to
+/// `Shutdown` so a stale "running" dot never lingers on a thread the backend reports as gone.
+/// Threads with no telemetry yet render as `PendingInit` (a hollow, dim dot), or `Shutdown` when
+/// already closed.
+pub(crate) fn agent_picker_row_status(
+    is_closed: bool,
+    live_status: Option<CollabAgentStatus>,
+) -> CollabAgentStatus {
+    match live_status {
+        Some(status) if is_terminal_collab_status(&status) => status,
+        Some(_) if is_closed => CollabAgentStatus::Shutdown,
+        Some(status) => status,
+        None if is_closed => CollabAgentStatus::Shutdown,
+        None => CollabAgentStatus::PendingInit,
+    }
+}
+
+fn is_terminal_collab_status(status: &CollabAgentStatus) -> bool {
+    matches!(
+        status,
+        CollabAgentStatus::Completed
+            | CollabAgentStatus::Interrupted
+            | CollabAgentStatus::Errored
+            | CollabAgentStatus::Shutdown
+            | CollabAgentStatus::NotFound
+    )
+}
+
+/// Builds the leading status glyph for an agent picker row.
+///
+/// The glyph encodes lifecycle status by both shape and color, reusing the `CollabAgentStatus`
+/// vocabulary: a running or pending thread shows a dot that is filled (`●`) when it is the currently
+/// watched thread and hollow (`○`) otherwise, so the active agent stands out; terminal states show a
+/// distinct glyph instead — a green check when completed, a yellow check when interrupted ("wrapped
+/// up"), a red cross when errored, and a dim square when stopped.
+pub(crate) fn agent_picker_status_dot_spans(
+    status: CollabAgentStatus,
+    is_active: bool,
+) -> Vec<Span<'static>> {
+    let glyph: Span<'static> = match status {
+        CollabAgentStatus::Completed => "✓".green(),
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
+        CollabAgentStatus::Interrupted => "✓".yellow(),
+        CollabAgentStatus::Errored | CollabAgentStatus::NotFound => "✗".red(),
+        CollabAgentStatus::Shutdown => "■".dim(),
+        CollabAgentStatus::Running if is_active => "●".green(),
+        CollabAgentStatus::Running => "○".green(),
+        CollabAgentStatus::PendingInit if is_active => "●".dim(),
+        CollabAgentStatus::PendingInit => "○".dim(),
     };
-    vec![dot, " ".into()]
+    vec![glyph, " ".into()]
+}
+
+/// Formats the enriched agent picker description column: `<task>   <elapsed> · ↓ <tokens> tokens`.
+///
+/// Every segment is optional: a thread with no captured task, no started turn, or no reported token
+/// usage simply omits that part. Returns `None` when there is nothing at all to show so the row can
+/// fall back to a bare agent name.
+pub(crate) fn format_agent_picker_metrics(
+    task: Option<&str>,
+    elapsed_secs: Option<u64>,
+    token_total: i64,
+) -> Option<String> {
+    let mut stats: Vec<String> = Vec::new();
+    if let Some(elapsed_secs) = elapsed_secs {
+        stats.push(fmt_elapsed_compact(elapsed_secs));
+    }
+    if token_total > 0 {
+        stats.push(format!("↓ {} tokens", format_tokens_compact(token_total)));
+    }
+
+    let task = task
+        .map(str::trim)
+        .filter(|task| !task.is_empty())
+        .map(|task| truncate_text(task, COLLAB_PICKER_TASK_PREVIEW_GRAPHEMES));
+
+    match (task, stats.is_empty()) {
+        (Some(task), true) => Some(task),
+        (Some(task), false) => Some(format!("{task}   {}", stats.join(" · "))),
+        (None, true) => None,
+        (None, false) => Some(stats.join(" · ")),
+    }
 }
 
 pub(crate) fn format_agent_picker_item_name(
@@ -1105,5 +1188,122 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("")
+    }
+
+    #[test]
+    fn agent_picker_row_status_prefers_live_status_but_respects_closed() {
+        // No telemetry yet: pending when open, stopped when the picker marked it closed.
+        assert_eq!(
+            agent_picker_row_status(/*is_closed*/ false, None),
+            CollabAgentStatus::PendingInit
+        );
+        assert_eq!(
+            agent_picker_row_status(/*is_closed*/ true, None),
+            CollabAgentStatus::Shutdown
+        );
+        // A live running thread the picker has since marked closed downgrades to stopped.
+        assert_eq!(
+            agent_picker_row_status(/*is_closed*/ true, Some(CollabAgentStatus::Running)),
+            CollabAgentStatus::Shutdown
+        );
+        // Terminal telemetry is authoritative even when the entry is closed.
+        assert_eq!(
+            agent_picker_row_status(/*is_closed*/ true, Some(CollabAgentStatus::Completed)),
+            CollabAgentStatus::Completed
+        );
+        assert_eq!(
+            agent_picker_row_status(/*is_closed*/ false, Some(CollabAgentStatus::Running)),
+            CollabAgentStatus::Running
+        );
+    }
+
+    #[test]
+    fn agent_picker_status_dot_spans_encode_status_shape_and_color() {
+        let running_active = agent_picker_status_dot_spans(CollabAgentStatus::Running, true);
+        assert_eq!(running_active[0].content.as_ref(), "●");
+        assert_eq!(running_active[0].style.fg, Some(Color::Green));
+
+        let running_idle = agent_picker_status_dot_spans(CollabAgentStatus::Running, false);
+        assert_eq!(running_idle[0].content.as_ref(), "○");
+        assert_eq!(running_idle[0].style.fg, Some(Color::Green));
+
+        let completed = agent_picker_status_dot_spans(CollabAgentStatus::Completed, false);
+        assert_eq!(completed[0].content.as_ref(), "✓");
+        assert_eq!(completed[0].style.fg, Some(Color::Green));
+
+        let interrupted = agent_picker_status_dot_spans(CollabAgentStatus::Interrupted, false);
+        assert_eq!(interrupted[0].content.as_ref(), "✓");
+        assert_eq!(interrupted[0].style.fg, Some(Color::Yellow));
+
+        let errored = agent_picker_status_dot_spans(CollabAgentStatus::Errored, false);
+        assert_eq!(errored[0].content.as_ref(), "✗");
+        assert_eq!(errored[0].style.fg, Some(Color::Red));
+
+        let shutdown = agent_picker_status_dot_spans(CollabAgentStatus::Shutdown, false);
+        assert_eq!(shutdown[0].content.as_ref(), "■");
+        assert!(shutdown[0].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn format_agent_picker_metrics_composes_task_elapsed_and_tokens() {
+        assert_eq!(
+            format_agent_picker_metrics(Some("audit the backend"), Some(125), 69_742),
+            Some("audit the backend   2m 05s · ↓ 69.7K tokens".to_string())
+        );
+        assert_eq!(
+            format_agent_picker_metrics(None, Some(5), 0),
+            Some("5s".to_string())
+        );
+        assert_eq!(
+            format_agent_picker_metrics(Some("just a task"), None, 0),
+            Some("just a task".to_string())
+        );
+        assert_eq!(
+            format_agent_picker_metrics(None, None, 0),
+            None,
+            "an empty row should have no description"
+        );
+    }
+
+    #[test]
+    fn agent_picker_rows_snapshot() {
+        // Deterministic stand-in for the live picker rows: `<dot> <name>  <task> <elapsed> · tokens`
+        // with Main first, one running/active row, one completed row, and one errored row.
+        let rows = [
+            (
+                CollabAgentStatus::Running,
+                /*is_active*/ true,
+                "Main [default]",
+                format_agent_picker_metrics(Some("triage the failing suite"), Some(125), 69_742),
+            ),
+            (
+                CollabAgentStatus::Completed,
+                /*is_active*/ false,
+                "Robie [explorer]",
+                format_agent_picker_metrics(Some("map the crate graph"), Some(42), 12_800),
+            ),
+            (
+                CollabAgentStatus::Errored,
+                /*is_active*/ false,
+                "Bob [worker]",
+                format_agent_picker_metrics(Some("run migrations"), Some(9), 1_024),
+            ),
+        ];
+
+        let snapshot = rows
+            .iter()
+            .map(|(status, is_active, name, description)| {
+                let mut spans = agent_picker_status_dot_spans(status.clone(), *is_active);
+                spans.push(Span::from((*name).to_string()));
+                if let Some(description) = description {
+                    spans.push(Span::from("  "));
+                    spans.push(Span::from(description.clone()));
+                }
+                line_to_text(&Line::from(spans))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_snapshot!("agent_picker_rows", snapshot);
     }
 }

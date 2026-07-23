@@ -23,9 +23,11 @@ use crate::multi_agents::format_agent_picker_entry_name;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
+use codex_app_server_protocol::CollabAgentStatus;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Small state container for multi-agent picker ordering and labeling.
 ///
@@ -50,6 +52,41 @@ pub(crate) struct AgentNavigationState {
     /// Authoritative absolute agent paths (for example `/root/backend_audit/db_check`) captured
     /// from the server-composed `AgentPath`, keyed by thread id.
     paths: HashMap<ThreadId, String>,
+    /// Live per-thread runtime telemetry (status, elapsed, tokens, task) rendered by the enriched
+    /// agent picker. Kept in its own map so it survives `upsert` metadata refreshes and thread
+    /// switches; only `clear` and `remove` drop it.
+    live_metrics: HashMap<ThreadId, AgentLiveMetrics>,
+}
+
+/// Live runtime telemetry for a tracked agent thread.
+///
+/// These fields are folded from the app-server event stream and rendered in the enriched agent
+/// picker rows (status dot, task, elapsed timer, token total). They are intentionally kept here in
+/// [`AgentNavigationState`] rather than on the `ChatWidget`: switching into an agent's window
+/// rebuilds the `ChatWidget` from scratch, which would otherwise reset the elapsed timer and token
+/// total every time the user glanced at a different agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentLiveMetrics {
+    /// Latest lifecycle status folded from turn/thread notifications.
+    pub(crate) status: CollabAgentStatus,
+    /// When the most recent turn started, used to render a live elapsed timer. `None` until the
+    /// thread emits its first `TurnStarted`.
+    pub(crate) started_at: Option<Instant>,
+    /// Short description of the current task, derived from the latest turn's first user input.
+    pub(crate) last_task_message: Option<String>,
+    /// Cumulative total token usage most recently reported for the thread.
+    pub(crate) token_total: i64,
+}
+
+impl Default for AgentLiveMetrics {
+    fn default() -> Self {
+        Self {
+            status: CollabAgentStatus::PendingInit,
+            started_at: None,
+            last_task_message: None,
+            token_total: 0,
+        }
+    }
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -150,6 +187,56 @@ impl AgentNavigationState {
         self.threads.contains_key(thread_id)
     }
 
+    /// Returns the live runtime telemetry captured for a thread, if any turn/thread event has been
+    /// folded for it yet.
+    pub(crate) fn metrics(&self, thread_id: &ThreadId) -> Option<&AgentLiveMetrics> {
+        self.live_metrics.get(thread_id)
+    }
+
+    /// Returns a mutable telemetry record for a thread, creating a default one on first sight.
+    ///
+    /// The default seeds `PendingInit`/no-elapsed/zero-tokens so a thread that has only just been
+    /// observed renders as a hollow pending dot until the first real event arrives.
+    fn metrics_mut(&mut self, thread_id: ThreadId) -> &mut AgentLiveMetrics {
+        self.live_metrics.entry(thread_id).or_default()
+    }
+
+    /// Folds a `TurnStarted` event: the thread is now running and its elapsed timer restarts.
+    ///
+    /// A non-empty `task_message` (the turn's first user input) is captured so the picker row can
+    /// describe what the agent is working on; an empty message leaves the previous task in place.
+    pub(crate) fn note_turn_started(&mut self, thread_id: ThreadId, task_message: Option<String>) {
+        let task_message = task_message
+            .map(|task| task.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|task| !task.is_empty());
+        let metrics = self.metrics_mut(thread_id);
+        metrics.status = CollabAgentStatus::Running;
+        metrics.started_at = Some(Instant::now());
+        if task_message.is_some() {
+            metrics.last_task_message = task_message;
+        }
+    }
+
+    /// Folds a `TurnCompleted` event, honoring the terminal turn status mapped by the caller.
+    pub(crate) fn note_turn_completed(&mut self, thread_id: ThreadId, status: CollabAgentStatus) {
+        self.metrics_mut(thread_id).status = status;
+    }
+
+    /// Folds a non-retrying `Error` event: the thread is now errored.
+    pub(crate) fn note_error(&mut self, thread_id: ThreadId) {
+        self.metrics_mut(thread_id).status = CollabAgentStatus::Errored;
+    }
+
+    /// Records a status transition folded from a thread-lifecycle event (close / status change).
+    pub(crate) fn note_status(&mut self, thread_id: ThreadId, status: CollabAgentStatus) {
+        self.metrics_mut(thread_id).status = status;
+    }
+
+    /// Records the cumulative total token usage most recently reported for a thread.
+    pub(crate) fn note_token_usage(&mut self, thread_id: ThreadId, token_total: i64) {
+        self.metrics_mut(thread_id).token_total = token_total.max(0);
+    }
+
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
@@ -176,6 +263,7 @@ impl AgentNavigationState {
         self.order.clear();
         self.parents.clear();
         self.paths.clear();
+        self.live_metrics.clear();
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -186,6 +274,7 @@ impl AgentNavigationState {
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
+        self.live_metrics.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -289,7 +378,7 @@ impl AgentNavigationState {
         let previous: Span<'static> = previous_agent_shortcut().into();
         let next: Span<'static> = next_agent_shortcut().into();
         format!(
-            "Select an agent to watch. {} previous, {} next.",
+            "Switch into an agent's live window. {} previous, {} next.",
             previous.content, next.content
         )
     }
@@ -415,5 +504,115 @@ mod tests {
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
             Some("Main [default]".to_string())
         );
+    }
+
+    #[test]
+    fn note_turn_started_marks_running_and_records_task_and_start() {
+        let (mut state, _, first_agent_id, _) = populated_state();
+        assert_eq!(state.metrics(&first_agent_id), None);
+
+        state.note_turn_started(
+            first_agent_id,
+            Some("  audit   the   backend  ".to_string()),
+        );
+
+        let metrics = state.metrics(&first_agent_id).expect("metrics recorded");
+        assert_eq!(metrics.status, CollabAgentStatus::Running);
+        assert!(metrics.started_at.is_some());
+        // Whitespace is collapsed so the picker row stays on a single tidy line.
+        assert_eq!(
+            metrics.last_task_message.as_deref(),
+            Some("audit the backend")
+        );
+    }
+
+    #[test]
+    fn note_turn_started_keeps_previous_task_when_message_is_blank() {
+        let (mut state, _, first_agent_id, _) = populated_state();
+        state.note_turn_started(first_agent_id, Some("first task".to_string()));
+        state.note_turn_started(first_agent_id, Some("   ".to_string()));
+
+        assert_eq!(
+            state
+                .metrics(&first_agent_id)
+                .and_then(|metrics| metrics.last_task_message.as_deref()),
+            Some("first task")
+        );
+    }
+
+    #[test]
+    fn note_turn_completed_and_error_transition_status() {
+        let (mut state, _, first_agent_id, second_agent_id) = populated_state();
+
+        state.note_turn_started(first_agent_id, None);
+        state.note_turn_completed(first_agent_id, CollabAgentStatus::Completed);
+        assert_eq!(
+            state
+                .metrics(&first_agent_id)
+                .map(|metrics| metrics.status.clone()),
+            Some(CollabAgentStatus::Completed)
+        );
+
+        state.note_error(second_agent_id);
+        assert_eq!(
+            state
+                .metrics(&second_agent_id)
+                .map(|metrics| metrics.status.clone()),
+            Some(CollabAgentStatus::Errored)
+        );
+    }
+
+    #[test]
+    fn note_status_and_token_usage_are_recorded() {
+        let (mut state, _, first_agent_id, second_agent_id) = populated_state();
+
+        state.note_status(first_agent_id, CollabAgentStatus::Shutdown);
+        state.note_token_usage(first_agent_id, 69_742);
+        // Negative totals are clamped so a bad report never renders a negative token count.
+        state.note_token_usage(second_agent_id, -5);
+
+        let metrics = state.metrics(&first_agent_id).expect("metrics recorded");
+        assert_eq!(metrics.status, CollabAgentStatus::Shutdown);
+        assert_eq!(metrics.token_total, 69_742);
+        assert_eq!(
+            state
+                .metrics(&second_agent_id)
+                .map(|metrics| metrics.token_total),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn metrics_survive_metadata_upsert() {
+        let (mut state, _, first_agent_id, _) = populated_state();
+        state.note_turn_started(first_agent_id, Some("task".to_string()));
+        state.note_token_usage(first_agent_id, 1_234);
+
+        // A picker-liveness refresh re-`upsert`s metadata; live telemetry must not be reset.
+        state.upsert(
+            first_agent_id,
+            Some("Robie".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+        );
+
+        let metrics = state.metrics(&first_agent_id).expect("metrics preserved");
+        assert_eq!(metrics.status, CollabAgentStatus::Running);
+        assert_eq!(metrics.token_total, 1_234);
+        assert_eq!(metrics.last_task_message.as_deref(), Some("task"));
+    }
+
+    #[test]
+    fn remove_and_clear_drop_metrics() {
+        let (mut state, main_thread_id, first_agent_id, _) = populated_state();
+        state.note_token_usage(first_agent_id, 10);
+        state.note_token_usage(main_thread_id, 20);
+
+        state.remove(first_agent_id);
+        assert_eq!(state.metrics(&first_agent_id), None);
+        assert!(state.metrics(&main_thread_id).is_some());
+
+        state.clear();
+        assert_eq!(state.metrics(&main_thread_id), None);
     }
 }

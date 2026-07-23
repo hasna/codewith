@@ -138,6 +138,22 @@ impl App {
             }
             return;
         }
+        // At an empty composer with no overlay/modal, a bare Down or Left arrow opens the agent
+        // picker (the switchable "FleetView" agent list). Up/Right are intentionally left to the
+        // composer for history recall and cursor motion. We only intercept when there is actually
+        // somewhere to switch to (or a new agent can be created) so a stray arrow in a plain
+        // single-agent session never pops the picker or the "enable subagents" prompt.
+        if self.overlay.is_none()
+            && self.chat_widget.no_modal_or_popup_active()
+            && self.chat_widget.composer_text_with_pending().is_empty()
+            && matches!(key_event.kind, KeyEventKind::Press)
+            && key_event.modifiers.is_empty()
+            && matches!(key_event.code, KeyCode::Down | KeyCode::Left)
+            && self.agent_switcher_available()
+        {
+            self.app_event_tx.send(AppEvent::OpenAgentPicker);
+            return;
+        }
         if side_return_shortcut_matches(key_event)
             && self.maybe_return_from_side(tui, app_server).await
         {
@@ -278,6 +294,17 @@ impl App {
 
     fn app_keymap_shortcuts_available(&self) -> bool {
         self.overlay.is_none() && self.chat_widget.no_modal_or_popup_active()
+    }
+
+    /// Whether opening the agent picker from an empty composer would show anything useful: either
+    /// collaboration is enabled (so a new agent can be spawned) or at least one non-primary agent
+    /// thread already exists to switch into. Gating the arrow-open on this mirrors the guard in
+    /// `open_agent_picker` and keeps the picker from surfacing on a plain single-agent session.
+    fn agent_switcher_available(&self) -> bool {
+        self.config.features.enabled(Feature::Collab)
+            || self
+                .agent_navigation
+                .has_non_primary_thread(self.primary_thread_id)
     }
 
     pub(super) fn refresh_status_line(&mut self) {
