@@ -104,7 +104,11 @@ pub fn item_event_to_server_notification(
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let received_status = CollabAgentState::from(end_event.status.clone());
+                    let mut received_status = CollabAgentState::from(end_event.status.clone());
+                    // Carry the authoritative agent path so the client's "Spawned" row renders the
+                    // child's hierarchical tree path (`root/<task>`) instead of a raw thread-id
+                    // prefix, without waiting for the child's separate `ThreadStarted`.
+                    received_status.agent_path = end_event.new_agent_path.clone();
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),

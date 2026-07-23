@@ -4246,6 +4246,12 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional canonical, human-readable agent path assigned to the new agent, for example
+    /// `/root/verify_bcr_statement_emails`. Carried so a client can render the freshly spawned
+    /// child's hierarchical tree path (`root/<task>`) immediately, without waiting for the child's
+    /// separate `ThreadStarted` to land and avoiding a raw thread-id fallback in the "Spawned" row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_path: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,

@@ -1191,7 +1191,13 @@ impl App {
                 let Ok(child_thread_id) = ThreadId::from_string(receiver_thread_id) else {
                     continue;
                 };
-                self.seed_spawned_child_render_metadata(child_thread_id, parent_thread_id);
+                let child_agent_path =
+                    collab_spawn_child_agent_path(notification, receiver_thread_id);
+                self.seed_spawned_child_render_metadata(
+                    child_thread_id,
+                    parent_thread_id,
+                    child_agent_path,
+                );
             }
         }
     }
@@ -1200,18 +1206,32 @@ impl App {
     /// `ChatWidget` render metadata so the "Spawned" row renders a hierarchical tree path instead of
     /// a raw thread id.
     ///
-    /// This deliberately records only the child -> parent edge and rendering metadata; it does not
-    /// call [`Self::upsert_agent_picker_thread`], so a receiver reference never fabricates an
-    /// `/agent` picker row before the child's own `ThreadStarted` confirms it. When that
-    /// `ThreadStarted` later lands it upgrades the resolution to the authoritative agent path and
-    /// nickname.
+    /// This deliberately records only the child -> parent edge, the authoritative agent path, and
+    /// rendering metadata; it does not call [`Self::upsert_agent_picker_thread`], so a receiver
+    /// reference never fabricates an `/agent` picker row before the child's own `ThreadStarted`
+    /// confirms it. When that `ThreadStarted` later lands it upgrades the resolution (adding the
+    /// nickname, which swaps the path leaf for a friendlier label).
+    ///
+    /// `child_agent_path` is the canonical path the spawn notification carries for this child (for
+    /// example `/root/verify_bcr_statement_emails`). Seeding it before computing the tree path is
+    /// what turns the frozen "Spawned" row from a raw `root/<short-id>` into `root/<task>`; without
+    /// it the row would fall back to a short id whenever the child's `ThreadStarted` has not yet been
+    /// processed (the common case during a fan-out).
     fn seed_spawned_child_render_metadata(
         &mut self,
         child_thread_id: ThreadId,
         parent_thread_id: ThreadId,
+        child_agent_path: Option<&str>,
     ) {
         self.agent_navigation
             .set_parent(child_thread_id, parent_thread_id);
+        if let Some(child_agent_path) = child_agent_path
+            .map(str::trim)
+            .filter(|agent_path| !agent_path.is_empty())
+        {
+            self.agent_navigation
+                .set_agent_path(child_thread_id, child_agent_path.to_string());
+        }
         let tree_path = self.agent_tree_path(child_thread_id);
         let existing = self.agent_navigation.get(&child_thread_id);
         let agent_nickname = existing.and_then(|entry| entry.agent_nickname.clone());

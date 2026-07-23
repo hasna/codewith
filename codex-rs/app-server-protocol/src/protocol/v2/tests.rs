@@ -380,6 +380,7 @@ fn collab_agent_state_maps_interrupted_status() {
         CollabAgentState {
             status: CollabAgentStatus::Interrupted,
             message: None,
+            agent_path: None,
         }
     );
 }

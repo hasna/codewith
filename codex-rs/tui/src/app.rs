@@ -332,6 +332,34 @@ fn collab_spawn_lineage(notification: &ServerNotification) -> Option<(&str, &[St
     }
 }
 
+/// Returns the authoritative agent path a **spawn** notification carries for one of its freshly
+/// spawned children, if any.
+///
+/// The spawn end event stamps the child's canonical `AgentPath` onto its per-agent `CollabAgentState`
+/// (`agents_states[child]`). Reading it here lets the TUI seed a hierarchical `root/<task>` tree path
+/// the instant the "Spawned" row is about to render, instead of falling back to a raw thread-id
+/// prefix while the child's own `ThreadStarted` is still in flight.
+fn collab_spawn_child_agent_path<'a>(
+    notification: &'a ServerNotification,
+    child_thread_id: &str,
+) -> Option<&'a str> {
+    let item = match notification {
+        ServerNotification::ItemStarted(notification) => &notification.item,
+        ServerNotification::ItemCompleted(notification) => &notification.item,
+        _ => return None,
+    };
+    match item {
+        ThreadItem::CollabAgentToolCall {
+            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+            agents_states,
+            ..
+        } => agents_states
+            .get(child_thread_id)
+            .and_then(|state| state.agent_path.as_deref()),
+        _ => None,
+    }
+}
+
 fn default_exec_approval_decisions(
     network_approval_context: Option<&codex_app_server_protocol::NetworkApprovalContext>,
     proposed_execpolicy_amendment: Option<&codex_app_server_protocol::ExecPolicyAmendment>,
