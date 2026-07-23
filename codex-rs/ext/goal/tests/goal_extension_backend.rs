@@ -1899,7 +1899,7 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
 }
 
 #[tokio::test]
-async fn one_turn_error_pauses_goal_without_blocking_it() -> anyhow::Result<()> {
+async fn one_turn_error_keeps_goal_active_without_blocking_it() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -1924,7 +1924,7 @@ async fn one_turn_error_pauses_goal_without_blocking_it() -> anyhow::Result<()> 
         .get_thread_goal(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
     assert!(
         pending_interactions_for_kind(
             runtime.as_ref(),
@@ -1972,14 +1972,14 @@ async fn third_consecutive_matching_turn_error_blocks_goal_plan_node() -> anyhow
         .await;
     harness.stop_turn("turn-1").await;
 
-    let paused_goal = runtime
+    let active_goal = runtime
         .thread_goals()
         .get_thread_goal(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(codex_state::ThreadGoalStatus::Paused, paused_goal.status);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, active_goal.status);
 
-    let paused_plan = runtime
+    let active_plan = runtime
         .thread_goals()
         .list_thread_goal_plans(thread_id)
         .await?
@@ -1987,16 +1987,16 @@ async fn third_consecutive_matching_turn_error_blocks_goal_plan_node() -> anyhow
         .next()
         .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
     assert_eq!(
-        codex_state::ThreadGoalPlanStatus::Paused,
-        paused_plan.plan.status
+        codex_state::ThreadGoalPlanStatus::Active,
+        active_plan.plan.status
     );
     assert_eq!(
-        codex_state::ThreadGoalPlanNodeStatus::Paused,
-        paused_plan.nodes[0].status
+        codex_state::ThreadGoalPlanNodeStatus::Active,
+        active_plan.nodes[0].status
     );
     assert_eq!(
         codex_state::ThreadGoalPlanNodeStatus::Pending,
-        paused_plan.nodes[1].status
+        active_plan.nodes[1].status
     );
     assert!(
         pending_interactions_for_kind(
@@ -2006,23 +2006,23 @@ async fn third_consecutive_matching_turn_error_blocks_goal_plan_node() -> anyhow
         )
         .await?
         .is_empty(),
-        "a held goal plan must not be advanced or reported as blocked"
+        "a pre-threshold goal plan must remain active without being reported as blocked"
     );
 
-    resume_goal_in_turn(&harness, "turn-2").await?;
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
     harness
         .notify_turn_error("turn-2", CodexErrorInfo::ContextWindowExceeded)
         .await;
     harness.stop_turn("turn-2").await;
 
-    let paused_goal = runtime
+    let active_goal = runtime
         .thread_goals()
         .get_thread_goal(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(codex_state::ThreadGoalStatus::Paused, paused_goal.status);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, active_goal.status);
 
-    resume_goal_in_turn(&harness, "turn-3").await?;
+    harness.start_turn("turn-3", &TokenUsage::default()).await;
     harness
         .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
         .await;
@@ -2082,7 +2082,7 @@ async fn third_consecutive_matching_turn_error_blocks_goal_plan_node() -> anyhow
         .await?
         .ok_or_else(|| anyhow::anyhow!("resumed goal should exist"))?;
     assert_eq!(
-        codex_state::ThreadGoalStatus::Paused,
+        codex_state::ThreadGoalStatus::Active,
         resumed_goal.status,
         "resuming a blocked goal must start a fresh blocker audit"
     );
@@ -2124,7 +2124,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
                 .await?;
         let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
         harness.resume_thread().await;
-        resume_goal_in_turn(&harness, "turn-1").await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
         harness
             .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
             .await;
@@ -2134,7 +2134,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
             .await?
             .ok_or_else(|| anyhow::anyhow!("goal should exist after replay"))?;
         assert_eq!(
-            codex_state::ThreadGoalStatus::Paused,
+            codex_state::ThreadGoalStatus::Active,
             goal.status,
             "redelivering one host turn after restart must not advance the audit"
         );
@@ -2147,7 +2147,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
                 .await?;
         let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
         harness.resume_thread().await;
-        resume_goal_in_turn(&harness, "turn-2").await?;
+        harness.start_turn("turn-2", &TokenUsage::default()).await;
         harness
             .notify_turn_error("turn-2", CodexErrorInfo::ContextWindowExceeded)
             .await;
@@ -2160,7 +2160,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
                 .await?;
         let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
         harness.resume_thread().await;
-        resume_goal_in_turn(&harness, "turn-1").await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
         harness
             .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
             .await;
@@ -2170,7 +2170,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
             .await?
             .ok_or_else(|| anyhow::anyhow!("goal should exist after delayed replay"))?;
         assert_eq!(
-            codex_state::ThreadGoalStatus::Paused,
+            codex_state::ThreadGoalStatus::Active,
             goal.status,
             "a delayed replay of any already-counted turn must not advance the audit"
         );
@@ -2182,7 +2182,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
             codex_state::StateRuntime::init(codex_home, "test-provider".to_string()).await?;
         let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
         harness.resume_thread().await;
-        resume_goal_in_turn(&harness, "turn-3").await?;
+        harness.start_turn("turn-3", &TokenUsage::default()).await;
         harness
             .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
             .await;
@@ -2202,7 +2202,7 @@ async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> an
 }
 
 #[tokio::test]
-async fn turn_stop_after_error_does_not_clear_audit_if_goal_reactivates() -> anyhow::Result<()> {
+async fn turn_stop_after_error_does_not_clear_active_goal_audit() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -2221,17 +2221,6 @@ async fn turn_stop_after_error_does_not_clear_audit_if_goal_reactivates() -> any
         .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
         .await;
 
-    // Recreate the stale local active-goal marker left by any post-commit
-    // error-handling failure (or by a concurrent explicit resume) before the
-    // core emits its normal turn-stop lifecycle event.
-    tool_by_name(&tools, "resume_goal")
-        .handle(tool_call_for_turn(
-            "turn-1",
-            "resume_goal",
-            "call-resume-before-error-turn-stop",
-            json!({}),
-        ))
-        .await?;
     harness.stop_turn("turn-1").await;
 
     harness.start_turn("turn-2", &TokenUsage::default()).await;
@@ -2240,7 +2229,7 @@ async fn turn_stop_after_error_does_not_clear_audit_if_goal_reactivates() -> any
         .await;
     harness.stop_turn("turn-2").await;
 
-    resume_goal_in_turn(&harness, "turn-3").await?;
+    harness.start_turn("turn-3", &TokenUsage::default()).await;
     harness
         .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
         .await;
@@ -2471,7 +2460,6 @@ async fn different_turn_error_resets_consecutive_blocker_count() -> anyhow::Resu
     harness.stop_turn("turn-1").await;
 
     for turn_id in ["turn-2", "turn-3"] {
-        reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
         harness.start_turn(turn_id, &TokenUsage::default()).await;
         harness
             .notify_turn_error(turn_id, CodexErrorInfo::Other)
@@ -2484,13 +2472,12 @@ async fn different_turn_error_resets_consecutive_blocker_count() -> anyhow::Resu
             .await?
             .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
         assert_eq!(
-            codex_state::ThreadGoalStatus::Paused,
+            codex_state::ThreadGoalStatus::Active,
             goal.status,
             "a changed blocker must restart the three-turn audit"
         );
     }
 
-    reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
     harness.start_turn("turn-4", &TokenUsage::default()).await;
     harness
         .notify_turn_error("turn-4", CodexErrorInfo::Other)
@@ -2532,7 +2519,6 @@ async fn broad_turn_error_variants_use_distinct_stable_fingerprints() -> anyhow:
     harness.stop_turn("turn-1").await;
 
     for turn_id in ["turn-2", "turn-3"] {
-        reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
         harness.start_turn(turn_id, &TokenUsage::default()).await;
         harness
             .notify_turn_error_with_fingerprint(
@@ -2549,13 +2535,12 @@ async fn broad_turn_error_variants_use_distinct_stable_fingerprints() -> anyhow:
             .await?
             .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
         assert_eq!(
-            codex_state::ThreadGoalStatus::Paused,
+            codex_state::ThreadGoalStatus::Active,
             goal.status,
             "unrelated broad error variants must not share blocker turns"
         );
     }
 
-    reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
     harness.start_turn("turn-4", &TokenUsage::default()).await;
     harness
         .notify_turn_error_with_fingerprint(
@@ -2596,7 +2581,6 @@ async fn successful_goal_turn_resets_consecutive_blocker_count() -> anyhow::Resu
         .await;
     harness.stop_turn("turn-1").await;
 
-    reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
     harness.start_turn("turn-2", &TokenUsage::default()).await;
     harness.stop_turn("turn-2").await;
 
@@ -2606,7 +2590,6 @@ async fn successful_goal_turn_resets_consecutive_blocker_count() -> anyhow::Resu
         .await;
     harness.stop_turn("turn-3").await;
 
-    reactivate_goal(runtime.as_ref(), &harness.goal_service, thread_id).await?;
     harness.start_turn("turn-4", &TokenUsage::default()).await;
     harness
         .notify_turn_error("turn-4", CodexErrorInfo::Other)
@@ -2618,7 +2601,7 @@ async fn successful_goal_turn_resets_consecutive_blocker_count() -> anyhow::Resu
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(
-        codex_state::ThreadGoalStatus::Paused,
+        codex_state::ThreadGoalStatus::Active,
         goal.status,
         "a successful intervening goal turn must reset the blocker audit"
     );
@@ -4349,28 +4332,6 @@ async fn resume_goal_in_turn(harness: &GoalExtensionHarness, turn_id: &str) -> a
             json!({}),
         ))
         .await?;
-    Ok(())
-}
-
-async fn reactivate_goal(
-    runtime: &codex_state::StateRuntime,
-    goal_service: &GoalService,
-    thread_id: ThreadId,
-) -> anyhow::Result<()> {
-    let outcome = goal_service
-        .set_thread_goal(
-            runtime,
-            GoalSetRequest {
-                thread_id,
-                objective: GoalObjectiveUpdate::Keep,
-                title: GoalTitleUpdate::Keep,
-                status: Some(ThreadGoalStatus::Active),
-                token_budget: GoalTokenBudgetUpdate::Keep,
-                auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
-            },
-        )
-        .await?;
-    outcome.apply_runtime_effects(goal_service).await;
     Ok(())
 }
 

@@ -5,15 +5,17 @@ use uuid::Uuid;
 
 pub const MAX_THREAD_SCHEDULE_NESTING_DEPTH: i64 = 5;
 const DYNAMIC_LOOP_CADENCE_SECONDS: i64 = 60;
+const ONCE_SCHEDULE_KIND: &str = "once";
 
 #[derive(Clone)]
 pub struct ScheduleStore {
     pool: Arc<SqlitePool>,
+    goals_pool: Arc<SqlitePool>,
 }
 
 impl ScheduleStore {
-    pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+    pub(crate) fn new(pool: Arc<SqlitePool>, goals_pool: Arc<SqlitePool>) -> Self {
+        Self { pool, goals_pool }
     }
 }
 
@@ -949,6 +951,30 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             next_run_at,
+            /*expected_goal_id*/ None,
+            FinishScheduleRun::Completed {
+                pause_schedule: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn complete_thread_schedule_run_for_goal(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        next_run_at: Option<DateTime<Utc>>,
+        expected_goal_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.finish_thread_schedule_run(
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            next_run_at,
+            Some(expected_goal_id),
             FinishScheduleRun::Completed {
                 pause_schedule: false,
             },
@@ -969,6 +995,7 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             /*next_run_at*/ None,
+            /*expected_goal_id*/ None,
             FinishScheduleRun::Completed {
                 pause_schedule: true,
             },
@@ -991,6 +1018,32 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             next_run_at,
+            /*expected_goal_id*/ None,
+            FinishScheduleRun::Failed {
+                error,
+                pause_schedule: false,
+            },
+        )
+        .await
+    }
+
+    pub async fn fail_thread_schedule_run_for_goal(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        next_run_at: Option<DateTime<Utc>>,
+        error: String,
+        expected_goal_id: &str,
+    ) -> anyhow::Result<bool> {
+        self.finish_thread_schedule_run(
+            schedule_id,
+            run_id,
+            lease_id,
+            completed_at,
+            next_run_at,
+            Some(expected_goal_id),
             FinishScheduleRun::Failed {
                 error,
                 pause_schedule: false,
@@ -1013,6 +1066,7 @@ WHERE schedule_id = ? AND lease_id = ?
             lease_id,
             completed_at,
             /*next_run_at*/ None,
+            /*expected_goal_id*/ None,
             FinishScheduleRun::Failed {
                 error,
                 pause_schedule: true,
@@ -1122,15 +1176,84 @@ WHERE status = 'active'
         lease_id: &str,
         completed_at: DateTime<Utc>,
         next_run_at: Option<DateTime<Utc>>,
+        expected_goal_id: Option<&str>,
+        finish: FinishScheduleRun,
+    ) -> anyhow::Result<bool> {
+        crate::busy_retry::retry_on_busy("finish thread schedule run", || {
+            self.finish_thread_schedule_run_once(
+                schedule_id,
+                run_id,
+                lease_id,
+                completed_at,
+                next_run_at,
+                expected_goal_id,
+                finish.clone(),
+            )
+        })
+        .await
+    }
+
+    async fn finish_thread_schedule_run_once(
+        &self,
+        schedule_id: &str,
+        run_id: &str,
+        lease_id: &str,
+        completed_at: DateTime<Utc>,
+        next_run_at: Option<DateTime<Utc>>,
+        expected_goal_id: Option<&str>,
         finish: FinishScheduleRun,
     ) -> anyhow::Result<bool> {
         let completed_at_ms = datetime_to_epoch_millis(completed_at);
         let next_run_at_ms = next_run_at.map(datetime_to_epoch_millis);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let schedule_context: Option<(String, String)> = sqlx::query_as(
+            r#"
+SELECT thread_id, schedule_kind
+FROM thread_schedules
+WHERE schedule_id = ? AND lease_id = ?
+            "#,
+        )
+        .bind(schedule_id)
+        .bind(lease_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((thread_id, schedule_kind)) = schedule_context else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        let goal_hold_can_pause = expected_goal_id.is_some() && schedule_kind != ONCE_SCHEDULE_KIND;
+        let mut goal_tx = if goal_hold_can_pause {
+            Some(self.goals_pool.begin_with("BEGIN IMMEDIATE").await?)
+        } else {
+            None
+        };
+        let pause_for_goal_hold = match (expected_goal_id, goal_hold_can_pause, goal_tx.as_mut()) {
+            (Some(expected_goal_id), true, Some(goal_tx)) => {
+                sqlx::query_scalar::<_, bool>(
+                    r#"
+SELECT EXISTS(
+    SELECT 1
+    FROM thread_goals
+    WHERE thread_id = ?
+      AND goal_id = ?
+      AND status IN ('paused', 'blocked', 'usage_limited', 'budget_limited')
+)
+                    "#,
+                )
+                .bind(thread_id)
+                .bind(expected_goal_id)
+                .fetch_one(&mut **goal_tx)
+                .await?
+            }
+            (Some(_), false, None) | (None, false, None) => false,
+            _ => unreachable!("goal transaction presence follows recurring goal schedule"),
+        };
         let failed = matches!(finish, FinishScheduleRun::Failed { .. });
         let pause_schedule = match &finish {
             FinishScheduleRun::Completed { pause_schedule }
-            | FinishScheduleRun::Failed { pause_schedule, .. } => *pause_schedule,
+            | FinishScheduleRun::Failed { pause_schedule, .. } => {
+                *pause_schedule || pause_for_goal_hold
+            }
         };
         let schedule_result = sqlx::query(
             r#"
@@ -1175,6 +1298,9 @@ WHERE schedule_id = ? AND lease_id = ?
         .await?;
         if schedule_result.rows_affected() == 0 {
             tx.commit().await?;
+            if let Some(goal_tx) = goal_tx {
+                let _ = goal_tx.rollback().await;
+            }
             return Ok(false);
         }
         let (status, error) = match &finish {
@@ -1203,13 +1329,20 @@ WHERE schedule_id = ? AND run_id = ? AND lease_id = ?
         .await?;
         if run_result.rows_affected() == 0 {
             tx.rollback().await?;
+            if let Some(goal_tx) = goal_tx {
+                let _ = goal_tx.rollback().await;
+            }
             return Ok(false);
         }
         tx.commit().await?;
+        if let Some(goal_tx) = goal_tx {
+            let _ = goal_tx.rollback().await;
+        }
         Ok(true)
     }
 }
 
+#[derive(Clone)]
 enum FinishScheduleRun {
     Completed { pause_schedule: bool },
     Failed { error: String, pause_schedule: bool },
@@ -1225,7 +1358,7 @@ struct ScheduleBindings<'a> {
 fn schedule_bindings(schedule: &crate::ThreadScheduleSpec) -> ScheduleBindings<'_> {
     match schedule {
         crate::ThreadScheduleSpec::Once => ScheduleBindings {
-            kind: "once",
+            kind: ONCE_SCHEDULE_KIND,
             interval_amount: None,
             interval_unit: None,
             cron_expression: None,
@@ -2648,6 +2781,242 @@ mod tests {
                 .is_none(),
             "a held schedule must not become claimable again"
         );
+    }
+
+    #[tokio::test]
+    async fn goal_correlated_completion_ignores_replacement_with_same_objective() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 41);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let next_run_at = now + chrono::Duration::minutes(5);
+        let objective = "repeat the same objective";
+        let original_goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                objective,
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("original goal should be created");
+        let schedule = create_interval_schedule(&runtime, thread_id, objective, Some(now)).await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-original-goal", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+        let replacement_goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                objective,
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("replacement goal should be created");
+        assert_ne!(original_goal.goal_id, replacement_goal.goal_id);
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run_for_goal(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-original-goal",
+                    now + chrono::Duration::seconds(5),
+                    Some(next_run_at),
+                    original_goal.goal_id.as_str(),
+                )
+                .await
+                .expect("run should complete")
+        );
+
+        let completed = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Active, completed.status);
+        assert_eq!(Some(next_run_at), completed.next_run_at);
+        assert_eq!(None, completed.lease_id);
+    }
+
+    #[tokio::test]
+    async fn goal_correlated_once_completion_expires_instead_of_pausing() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 43);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "finish once while held",
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should be created");
+        let schedule = runtime
+            .thread_schedules()
+            .create_thread_schedule(ThreadScheduleCreateParams {
+                thread_id,
+                prompt: "finish once while held".to_string(),
+                prompt_source: crate::ThreadSchedulePromptSource::Inline,
+                schedule: crate::ThreadScheduleSpec::Once,
+                timezone: "UTC".to_string(),
+                status: crate::ThreadScheduleStatus::Active,
+                next_run_at: Some(now),
+                expires_at: None,
+            })
+            .await
+            .expect("one-time schedule should be created");
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-once", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+
+        assert!(
+            runtime
+                .thread_schedules()
+                .complete_thread_schedule_run_for_goal(
+                    &schedule.schedule_id,
+                    &claim.run.run_id,
+                    "lease-once",
+                    now + chrono::Duration::seconds(5),
+                    /*next_run_at*/ None,
+                    goal.goal_id.as_str(),
+                )
+                .await
+                .expect("run should complete")
+        );
+
+        let completed = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Expired, completed.status);
+        assert_eq!(None, completed.next_run_at);
+        assert_eq!(None, completed.lease_id);
+    }
+
+    #[tokio::test]
+    async fn concurrent_goal_correlated_finalizers_complete_exactly_once() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = test_thread_id(/*id*/ 42);
+        upsert_test_thread(runtime.as_ref(), thread_id).await;
+        let now = at(/*seconds*/ 1_700_000_000);
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "pause once under contention",
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should be created");
+        let schedule = create_interval_schedule(
+            runtime.as_ref(),
+            thread_id,
+            "pause once under contention",
+            Some(now),
+        )
+        .await;
+        let claim = runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "lease-contended", Duration::from_secs(300))
+            .await
+            .expect("claim should succeed")
+            .expect("schedule should claim");
+
+        let contender_state_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(codex_home.join(crate::STATE_DB_FILENAME))
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_millis(1)),
+            )
+            .await
+            .expect("contending state pool should open");
+        let contender_goals_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(codex_home.join(crate::GOALS_DB_FILENAME))
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_millis(1)),
+            )
+            .await
+            .expect("contending goals pool should open");
+        let contender = ScheduleStore::new(
+            Arc::new(contender_state_pool),
+            Arc::new(contender_goals_pool),
+        );
+        let completed_at = now + chrono::Duration::seconds(5);
+        let next_run_at = Some(now + chrono::Duration::minutes(5));
+        let primary_completion = runtime
+            .thread_schedules()
+            .complete_thread_schedule_run_for_goal(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-contended",
+                completed_at,
+                next_run_at,
+                goal.goal_id.as_str(),
+            );
+        let contender_completion = contender.complete_thread_schedule_run_for_goal(
+            &schedule.schedule_id,
+            &claim.run.run_id,
+            "lease-contended",
+            completed_at,
+            next_run_at,
+            goal.goal_id.as_str(),
+        );
+        let (primary_result, contender_result) =
+            tokio::join!(primary_completion, contender_completion);
+        let completions = [
+            primary_result.expect("primary finalizer should succeed"),
+            contender_result.expect("contending finalizer should succeed"),
+        ];
+        assert_eq!(
+            1,
+            completions
+                .into_iter()
+                .filter(|completed| *completed)
+                .count(),
+            "the schedule lease must let exactly one finalizer commit"
+        );
+
+        let held_schedule = runtime
+            .thread_schedules()
+            .get_thread_schedule(&schedule.schedule_id)
+            .await
+            .expect("schedule should load")
+            .expect("schedule should exist");
+        assert_eq!(crate::ThreadScheduleStatus::Paused, held_schedule.status);
+        assert_eq!(None, held_schedule.next_run_at);
+        assert_eq!(None, held_schedule.lease_id);
+        let run = runtime
+            .thread_schedules()
+            .get_thread_schedule_run(&claim.run.run_id)
+            .await
+            .expect("run should load")
+            .expect("run should exist");
+        assert_eq!(crate::ThreadScheduleRunStatus::Completed, run.status);
     }
 
     #[tokio::test]
