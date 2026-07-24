@@ -381,10 +381,32 @@ impl ChatWidget {
             return;
         }
 
+        if matches!(
+            key_path,
+            "usage_self_heal.retry_errors" | "usage_self_heal.switch_model_errors"
+        ) {
+            let Ok(error_classes) = serde_json::from_value(value.clone()) else {
+                return;
+            };
+            match key_path {
+                "usage_self_heal.retry_errors" => {
+                    self.config.usage_self_heal.retry_errors = error_classes;
+                }
+                "usage_self_heal.switch_model_errors" => {
+                    self.config.usage_self_heal.switch_model_errors = error_classes;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let Some(enabled) = value.as_bool() else {
             return;
         };
         match key_path {
+            "usage_self_heal.enabled" => {
+                self.config.usage_self_heal.enabled = enabled;
+            }
             "auth_profile_auto_switch.enabled" => {
                 self.config.auth_profile_auto_switch.enabled = enabled;
             }

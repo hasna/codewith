@@ -259,6 +259,21 @@ pub struct UsageSelfHealToml {
 
     /// Longest reset-based delay, in seconds, that Codewith will schedule automatically.
     pub max_reset_retry_delay_secs: Option<u64>,
+
+    /// Error classes that Codewith retries on the current model.
+    pub retry_errors: Option<Vec<UsageSelfHealErrorClass>>,
+
+    /// Error classes that Codewith handles by trying another compatible model before retrying.
+    pub switch_model_errors: Option<Vec<UsageSelfHealErrorClass>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSelfHealErrorClass {
+    /// The active account or workspace has exhausted an applicable usage limit.
+    UsageLimit,
+    /// The selected model is temporarily at capacity.
+    ModelCapacity,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]

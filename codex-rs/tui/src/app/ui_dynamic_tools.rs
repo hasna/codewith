@@ -648,7 +648,12 @@ mod tests {
 
         assert_eq!(
             ids,
-            vec!["account-automation", "ai-context", "interface-privacy"]
+            vec![
+                "account-automation",
+                "self-healing",
+                "ai-context",
+                "interface-privacy"
+            ]
         );
     }
 

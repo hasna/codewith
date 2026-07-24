@@ -7,11 +7,13 @@ expression: popup
 
 › 1. Account & automation    Auth failover, usage resets, recaps, and update policy. 7
                              settings.
-  2. AI context              What Codewith shows the model. 5 settings.
-  3. Interface & privacy     Composer, transcript, privacy, and TUI behavior. 8
+  2. Self-healing            Automatic recovery from usage and model availability
+                             errors. 4 settings.
+  3. AI context              What Codewith shows the model. 5 settings.
+  4. Interface & privacy     Composer, transcript, privacy, and TUI behavior. 8
                              settings.
-  4. Agent subagent threads  Max concurrent subagent threads per agent run (currently
+  5. Agent subagent threads  Max concurrent subagent threads per agent run (currently
                              the built-in default).
-  5. Goal objective limit    Max characters echoed per goal objective (now 4000).
+  6. Goal objective limit    Max characters echoed per goal objective (now 4000).
 
   Press enter to open; esc to close

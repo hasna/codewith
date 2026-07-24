@@ -4638,6 +4638,20 @@
       },
       "type": "object"
     },
+    "UsageSelfHealErrorClass": {
+      "oneOf": [
+        {
+          "const": "usage_limit",
+          "description": "The active account or workspace has exhausted an applicable usage limit.",
+          "type": "string"
+        },
+        {
+          "const": "model_capacity",
+          "description": "The selected model is temporarily at capacity.",
+          "type": "string"
+        }
+      ]
+    },
     "UsageSelfHealToml": {
       "additionalProperties": false,
       "properties": {
@@ -4674,6 +4688,20 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "retry_errors": {
+          "description": "Error classes that Codewith retries on the current model.",
+          "items": {
+            "$ref": "#/definitions/UsageSelfHealErrorClass"
+          },
+          "type": "array"
+        },
+        "switch_model_errors": {
+          "description": "Error classes that Codewith handles by trying another compatible model before retrying.",
+          "items": {
+            "$ref": "#/definitions/UsageSelfHealErrorClass"
+          },
+          "type": "array"
         }
       },
       "type": "object"

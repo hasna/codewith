@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: self_healing_popup
+---
+  Config: Self-healing
+  Automatic recovery from usage and model availability errors.
+
+  Search Self-healing settings
+› [ ] Automatic recovery        Retry selected recoverable errors automatically.
+  [*] Retry usage limits        Retry after the usage limit reset time when available.
+  [*] Retry model capacity      Retry the current model when it is temporarily at
+                                capacity.
+  [ ] Switch model on capacity  Try another compatible model before retrying a capacity
+                                error.
+  Back to sections              Return to the config section menu.
+
+  Press space to toggle; esc to close

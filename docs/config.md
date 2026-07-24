@@ -106,14 +106,22 @@ auto_reset_enabled = false
 
 Automatic retry for recoverable usage-limit and transient availability errors.
 
-| Key                          | Default | Behavior                                                                                             |
-| ---------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `enabled`                    | `false` | Enables automatic retry for recoverable usage and transient availability errors.                     |
-| `max_retries`                | `3`     | Maximum automatic retry attempts per failing turn.                                                   |
-| `initial_backoff_secs`       | `30`    | Initial retry delay for transient errors, or usage errors without reset metadata (minimum 1 second). |
-| `max_backoff_secs`           | `300`   | Ceiling for exponential backoff (5 minutes); never drops below the initial backoff.                  |
-| `reset_retry_buffer_secs`    | `60`    | Extra seconds to wait after a usage-limit reset timestamp before retrying.                           |
-| `max_reset_retry_delay_secs` | `86400` | Longest reset-based delay Codewith schedules automatically (24 hours).                               |
+| Key                          | Default                             | Behavior                                                                                             |
+| ---------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`                    | `false`                             | Enables automatic retry for recoverable usage and transient availability errors.                     |
+| `max_retries`                | `3`                                 | Maximum automatic retry attempts per failing turn.                                                   |
+| `initial_backoff_secs`       | `30`                                | Initial retry delay for transient errors, or usage errors without reset metadata (minimum 1 second). |
+| `max_backoff_secs`           | `300`                               | Ceiling for exponential backoff (5 minutes); never drops below the initial backoff.                  |
+| `reset_retry_buffer_secs`    | `60`                                | Extra seconds to wait after a usage-limit reset timestamp before retrying.                           |
+| `max_reset_retry_delay_secs` | `86400`                             | Longest reset-based delay Codewith schedules automatically (24 hours).                               |
+| `retry_errors`               | `["usage_limit", "model_capacity"]` | Error classes retried on the current model.                                                          |
+| `switch_model_errors`        | `[]`                                | Error classes that first try another compatible model before retrying.                               |
+
+Supported error classes are `usage_limit` (the account or workspace exhausted an
+applicable usage limit) and `model_capacity` (the selected model is temporarily at
+capacity). An error class that appears in neither list is never retried
+automatically. A model switch applies to the current session only; it is not
+persisted to `config.toml`.
 
 ```toml
 [usage_self_heal]
@@ -123,6 +131,8 @@ initial_backoff_secs = 30
 max_backoff_secs = 300
 reset_retry_buffer_secs = 60
 max_reset_retry_delay_secs = 86400
+retry_errors = ["usage_limit", "model_capacity"]
+switch_model_errors = []
 ```
 
 ### `[keep_going]`

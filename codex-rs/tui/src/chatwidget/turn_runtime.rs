@@ -363,7 +363,7 @@ impl ChatWidget {
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         let retry_delay = self.maybe_schedule_usage_self_heal_retry(
-            UsageSelfHealErrorKind::TransientAvailability,
+            UsageSelfHealErrorKind::ModelCapacity,
             /*error_message*/ None,
         );
         self.finalize_turn();

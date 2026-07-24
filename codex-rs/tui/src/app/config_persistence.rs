@@ -5,6 +5,7 @@
 //! loop.
 
 use super::*;
+use crate::common_config_options::resolve_error_class_toggle;
 #[cfg(target_os = "windows")]
 use codex_utils_approval_presets::ApprovalPreset;
 
@@ -441,6 +442,18 @@ impl App {
         } else {
             value
         };
+        // Error-class toggles carry a membership delta so that two options that
+        // share one list `key_path` cannot clobber each other; resolve it here,
+        // against the live config, right before the value is written.
+        let value = match key_path.as_str() {
+            "usage_self_heal.retry_errors" => {
+                resolve_error_class_toggle(&self.config.usage_self_heal.retry_errors, value)?
+            }
+            "usage_self_heal.switch_model_errors" => {
+                resolve_error_class_toggle(&self.config.usage_self_heal.switch_model_errors, value)?
+            }
+            _ => value,
+        };
         let write_response = crate::config_update::write_config_batch(
             app_server.request_handle(),
             vec![crate::config_update::replace_config_value(
@@ -483,8 +496,31 @@ impl App {
             return Ok(());
         }
 
+        if matches!(
+            key_path.as_str(),
+            "usage_self_heal.retry_errors" | "usage_self_heal.switch_model_errors"
+        ) {
+            let error_classes = serde_json::from_value(value.clone())
+                .map_err(|err| format!("Failed to apply {label}: {err}"))?;
+            match key_path.as_str() {
+                "usage_self_heal.retry_errors" => {
+                    self.config.usage_self_heal.retry_errors = error_classes;
+                }
+                "usage_self_heal.switch_model_errors" => {
+                    self.config.usage_self_heal.switch_model_errors = error_classes;
+                }
+                _ => {}
+            }
+            self.chat_widget.apply_config_popup_value(&key_path, &value);
+            self.refresh_status_line();
+            return Ok(());
+        }
+
         if let Some(enabled) = value.as_bool() {
             match key_path.as_str() {
+                "usage_self_heal.enabled" => {
+                    self.config.usage_self_heal.enabled = enabled;
+                }
                 "auth_profile_auto_switch.enabled" => {
                     self.config.auth_profile_auto_switch.enabled = enabled;
                 }
