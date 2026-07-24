@@ -134,14 +134,13 @@ fn serialize_environment_context_with_xml_safe_session() {
         /*subagents*/ None,
     );
     context.session = SessionContext::new(
-        Some("session-<&\"'>".to_string()),
         Some("profile-<&\"'>".to_string()),
         Some("tmux-<&\"'>".to_string()),
         Some("window-<&\"'>".to_string()),
     );
 
     let expected = r#"<environment_context>
-  <session><id>session-&lt;&amp;&quot;&apos;&gt;</id><profile_id>profile-&lt;&amp;&quot;&apos;&gt;</profile_id><tmux_session>tmux-&lt;&amp;&quot;&apos;&gt;</tmux_session><tmux_window>window-&lt;&amp;&quot;&apos;&gt;</tmux_window></session>
+  <session><profile_id>profile-&lt;&amp;&quot;&apos;&gt;</profile_id><tmux_session>tmux-&lt;&amp;&quot;&apos;&gt;</tmux_session><tmux_window>window-&lt;&amp;&quot;&apos;&gt;</tmux_window></session>
 </environment_context>"#;
 
     assert_eq!(context.render(), expected);
@@ -264,9 +263,13 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
     );
     assert!(
         context.contains(
-            "<session><id>67e55044-10b1-426f-9247-bb680e5fe0c8</id><profile_id>workspace</profile_id><tmux_session>codewith</tmux_session><tmux_window>implementation</tmux_window></session>"
+            "<session><profile_id>workspace</profile_id><tmux_session>codewith</tmux_session><tmux_window>implementation</tmux_window></session>"
         ),
         "{context}"
+    );
+    assert!(
+        !context.contains("67e55044-10b1-426f-9247-bb680e5fe0c8"),
+        "session id must stay out of the model-visible context: {context}"
     );
     assert!(
         context.contains(&format!(
@@ -402,7 +405,6 @@ fn equals_except_shell_detects_tmux_window_rename() {
         /*subagents*/ None,
     );
     before.session = SessionContext::new(
-        Some("session-id".to_string()),
         Some("workspace".to_string()),
         Some("codewith".to_string()),
         Some("before".to_string()),
@@ -411,6 +413,51 @@ fn equals_except_shell_detects_tmux_window_rename() {
     after.session.as_mut().expect("session context").tmux_window = Some("after".to_string());
 
     assert!(!before.equals_except_shell(&after));
+}
+
+#[test]
+fn turn_context_item_session_id_alone_is_not_model_visible() {
+    let item = TurnContextItem {
+        thread_id: None,
+        turn_id: None,
+        session_id: Some(
+            SessionId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")
+                .expect("valid session id"),
+        ),
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
+        cwd: test_path_buf("/workspace"),
+        workspace_roots: None,
+        current_date: None,
+        timezone: None,
+        machine_id: None,
+        machine_name: None,
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        permission_profile: None,
+        network: None,
+        file_system_sandbox_policy: None,
+        model: "gpt-5".to_string(),
+        model_provider_id: None,
+        personality: None,
+        collaboration_mode: None,
+        session_prompt: None,
+        worktree_mode: codex_protocol::protocol::SessionWorktreeMode::Manual,
+        multi_agent_version: None,
+        auth_profile: None,
+        realtime_active: None,
+        effort: None,
+        summary: codex_protocol::config_types::ReasoningSummary::Auto,
+    };
+
+    let context = EnvironmentContext::from_turn_context_item(&item, fake_shell_name()).render();
+
+    assert!(!context.contains("<session>"), "{context}");
+    assert!(
+        !context.contains("67e55044-10b1-426f-9247-bb680e5fe0c8"),
+        "{context}"
+    );
 }
 
 #[test]

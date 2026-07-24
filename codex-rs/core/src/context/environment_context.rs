@@ -124,9 +124,15 @@ impl MachineContext {
     }
 }
 
+/// Model-visible slice of the session environment.
+///
+/// The runtime session id is deliberately *not* part of this struct: it is
+/// persisted on [`TurnContextItem`] for resume/fork bookkeeping, but rendering
+/// it would make the model-visible context differ between two otherwise
+/// identical sessions and would re-inject a full environment update on every
+/// resume/fork purely because a fresh id was minted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionContext {
-    id: Option<String>,
     profile_id: Option<String>,
     tmux_session: Option<String>,
     tmux_window: Option<String>,
@@ -134,16 +140,14 @@ pub(crate) struct SessionContext {
 
 impl SessionContext {
     fn new(
-        id: Option<String>,
         profile_id: Option<String>,
         tmux_session: Option<String>,
         tmux_window: Option<String>,
     ) -> Option<Self> {
-        if id.is_none() && profile_id.is_none() && tmux_session.is_none() && tmux_window.is_none() {
+        if profile_id.is_none() && tmux_session.is_none() && tmux_window.is_none() {
             return None;
         }
         Some(Self {
-            id,
             profile_id,
             tmux_session,
             tmux_window,
@@ -152,9 +156,6 @@ impl SessionContext {
 
     fn render(&self) -> String {
         let mut rendered = "<session>".to_string();
-        if let Some(id) = &self.id {
-            push_text_element(&mut rendered, "id", id);
-        }
         if let Some(profile_id) = &self.profile_id {
             push_text_element(&mut rendered, "profile_id", profile_id);
         }
@@ -536,7 +537,6 @@ impl EnvironmentContext {
             turn_context.machine_name.clone(),
         );
         context.session = SessionContext::new(
-            Some(turn_context.session_id.to_string()),
             turn_context.profile_id.clone(),
             turn_context.tmux_session.clone(),
             turn_context.tmux_window.clone(),
@@ -622,7 +622,6 @@ impl EnvironmentContext {
         turn_context_item: &TurnContextItem,
     ) -> Option<SessionContext> {
         SessionContext::new(
-            turn_context_item.session_id.map(|id| id.to_string()),
             turn_context_item.profile_id.clone(),
             turn_context_item.tmux_session.clone(),
             turn_context_item.tmux_window.clone(),
