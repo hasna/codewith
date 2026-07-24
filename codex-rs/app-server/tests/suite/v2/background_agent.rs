@@ -432,7 +432,7 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
             .execution_snapshot
             .payload
             .get("authProfileIdentitySha256"),
-        Some(&Value::Null)
+        Some(&JsonValue::Null)
     );
     assert_eq!(
         start.execution_snapshot.payload.get("approvalPolicy"),
