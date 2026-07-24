@@ -82,9 +82,12 @@ jobs:
         working-directory: codex-rs
         run: |
           . "$HOME/.codewith-testbox-env"
-          rustup show active-toolchain
+          # Go through the rustup proxies first: they materialise the toolchain named by
+          # codex-rs/rust-toolchain.toml (rustup >= 1.28 no longer installs it from
+          # `rustup show`). This is the same path rust-ci.yml relies on.
           rustc --version
           cargo --version
+          rustup show active-toolchain
           just --version
           cargo nextest --version
 
