@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::daemon::BackgroundAgentDaemon;
 use codex_background_agent::daemon::BackgroundAgentDaemonPaths;
@@ -1024,13 +1025,11 @@ async fn start_agent(
             "provider": runtime_context.and_then(|context| context.provider.as_deref()),
             "serviceTier": runtime_context
                 .and_then(|context| context.service_tier.as_deref()),
+            "authProfileRef": auth_profile_ref.as_deref(),
+            "managedWorktreeId": null,
             "configFingerprint": config_fingerprint.as_str(),
             "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
-            "packageFingerprint": format!(
-                "{}:{}",
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION")
-            ),
+            "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
             "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
         }),
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),

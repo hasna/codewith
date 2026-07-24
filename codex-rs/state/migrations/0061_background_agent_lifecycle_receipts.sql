@@ -7,6 +7,28 @@ ALTER TABLE background_agent_runs
 ALTER TABLE background_agent_events
     ADD COLUMN receipt_key TEXT;
 
+-- Runs admitted before lifecycle receipts existed cannot prove a complete,
+-- replayable admission. Fail them closed during the upgrade instead of
+-- leaving them permanently active but unclaimable.
+UPDATE background_agent_runs
+SET
+    desired_state = 'stopped',
+    status = 'failed',
+    status_reason = 'background agent admission predates durable lifecycle receipts',
+    updated_at = unixepoch(),
+    completed_at = COALESCE(completed_at, unixepoch())
+WHERE
+    admission_ready_at IS NULL
+    AND status IN (
+        'queued',
+        'starting',
+        'running',
+        'waiting_on_approval',
+        'waiting_on_user',
+        'stopping',
+        'orphaned'
+    );
+
 CREATE UNIQUE INDEX idx_background_agent_events_receipt_key
     ON background_agent_events(run_id, receipt_key)
     WHERE receipt_key IS NOT NULL;

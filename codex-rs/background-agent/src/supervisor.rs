@@ -232,6 +232,7 @@ where
                 self.config.supervisor_id.as_str(),
                 process_lease_id.as_str(),
                 crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                crate::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
             )
             .await?
         else {
@@ -792,9 +793,9 @@ mod tests {
     }
 
     async fn create_run(runtime: &StateRuntime, id: &str) -> anyhow::Result<BackgroundAgentRun> {
-        let (run, _, _, _, _) = runtime
-            .admit_background_agent_run(
-                &BackgroundAgentRunCreateParams {
+        runtime
+            .admit_run(
+                BackgroundAgentRunCreateParams {
                     id: id.to_string(),
                     idempotency_key: None,
                     request_id: None,
@@ -822,13 +823,16 @@ mod tests {
                 &BackgroundAgentExecutionSnapshotParams {
                     run_id: id.to_string(),
                     snapshot_kind: "initial_execution_context".to_string(),
-                    payload_json: json!({"cwd": "/tmp"}),
+                    payload_json: json!({
+                        "cwd": "/tmp",
+                        "packageFingerprint":
+                            crate::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                    }),
                     recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
                     config_fingerprint: None,
                 },
                 /*max_active_runs*/ 8,
             )
-            .await?;
-        Ok(run)
+            .await
     }
 }

@@ -51,15 +51,18 @@ use codex_app_server_protocol::WorktreeReconcileResponse;
 use codex_app_server_protocol::WorktreeReleaseParams;
 use codex_app_server_protocol::WorktreeReleaseResponse;
 use codex_app_server_protocol::WorktreeSessionMode;
+use codex_backend_client::Client as BackendClient;
 use codex_background_agent::AgentEventJournal;
 use codex_background_agent::AgentRunStore;
 use codex_background_agent::AgentSnapshotStore;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionHandleParams;
+use codex_background_agent::BackgroundAgentExecutionSnapshot;
 use codex_background_agent::BackgroundAgentExecutionSnapshotParams;
 use codex_background_agent::BackgroundAgentPendingInteraction;
 use codex_background_agent::BackgroundAgentPendingInteractionCreateParams;
@@ -98,6 +101,7 @@ use codex_git_utils::worktree_has_commits_after;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
@@ -369,7 +373,12 @@ impl ThreadRequestProcessor {
         }
         let response = self
             .background_agent_state_processor()
-            .agent_start_inner(params)
+            .agent_start_inner(
+                params,
+                managed_worktree
+                    .as_ref()
+                    .map(|worktree| worktree.worktree_id.as_str()),
+            )
             .await?;
         if let Some(worktree) = managed_worktree.as_ref() {
             let snapshot_cwd_matches = response
@@ -1875,6 +1884,7 @@ async fn reconcile_background_agents(
             .background_agent_admission_is_ready(
                 run.id.as_str(),
                 BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
             )
             .await?
         {
@@ -1970,6 +1980,7 @@ async fn reconcile_background_agent_worker_processes(
             .background_agent_admission_is_ready(
                 run.id.as_str(),
                 BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
             )
             .await?
         {
@@ -2914,6 +2925,7 @@ async fn run_background_agent_worker(
                 context.supervisor_id.as_str(),
                 process_lease_id.as_str(),
                 BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
             )
     })
     .await?
@@ -2922,11 +2934,23 @@ async fn run_background_agent_worker(
         return Ok(());
     };
 
-    let BackgroundAgentConfigResolution::Ready {
-        config,
-        initial_execution_payload,
-    } = resolve_background_agent_config(&context, &run).await?;
-    let config = *config;
+    let (config, initial_execution_payload) =
+        match resolve_background_agent_config(&context, &run).await? {
+            BackgroundAgentConfigResolution::Ready {
+                config,
+                initial_execution_payload,
+            } => (*config, initial_execution_payload),
+            BackgroundAgentConfigResolution::UsageProfileWait { retry_at } => {
+                defer_background_agent_for_usage_profile_wait(
+                    &context,
+                    run.id.as_str(),
+                    generation,
+                    retry_at,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
 
     let pid_value = i64::from(std::process::id());
     let pid = Some(pid_value);
@@ -3126,6 +3150,7 @@ async fn run_background_agent_worker(
                     &context,
                     run.id.as_str(),
                     generation,
+                    run.auth_profile_ref.as_deref(),
                     thread.clone(),
                     event.msg,
                     &cancel_token,
@@ -3179,6 +3204,9 @@ enum BackgroundAgentConfigResolution {
         config: Box<codex_core::config::Config>,
         initial_execution_payload: Option<Value>,
     },
+    UsageProfileWait {
+        retry_at: DateTime<Utc>,
+    },
 }
 
 async fn resolve_background_agent_config(
@@ -3199,8 +3227,17 @@ async fn resolve_background_agent_config(
                 "background agent admission is missing its initial execution context snapshot"
             )
         })?;
+    validate_background_agent_initial_execution_snapshot(run, &snapshot)?;
     let initial_execution_payload = Some(snapshot.payload_json.clone());
     let payload = snapshot.payload_json.as_object();
+    let package_fingerprint = payload
+        .and_then(|payload| payload.get("packageFingerprint"))
+        .and_then(Value::as_str);
+    if package_fingerprint != Some(BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT) {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted background agent runtime package is incompatible"
+        );
+    }
     let cwd = payload
         .and_then(|payload| payload.get("cwd"))
         .and_then(Value::as_str)
@@ -3315,12 +3352,116 @@ async fn resolve_background_agent_config(
             "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: loaded worker auth profile does not match the admitted run"
         );
     }
+    if let Some(retry_at) =
+        background_agent_exact_profile_retry_at(context, &config, run.auth_profile_ref.as_deref())
+            .await
+    {
+        return Ok(BackgroundAgentConfigResolution::UsageProfileWait { retry_at });
+    }
     config.auth_profile_auto_switch.enabled = false;
     config.usage_self_heal.enabled = false;
     Ok(BackgroundAgentConfigResolution::Ready {
         config: Box::new(config),
         initial_execution_payload,
     })
+}
+
+fn validate_background_agent_initial_execution_snapshot(
+    run: &BackgroundAgentRun,
+    snapshot: &BackgroundAgentExecutionSnapshot,
+) -> anyhow::Result<()> {
+    let payload = snapshot.payload_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot must be an object"
+        )
+    })?;
+    let required = |key: &str| {
+        payload.get(key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot is missing {key}"
+            )
+        })
+    };
+    let required_string = |key: &str| -> anyhow::Result<&str> {
+        required(key)?.as_str().filter(|value| !value.is_empty()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot field {key} must be a non-empty string"
+            )
+        })
+    };
+    let optional_string = |key: &str| -> anyhow::Result<Option<&str>> {
+        let value = required(key)?;
+        if value.is_null() {
+            Ok(None)
+        } else {
+            value.as_str().map(Some).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot field {key} must be a string or null"
+                )
+            })
+        }
+    };
+
+    required_string("cwd")?;
+    for key in ["model", "provider", "serviceTier"] {
+        optional_string(key)?;
+    }
+    let roots = required("workspaceRoots")?;
+    if !roots.is_null()
+        && !roots.as_array().is_some_and(|roots| {
+            roots
+                .iter()
+                .all(|root| root.as_str().is_some_and(|root| !root.is_empty()))
+        })
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot field workspaceRoots must be an array of non-empty strings or null"
+        );
+    }
+    let permission_profile = required("permissionProfile")?;
+    if !permission_profile.is_null() && !permission_profile.is_object() {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot field permissionProfile must be an object or null"
+        );
+    }
+    if optional_string("authProfileRef")? != run.auth_profile_ref.as_deref() {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: persisted execution snapshot auth profile does not match the admitted run"
+        );
+    }
+    if optional_string("managedWorktreeId")?.is_some_and(|worktree_id| worktree_id.is_empty()) {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: managed worktree id must not be empty"
+        );
+    }
+    if required_string("configFingerprint")?
+        != run.config_fingerprint.as_deref().unwrap_or_default()
+        || snapshot.config_fingerprint.as_deref() != run.config_fingerprint.as_deref()
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted execution snapshot configuration fingerprint does not match the admitted run"
+        );
+    }
+    if required_string("versionFingerprint")? != BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION
+        || run.version_fingerprint.as_deref() != Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted execution snapshot admission schema is incompatible"
+        );
+    }
+    if required_string("packageFingerprint")? != BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted execution snapshot runtime package is incompatible"
+        );
+    }
+    let recovery_policy = required_string("recoveryPolicy")?;
+    if recovery_policy != snapshot.recovery_policy.as_str() {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted execution snapshot recovery policy does not match its envelope"
+        );
+    }
+    Ok(())
 }
 
 async fn insert_initial_goal_for_background_thread(
@@ -3375,6 +3516,121 @@ fn initial_goal_objective_from_execution_payload(payload: &Value) -> Option<Stri
         .map(str::trim)
         .filter(|objective| !objective.is_empty())
         .map(str::to_string)
+}
+
+async fn defer_background_agent_for_usage_profile_wait(
+    context: &BackgroundAgentWorkerContext,
+    run_id: &str,
+    generation: i64,
+    retry_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let status_reason = background_agent_usage_profile_wait_reason(retry_at);
+    append_status(
+        context,
+        run_id,
+        generation,
+        BackgroundAgentRunStatus::Queued,
+        status_reason.as_str(),
+        "agent.usageProfileWait",
+        json!({
+            "retryAt": retry_at.timestamp(),
+        }),
+    )
+    .await?;
+    retry_transient_sqlite_busy("finish background agent usage profile wait lease", || {
+        context.state_db.finish_background_agent_process_lease(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+            /*exit_code*/ None,
+            /*exit_signal*/ None,
+            Some("usage profile wait"),
+        )
+    })
+    .await?;
+    Ok(())
+}
+
+async fn background_agent_exact_profile_retry_at(
+    context: &BackgroundAgentWorkerContext,
+    config: &codex_core::config::Config,
+    auth_profile_ref: Option<&str>,
+) -> Option<DateTime<Utc>> {
+    let scoped_auth_manager = context
+        .auth_manager
+        .shared_scoped_auth_profile(auth_profile_ref.map(str::to_string))
+        .await;
+    let auth = scoped_auth_manager.auth().await?;
+    if !auth.uses_codex_backend() {
+        return None;
+    }
+    let client = BackendClient::from_auth(config.chatgpt_base_url.clone(), &auth).ok()?;
+    let snapshots = client.get_rate_limits_many().await.ok()?;
+    let now = Utc::now().timestamp();
+    let mut exhausted = false;
+    let mut retry_at = None;
+    for snapshot in &snapshots {
+        let snapshot = codex_core::usage_profile_health::UsageProfileRateLimitSnapshot {
+            limit_id: snapshot.limit_id.as_deref(),
+            limit_name: snapshot.limit_name.as_deref(),
+            primary: snapshot.primary.as_ref().map(|window| {
+                codex_core::usage_profile_health::UsageProfileRateLimitWindow {
+                    used_percent: window.used_percent,
+                    window_minutes: window.window_minutes,
+                    resets_at: window.resets_at,
+                }
+            }),
+            secondary: snapshot.secondary.as_ref().map(|window| {
+                codex_core::usage_profile_health::UsageProfileRateLimitWindow {
+                    used_percent: window.used_percent,
+                    window_minutes: window.window_minutes,
+                    resets_at: window.resets_at,
+                }
+            }),
+        };
+        exhausted |=
+            codex_core::usage_profile_health::exhausted_auto_switch_window_for_snapshot(&snapshot)
+                .is_some();
+        if let Some(snapshot_retry_at) =
+            codex_core::usage_profile_health::earliest_exhausted_reset_at(&snapshot, now)
+        {
+            retry_at = Some(retry_at.map_or(snapshot_retry_at, |current: i64| {
+                current.min(snapshot_retry_at)
+            }));
+        }
+    }
+    exhausted.then(|| {
+        background_agent_usage_retry_at(
+            retry_at,
+            config.usage_self_heal.reset_retry_buffer_secs,
+            config.usage_self_heal.initial_backoff_secs,
+            now,
+        )
+    })
+}
+
+fn background_agent_usage_retry_at(
+    reset_at: Option<i64>,
+    reset_retry_buffer_secs: u64,
+    initial_backoff_secs: u64,
+    now: i64,
+) -> DateTime<Utc> {
+    let retry_at = reset_at
+        .filter(|reset_at| *reset_at > now)
+        .map(|reset_at| {
+            reset_at.saturating_add(i64::try_from(reset_retry_buffer_secs).unwrap_or(i64::MAX))
+        })
+        .unwrap_or_else(|| {
+            now.saturating_add(i64::try_from(initial_backoff_secs.max(1)).unwrap_or(i64::MAX))
+        });
+    DateTime::<Utc>::from_timestamp(retry_at, /*nsecs*/ 0).unwrap_or_else(Utc::now)
+}
+
+fn background_agent_error_is_usage_limit(event: &codex_protocol::protocol::ErrorEvent) -> bool {
+    matches!(
+        event.codex_error_info,
+        Some(CodexErrorInfo::UsageLimitExceeded)
+    )
 }
 
 fn background_agent_usage_profile_wait_reason(retry_at: DateTime<Utc>) -> String {
@@ -3447,6 +3703,7 @@ async fn handle_background_agent_event(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
     generation: i64,
+    auth_profile_ref: Option<&str>,
     thread: Arc<codex_core::CodexThread>,
     msg: EventMsg,
     cancel_token: &CancellationToken,
@@ -3728,6 +3985,25 @@ async fn handle_background_agent_event(
                 .await?;
         }
         EventMsg::Error(event) => {
+            if background_agent_error_is_usage_limit(&event) {
+                let config = thread.config().await;
+                let retry_at =
+                    background_agent_exact_profile_retry_at(context, &config, auth_profile_ref)
+                        .await
+                        .unwrap_or_else(|| {
+                            background_agent_usage_retry_at(
+                                /*reset_at*/ None,
+                                config.usage_self_heal.reset_retry_buffer_secs,
+                                config.usage_self_heal.initial_backoff_secs,
+                                Utc::now().timestamp(),
+                            )
+                        });
+                defer_background_agent_for_usage_profile_wait(
+                    context, run_id, generation, retry_at,
+                )
+                .await?;
+                return Ok(true);
+            }
             // Codex-core emits `EventMsg::Error` immediately before ending a turn
             // (e.g. pre-sampling/auto compaction failed with
             // `context_length_exceeded`). Record it so the trailing `TurnComplete`
@@ -5351,6 +5627,40 @@ done
         assert_ne!(slash_component, underscore_component);
         assert_eq!(slash_component, "run%2Fa");
         assert_eq!(underscore_component, "run_a");
+    }
+
+    #[test]
+    fn usage_limit_error_defers_exact_profile_until_reset_or_bounded_retry() {
+        let usage_error = codex_protocol::protocol::ErrorEvent {
+            message: "usage exhausted".to_string(),
+            codex_error_info: Some(CodexErrorInfo::UsageLimitExceeded),
+        };
+        let ordinary_error = codex_protocol::protocol::ErrorEvent {
+            message: "ordinary failure".to_string(),
+            codex_error_info: Some(CodexErrorInfo::Other),
+        };
+        assert!(background_agent_error_is_usage_limit(&usage_error));
+        assert!(!background_agent_error_is_usage_limit(&ordinary_error));
+
+        let now = 1_000;
+        assert_eq!(
+            background_agent_usage_retry_at(
+                Some(2_000),
+                /*reset_retry_buffer_secs*/ 30,
+                /*initial_backoff_secs*/ 15,
+                now,
+            )
+            .timestamp(),
+            2_030
+        );
+        assert_eq!(
+            background_agent_usage_retry_at(
+                /*reset_at*/ None, /*reset_retry_buffer_secs*/ 30,
+                /*initial_backoff_secs*/ 15, now,
+            )
+            .timestamp(),
+            1_015
+        );
     }
 
     #[tokio::test]

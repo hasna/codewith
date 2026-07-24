@@ -41,6 +41,10 @@ pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH: &str =
     "background_agent_admission_schema_mismatch";
 pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str = "background_agent_daemon_incompatible";
 pub const BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT: &str = concat!(
+    "codewith.background-agent.runtime.v1:",
+    env!("CARGO_PKG_VERSION")
+);
 pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
 
 /// Durable run roster used by the background-agent supervisor.
@@ -49,9 +53,12 @@ pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
 /// ownership, heartbeat, and status independently from loaded app-server
 /// threads or connected clients.
 pub trait AgentRunStore {
-    fn create_run(
+    fn admit_run(
         &self,
         params: BackgroundAgentRunCreateParams,
+        start_event_payload_json: &serde_json::Value,
+        execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+        max_active_runs: i64,
     ) -> impl Future<Output = anyhow::Result<BackgroundAgentRun>> + Send;
 
     fn get_run(
@@ -114,6 +121,7 @@ pub trait AgentRunStore {
         supervisor_id: &str,
         process_lease_id: &str,
         required_version_fingerprint: &str,
+        required_package_fingerprint: &str,
     ) -> impl Future<Output = anyhow::Result<Option<i64>>> + Send;
 
     fn record_execution_handle(
@@ -130,11 +138,21 @@ pub trait AgentRunStore {
 }
 
 impl AgentRunStore for codex_state::StateRuntime {
-    async fn create_run(
+    async fn admit_run(
         &self,
         params: BackgroundAgentRunCreateParams,
+        start_event_payload_json: &serde_json::Value,
+        execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+        max_active_runs: i64,
     ) -> anyhow::Result<BackgroundAgentRun> {
-        self.create_background_agent_run(&params).await
+        self.admit_background_agent_run(
+            &params,
+            start_event_payload_json,
+            execution_snapshot_params,
+            max_active_runs,
+        )
+        .await
+        .map(|(run, _created, _event, _execution_snapshot, _status_snapshot)| run)
     }
 
     async fn get_run(&self, run_id: &str) -> anyhow::Result<Option<BackgroundAgentRun>> {
@@ -217,12 +235,14 @@ impl AgentRunStore for codex_state::StateRuntime {
         supervisor_id: &str,
         process_lease_id: &str,
         required_version_fingerprint: &str,
+        required_package_fingerprint: &str,
     ) -> anyhow::Result<Option<i64>> {
         self.claim_background_agent_supervisor_compatible(
             run_id,
             supervisor_id,
             process_lease_id,
             required_version_fingerprint,
+            required_package_fingerprint,
         )
         .await
     }
