@@ -93,32 +93,22 @@ impl ChatWidget {
     }
 
     pub(super) fn resume_after_usage_limit_reset(&mut self) -> bool {
-        let Some(submitted) = self.usage_self_heal.last_submitted_turn.take() else {
+        if !self.requeue_failed_turn_at_front() {
             return false;
-        };
-        self.usage_self_heal.pending_retry = None;
-        self.usage_self_heal.consecutive_retries = 0;
-        self.input_queue.queued_user_messages.push_front(
-            QueuedUserMessage::new_with_shell_escape_policy(
-                submitted.user_message,
-                QueuedInputAction::Plain,
-                submitted.shell_escape_policy,
-            ),
-        );
-        self.input_queue
-            .queued_user_message_history_records
-            .push_front(submitted.history_record);
-        self.refresh_pending_input_preview();
+        }
         self.maybe_send_next_queued_input()
     }
 
-    /// Re-queue the interrupted turn at the front of the input queue WITHOUT sending it, so a
-    /// pending auth-profile auto-switch resumes it on the *new* profile once the switch is
-    /// applied. The `SwitchAuthProfile` handler drains the queue via `resume_queued_input`
-    /// after it submits the profile override, guaranteeing the turn re-runs on the healthy
-    /// profile. Sending here would race the switch and re-run the turn on the still-exhausted
-    /// profile. Returns whether a turn was re-queued.
-    pub(super) fn requeue_failed_turn_for_auth_profile_switch(&mut self) -> bool {
+    /// Move the interrupted turn back to the front of the input queue WITHOUT sending it, and
+    /// clear the self-heal retry bookkeeping that turn owned. Returns whether a turn was
+    /// re-queued.
+    ///
+    /// Callers that want the turn to run immediately follow this with
+    /// `maybe_send_next_queued_input`. On the auth-profile auto-switch path the send is
+    /// deliberately left to the pending `SwitchAuthProfile { resume_queued_input: true }`
+    /// handler, which drains the queue *after* it submits the profile override — sending here
+    /// would race the switch and re-run the turn on the still-exhausted profile.
+    pub(super) fn requeue_failed_turn_at_front(&mut self) -> bool {
         let Some(submitted) = self.usage_self_heal.last_submitted_turn.take() else {
             return false;
         };
