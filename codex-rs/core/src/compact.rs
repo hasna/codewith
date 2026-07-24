@@ -11,6 +11,7 @@ use crate::hook_runtime::run_pre_compact_hooks;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
+use crate::session::turn::built_tools;
 use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
 use crate::turn_metadata::CompactionTurnMetadata;
@@ -41,6 +42,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use codex_model_provider_info::ModelProviderInfo;
@@ -569,6 +571,13 @@ async fn drain_to_completed(
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
 ) -> CodexResult<()> {
+    // AuthCapsule sessions must fail closed before a local compaction attempt reaches the
+    // model. Other profiles skip the router rebuild: `ensure_policy_ready` is a no-op for
+    // them and this runs once per compaction attempt.
+    if turn_context.config.is_infinity_agent() {
+        let cancellation_token = CancellationToken::new();
+        built_tools(sess, turn_context, &cancellation_token).await?;
+    }
     let mut stream = client_session
         .stream(
             prompt,

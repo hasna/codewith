@@ -16,6 +16,7 @@ use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_otel::STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC;
 use codex_otel::STARTUP_PREWARM_DURATION_METRIC;
 use codex_otel::SessionTelemetry;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 
@@ -285,6 +286,9 @@ async fn schedule_startup_prewarm_inner(
         .current_header_value_for_prewarm(&window_id);
     let mut client_session = session.runtime_model_client().new_session();
     let websocket_warmup_started_at = Instant::now();
+    startup_router
+        .ensure_policy_ready()
+        .map_err(CodexErr::InvalidRequest)?;
     client_session
         .prewarm_websocket(
             &startup_prompt,

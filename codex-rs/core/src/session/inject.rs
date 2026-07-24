@@ -103,6 +103,17 @@ impl Session {
                 input,
             ));
         }
+        if !self
+            .regular_task_policy_ready_or_emit(turn_context.as_ref())
+            .await
+        {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            ));
+        }
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
         if self.input_queue.has_trigger_turn_mailbox_items().await {
@@ -127,14 +138,25 @@ impl Session {
             ));
         }
 
+        let rejected_input = input.clone();
         self.input_queue
             .extend_pending_input_for_turn_state(
                 turn_state.as_ref(),
                 input.into_iter().map(TurnInput::ResponseItem).collect(),
             )
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
+        if self
+            .start_task(turn_context, Vec::new(), RegularTask::new())
+            .await
+            .is_err()
+        {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                rejected_input,
+            ));
+        }
         Ok(())
     }
 
@@ -227,6 +249,11 @@ impl Session {
                 TryStartTurnIfIdleRejectionReason::PlanMode,
             ));
         }
+        if let Err(error) = self.regular_task_policy_ready(turn_context.as_ref()).await {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(error));
+        }
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
 
@@ -243,8 +270,14 @@ impl Session {
             content: input,
             client_id: None,
         });
-        self.start_task(turn_context, task_input, RegularTask::new())
-            .await;
+        if let Err(error) = self
+            .start_task(turn_context, task_input, RegularTask::new())
+            .await
+        {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(error));
+        }
         Ok(sub_id)
     }
 

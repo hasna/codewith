@@ -371,6 +371,9 @@ async fn run_remote_compact_attempt(
         .turn_metadata_state
         .current_header_value_for_compaction(&window_id, compaction_metadata);
     let request_budget = RemoteCompactionRequestBudget::new();
+    tool_router
+        .ensure_policy_ready()
+        .map_err(CodexErr::InvalidRequest)?;
     let result = sess
         .runtime_model_client()
         .compact_conversation_history(

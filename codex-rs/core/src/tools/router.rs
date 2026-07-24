@@ -38,10 +38,7 @@ pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Vec<ToolSpec>,
     // Fail-closed policy-build error recorded by `from_policy_error` and surfaced
-    // via the unit-tested `ensure_policy_ready` readiness gate. Production dispatch
-    // fail-closes independently on a missing verified policy, so this is not yet
-    // wired into the hot path.
-    #[allow(dead_code)]
+    // by `built_tools` before the router reaches a prompt or model request.
     policy_error: Option<String>,
     infinity_agent_policy: Option<Arc<VerifiedToolPolicy>>,
 }
@@ -92,7 +89,6 @@ impl ToolRouter {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn ensure_policy_ready(&self) -> Result<(), String> {
         if let Some(error) = &self.policy_error {
             return Err(error.clone());
@@ -103,6 +99,51 @@ impl ToolRouter {
                 .map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_tool_call(
+        &self,
+        turn: &TurnContext,
+        call: &ToolCall,
+    ) -> Result<(), FunctionCallError> {
+        if !turn.config.is_infinity_agent() {
+            return Ok(());
+        }
+
+        self.ensure_policy_ready().map_err(|error| {
+            FunctionCallError::Fatal(format!(
+                "Infinity Agent tool dispatch rejected before handler execution: {error}"
+            ))
+        })?;
+        let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "Infinity Agent tool dispatch has no router-bound verified process policy"
+                    .to_string(),
+            )
+        })?;
+        let config_policy = turn.config.infinity_agent_policy.as_ref().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "Infinity Agent turn has no verified process policy".to_string(),
+            )
+        })?;
+        if policy.digest() != config_policy.digest() {
+            return Err(FunctionCallError::Fatal(
+                "Infinity Agent router policy does not match the turn policy".to_string(),
+            ));
+        }
+        policy
+            .authorize_dispatch(&call.tool_name, chrono::Utc::now())
+            .map_err(|error| {
+                FunctionCallError::Fatal(format!(
+                    "Infinity Agent tool dispatch rejected before handler execution: {error}"
+                ))
+            })?;
+        let ToolPayload::Function { arguments } = &call.payload else {
+            return Err(FunctionCallError::Fatal(
+                "Infinity Agent received a non-function tool payload".to_string(),
+            ));
+        };
+        validate_infinity_agent_arguments(arguments)
     }
 
     pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
@@ -250,43 +291,13 @@ impl ToolRouter {
         source: ToolCallSource,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
+        self.validate_tool_call(turn.as_ref(), &call)?;
+
         let ToolCall {
             tool_name,
             call_id,
             payload,
         } = call;
-
-        if turn.config.is_infinity_agent() {
-            let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
-                FunctionCallError::Fatal(
-                    "Infinity Agent tool dispatch has no router-bound verified process policy"
-                        .to_string(),
-                )
-            })?;
-            let config_policy = turn.config.infinity_agent_policy.as_ref().ok_or_else(|| {
-                FunctionCallError::Fatal(
-                    "Infinity Agent turn has no verified process policy".to_string(),
-                )
-            })?;
-            if policy.digest() != config_policy.digest() {
-                return Err(FunctionCallError::Fatal(
-                    "Infinity Agent router policy does not match the turn policy".to_string(),
-                ));
-            }
-            policy
-                .authorize_dispatch(&tool_name, chrono::Utc::now())
-                .map_err(|error| {
-                    FunctionCallError::Fatal(format!(
-                        "Infinity Agent tool dispatch rejected before handler execution: {error}"
-                    ))
-                })?;
-            let ToolPayload::Function { arguments } = &payload else {
-                return Err(FunctionCallError::Fatal(
-                    "Infinity Agent received a non-function tool payload".to_string(),
-                ));
-            };
-            validate_infinity_agent_arguments(arguments)?;
-        }
 
         let invocation = ToolInvocation {
             session,

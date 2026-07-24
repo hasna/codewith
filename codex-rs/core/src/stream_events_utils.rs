@@ -411,8 +411,13 @@ pub(crate) async fn handle_output_item_done(
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
 
     match ToolRouter::build_tool_call(item.clone()) {
-        // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
+        // The model emitted a tool call. AuthCapsule calls must pass the router's
+        // fail-closed policy before their raw arguments may reach logs or history.
         Ok(Some(call)) => {
+            if let Err(error) = ctx.tool_runtime.validate_tool_call(&call) {
+                return handle_rejected_tool_call(ctx, &item, error, output).await;
+            }
+
             ctx.sess
                 .input_queue
                 .accept_mailbox_delivery_for_current_turn(
@@ -485,25 +490,13 @@ pub(crate) async fn handle_output_item_done(
         }
         // The tool request should be answered directly (or was denied); push that response into the transcript.
         Err(FunctionCallError::RespondToModel(message)) => {
-            let response = ResponseInputItem::FunctionCallOutput {
-                call_id: response_item_call_id(&item).unwrap_or_default(),
-                output: FunctionCallOutputPayload {
-                    body: FunctionCallOutputBody::Text(message),
-                    ..Default::default()
-                },
-            };
-            record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
-                .await;
-            if let Some(response_item) = response_input_to_response_item(&response) {
-                ctx.sess
-                    .record_conversation_items(
-                        &ctx.turn_context,
-                        std::slice::from_ref(&response_item),
-                    )
-                    .await;
-            }
-
-            output.needs_follow_up = true;
+            return handle_rejected_tool_call(
+                ctx,
+                &item,
+                FunctionCallError::RespondToModel(message),
+                output,
+            )
+            .await;
         }
         // A fatal error occurred; surface it back into history.
         Err(FunctionCallError::Fatal(message)) => {
@@ -512,6 +505,88 @@ pub(crate) async fn handle_output_item_done(
     }
 
     Ok(output)
+}
+
+async fn handle_rejected_tool_call(
+    ctx: &HandleOutputCtx,
+    item: &ResponseItem,
+    error: FunctionCallError,
+    mut output: OutputItemResult,
+) -> Result<OutputItemResult> {
+    let message = match error {
+        FunctionCallError::RespondToModel(message) => message,
+        FunctionCallError::Fatal(message) => return Err(CodexErr::Fatal(message)),
+    };
+
+    let response = ResponseInputItem::FunctionCallOutput {
+        call_id: response_item_call_id(item).unwrap_or_default(),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(message),
+            ..Default::default()
+        },
+    };
+    let recorded_item = if ctx.turn_context.config.is_infinity_agent() {
+        redact_rejected_tool_arguments(item.clone())
+    } else {
+        item.clone()
+    };
+    record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &recorded_item)
+        .await;
+    if let Some(response_item) = response_input_to_response_item(&response) {
+        ctx.sess
+            .record_conversation_items(&ctx.turn_context, std::slice::from_ref(&response_item))
+            .await;
+    }
+
+    output.needs_follow_up = true;
+    Ok(output)
+}
+
+fn redact_rejected_tool_arguments(item: ResponseItem) -> ResponseItem {
+    match item {
+        ResponseItem::FunctionCall {
+            id,
+            name,
+            namespace,
+            call_id,
+            ..
+        } => ResponseItem::FunctionCall {
+            id,
+            name,
+            namespace,
+            arguments: "{}".to_string(),
+            call_id,
+        },
+        ResponseItem::CustomToolCall {
+            id,
+            status,
+            call_id,
+            name,
+            namespace,
+            ..
+        } => ResponseItem::CustomToolCall {
+            id,
+            status,
+            call_id,
+            name,
+            namespace,
+            input: String::new(),
+        },
+        ResponseItem::ToolSearchCall {
+            id,
+            call_id,
+            status,
+            execution,
+            ..
+        } => ResponseItem::ToolSearchCall {
+            id,
+            call_id,
+            status,
+            execution,
+            arguments: serde_json::json!({}),
+        },
+        item => item,
+    }
 }
 
 /// Best-effort extraction of the originating tool call's `call_id` so that a

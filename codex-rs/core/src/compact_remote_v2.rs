@@ -412,6 +412,7 @@ async fn run_remote_compact_v2_attempt(
     let result = run_remote_compaction_request_v2(
         sess,
         turn_context,
+        tool_router.as_ref(),
         client_session,
         &prompt,
         turn_metadata_header.as_deref(),
@@ -465,6 +466,7 @@ struct RemoteCompactionV2Output {
 async fn run_remote_compaction_request_v2(
     sess: &Session,
     turn_context: &TurnContext,
+    tool_router: &crate::tools::ToolRouter,
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
     turn_metadata_header: Option<&str>,
@@ -477,6 +479,9 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
     loop {
+        tool_router
+            .ensure_policy_ready()
+            .map_err(CodexErr::InvalidRequest)?;
         let result = match client_session
             .stream_remote_compaction(
                 prompt,

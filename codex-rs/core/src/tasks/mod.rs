@@ -43,6 +43,7 @@ use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TokenUsage;
@@ -302,21 +303,100 @@ where
 }
 
 impl Session {
+    async fn task_policy_ready(
+        &self,
+        turn_context: &TurnContext,
+        task_kind: TaskKind,
+    ) -> codex_protocol::error::Result<()> {
+        if task_kind != TaskKind::Regular || !turn_context.config.is_infinity_agent() {
+            return Ok(());
+        }
+        let cancellation_token = CancellationToken::new();
+        crate::session::turn::built_tools(self, turn_context, &cancellation_token).await?;
+        Ok(())
+    }
+
+    async fn task_policy_ready_or_emit(
+        &self,
+        turn_context: &TurnContext,
+        task_kind: TaskKind,
+    ) -> bool {
+        let Err(error) = self.task_policy_ready(turn_context, task_kind).await else {
+            return true;
+        };
+        self.send_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg: EventMsg::Error(error.to_error_event(/*message_prefix*/ None)),
+        })
+        .await;
+        false
+    }
+
+    pub(crate) async fn regular_task_policy_ready_or_emit(
+        &self,
+        turn_context: &TurnContext,
+    ) -> bool {
+        self.task_policy_ready_or_emit(turn_context, TaskKind::Regular)
+            .await
+    }
+
+    pub(crate) async fn regular_task_policy_ready(
+        &self,
+        turn_context: &TurnContext,
+    ) -> codex_protocol::error::Result<()> {
+        self.task_policy_ready(turn_context, TaskKind::Regular)
+            .await
+    }
+
     pub async fn spawn_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
     ) {
+        if !self
+            .task_policy_ready_or_emit(turn_context.as_ref(), task.kind())
+            .await
+        {
+            return;
+        }
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
         self.clear_connector_selection().await;
-        self.start_task(turn_context, input, task).await;
+        self.start_task_after_policy_preflight(turn_context, input, task)
+            .await;
     }
 
     // The explicit return type keeps the `Send` contract visible for lifecycle
     // code that may await this helper inside spawned tasks.
     #[allow(clippy::manual_async_fn)]
     pub(crate) fn start_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+    ) -> impl std::future::Future<Output = codex_protocol::error::Result<()>> + Send + '_ {
+        async move {
+            if let Err(error) = self
+                .task_policy_ready(turn_context.as_ref(), task.kind())
+                .await
+            {
+                self.send_event_raw(Event {
+                    id: turn_context.sub_id.clone(),
+                    msg: EventMsg::Error(error.to_error_event(/*message_prefix*/ None)),
+                })
+                .await;
+                return Err(error);
+            }
+            self.start_task_after_policy_preflight(turn_context, input, task)
+                .await;
+            Ok(())
+        }
+    }
+
+    // Keep the explicit `Send` bound visible: this helper participates in a
+    // recursive task-start path that can be awaited from a spawned turn.
+    #[allow(clippy::manual_async_fn)]
+    fn start_task_after_policy_preflight<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
@@ -482,6 +562,25 @@ impl Session {
         }
 
         {
+            let active_turn = self.active_turn.lock().await;
+            if active_turn
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .is_some()
+            {
+                return false;
+            }
+        }
+
+        let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
+        if !self
+            .regular_task_policy_ready_or_emit(turn_context.as_ref())
+            .await
+        {
+            return false;
+        }
+
+        {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn
                 .as_ref()
@@ -496,10 +595,9 @@ impl Session {
             *active_turn = Some(ActiveTurn::default());
         }
 
-        let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
+        self.start_task_after_policy_preflight(turn_context, Vec::new(), RegularTask::new())
             .await;
         true
     }
