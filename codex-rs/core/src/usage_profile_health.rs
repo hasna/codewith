@@ -831,6 +831,68 @@ mod tests {
         assert_eq!(None, earliest_exhausted_reset_at(&snapshot, 500));
     }
 
+    /// Health derived from a single primary 5h window at `used_percent`, resetting at `resets_at`.
+    fn health_from_5h(used_percent: f64, resets_at: Option<i64>) -> UsageProfileHealth {
+        usage_health_for_snapshots(
+            &[snapshot(
+                Some(window(used_percent, MINUTES_PER_5_HOURS, resets_at)),
+                None,
+            )],
+            &config(),
+            Some(FIVE_HOUR_LIMIT_LABEL),
+            /*is_fresh*/ true,
+        )
+    }
+
+    #[test]
+    fn highest_available_picks_best_remaining_and_skips_exhausted() {
+        // `dead` is exhausted (must be skipped), `low` has 20% headroom, `high` has 70%.
+        // HighestAvailable must select `high` even though `low`/`dead` come first in order.
+        let health_by_profile = BTreeMap::from([
+            ("dead".to_string(), health_from_5h(100.0, Some(900))),
+            ("low".to_string(), health_from_5h(80.0, Some(100))),
+            ("high".to_string(), health_from_5h(30.0, Some(200))),
+        ]);
+
+        let selection = choose_profile_for_auto_switch(
+            &config(),
+            &["dead".to_string(), "low".to_string(), "high".to_string()],
+            &health_by_profile,
+        );
+
+        assert_eq!(selection.selected_profile.as_deref(), Some("high"));
+        assert_eq!(
+            selection.reason,
+            UsageProfileSelectionReason::SelectedHealthyProfile
+        );
+    }
+
+    #[test]
+    fn all_exhausted_snapshots_report_earliest_reset_gracefully() {
+        // Every candidate is exhausted: no profile is selectable, and the soonest reset
+        // (900, earlier than 2_000) is surfaced so the caller can tell the user when a
+        // profile becomes usable again.
+        let health_by_profile = BTreeMap::from([
+            ("later".to_string(), health_from_5h(100.0, Some(2_000))),
+            ("soonest".to_string(), health_from_5h(100.0, Some(900))),
+        ]);
+
+        let selection = choose_profile_for_auto_switch(
+            &config(),
+            &["later".to_string(), "soonest".to_string()],
+            &health_by_profile,
+        );
+
+        assert_eq!(
+            selection,
+            UsageProfileSelection {
+                selected_profile: None,
+                retry_at: Some(900),
+                reason: UsageProfileSelectionReason::NoAvailableProfiles,
+            }
+        );
+    }
+
     #[test]
     fn exhausted_candidates_merge_earliest_retry_timestamp() {
         let health_by_profile = BTreeMap::from([

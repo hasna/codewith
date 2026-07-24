@@ -27,6 +27,17 @@ pub(super) struct UsageProfileSwitchTarget {
     pub(super) trigger_key: String,
 }
 
+/// Outcome of resolving an auto-switch target for an exhausted window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum UsageProfileSwitchOutcome {
+    /// A healthier alternate profile is available; switch to it.
+    Switch(UsageProfileSwitchTarget),
+    /// No alternate profile has available usage right now. `earliest_reset_at` carries the
+    /// soonest known reset (unix seconds) across the exhausted candidates, when any is known,
+    /// so callers can tell the user when a profile is expected to become usable again.
+    NoEligibleProfile { earliest_reset_at: Option<i64> },
+}
+
 pub(super) fn exhausted_auto_switch_window(
     snapshot: &RateLimitSnapshot,
     config: &AuthProfileAutoSwitchConfig,
@@ -82,10 +93,10 @@ pub(super) fn auth_profile_auto_switch_target(
     recently_failed_profiles: &HashSet<String>,
     limit_id: &str,
     window: &UsageProfileAutoSwitchWindow,
-) -> Option<UsageProfileSwitchTarget> {
+) -> UsageProfileSwitchOutcome {
     let ordered = ordered_auth_profiles_for_auto_switch(&config.profiles, saved_profiles);
     let candidates = auth_profile_auto_switch_candidates(selected_auth_profile, &ordered);
-    let profile = match config.strategy {
+    let selection = match config.strategy {
         AuthProfileAutoSwitchStrategy::HighestAvailable
         | AuthProfileAutoSwitchStrategy::Ordered => healthiest_auth_profile_for_auto_switch(
             config,
@@ -94,11 +105,16 @@ pub(super) fn auth_profile_auto_switch_target(
             &candidates,
             window,
         ),
-    }?;
-    Some(UsageProfileSwitchTarget {
-        profile,
-        trigger_key: auto_switch_trigger_key(limit_id, window),
-    })
+    };
+    match selection.selected_profile {
+        Some(profile) => UsageProfileSwitchOutcome::Switch(UsageProfileSwitchTarget {
+            profile,
+            trigger_key: auto_switch_trigger_key(limit_id, window),
+        }),
+        None => UsageProfileSwitchOutcome::NoEligibleProfile {
+            earliest_reset_at: selection.retry_at,
+        },
+    }
 }
 
 fn ordered_auth_profiles_for_auto_switch(
@@ -159,7 +175,7 @@ fn healthiest_auth_profile_for_auto_switch(
     recently_failed_profiles: &HashSet<String>,
     candidates: &[String],
     window: &UsageProfileAutoSwitchWindow,
-) -> Option<String> {
+) -> usage_profile_health::UsageProfileSelection {
     let freshness = Duration::from_secs(config.heartbeat_freshness_secs);
     let mut health_by_profile = BTreeMap::new();
 
@@ -180,7 +196,7 @@ fn healthiest_auth_profile_for_auto_switch(
         health_by_profile.insert(profile.clone(), health);
     }
 
-    choose_profile_for_auto_switch(config, candidates, &health_by_profile).selected_profile
+    choose_profile_for_auto_switch(config, candidates, &health_by_profile)
 }
 
 fn auth_profile_usage_health_for_auto_switch(
@@ -294,7 +310,10 @@ fn display_rate_limit_window(
     UsageProfileRateLimitWindow {
         used_percent: window.used_percent,
         window_minutes: window.window_minutes,
-        resets_at: None,
+        // Preserve the server-reported reset time so an exhausted cached profile reports its
+        // `retry_at` (used for the earliest-reset message and to avoid re-picking a profile
+        // until it resets) instead of an anonymous exhausted state.
+        resets_at: window.resets_at_unix,
     }
 }
 
