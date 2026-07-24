@@ -120,6 +120,12 @@ impl FromStr for ReasoningEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
+            // `ultra` is not a valid wire enum; the API rejects it with a 400
+            // ("Invalid value: 'ultra'"). It was only ever meant as "the highest
+            // effort", so normalize the alias to the supported top tier `max`
+            // (the ceiling advertised by the API, one above `xhigh`) instead of
+            // forwarding it verbatim through the `Custom` passthrough.
+            "ultra" => Ok(Self::Custom("max".to_string())),
             "" => Err("reasoning_effort must not be empty".to_string()),
             effort => Ok(Self::Custom(effort.to_string())),
         }
@@ -725,6 +731,28 @@ mod tests {
                 r#""max""#.to_string(),
                 "max".to_string(),
             )
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_normalizes_ultra_alias_to_max() {
+        // `ultra` is not a valid wire enum and triggers a 400 from the API. It
+        // must be normalized to the supported top tier `max` at the parse
+        // boundary so it never reaches the wire verbatim.
+        let parsed = "ultra"
+            .parse::<ReasoningEffort>()
+            .expect("ultra alias should parse");
+        assert_eq!(parsed, ReasoningEffort::Custom("max".to_string()));
+        assert_eq!(parsed.as_str(), "max");
+        assert_eq!(
+            to_string(&parsed).expect("effort should serialize"),
+            r#""max""#.to_string()
+        );
+        // Round-trips through deserialization (the path used for config, client
+        // turn requests, and model presets) also yield `max`, not `ultra`.
+        assert_eq!(
+            from_str::<ReasoningEffort>(r#""ultra""#).expect("ultra should deserialize"),
+            ReasoningEffort::Custom("max".to_string())
         );
     }
 
