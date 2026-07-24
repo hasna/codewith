@@ -1581,7 +1581,10 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
                 &user_config_path,
                 toml! { skills = { bundled = { enabled = false } } }.into(),
             );
-            config.model_context_window = Some(12_000);
+            // Only `MAX_STARTER_SKILLS` of the 12 skills reach the developer message,
+            // so the window has to be tighter than before for those starter entries to
+            // still exceed the 2% skills budget and force the alias rendering.
+            config.model_context_window = Some(5_000);
         });
     let codex = builder
         .build(&server)
