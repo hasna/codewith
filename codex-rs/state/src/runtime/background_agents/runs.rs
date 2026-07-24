@@ -802,10 +802,12 @@ WHERE
     AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
             "#,
         )
-        .bind(params.thread_id.as_str())
-        .bind(params.thread_store_kind.as_str())
-        .bind(params.thread_store_id.as_deref())
-        .bind(params.rollout_path.as_deref())
+        // Same invariant as admission: these columns are caller-visible strings,
+        // so they are written through state redaction rather than raw.
+        .bind(redact_state_string(params.thread_id.as_str()))
+        .bind(redact_state_string(params.thread_store_kind.as_str()))
+        .bind(params.thread_store_id.as_deref().map(redact_state_string))
+        .bind(params.rollout_path.as_deref().map(redact_state_string))
         .bind(now)
         .bind(params.run_id.as_str())
         .bind(params.supervisor_id.as_str())
@@ -2230,16 +2232,116 @@ WHERE
     .map_err(anyhow::Error::from)
 }
 
+/// Secret-safe projection of every string column that admission writes to
+/// `background_agent_runs`.
+///
+/// State invariant: **no persisted background-agent column may hold a
+/// recoverable plaintext secret.** Every caller-supplied string reaches SQLite
+/// through this one struct, which is the enforcement point for that invariant:
+/// [`insert_background_agent_run_in_tx`] binds only values produced here, and
+/// [`validate_existing_background_agent_admission_in_tx`] compares stored rows
+/// against the same projection, so a column cannot be protected on write while
+/// being compared raw on replay (or vice versa).
+///
+/// Per-column protection rationale:
+/// * `idempotency_key` — one-way SHA-256 digest; the raw key is only ever
+///   compared against a digest of the caller-supplied key and is never read
+///   back, so it must never be recoverable.
+/// * every other column — [`redact_state_string`] (or `redact_state_json_string`
+///   for `spawn_linkage_json`). These are surfaced on read (TUI/CLI/app-server
+///   responses) and are matched verbatim on idempotent replay, so a digest
+///   would break both display and replay; pattern redaction keeps non-secret
+///   values byte-identical while never persisting secret-shaped material.
+/// * `id`, `desired_state`, `status`, `retention_state`, `created_at`,
+///   `updated_at` are not projected here: `id` is a runtime-generated
+///   identifier and the primary/foreign key joining every background-agent
+///   table, the state columns are closed enums owned by this module, and the
+///   timestamps are integers. None can carry caller input.
+struct RedactedBackgroundAgentRunColumns {
+    idempotency_key: Option<String>,
+    request_id: Option<String>,
+    source: String,
+    prompt_snapshot_ref: String,
+    input_snapshot_ref: Option<String>,
+    thread_id: Option<String>,
+    thread_store_kind: String,
+    thread_store_id: Option<String>,
+    rollout_path: Option<String>,
+    parent_thread_id: Option<String>,
+    parent_agent_run_id: Option<String>,
+    spawn_linkage_json: Option<String>,
+    auth_profile_ref: Option<String>,
+    status_reason: Option<String>,
+    config_fingerprint: Option<String>,
+    version_fingerprint: Option<String>,
+}
+
+impl RedactedBackgroundAgentRunColumns {
+    fn from_params(params: &BackgroundAgentRunCreateParams) -> anyhow::Result<Self> {
+        Ok(Self {
+            idempotency_key: params
+                .idempotency_key
+                .as_deref()
+                .map(background_agent_idempotency_key_digest),
+            request_id: params.request_id.as_deref().map(redact_state_string),
+            source: redact_state_string(params.source.as_str()),
+            prompt_snapshot_ref: redact_state_string(params.prompt_snapshot_ref.as_str()),
+            input_snapshot_ref: params.input_snapshot_ref.as_deref().map(redact_state_string),
+            thread_id: params.thread_id.as_deref().map(redact_state_string),
+            thread_store_kind: redact_state_string(params.thread_store_kind.as_str()),
+            thread_store_id: params.thread_store_id.as_deref().map(redact_state_string),
+            rollout_path: params.rollout_path.as_deref().map(redact_state_string),
+            parent_thread_id: params.parent_thread_id.as_deref().map(redact_state_string),
+            parent_agent_run_id: params
+                .parent_agent_run_id
+                .as_deref()
+                .map(redact_state_string),
+            spawn_linkage_json: params
+                .spawn_linkage_json
+                .as_ref()
+                .map(redact_state_json_string)
+                .transpose()?,
+            auth_profile_ref: params.auth_profile_ref.as_deref().map(redact_state_string),
+            status_reason: params.status_reason.as_deref().map(redact_state_string),
+            config_fingerprint: params.config_fingerprint.as_deref().map(redact_state_string),
+            version_fingerprint: params
+                .version_fingerprint
+                .as_deref()
+                .map(redact_state_string),
+        })
+    }
+}
+
+/// Secret-safe projection of the execution-snapshot columns, for the same
+/// reason as [`RedactedBackgroundAgentRunColumns`]: the initial snapshot is
+/// written during admission and re-compared byte-for-byte on replay, so write
+/// and compare must share one definition.
+pub(in crate::runtime) struct RedactedBackgroundAgentExecutionSnapshotColumns {
+    pub(in crate::runtime) snapshot_kind: String,
+    pub(in crate::runtime) payload_json: String,
+    pub(in crate::runtime) recovery_policy: String,
+    pub(in crate::runtime) config_fingerprint: Option<String>,
+}
+
+impl RedactedBackgroundAgentExecutionSnapshotColumns {
+    pub(in crate::runtime) fn from_params(
+        params: &BackgroundAgentExecutionSnapshotParams,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            snapshot_kind: redact_state_string(params.snapshot_kind.as_str()),
+            payload_json: redact_state_json_string(&params.payload_json)?,
+            recovery_policy: redact_state_string(params.recovery_policy.as_str()),
+            config_fingerprint: params.config_fingerprint.as_deref().map(redact_state_string),
+        })
+    }
+}
+
 pub(in crate::runtime) async fn insert_background_agent_run_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     params: &BackgroundAgentRunCreateParams,
     now: i64,
 ) -> anyhow::Result<()> {
-    let spawn_linkage_json = params
-        .spawn_linkage_json
-        .as_ref()
-        .map(redact_state_json_string)
-        .transpose()?;
+    let columns = RedactedBackgroundAgentRunColumns::from_params(params)?;
     let insert_result = sqlx::query(
         r#"
 INSERT INTO background_agent_runs (
@@ -2269,34 +2371,24 @@ INSERT INTO background_agent_runs (
         "#,
     )
     .bind(params.id.as_str())
-    .bind(
-        params
-            .idempotency_key
-            .as_deref()
-            .map(background_agent_idempotency_key_digest),
-    )
-    .bind(params.request_id.as_deref().map(redact_state_string))
-    .bind(params.source.as_str())
-    .bind(params.prompt_snapshot_ref.as_str())
-    .bind(
-        params
-            .input_snapshot_ref
-            .as_deref()
-            .map(redact_state_string),
-    )
-    .bind(params.thread_id.as_deref())
-    .bind(params.thread_store_kind.as_str())
-    .bind(params.thread_store_id.as_deref())
-    .bind(params.rollout_path.as_deref())
-    .bind(params.parent_thread_id.as_deref())
-    .bind(params.parent_agent_run_id.as_deref())
-    .bind(spawn_linkage_json.as_deref())
-    .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
+    .bind(columns.idempotency_key.as_deref())
+    .bind(columns.request_id.as_deref())
+    .bind(columns.source.as_str())
+    .bind(columns.prompt_snapshot_ref.as_str())
+    .bind(columns.input_snapshot_ref.as_deref())
+    .bind(columns.thread_id.as_deref())
+    .bind(columns.thread_store_kind.as_str())
+    .bind(columns.thread_store_id.as_deref())
+    .bind(columns.rollout_path.as_deref())
+    .bind(columns.parent_thread_id.as_deref())
+    .bind(columns.parent_agent_run_id.as_deref())
+    .bind(columns.spawn_linkage_json.as_deref())
+    .bind(columns.auth_profile_ref.as_deref())
     .bind(BackgroundAgentDesiredState::Running.as_str())
     .bind(BackgroundAgentRunStatus::Queued.as_str())
-    .bind(params.status_reason.as_deref().map(redact_state_string))
-    .bind(params.config_fingerprint.as_deref())
-    .bind(params.version_fingerprint.as_deref())
+    .bind(columns.status_reason.as_deref())
+    .bind(columns.config_fingerprint.as_deref())
+    .bind(columns.version_fingerprint.as_deref())
     .bind(crate::BackgroundAgentRetentionState::Active.as_str())
     .bind(now)
     .bind(now)
@@ -2396,7 +2488,7 @@ async fn insert_background_agent_execution_snapshot_in_tx(
     params: &BackgroundAgentExecutionSnapshotParams,
     now: i64,
 ) -> anyhow::Result<i64> {
-    let payload_json = redact_state_json_string(&params.payload_json)?;
+    let columns = RedactedBackgroundAgentExecutionSnapshotColumns::from_params(params)?;
     let seq: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
     )
@@ -2418,10 +2510,10 @@ INSERT INTO background_agent_execution_snapshots (
     )
     .bind(params.run_id.as_str())
     .bind(seq)
-    .bind(params.snapshot_kind.as_str())
-    .bind(payload_json)
-    .bind(params.recovery_policy.as_str())
-    .bind(params.config_fingerprint.as_deref())
+    .bind(columns.snapshot_kind.as_str())
+    .bind(columns.payload_json.as_str())
+    .bind(columns.recovery_policy.as_str())
+    .bind(columns.config_fingerprint.as_deref())
     .bind(now)
     .execute(&mut **tx)
     .await?
@@ -2539,15 +2631,18 @@ LIMIT 1
     .bind(run_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let proposed_snapshot_payload: serde_json::Value = serde_json::from_str(
-        redact_state_json_string(&execution_snapshot_params.payload_json)?.as_str(),
-    )?;
+    // Same rule as the run columns: replay compares against the persisted,
+    // secret-safe projection, never against the raw request.
+    let proposed_snapshot_columns =
+        RedactedBackgroundAgentExecutionSnapshotColumns::from_params(&execution_snapshot_params)?;
+    let proposed_snapshot_payload: serde_json::Value =
+        serde_json::from_str(proposed_snapshot_columns.payload_json.as_str())?;
     let execution_snapshot_id = match existing_snapshot {
         Some((id, payload_json, recovery_policy, config_fingerprint)) => {
             let payload_json: serde_json::Value = serde_json::from_str(payload_json.as_str())?;
             if payload_json != proposed_snapshot_payload
-                || recovery_policy != execution_snapshot_params.recovery_policy
-                || config_fingerprint != execution_snapshot_params.config_fingerprint
+                || recovery_policy != proposed_snapshot_columns.recovery_policy
+                || config_fingerprint != proposed_snapshot_columns.config_fingerprint
             {
                 anyhow::bail!(
                     "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
@@ -2701,29 +2796,24 @@ WHERE idempotency_key = ?
         }
         return Ok(Some(existing_id));
     }
-    let requested_spawn_linkage_json = params
-        .spawn_linkage_json
-        .as_ref()
-        .map(redact_state_json_string)
-        .transpose()?;
-    let identity_matches = request_id == params.request_id.as_deref().map(redact_state_string)
-        && source == params.source
-        && prompt_snapshot_ref == params.prompt_snapshot_ref
-        && input_snapshot_ref
-            == params
-                .input_snapshot_ref
-                .as_deref()
-                .map(redact_state_string)
-        && thread_id == params.thread_id
-        && thread_store_kind == params.thread_store_kind
-        && thread_store_id == params.thread_store_id
-        && rollout_path == params.rollout_path
-        && parent_thread_id == params.parent_thread_id
-        && parent_agent_run_id == params.parent_agent_run_id
-        && spawn_linkage_json == requested_spawn_linkage_json
-        && auth_profile_ref == params.auth_profile_ref.as_deref().map(redact_state_string)
-        && config_fingerprint == params.config_fingerprint
-        && version_fingerprint == params.version_fingerprint;
+    // Compare against the same secret-safe projection that admission persisted;
+    // reading a column raw here would silently reject every replay of a
+    // redacted value (and invites the write side to drift back to plaintext).
+    let requested = RedactedBackgroundAgentRunColumns::from_params(params)?;
+    let identity_matches = request_id == requested.request_id
+        && source == requested.source
+        && prompt_snapshot_ref == requested.prompt_snapshot_ref
+        && input_snapshot_ref == requested.input_snapshot_ref
+        && thread_id == requested.thread_id
+        && thread_store_kind == requested.thread_store_kind
+        && thread_store_id == requested.thread_store_id
+        && rollout_path == requested.rollout_path
+        && parent_thread_id == requested.parent_thread_id
+        && parent_agent_run_id == requested.parent_agent_run_id
+        && spawn_linkage_json == requested.spawn_linkage_json
+        && auth_profile_ref == requested.auth_profile_ref
+        && config_fingerprint == requested.config_fingerprint
+        && version_fingerprint == requested.version_fingerprint;
     if !identity_matches {
         anyhow::bail!(
             "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \

@@ -55,15 +55,48 @@ lifecycle receipt through its foreign-keyed `runId`. The supervisor
 `generation` is only a local process-fencing counter and must never be
 interpreted as the projected writer generation.
 
-Neither opaque identity reference is persisted in a recoverable form.
-Idempotency keys are caller-controlled and are stored only as a one-way SHA-256
-digest; dedupe, replay, and immutable-identity comparisons all run against that
-digest, and the plaintext key is never written to or read back from local state.
-Auth-profile references are validated aliases — the alias itself has to survive
-so the worker can load the same profile — and are written through state
-redaction before persistence, so a credential-shaped value is redacted rather
-than stored. Execution snapshots persist only the alias digest, never the alias,
-and credential or account payloads do not belong in either reference projection.
+### Persisted-secret Invariant
+
+**No persisted background-agent column may hold a recoverable plaintext
+secret.** The invariant is enforced structurally rather than column by column:
+every caller-supplied string that admission writes to `background_agent_runs`
+is produced by `RedactedBackgroundAgentRunColumns::from_params`, and every
+execution-snapshot column by
+`RedactedBackgroundAgentExecutionSnapshotColumns::from_params`. Both the write
+path and the idempotent-replay comparison read those same projections, so a
+column cannot be protected on write while being compared raw on replay. Each
+column is therefore exactly one of:
+
+- **Digested** — `idempotency_key` is caller-controlled and opaque, so it is
+  stored only as a one-way SHA-256 digest; dedupe, replay, and
+  immutable-identity comparisons all run against that digest, and the plaintext
+  key is never written to or read back from local state. Lifecycle receipt keys
+  and `admission_identity_sha256` are likewise digests. Execution snapshots
+  persist only the auth-profile alias digest, never the alias.
+- **Redacted** — `request_id`, `source`, `prompt_snapshot_ref`,
+  `input_snapshot_ref`, `thread_id`, `thread_store_kind`, `thread_store_id`,
+  `rollout_path`, `parent_thread_id`, `parent_agent_run_id`,
+  `spawn_linkage_json`, `auth_profile_ref`, `status_reason`,
+  `config_fingerprint`, `version_fingerprint`, and the execution-snapshot
+  `snapshot_kind` / `payload_json` / `recovery_policy` / `config_fingerprint`.
+  These all have to survive readable — the worker loads the same auth profile,
+  and the CLI/TUI/app-server surface the refs — so they go through state
+  redaction, which leaves non-secret values byte-identical and replaces only
+  credential-shaped material. Event, receipt, and status-snapshot payloads are
+  redacted as JSON. The thread-binding update redacts the same thread columns.
+- **Provably non-secret** — `id` (runtime-generated identifier and the
+  primary/foreign key joining every background-agent table), the closed enums
+  (`desired_state`, `status`, `retention_state`), supervisor-side process
+  bookkeeping (`supervisor_id`, `generation`, `pid`, `pgid`, `job_id`,
+  `start_token`, `stderr_log_path`, lease ids), and integer timestamps and
+  counters. None of these can carry caller input.
+
+Credential or account payloads do not belong in any reference projection.
+`background_agent_admission_persists_no_plaintext_secret_in_any_column` guards
+the invariant generically: it admits a run whose every caller-supplied string
+carries the same secret-shaped token, then scans every cell of every
+`background_agent*` table for that token, so a newly added raw binding fails
+the suite without anyone having to remember to extend a per-column assertion.
 
 ## Run And Thread Relationship
 

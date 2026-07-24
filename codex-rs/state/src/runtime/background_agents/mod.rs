@@ -9,6 +9,7 @@ mod tests;
 
 pub(in crate::runtime) use events::append_background_agent_event_in_tx;
 pub(in crate::runtime) use runs::ExistingBackgroundAgentAdmissionIdentity;
+pub(in crate::runtime) use runs::RedactedBackgroundAgentExecutionSnapshotColumns;
 pub(in crate::runtime) use runs::background_agent_admission_identity_sha256;
 pub(in crate::runtime) use runs::background_agent_idempotency_key_digest;
 pub(in crate::runtime) use runs::count_live_or_recoverable_background_agent_runs_in_tx;
