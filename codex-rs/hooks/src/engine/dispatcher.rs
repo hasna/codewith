@@ -61,7 +61,11 @@ pub(crate) fn select_handlers_for_matcher_inputs(
                         .any(|input| matches_matcher(handler.matcher.as_deref(), Some(input)))
                 }
             }
-            HookEventName::UserPromptSubmit | HookEventName::Stop => true,
+            HookEventName::UserPromptSubmit
+            | HookEventName::Stop
+            | HookEventName::OnError
+            | HookEventName::OnSafetyFlag
+            | HookEventName::OnNewAgentThread => true,
         })
         .cloned()
         .collect()
@@ -141,7 +145,9 @@ pub(crate) fn completed_summary(
 
 fn scope_for_event(event_name: HookEventName) -> HookScope {
     match event_name {
-        HookEventName::SessionStart | HookEventName::SubagentStart => HookScope::Thread,
+        HookEventName::SessionStart
+        | HookEventName::SubagentStart
+        | HookEventName::OnNewAgentThread => HookScope::Thread,
         HookEventName::PreToolUse
         | HookEventName::PermissionRequest
         | HookEventName::PostToolUse
@@ -149,7 +155,9 @@ fn scope_for_event(event_name: HookEventName) -> HookScope {
         | HookEventName::PostCompact
         | HookEventName::UserPromptSubmit
         | HookEventName::SubagentStop
-        | HookEventName::Stop => HookScope::Turn,
+        | HookEventName::Stop
+        | HookEventName::OnError
+        | HookEventName::OnSafetyFlag => HookScope::Turn,
     }
 }
 

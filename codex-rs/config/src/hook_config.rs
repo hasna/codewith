@@ -51,6 +51,12 @@ pub struct HookEventsToml {
     pub subagent_stop: Vec<MatcherGroup>,
     #[serde(rename = "Stop", default)]
     pub stop: Vec<MatcherGroup>,
+    #[serde(rename = "OnError", default)]
+    pub on_error: Vec<MatcherGroup>,
+    #[serde(rename = "OnSafetyFlag", default)]
+    pub on_safety_flag: Vec<MatcherGroup>,
+    #[serde(rename = "OnNewAgentThread", default)]
+    pub on_new_agent_thread: Vec<MatcherGroup>,
 }
 
 impl HookEventsToml {
@@ -66,6 +72,9 @@ impl HookEventsToml {
             subagent_start,
             subagent_stop,
             stop,
+            on_error,
+            on_safety_flag,
+            on_new_agent_thread,
         } = self;
         pre_tool_use.is_empty()
             && permission_request.is_empty()
@@ -77,6 +86,9 @@ impl HookEventsToml {
             && subagent_start.is_empty()
             && subagent_stop.is_empty()
             && stop.is_empty()
+            && on_error.is_empty()
+            && on_safety_flag.is_empty()
+            && on_new_agent_thread.is_empty()
     }
 
     pub fn handler_count(&self) -> usize {
@@ -91,6 +103,9 @@ impl HookEventsToml {
             subagent_start,
             subagent_stop,
             stop,
+            on_error,
+            on_safety_flag,
+            on_new_agent_thread,
         } = self;
         [
             pre_tool_use,
@@ -103,6 +118,9 @@ impl HookEventsToml {
             subagent_start,
             subagent_stop,
             stop,
+            on_error,
+            on_safety_flag,
+            on_new_agent_thread,
         ]
         .into_iter()
         .flatten()
@@ -110,7 +128,7 @@ impl HookEventsToml {
         .sum()
     }
 
-    pub fn into_matcher_groups(self) -> [(HookEventName, Vec<MatcherGroup>); 10] {
+    pub fn into_matcher_groups(self) -> [(HookEventName, Vec<MatcherGroup>); 13] {
         [
             (HookEventName::PreToolUse, self.pre_tool_use),
             (HookEventName::PermissionRequest, self.permission_request),
@@ -122,6 +140,12 @@ impl HookEventsToml {
             (HookEventName::SubagentStart, self.subagent_start),
             (HookEventName::SubagentStop, self.subagent_stop),
             (HookEventName::Stop, self.stop),
+            (HookEventName::OnError, self.on_error),
+            (HookEventName::OnSafetyFlag, self.on_safety_flag),
+            (
+                HookEventName::OnNewAgentThread,
+                self.on_new_agent_thread,
+            ),
         ]
     }
 }

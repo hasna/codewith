@@ -16,7 +16,7 @@ pub use declarations::plugin_hook_declarations;
 pub use engine::HookListEntry;
 pub use events::common::SubagentHookContext;
 /// Hook event names as they appear in hooks JSON and config files.
-pub const HOOK_EVENT_NAMES: [&str; 10] = [
+pub const HOOK_EVENT_NAMES: [&str; 13] = [
     "PreToolUse",
     "PermissionRequest",
     "PostToolUse",
@@ -27,6 +27,9 @@ pub const HOOK_EVENT_NAMES: [&str; 10] = [
     "SubagentStart",
     "SubagentStop",
     "Stop",
+    "OnError",
+    "OnSafetyFlag",
+    "OnNewAgentThread",
 ];
 
 /// Hook event names whose matcher fields are meaningful during dispatch.
@@ -93,6 +96,9 @@ pub fn hook_event_key_label(event_name: HookEventName) -> &'static str {
         HookEventName::SubagentStart => "subagent_start",
         HookEventName::SubagentStop => "subagent_stop",
         HookEventName::Stop => "stop",
+        HookEventName::OnError => "on_error",
+        HookEventName::OnSafetyFlag => "on_safety_flag",
+        HookEventName::OnNewAgentThread => "on_new_agent_thread",
     }
 }
 
