@@ -35,6 +35,7 @@ const DEFAULT_STDERR_TAIL_BYTES: u64 = 4096;
 pub struct WorkerProcessCommand {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
     pub cwd: Option<PathBuf>,
     pub stderr_log_path: PathBuf,
 }
@@ -44,6 +45,7 @@ impl WorkerProcessCommand {
         Self {
             program: program.into(),
             args: Vec::new(),
+            env: Vec::new(),
             cwd: None,
             stderr_log_path: stderr_log_path.into(),
         }
@@ -56,6 +58,11 @@ impl WorkerProcessCommand {
 
     pub fn args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -183,6 +190,7 @@ impl WorkerProcessController {
         let mut command = Command::new(&request.program);
         command
             .args(&request.args)
+            .envs(request.env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log.into_std().await));

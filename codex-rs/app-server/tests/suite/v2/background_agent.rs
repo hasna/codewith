@@ -63,6 +63,11 @@ use codex_app_server_protocol::WorktreeMergeCandidateStatus;
 use codex_app_server_protocol::WorktreeOwnerKind;
 use codex_app_server_protocol::WorktreeReadResponse;
 use codex_app_server_protocol::WorktreeReleaseResponse;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -78,6 +83,8 @@ use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -86,6 +93,11 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
+
+enum SeededAgentExecution {
+    Inert,
+    Claimable { cwd: String },
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result<()> {
@@ -153,7 +165,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         start.execution_snapshot.payload.get("approvalPolicy"),
         Some(&json!("never"))
     );
-    assert_eq!(start.event.seq, 1);
+    assert_eq!(start.event.seq, 2);
     assert_eq!(start.event.event_type, "agent.started");
     assert_eq!(
         start.event.payload.get("prompt"),
@@ -199,7 +211,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     let first_events_page =
         agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(1)).await?;
     assert_eq!(first_events_page.data.len(), 1);
-    assert_eq!(first_events_page.data[0].event_type, "agent.started");
+    assert_eq!(first_events_page.data[0].event_type, "agent.admitted");
     assert_eq!(first_events_page.next_cursor, Some("event:1".to_string()));
 
     let second_events_page = agent_events_page(
@@ -210,13 +222,10 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     )
     .await?;
     assert_eq!(second_events_page.data.len(), 1);
-    assert_eq!(
-        second_events_page.data[0].event_type,
-        "agent.workerStarting"
-    );
+    assert_eq!(second_events_page.data[0].event_type, "agent.started");
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
     let all_events =
-        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
+        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(200)).await?;
     let event_types = all_events
         .data
         .iter()
@@ -232,7 +241,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     let stale_cursor_error = agent_events_error(
         &mut restarted,
         &agent_id,
-        Some("event:1".to_string()),
+        Some("event:0".to_string()),
         Some(1),
     )
     .await?;
@@ -250,7 +259,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_start_records_initial_goal_objective() -> Result<()> {
+async fn agent_start_binds_prompt_and_initial_goal_to_idempotency_identity() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
     write_config(codex_home.path(), server.uri().as_str())?;
@@ -261,6 +270,7 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         codex_home.path(),
     );
     params.initial_goal_objective = Some("Investigate flaky regression".to_string());
+    let exact_retry_params = params.clone();
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let start = start_agent(&mut mcp, params).await?;
@@ -274,7 +284,7 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         Some(&json!("Investigate flaky regression"))
     );
 
-    let retry = start_agent(
+    let conflicting_retry = start_agent_error(
         &mut mcp,
         start_params(
             "retry with different params",
@@ -283,8 +293,18 @@ async fn agent_start_records_initial_goal_objective() -> Result<()> {
         ),
     )
     .await?;
+    assert_eq!(
+        conflicting_retry
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!("background_agent_admission_identity_mismatch"))
+    );
 
+    let retry = start_agent(&mut mcp, exact_retry_params).await?;
     assert_eq!(retry.agent.agent_id, start.agent.agent_id);
+    assert_eq!(retry.event, start.event);
     assert_eq!(
         retry.execution_snapshot.payload.get("initialGoalObjective"),
         Some(&json!("Investigate flaky regression"))
@@ -330,6 +350,7 @@ async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
             agent_id.as_str(),
             /*idempotency_key*/ None,
             "paged run",
+            SeededAgentExecution::Inert,
         )
         .await?;
         state_db
@@ -390,7 +411,6 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         codex_home.path(),
     );
     params.cwd = Some("/tmp/client-selected-cwd".to_string());
-    params.auth_profile_ref = Some("client-selected-auth-profile".to_string());
     let context = params
         .execution_context
         .as_mut()
@@ -413,8 +433,12 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
         start.execution_snapshot.payload.get("workspaceRoots"),
         Some(&json!(["/tmp/client-root"]))
     );
+    assert_eq!(start.execution_snapshot.payload.get("authProfileRef"), None);
     assert_eq!(
-        start.execution_snapshot.payload.get("authProfileRef"),
+        start
+            .execution_snapshot
+            .payload
+            .get("authProfileIdentitySha256"),
         Some(&JsonValue::Null)
     );
     assert_eq!(
@@ -453,6 +477,75 @@ async fn agent_start_freezes_authority_from_server_config() -> Result<()> {
     assert_eq!(
         start.execution_snapshot.payload.get("serviceTier"),
         Some(&JsonValue::Null)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let mut profile_mismatch = start_params(
+        "reject mismatched profile",
+        Some("profile-mismatch".to_string()),
+        codex_home.path(),
+    );
+    profile_mismatch.auth_profile_ref = Some("client-selected-auth-profile".to_string());
+    let error = start_agent_error(&mut mcp, profile_mismatch).await?;
+    assert_eq!(
+        error
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH))
+    );
+    assert_eq!(
+        error.error.data,
+        Some(json!({
+            "errorCode": BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH,
+        }))
+    );
+
+    let mut omitted_schema = start_params(
+        "accept omitted schema",
+        Some("omitted-schema".to_string()),
+        codex_home.path(),
+    );
+    omitted_schema.version_fingerprint = None;
+    let compatible = start_agent(&mut mcp, omitted_schema).await?;
+    assert_eq!(
+        compatible.agent.version_fingerprint.as_deref(),
+        Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
+    );
+    let compatible_agent_id = compatible.agent.agent_id;
+
+    let mut schema_mismatch = start_params(
+        "reject mismatched schema",
+        Some("schema-mismatch".to_string()),
+        codex_home.path(),
+    );
+    schema_mismatch.version_fingerprint = Some("older-schema".to_string());
+    let error = start_agent_error(&mut mcp, schema_mismatch).await?;
+    assert_eq!(
+        error
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH))
+    );
+    assert_eq!(
+        agent_list(&mut mcp)
+            .await?
+            .data
+            .into_iter()
+            .map(|agent| agent.agent_id)
+            .collect::<Vec<_>>(),
+        vec![compatible_agent_id]
     );
     Ok(())
 }
@@ -749,36 +842,11 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "picked up by periodic supervisor",
+        SeededAgentExecution::Claimable {
+            cwd: codex_home.path().display().to_string(),
+        },
     )
     .await?;
-    state_db
-        .create_background_agent_execution_snapshot(&BackgroundAgentExecutionSnapshotParams {
-            run_id: agent_id.clone(),
-            snapshot_kind: "initial_execution_context".to_string(),
-            payload_json: json!({
-                "snapshotSource": "state-seeded-test",
-                "cwd": codex_home.path().display().to_string(),
-                "workspaceRoots": [codex_home.path().display().to_string()],
-                "model": "mock-model",
-                "provider": "mock_provider",
-                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-            }),
-            recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-            config_fingerprint: Some("cfg-test".to_string()),
-        })
-        .await?;
-    state_db
-        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
-            run_id: agent_id.clone(),
-            seq: 1,
-            status: StateBackgroundAgentRunStatus::Queued,
-            desired_state: StateBackgroundAgentDesiredState::Running,
-            summary: Some("Queued".to_string()),
-            pending_interaction_count: 0,
-            last_event_seq: 1,
-            payload_json: json!({"phase": "queued"}),
-        })
-        .await?;
 
     let completed =
         wait_for_agent_status(&mut mcp, agent_id.as_str(), AgentRunStatus::Completed).await?;
@@ -786,7 +854,7 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
     assert_eq!(agent.agent_id, agent_id);
     assert!(agent.thread_id.is_some());
 
-    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(20)).await?;
+    let events = agent_events_page(&mut mcp, agent_id.as_str(), /*cursor*/ None, Some(200)).await?;
     let event_types = events
         .data
         .iter()
@@ -813,6 +881,7 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "wait for approval",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -1059,6 +1128,7 @@ async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "delete then stop",
+        SeededAgentExecution::Inert,
     )
     .await?;
     drop(state_db);
@@ -1115,6 +1185,7 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "wait for approval",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -1223,7 +1294,7 @@ async fn worker_fails_when_turn_completes_without_agent_message() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()> {
+async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()> {
     let codex_home = TempDir::new()?;
     let server =
         create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
@@ -1240,8 +1311,21 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
             &format!("quota-run-{index}"),
             Some(format!("quota-idempotency-{index}")),
             &format!("quota run {index}"),
+            SeededAgentExecution::Inert,
         )
         .await?;
+        // Park the filler runs in `stopping`: they still consume an admission
+        // slot, but unlike queued/orphaned rows they are neither claimable nor
+        // reclaimable, so this exercises capacity backpressure rather than the
+        // incompatible-runtime reaper (covered by
+        // `agent_start_reclaims_capacity_stranded_by_a_runtime_upgrade`).
+        state_db
+            .update_background_agent_run_status(
+                &format!("quota-run-{index}"),
+                StateBackgroundAgentRunStatus::Stopping,
+                Some("parked by quota test"),
+            )
+            .await?;
     }
     let first_agent_id = "quota-run-0".to_string();
 
@@ -1252,7 +1336,6 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
 
     let full = initial;
     assert_eq!(full.active_run_count, full.max_active_runs_per_user);
-    assert_eq!(full.queued_run_count, full.max_active_runs_per_user);
     assert_eq!(full.available_active_run_slots, 0);
     assert!(!full.admission_allowed);
     assert_eq!(
@@ -1260,7 +1343,7 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
         vec!["active_run_limit".to_string()]
     );
     assert_eq!(
-        run_status_count(&full, AgentRunStatus::Queued),
+        run_status_count(&full, AgentRunStatus::Stopping),
         full.max_active_runs_per_user
     );
 
@@ -1274,13 +1357,21 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
     )
     .await?;
     assert_eq!(rejected.error.code, -32001);
-    assert!(
+    assert_eq!(
         rejected
             .error
-            .message
-            .contains("background agent queue is overloaded"),
-        "unexpected overloaded error: {}",
-        rejected.error.message
+            .data
+            .as_ref()
+            .and_then(|data| data.get("errorCode")),
+        Some(&json!(BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED))
+    );
+    assert_eq!(
+        rejected
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("maxActiveRuns")),
+        Some(&json!(full.max_active_runs_per_user))
     );
 
     state_db
@@ -1300,15 +1391,13 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
     assert!(available.admission_allowed);
     assert!(available.backpressure_reasons.is_empty());
 
-    let accepted = start_agent(
-        &mut mcp,
-        start_params(
-            "new run after a slot opens",
-            Some("quota-idempotency-after-slot".to_string()),
-            codex_home.path(),
-        ),
-    )
-    .await?;
+    let accepted_params = start_params(
+        "new run after a slot opens",
+        Some("quota-idempotency-after-slot".to_string()),
+        codex_home.path(),
+    );
+    let retry_params = accepted_params.clone();
+    let accepted = start_agent(&mut mcp, accepted_params).await?;
     assert_ne!(accepted.agent.agent_id, first_agent_id);
     wait_for_agent_status(
         &mut mcp,
@@ -1317,16 +1406,82 @@ async fn agent_diagnostics_reports_quota_and_overloaded_admission() -> Result<()
     )
     .await?;
 
-    let retry = start_agent(
+    let retry = start_agent(&mut mcp, retry_params).await?;
+    assert_eq!(retry.agent.agent_id, accepted.agent.agent_id);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_reclaims_capacity_stranded_by_a_runtime_upgrade() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "accepted after reclaim",
+        )?])
+        .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    // Seeded with a foreign `packageFingerprint`, exactly like runs admitted by
+    // a previous codewith build: queued, still counted against the admission
+    // quota, and unclaimable by this binary forever.
+    for index in 0..8 {
+        seed_queued_agent_run(
+            state_db.as_ref(),
+            &format!("stranded-run-{index}"),
+            Some(format!("stranded-idempotency-{index}")),
+            &format!("stranded run {index}"),
+            SeededAgentExecution::Inert,
+        )
+        .await?;
+    }
+
+    let full = agent_daemon_diagnostics(&mut mcp).await?;
+    assert_eq!(full.active_run_count, full.max_active_runs_per_user);
+    assert_eq!(full.available_active_run_slots, 0);
+    assert!(!full.admission_allowed);
+
+    // Admission must self-heal instead of failing closed forever.
+    let accepted = start_agent(
         &mut mcp,
         start_params(
-            "idempotent retry is not new pressure",
-            Some("quota-idempotency-0".to_string()),
+            "new run after a runtime upgrade",
+            Some("reclaimed-idempotency".to_string()),
             codex_home.path(),
         ),
     )
     .await?;
-    assert_eq!(retry.agent.agent_id, first_agent_id);
+    wait_for_agent_status(
+        &mut mcp,
+        accepted.agent.agent_id.as_str(),
+        AgentRunStatus::Completed,
+    )
+    .await?;
+
+    for index in 0..8 {
+        let stranded = state_db
+            .get_background_agent_run(&format!("stranded-run-{index}"))
+            .await?
+            .expect("stranded run should still be readable");
+        assert_eq!(stranded.status, StateBackgroundAgentRunStatus::Failed);
+        assert!(
+            stranded
+                .status_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("runtime package is incompatible")),
+            "unexpected status reason: {:?}",
+            stranded.status_reason
+        );
+    }
+    let reclaimed = agent_daemon_diagnostics(&mut mcp).await?;
+    assert_eq!(reclaimed.active_run_count, 0);
+    assert_eq!(
+        reclaimed.available_active_run_slots,
+        reclaimed.max_active_runs_per_user
+    );
+    assert!(reclaimed.admission_allowed);
 
     Ok(())
 }
@@ -1929,6 +2084,7 @@ async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<(
         "agent-run-cleanup-guard",
         /*idempotency_key*/ None,
         "guard nonterminal owner cleanup",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -2654,6 +2810,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         "agent-run-attach",
         /*idempotency_key*/ None,
         "attach this agent to a worktree",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -3011,6 +3168,7 @@ async fn create_background_agent_git_worktree_lease(
         agent_id,
         /*idempotency_key*/ None,
         "release a leased background-agent worktree",
+        SeededAgentExecution::Inert,
     )
     .await?;
     let branch = format!("codewith/{agent_id}");
@@ -3312,37 +3470,87 @@ async fn seed_queued_agent_run(
     agent_id: &str,
     idempotency_key: Option<String>,
     prompt: &str,
+    execution: SeededAgentExecution,
 ) -> Result<()> {
+    let start_event_payload = json!({
+        "cwd": null,
+        "prompt": prompt,
+        "promptSha256": format!("{:x}", Sha256::digest(prompt.as_bytes())),
+        "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
+        "initialGoalObjective": null,
+    });
+    let mut execution_payload = json!({
+        "snapshotSource": "agent/start",
+        "cwd": null,
+        "initialGoalObjective": null,
+        "workspaceRoots": null,
+        "approvalPolicy": null,
+        "permissionProfile": null,
+        "sandboxPolicy": null,
+        "networkPolicy": null,
+        "model": null,
+        "provider": null,
+        "serviceTier": null,
+        "mcpToolAllowlist": null,
+        "envSnapshotPolicy": "inherit-minimal",
+        "shellSnapshot": null,
+        "configSourceHashes": null,
+        "maxRuntimeSeconds": null,
+        "maxTokens": null,
+        "authProfileIdentitySha256": null,
+        "managedWorktreeId": null,
+        "configFingerprint": "cfg-test",
+        "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+        "packageFingerprint": "incompatible-test-runtime",
+        "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
+    });
+    if let SeededAgentExecution::Claimable { cwd } = execution {
+        let Some(payload) = execution_payload.as_object_mut() else {
+            anyhow::bail!("seeded execution payload should be an object");
+        };
+        payload.insert("workspaceRoots".to_string(), json!([cwd.as_str()]));
+        payload.insert("cwd".to_string(), json!(cwd));
+        payload.insert("model".to_string(), json!("mock-model"));
+        payload.insert("provider".to_string(), json!("mock_provider"));
+        payload.insert("serviceTier".to_string(), json!("default"));
+        payload.insert("approvalPolicy".to_string(), json!("never"));
+        payload.insert(
+            "packageFingerprint".to_string(),
+            json!(BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT),
+        );
+    }
+    let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.to_string(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: execution_payload,
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: Some("cfg-test".to_string()),
+    };
     state_db
-        .create_background_agent_run(&BackgroundAgentRunCreateParams {
-            id: agent_id.to_string(),
-            idempotency_key,
-            request_id: None,
-            source: "quota-test".to_string(),
-            prompt_snapshot_ref: format!("inline:{agent_id}:prompt"),
-            input_snapshot_ref: None,
-            thread_id: None,
-            thread_store_kind: "background-agent".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
-            parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: None,
-            status_reason: Some("queued by quota test".to_string()),
-            config_fingerprint: Some("cfg-test".to_string()),
-            version_fingerprint: Some("version-test".to_string()),
-        })
-        .await?;
-    state_db
-        .append_background_agent_event(
-            agent_id,
-            "agent.started",
-            &json!({
-                "cwd": null,
-                "prompt": prompt,
-                "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
-            }),
+        .admit_background_agent_run(
+            &BackgroundAgentRunCreateParams {
+                id: agent_id.to_string(),
+                idempotency_key,
+                request_id: None,
+                source: "quota-test".to_string(),
+                prompt_snapshot_ref: format!("inline:{agent_id}:prompt"),
+                input_snapshot_ref: None,
+                thread_id: None,
+                thread_store_kind: "background-agent".to_string(),
+                thread_store_id: None,
+                rollout_path: None,
+                parent_thread_id: None,
+                parent_agent_run_id: None,
+                spawn_linkage_json: None,
+                auth_profile_ref: None,
+                status_reason: Some("queued by quota test".to_string()),
+                config_fingerprint: Some("cfg-test".to_string()),
+                version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
+            },
+            &start_event_payload,
+            &execution_snapshot_params,
+            /*max_active_runs*/ 1_000,
         )
         .await?;
     Ok(())
@@ -3371,7 +3579,7 @@ fn start_params(
         spawn_linkage: None,
         auth_profile_ref: None,
         config_fingerprint: Some("cfg-test".to_string()),
-        version_fingerprint: Some("version-test".to_string()),
+        version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
         execution_context: Some(Box::new(AgentExecutionContextParams {
             workspace_roots: Some(vec![codex_home.display().to_string()]),
             approval_policy: Some(AskForApproval::Never),

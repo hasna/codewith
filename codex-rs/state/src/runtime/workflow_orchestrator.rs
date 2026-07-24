@@ -1,5 +1,12 @@
 use super::*;
+use crate::runtime::background_agents::ExistingBackgroundAgentAdmissionIdentity;
 use crate::runtime::background_agents::append_background_agent_event_in_tx;
+use crate::runtime::background_agents::background_agent_admission_identity_sha256;
+use crate::runtime::background_agents::background_agent_idempotency_key_digest;
+use crate::runtime::background_agents::count_live_or_recoverable_background_agent_runs_in_tx;
+use crate::runtime::background_agents::insert_background_agent_run_in_tx;
+use crate::runtime::background_agents::recover_or_validate_background_agent_initial_state_in_tx;
+use crate::runtime::background_agents::validate_existing_background_agent_admission_in_tx;
 use crate::runtime::workflow_automation::arm_workflow_timers_for_succeeded_step_in_tx;
 use crate::runtime::workflows::WorkflowRunEventAppend;
 use crate::runtime::workflows::append_workflow_run_event_in_tx;
@@ -471,7 +478,8 @@ async fn admit_ready_workflow_branches_in_tx(
         .saturating_sub(active_counts.branch_count)
         .min(limits.max_agents.saturating_sub(active_counts.branch_count));
     if let Some(max_active_background_agent_runs) = params.max_active_background_agent_runs {
-        let active_background_runs = active_background_agent_run_count_in_tx(tx).await?;
+        let active_background_runs =
+            count_live_or_recoverable_background_agent_runs_in_tx(tx).await?;
         capacity =
             capacity.min(max_active_background_agent_runs.saturating_sub(active_background_runs));
     }
@@ -917,22 +925,6 @@ WHERE run_id = ?
     })
 }
 
-async fn active_background_agent_run_count_in_tx(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-) -> anyhow::Result<i64> {
-    sqlx::query_scalar(
-        r#"
-SELECT COUNT(*)
-FROM background_agent_runs
-WHERE retention_state = 'active'
-  AND status NOT IN ('completed', 'failed', 'cancelled')
-        "#,
-    )
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(anyhow::Error::from)
-}
-
 async fn ready_branch_candidates_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
@@ -1098,7 +1090,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
     )
-    .bind(idempotency_key)
+    .bind(background_agent_idempotency_key_digest(idempotency_key))
     .fetch_optional(&mut **tx)
     .await
     .map_err(anyhow::Error::from)
@@ -1119,20 +1111,6 @@ async fn create_background_branch_run_if_missing_in_tx(
         now_ms,
     } = branch;
     let now = now_ms.div_euclid(1000);
-    let existing: Option<String> = sqlx::query_scalar(
-        r#"
-SELECT id
-FROM background_agent_runs
-WHERE id = ?
-        "#,
-    )
-    .bind(background_agent_run_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if existing.is_some() {
-        return Ok(false);
-    }
-
     let prompt = render_workflow_branch_prompt(WorkflowBranchPrompt {
         run_id: run.run_id.as_str(),
         step_id: candidate.step_id.as_str(),
@@ -1141,8 +1119,7 @@ WHERE id = ?
         parallel_group: candidate.parallel_group.as_deref(),
     });
     let prompt_snapshot_ref = format!("workflow:{}:step:{}:prompt", run.run_id, candidate.step_id);
-    let source = WORKFLOW_BRANCH_SOURCE.to_string();
-    let spawn_linkage_json = redact_state_json_string(&json!({
+    let spawn_linkage_json = json!({
         "schemaVersion": "workflow.branch_spawn/v0",
         "redactionVersion": 1,
         "workflowRunId": run.run_id.as_str(),
@@ -1152,69 +1129,73 @@ WHERE id = ?
         "stepRunId": candidate.step_run_id.as_str(),
         "agentId": candidate.agent_id.as_str(),
         "parallelGroup": candidate.parallel_group.as_deref(),
-    }))?;
-    sqlx::query(
-        r#"
-INSERT INTO background_agent_runs (
-    id,
-    idempotency_key,
-    request_id,
-    source,
-    prompt_snapshot_ref,
-    input_snapshot_ref,
-    thread_id,
-    thread_store_kind,
-    thread_store_id,
-    rollout_path,
-    parent_thread_id,
-    parent_agent_run_id,
-    spawn_linkage_json,
-    auth_profile_ref,
-    desired_state,
-    status,
-    status_reason,
-    config_fingerprint,
-    version_fingerprint,
-    retention_state,
-    created_at,
-    updated_at
-) VALUES (?, ?, NULL, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(background_agent_run_id)
-    .bind(redact_state_string(idempotency_key))
-    .bind(source)
-    .bind(redact_state_string(prompt_snapshot_ref.as_str()))
-    .bind(WORKFLOW_BRANCH_THREAD_STORE_KIND)
-    .bind(
-        run.source_thread_id
+    });
+    let run_params = BackgroundAgentRunCreateParams {
+        id: background_agent_run_id.to_string(),
+        idempotency_key: Some(idempotency_key.to_string()),
+        request_id: None,
+        source: WORKFLOW_BRANCH_SOURCE.to_string(),
+        prompt_snapshot_ref: prompt_snapshot_ref.clone(),
+        input_snapshot_ref: None,
+        thread_id: None,
+        thread_store_kind: WORKFLOW_BRANCH_THREAD_STORE_KIND.to_string(),
+        thread_store_id: None,
+        rollout_path: None,
+        parent_thread_id: run
+            .source_thread_id
             .as_ref()
             .map(std::string::ToString::to_string),
+        parent_agent_run_id: params.parent_agent_run_id.clone(),
+        spawn_linkage_json: Some(spawn_linkage_json),
+        auth_profile_ref: params.auth_profile_ref.clone(),
+        status_reason: Some("queued by workflow branch admission".to_string()),
+        config_fingerprint: params.config_fingerprint.clone(),
+        version_fingerprint: params.version_fingerprint.clone(),
+    };
+    let start_event_payload = json!({
+        "cwd": Value::Null,
+        "prompt": prompt,
+        "promptSnapshotRef": prompt_snapshot_ref,
+    });
+    let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: background_agent_run_id.to_string(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: branch_execution_payload(
+            run,
+            candidate,
+            model_route_json,
+            workspace_json,
+            params,
+        ),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: params.config_fingerprint.clone(),
+    };
+    let admission_identity_sha256 = background_agent_admission_identity_sha256(
+        &run_params,
+        &start_event_payload,
+        &execution_snapshot_params,
+    )?;
+    let created = validate_existing_background_agent_admission_in_tx(
+        tx,
+        idempotency_key,
+        &run_params,
+        ExistingBackgroundAgentAdmissionIdentity::AdmissionDigest(
+            admission_identity_sha256.as_str(),
+        ),
     )
-    .bind(params.parent_agent_run_id.as_deref())
-    .bind(spawn_linkage_json.as_str())
-    .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
-    .bind(BackgroundAgentDesiredState::Running.as_str())
-    .bind(BackgroundAgentRunStatus::Queued.as_str())
-    .bind(redact_state_string("queued by workflow branch admission"))
-    .bind(params.config_fingerprint.as_deref())
-    .bind(params.version_fingerprint.as_deref())
-    .bind(crate::BackgroundAgentRetentionState::Active.as_str())
-    .bind(now)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-
-    let event = append_background_agent_event_in_tx(
+    .await?
+    .is_none();
+    if created {
+        insert_background_agent_run_in_tx(tx, &run_params, now).await?;
+    }
+    let (event, _execution_snapshot_id) = recover_or_validate_background_agent_initial_state_in_tx(
         tx,
         background_agent_run_id,
-        "agent.started",
-        &json!({
-            "cwd": Value::Null,
-            "prompt": prompt,
-            "promptSnapshotRef": prompt_snapshot_ref,
-        }),
-        now,
+        &run_params,
+        admission_identity_sha256.as_str(),
+        &start_event_payload,
+        &execution_snapshot_params,
+        params.max_active_background_agent_runs.unwrap_or(i64::MAX),
     )
     .await?;
     let status_payload = json!({
@@ -1235,17 +1216,7 @@ INSERT INTO background_agent_runs (
         },
     )
     .await?;
-    insert_background_agent_execution_snapshot_in_tx(
-        tx,
-        background_agent_run_id,
-        "initial_execution_context",
-        branch_execution_payload(run, candidate, model_route_json, workspace_json, params),
-        "abort_mid_turn_resume_at_safe_boundary",
-        params.config_fingerprint.as_deref(),
-        now,
-    )
-    .await?;
-    Ok(true)
+    Ok(created)
 }
 
 async fn upsert_background_agent_status_snapshot_in_tx(
@@ -1298,58 +1269,6 @@ ON CONFLICT(run_id) DO UPDATE SET
     Ok(())
 }
 
-async fn insert_background_agent_execution_snapshot_in_tx(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-    run_id: &str,
-    snapshot_kind: &str,
-    payload_json: Value,
-    recovery_policy: &str,
-    config_fingerprint: Option<&str>,
-    now: i64,
-) -> anyhow::Result<()> {
-    let seq: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
-    )
-    .bind(run_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    sqlx::query(
-        r#"
-INSERT INTO background_agent_execution_snapshots (
-    run_id,
-    seq,
-    snapshot_kind,
-    payload_json,
-    recovery_policy,
-    config_fingerprint,
-    created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(run_id)
-    .bind(seq)
-    .bind(snapshot_kind)
-    .bind(redact_state_json_string(&payload_json)?)
-    .bind(recovery_policy)
-    .bind(config_fingerprint)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-        r#"
-UPDATE background_agent_runs
-SET last_snapshot_seq = ?, updated_at = ?
-WHERE id = ?
-        "#,
-    )
-    .bind(seq)
-    .bind(now)
-    .bind(run_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
 fn branch_execution_payload(
     run: &crate::WorkflowRun,
     candidate: &ReadyBranchCandidate,
@@ -1372,7 +1291,10 @@ fn branch_execution_payload(
         "serviceTier": model_route_json.get("service_tier"),
         "approvalPolicy": model_route_json.get("approval_policy"),
         "permissionProfile": model_route_json.get("permission_profile"),
-        "authProfileRef": params.auth_profile_ref.as_deref(),
+        "authProfileIdentitySha256": params
+            .auth_profile_ref
+            .as_deref()
+            .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes())),
         "workspace": workspace_json,
         "envSnapshotPolicy": "inherit-minimal",
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
@@ -3320,6 +3242,21 @@ WHERE plan_id = ? AND key = ?
         .expect("admission should succeed")
         .expect("run should be owned");
         assert_eq!(1, admitted.admitted.len());
+        let admitted_run_id = admitted.admitted[0].background_agent_run_id.clone();
+        assert_eq!(
+            runtime
+                .list_background_agent_events_after(
+                    admitted_run_id.as_str(),
+                    /*after_seq*/ None,
+                    /*limit*/ None,
+                )
+                .await
+                .expect("admission events should load")
+                .into_iter()
+                .map(|event| event.event_type)
+                .collect::<Vec<_>>(),
+            vec!["agent.admitted".to_string(), "agent.started".to_string()]
+        );
 
         let retry = admit_test_workflow_run_branches(
             &runtime,

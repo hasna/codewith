@@ -80,6 +80,92 @@ async fn create_run_with_id(
         .await
 }
 
+fn admission_params(
+    id: &str,
+    idempotency_key: &str,
+    auth_profile_ref: &str,
+) -> BackgroundAgentRunCreateParams {
+    BackgroundAgentRunCreateParams {
+        id: id.to_string(),
+        idempotency_key: Some(idempotency_key.to_string()),
+        request_id: Some(format!("request-{idempotency_key}")),
+        source: "admission-test".to_string(),
+        prompt_snapshot_ref: format!("inline:{idempotency_key}:prompt"),
+        input_snapshot_ref: None,
+        thread_id: Some(format!("thread-{idempotency_key}")),
+        thread_store_kind: "background-agent".to_string(),
+        thread_store_id: Some("state.sqlite".to_string()),
+        rollout_path: None,
+        parent_thread_id: Some("parent-thread".to_string()),
+        parent_agent_run_id: Some("parent-run".to_string()),
+        spawn_linkage_json: Some(json!({"agentPath": ["worker"]})),
+        auth_profile_ref: Some(auth_profile_ref.to_string()),
+        status_reason: Some("queued by admission test".to_string()),
+        config_fingerprint: Some("config-v1".to_string()),
+        version_fingerprint: Some("codewith.background-agent.admission.v1".to_string()),
+    }
+}
+
+async fn admit_run(
+    runtime: &StateRuntime,
+    params: &BackgroundAgentRunCreateParams,
+    max_active_runs: i64,
+) -> anyhow::Result<(BackgroundAgentRun, bool)> {
+    let snapshot_params = admission_snapshot_params(params);
+    let (run, created, _, _, _) = runtime
+        .admit_background_agent_run(
+            params,
+            &admission_start_payload(params),
+            &snapshot_params,
+            max_active_runs,
+        )
+        .await?;
+    Ok((run, created))
+}
+
+fn admission_start_payload(params: &BackgroundAgentRunCreateParams) -> serde_json::Value {
+    let prompt = format!(
+        "prompt for {}",
+        params
+            .idempotency_key
+            .as_deref()
+            .unwrap_or(params.id.as_str())
+    );
+    json!({
+        "cwd": "/tmp/admission-test",
+        "prompt": prompt,
+        "promptSnapshotRef": params.prompt_snapshot_ref,
+        "initialGoalObjective": "test admission",
+    })
+}
+
+fn admission_snapshot_params(
+    params: &BackgroundAgentRunCreateParams,
+) -> BackgroundAgentExecutionSnapshotParams {
+    BackgroundAgentExecutionSnapshotParams {
+        run_id: params.id.clone(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "cwd": "/tmp/admission-test",
+            "workspaceRoots": ["/tmp/admission-test"],
+            "permissionProfile": {"type": "managed"},
+            "networkPolicy": "restricted",
+            "model": "test-model",
+            "provider": "test-provider",
+            "serviceTier": "default",
+            "authProfileIdentitySha256": params.auth_profile_ref.as_deref().map(|profile| {
+                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+            }),
+            "configFingerprint": params.config_fingerprint,
+            "versionFingerprint": params.version_fingerprint,
+            "packageFingerprint": "codex-state:test",
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: params.config_fingerprint.clone(),
+    }
+}
+
 #[tokio::test]
 async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -88,21 +174,21 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
         .create_background_agent_run(&BackgroundAgentRunCreateParams {
             id: "run-duplicate".to_string(),
             idempotency_key: Some("idem-1".to_string()),
-            request_id: Some("req-duplicate".to_string()),
+            request_id: Some("req-1".to_string()),
             source: "cli".to_string(),
-            prompt_snapshot_ref: "prompt://duplicate".to_string(),
-            input_snapshot_ref: None,
-            thread_id: None,
+            prompt_snapshot_ref: "prompt://run-1".to_string(),
+            input_snapshot_ref: Some("input://run-1".to_string()),
+            thread_id: Some("thread-1".to_string()),
             thread_store_kind: "local".to_string(),
-            thread_store_id: None,
-            rollout_path: None,
-            parent_thread_id: None,
+            thread_store_id: Some("state_5.sqlite".to_string()),
+            rollout_path: Some("/tmp/rollout.jsonl".to_string()),
+            parent_thread_id: Some("parent-thread".to_string()),
             parent_agent_run_id: None,
-            spawn_linkage_json: None,
-            auth_profile_ref: None,
+            spawn_linkage_json: Some(json!({"agentPath": ["reviewer"]})),
+            auth_profile_ref: Some("profile:default".to_string()),
             status_reason: None,
-            config_fingerprint: None,
-            version_fingerprint: None,
+            config_fingerprint: Some("cfg-1".to_string()),
+            version_fingerprint: Some("version-1".to_string()),
         })
         .await?;
 
@@ -111,6 +197,1067 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
         runtime.list_background_agent_runs(/*limit*/ None).await?,
         vec![first]
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() -> anyhow::Result<()>
+{
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let first_params = admission_params("admitted-1", "admission-key", "profile-a");
+    let (first, created) =
+        admit_run(runtime.as_ref(), &first_params, /*max_active_runs*/ 2).await?;
+    assert!(created);
+
+    let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
+    let (retry, created) =
+        admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
+    assert!(!created);
+    assert_eq!(retry.id, first.id);
+    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    let events = runtime
+        .list_background_agent_events_after(first.id.as_str(), None, None)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event_type, "agent.admitted");
+    assert_eq!(events[1].event_type, "agent.started");
+    assert_ne!(
+        events[0]
+            .payload_json
+            .get("receiptKey")
+            .and_then(serde_json::Value::as_str),
+        Some("admission:admission-key")
+    );
+    assert!(
+        runtime
+            .get_latest_background_agent_execution_snapshot(first.id.as_str())
+            .await?
+            .is_some()
+    );
+    assert!(
+        runtime
+            .get_background_agent_status_snapshot(first.id.as_str())
+            .await?
+            .is_some()
+    );
+    runtime
+        .create_background_agent_execution_snapshot(&BackgroundAgentExecutionSnapshotParams {
+            run_id: first.id.clone(),
+            snapshot_kind: "worker_thread_bound".to_string(),
+            payload_json: json!({"threadId": "thread-after-admission"}),
+            recovery_policy: "resume_or_orphan".to_string(),
+            config_fingerprint: first.config_fingerprint.clone(),
+        })
+        .await?;
+    assert_eq!(
+        runtime
+            .get_background_agent_initial_execution_snapshot(first.id.as_str())
+            .await?
+            .expect("initial execution context must remain authoritative")
+            .snapshot_kind,
+        "initial_execution_context"
+    );
+    sqlx::query(
+        "DELETE FROM background_agent_lifecycle_receipts \
+         WHERE run_id = ? AND event_type = 'agent.admitted'",
+    )
+    .bind(first.id.as_str())
+    .execute(runtime.pool.as_ref())
+    .await?;
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                first.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                first.id.as_str(),
+                "supervisor-without-admission-receipt",
+                "lease-without-admission-receipt",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+            .is_none()
+    );
+    let (_, recovered) = admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
+    assert!(!recovered);
+    assert!(
+        runtime
+            .background_agent_admission_is_ready(
+                first.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    sqlx::query(
+        "DELETE FROM background_agent_execution_snapshots \
+         WHERE run_id = ? AND snapshot_kind = 'initial_execution_context'",
+    )
+    .bind(first.id.as_str())
+    .execute(runtime.pool.as_ref())
+    .await?;
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                first.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                first.id.as_str(),
+                "supervisor-after-corruption",
+                "lease-after-corruption",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-1", "admission-key", "profile-a"),
+        2,
+    )
+    .await?;
+
+    let error = admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-2", "admission-key", "profile-b"),
+        2,
+    )
+    .await
+    .expect_err("profile mismatch must not adopt the existing run");
+
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_identity_mismatch")
+    );
+    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_retry_uses_immutable_identity_after_thread_binding()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let first_params = admission_params("admitted-1", "admission-key", "profile-a");
+    let (first, created) =
+        admit_run(runtime.as_ref(), &first_params, /*max_active_runs*/ 2).await?;
+    assert!(created);
+    let generation = runtime
+        .claim_background_agent_supervisor_compatible(
+            first.id.as_str(),
+            "binding-supervisor",
+            "binding-process-lease",
+            "codewith.background-agent.admission.v1",
+            "codex-state:test",
+        )
+        .await?
+        .expect("admitted run should be claimable");
+    assert!(
+        runtime
+            .bind_background_agent_thread(&BackgroundAgentThreadBindingParams {
+                run_id: first.id.clone(),
+                supervisor_id: "binding-supervisor".to_string(),
+                generation,
+                thread_id: "bound-thread".to_string(),
+                thread_store_kind: "thread-store".to_string(),
+                thread_store_id: Some("bound-thread".to_string()),
+                rollout_path: Some("/tmp/bound-rollout.jsonl".to_string()),
+            })
+            .await?
+    );
+
+    let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
+    let (retry, created) =
+        admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
+    assert!(!created);
+    assert_eq!(retry.id, first.id);
+
+    let mut conflicting_params = retry_params;
+    conflicting_params.prompt_snapshot_ref = "inline:different:prompt".to_string();
+    let error = admit_run(
+        runtime.as_ref(),
+        &conflicting_params,
+        /*max_active_runs*/ 2,
+    )
+    .await
+    .expect_err("changed immutable admission identity must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_identity_mismatch")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_never_persists_recoverable_identity_plaintext()
+-> anyhow::Result<()> {
+    let sqlite_home = unique_temp_dir();
+    let runtime = StateRuntime::init(sqlite_home.clone(), "test-provider".to_string()).await?;
+    let idempotency_key = format!("{}{}", "sk-proj-", "a".repeat(32));
+    let auth_profile_ref = format!("{}{}", "sk-proj-", "b".repeat(32));
+    assert!(crate::local_state_string_contains_secret(&idempotency_key));
+    assert!(crate::local_state_string_contains_secret(&auth_profile_ref));
+    let mut params = admission_params(
+        "opaque-admission",
+        idempotency_key.as_str(),
+        auth_profile_ref.as_str(),
+    );
+    params.request_id = Some("opaque-admission-request".to_string());
+    params.prompt_snapshot_ref = "inline:opaque-admission:prompt".to_string();
+    params.thread_id = Some("thread-opaque-admission".to_string());
+    let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 2).await?;
+
+    assert!(created);
+    // The idempotency key is caller-controlled and opaque, so it is persisted
+    // only as a one-way digest and is never reconstructed on read.
+    let expected_digest =
+        StateRuntime::background_agent_identity_sha256(idempotency_key.as_bytes());
+    assert_eq!(
+        run.idempotency_key.as_deref(),
+        Some(expected_digest.as_str())
+    );
+    assert_ne!(
+        run.idempotency_key.as_deref(),
+        Some(idempotency_key.as_str())
+    );
+    // The auth-profile alias stays usable for config loading, but it is written
+    // through state redaction so a secret-shaped alias never lands in plaintext.
+    let expected_redacted_profile = crate::redact_local_state_string(&auth_profile_ref);
+    assert_ne!(expected_redacted_profile, auth_profile_ref);
+    assert_eq!(
+        run.auth_profile_ref.as_deref(),
+        Some(expected_redacted_profile.as_str())
+    );
+    let stored = sqlx::query_as::<_, (String, String)>(
+        "SELECT idempotency_key, auth_profile_ref FROM background_agent_runs WHERE id = ?",
+    )
+    .bind(run.id.as_str())
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(stored.0, expected_digest);
+    assert_eq!(stored.1, expected_redacted_profile);
+    assert!(!crate::local_state_string_contains_secret(&stored.0));
+    assert!(!crate::local_state_string_contains_secret(&stored.1));
+    let execution_snapshot = runtime
+        .get_background_agent_initial_execution_snapshot(run.id.as_str())
+        .await?
+        .expect("admission snapshot should exist");
+    assert_eq!(
+        execution_snapshot
+            .payload_json
+            .get("authProfileIdentitySha256"),
+        Some(&json!(StateRuntime::background_agent_identity_sha256(
+            auth_profile_ref.as_bytes()
+        )))
+    );
+    assert!(!serde_json::to_string(&execution_snapshot.payload_json)?.contains(&auth_profile_ref));
+    // The secrets doctor must never find plaintext to redact here, because
+    // admission already refused to write any.
+    let doctor_report =
+        crate::run_local_state_secrets_doctor(crate::LocalStateSecretsDoctorOptions {
+            codex_home: sqlite_home.clone(),
+            sqlite_home,
+            repair: true,
+        })
+        .await?;
+    assert_eq!(doctor_report.redacted_sqlite_cells, 0);
+    assert!(!doctor_report.has_findings());
+    let after_doctor = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("run should survive secrets repair");
+    assert_eq!(
+        after_doctor.idempotency_key.as_deref(),
+        Some(expected_digest.as_str())
+    );
+    assert_eq!(
+        after_doctor.auth_profile_ref.as_deref(),
+        Some(expected_redacted_profile.as_str())
+    );
+    // Byte-exact idempotent replay still works off the digest.
+    assert_eq!(
+        runtime
+            .get_background_agent_run_by_idempotency_key(idempotency_key.as_str())
+            .await?
+            .map(|run| run.id),
+        Some(run.id.clone())
+    );
+    assert_eq!(
+        runtime
+            .get_background_agent_run_by_idempotency_key(
+                format!("{}{}", "sk-proj-", "c".repeat(32)).as_str()
+            )
+            .await?
+            .map(|run| run.id),
+        None
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_runtime_upgrade_reclaims_stranded_admission_capacity()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let params = admission_params("stranded-run", "stranded-key", "profile:default");
+    let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1).await?;
+    assert!(created);
+
+    // The daemon dies mid-run, so the row goes to `orphaned` while still
+    // holding the single admission slot.
+    runtime
+        .claim_background_agent_supervisor(run.id.as_str(), "supervisor-old", "lease-old")
+        .await?
+        .expect("queued run should be claimable by the admitting runtime");
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+    assert_eq!(
+        runtime
+            .get_background_agent_run(run.id.as_str())
+            .await?
+            .map(|run| run.status),
+        Some(BackgroundAgentRunStatus::Orphaned)
+    );
+
+    // Operator upgrades codewith: the persisted package fingerprint no longer
+    // matches the running binary, so the row can never be claimed again.
+    let upgraded_package_fingerprint = "codex-state:test-upgraded";
+    let upgraded_version_fingerprint = params
+        .version_fingerprint
+        .as_deref()
+        .expect("admission fixtures set a version fingerprint");
+    assert_eq!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "supervisor-new",
+                "lease-new",
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        None
+    );
+    let capacity_error = admit_run(
+        runtime.as_ref(),
+        &admission_params("post-upgrade-run", "post-upgrade-key", "profile:default"),
+        /*max_active_runs*/ 1,
+    )
+    .await
+    .expect_err("the stranded run must still be holding the only admission slot");
+    assert!(
+        capacity_error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded"),
+        "unexpected error: {capacity_error}"
+    );
+
+    // Reconciliation must release the slot instead of leaking it forever.
+    assert_eq!(
+        runtime
+            .terminalize_incompatible_background_agent_runs(
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        1
+    );
+    let stranded = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("stranded run should still be readable");
+    assert_eq!(stranded.status, BackgroundAgentRunStatus::Failed);
+    assert_eq!(stranded.desired_state, BackgroundAgentDesiredState::Stopped);
+    assert!(stranded.completed_at.is_some());
+    assert!(
+        stranded
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("runtime package is incompatible")),
+        "unexpected status reason: {:?}",
+        stranded.status_reason
+    );
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM background_agent_lifecycle_receipts \
+         WHERE run_id = ? AND event_type = 'agent.failed'",
+    )
+    .bind(run.id.as_str())
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(receipts, 1);
+
+    // A repeat pass is a no-op, and new admissions succeed again.
+    assert_eq!(
+        runtime
+            .terminalize_incompatible_background_agent_runs(
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        0
+    );
+    let (recovered, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("post-upgrade-run", "post-upgrade-key", "profile:default"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+    assert_eq!(recovered.status, BackgroundAgentRunStatus::Queued);
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run_with_id(runtime.as_ref(), "legacy-incompatible").await?;
+    assert_eq!(
+        runtime.count_background_agent_runs_by_status().await?,
+        Vec::<(BackgroundAgentRunStatus, i64)>::new()
+    );
+    let (first, _) = admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-1", "admission-key-1", "profile-a"),
+        1,
+    )
+    .await?;
+    let generation = runtime
+        .claim_background_agent_supervisor(first.id.as_str(), "supervisor-1", "lease-1")
+        .await?
+        .expect("admitted run should be claimable");
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                first.id.as_str(),
+                Some("supervisor-1"),
+                generation,
+                "capacity test stop",
+                &json!({"reason": "capacity_test"}),
+            )
+            .await?
+    );
+    let error = admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-2", "admission-key-2", "profile-a"),
+        1,
+    )
+    .await
+    .expect_err("claimed stopping run must consume capacity");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded")
+    );
+    assert!(
+        runtime
+            .finalize_stopped_background_agent_process(
+                first.id.as_str(),
+                "supervisor-1",
+                generation,
+                "capacity test process stopped",
+                &json!({"reason": "capacity_test_process_stopped"}),
+            )
+            .await?
+    );
+    let (_, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-2", "admission-key-2", "profile-a"),
+        1,
+    )
+    .await?;
+    assert!(created);
+
+    runtime
+        .update_background_agent_run_status(
+            "admitted-2",
+            BackgroundAgentRunStatus::Orphaned,
+            Some("recoverable orphan"),
+        )
+        .await?;
+    let error = admit_run(
+        runtime.as_ref(),
+        &admission_params("admitted-3", "admission-key-3", "profile-a"),
+        1,
+    )
+    .await
+    .expect_err("recoverable orphan must consume capacity");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_admission_recovery_cannot_bypass_full_capacity() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let partial_params = admission_params("partial-run", "partial-key", "profile-a");
+    runtime.create_background_agent_run(&partial_params).await?;
+    let (active_run, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("active-run", "active-key", "profile-a"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+
+    let error = admit_run(
+        runtime.as_ref(),
+        &partial_params,
+        /*max_active_runs*/ 1,
+    )
+    .await
+    .expect_err("recovering a partial admission must consume capacity atomically");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded")
+    );
+    assert!(
+        runtime
+            .list_background_agent_events_after(
+                "partial-run",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
+            .await?
+            .is_empty()
+    );
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                "partial-run",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                active_run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                active_run.generation,
+                "capacity released for partial recovery",
+                &json!({"reason": "capacity_released"}),
+            )
+            .await?
+    );
+    let (recovered, created) = admit_run(
+        runtime.as_ref(),
+        &partial_params,
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(!created);
+    assert_eq!(recovered.id, "partial-run");
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(
+                "partial-run",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
+            .await?
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>(),
+        vec!["agent.admitted".to_string(), "agent.started".to_string()]
+    );
+    assert!(
+        runtime
+            .background_agent_admission_is_ready(
+                "partial-run",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_admission_recovery_requires_exact_persisted_execution_identity()
+-> anyhow::Result<()> {
+    let field_cases = [
+        ("permission missing", "permissionProfile", None),
+        (
+            "permission different",
+            "permissionProfile",
+            Some(json!({"type": "danger-full-access"})),
+        ),
+        ("model missing", "model", None),
+        ("model different", "model", Some(json!("other-model"))),
+        ("workspace missing", "workspaceRoots", None),
+        (
+            "workspace different",
+            "workspaceRoots",
+            Some(json!(["/tmp/other-workspace"])),
+        ),
+        ("provider missing", "provider", None),
+        (
+            "provider different",
+            "provider",
+            Some(json!("other-provider")),
+        ),
+        ("service tier missing", "serviceTier", None),
+        (
+            "service tier different",
+            "serviceTier",
+            Some(json!("priority")),
+        ),
+        (
+            "auth profile identity missing",
+            "authProfileIdentitySha256",
+            None,
+        ),
+        (
+            "auth profile identity different",
+            "authProfileIdentitySha256",
+            Some(json!(StateRuntime::background_agent_identity_sha256(
+                b"profile-b"
+            ))),
+        ),
+        ("package missing", "packageFingerprint", None),
+        (
+            "package different",
+            "packageFingerprint",
+            Some(json!("codex-state:other")),
+        ),
+        ("recovery policy missing", "recoveryPolicy", None),
+        (
+            "recovery policy different",
+            "recoveryPolicy",
+            Some(json!("restart_from_beginning")),
+        ),
+    ];
+    for (index, (case, field, stored_value)) in field_cases.into_iter().enumerate() {
+        let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+        let params = admission_params(
+            format!("partial-identity-{index}").as_str(),
+            format!("partial-identity-key-{index}").as_str(),
+            "profile-a",
+        );
+        runtime.create_background_agent_run(&params).await?;
+        let mut stored_snapshot = admission_snapshot_params(&params);
+        let stored_payload = stored_snapshot
+            .payload_json
+            .as_object_mut()
+            .expect("test execution snapshot must be an object");
+        match stored_value {
+            Some(value) => {
+                stored_payload.insert(field.to_string(), value);
+            }
+            None => {
+                stored_payload.remove(field);
+            }
+        }
+        runtime
+            .create_background_agent_execution_snapshot(&stored_snapshot)
+            .await?;
+
+        let error = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1)
+            .await
+            .expect_err(case);
+        assert!(
+            error
+                .to_string()
+                .contains("background_agent_admission_identity_mismatch"),
+            "{case}: {error}"
+        );
+    }
+
+    for (index, (case, recovery_policy, config_fingerprint)) in [
+        (
+            "recovery policy column different",
+            "restart_from_beginning",
+            Some("config-v1"),
+        ),
+        (
+            "config fingerprint column missing",
+            "abort_mid_turn_resume_at_safe_boundary",
+            None,
+        ),
+        (
+            "config fingerprint column different",
+            "abort_mid_turn_resume_at_safe_boundary",
+            Some("config-v2"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+        let params = admission_params(
+            format!("partial-column-{index}").as_str(),
+            format!("partial-column-key-{index}").as_str(),
+            "profile-a",
+        );
+        runtime.create_background_agent_run(&params).await?;
+        let mut stored_snapshot = admission_snapshot_params(&params);
+        stored_snapshot.recovery_policy = recovery_policy.to_string();
+        stored_snapshot.config_fingerprint = config_fingerprint.map(str::to_string);
+        runtime
+            .create_background_agent_execution_snapshot(&stored_snapshot)
+            .await?;
+
+        let error = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1)
+            .await
+            .expect_err(case);
+        assert!(
+            error
+                .to_string()
+                .contains("background_agent_admission_identity_mismatch"),
+            "{case}: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compatible_claim_rejects_persisted_runtime_package_skew() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let (run, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("package-run", "package-key", "profile-a"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                run.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:next",
+            )
+            .await?
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "newer-supervisor",
+                "newer-lease",
+                "codewith.background-agent.admission.v1",
+                "codex-state:next",
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "compatible-supervisor",
+                "compatible-lease",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let run = create_run(runtime.as_ref()).await?;
+    let diagnostics = json!({
+        "apiKey": "sk-secret-test-value",
+        "blob": "x".repeat(8 * 1024),
+    });
+
+    let first = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(1),
+            &diagnostics,
+        )
+        .await?;
+    let conflict = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(2),
+            &diagnostics,
+        )
+        .await
+        .expect_err("receipt attempt mismatch must fail");
+    assert!(
+        conflict
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
+    );
+    let redaction_collision = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(1),
+            &json!({
+                "apiKey": "sk-different-secret-value",
+                "blob": "x".repeat(8 * 1024),
+            }),
+        )
+        .await
+        .expect_err("distinct raw diagnostics must not collapse after redaction");
+    assert!(
+        redaction_collision
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
+    );
+    let retry = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(1),
+            &diagnostics,
+        )
+        .await?;
+
+    assert_eq!(retry.id, first.id);
+    assert_eq!(retry.seq, first.seq);
+    let serialized = serde_json::to_string(&retry.payload_json)?;
+    assert!(!serialized.contains("sk-secret-test-value"));
+    assert!(serialized.len() < 2 * 1024);
+    assert_eq!(
+        retry
+            .payload_json
+            .pointer("/diagnostics/truncated")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        runtime
+            .compact_background_agent_events_before_seq("run-1", first.seq + 1)
+            .await?,
+        1
+    );
+    let compacted_retry = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.testReceipt",
+            "test-receipt",
+            1,
+            Some(1),
+            &diagnostics,
+        )
+        .await?;
+    assert_eq!(compacted_retry, first);
+
+    let oversized_receipt_key = "x".repeat(300);
+    let error = runtime
+        .append_background_agent_lifecycle_receipt(
+            run.id.as_str(),
+            "agent.oversizedReceipt",
+            oversized_receipt_key.as_str(),
+            1,
+            Some(1),
+            &json!({}),
+        )
+        .await
+        .expect_err("caller-controlled receipt keys must be bounded");
+    assert!(
+        error
+            .to_string()
+            .contains("background agent lifecycle receipt key exceeds")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let run = create_run_with_id(runtime.as_ref(), "stop-retry").await?;
+    let stop_diagnostics = json!({"reason": "operator_requested"});
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                "operator requested stop",
+                &stop_diagnostics,
+            )
+            .await?
+    );
+    let first_stop_events = runtime
+        .list_background_agent_events_after(run.id.as_str(), None, None)
+        .await?;
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                "operator requested stop",
+                &stop_diagnostics,
+            )
+            .await?
+    );
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(run.id.as_str(), None, None)
+            .await?,
+        first_stop_events
+    );
+    for (status_reason, diagnostics) in [
+        ("different stop reason", stop_diagnostics.clone()),
+        (
+            "operator requested stop",
+            json!({"reason": "different_request"}),
+        ),
+    ] {
+        let error = runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                status_reason,
+                &diagnostics,
+            )
+            .await
+            .expect_err("conflicting stop receipt retry must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("background agent lifecycle receipt identity mismatch")
+        );
+    }
+
+    let delete_run = create_run_with_id(runtime.as_ref(), "delete-retry").await?;
+    assert!(
+        runtime
+            .request_background_agent_delete(delete_run.id.as_str())
+            .await?
+    );
+    let first_delete_events = runtime
+        .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+        .await?;
+    assert!(
+        runtime
+            .request_background_agent_delete(delete_run.id.as_str())
+            .await?
+    );
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+            .await?,
+        first_delete_events
+    );
+    sqlx::query("UPDATE background_agent_runs SET status_reason = ? WHERE id = ?")
+        .bind("conflicting delete reason")
+        .bind(delete_run.id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await?;
+    let error = runtime
+        .request_background_agent_delete(delete_run.id.as_str())
+        .await
+        .expect_err("conflicting persisted delete reason must fail receipt replay");
+    assert!(
+        error
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_terminal_status_receipt_replays_after_commit_and_compaction()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let run = create_run(runtime.as_ref()).await?;
+    let generation = runtime
+        .claim_background_agent_supervisor(run.id.as_str(), "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimable");
+    let event_payload = json!({"outcome": "completed"});
+    let status_payload = json!({"phase": "completed"});
+    let params = || BackgroundAgentStatusEventForSupervisorParams {
+        run_id: run.id.as_str(),
+        supervisor_id: "supervisor-1",
+        generation,
+        status: BackgroundAgentRunStatus::Completed,
+        status_reason: Some("worker completed"),
+        event_type: "agent.completed",
+        event_payload_json: &event_payload,
+        summary: Some("Completed"),
+        pending_interaction_count: 0,
+        status_payload_json: &status_payload,
+    };
+
+    let first = runtime
+        .append_background_agent_status_event_for_supervisor(params())
+        .await?
+        .expect("current generation should complete");
+    let conflict = runtime
+        .append_background_agent_status_event_for_supervisor(
+            BackgroundAgentStatusEventForSupervisorParams {
+                status_reason: Some("different terminal outcome"),
+                ..params()
+            },
+        )
+        .await
+        .expect_err("terminal receipt replay must bind the full projected operation");
+    assert!(
+        conflict
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
+    );
+    let retry = runtime
+        .append_background_agent_status_event_for_supervisor(params())
+        .await?
+        .expect("terminal receipt should replay after an ambiguous acknowledgement");
+    assert_eq!(retry, first);
+
+    assert!(
+        runtime
+            .compact_background_agent_events_before_seq(run.id.as_str(), first.seq + 1)
+            .await?
+            > 0
+    );
+    let compacted_retry = runtime
+        .append_background_agent_status_event_for_supervisor(params())
+        .await?
+        .expect("terminal receipt should survive event compaction");
+    assert_eq!(compacted_retry, first);
     Ok(())
 }
 
@@ -754,7 +1901,12 @@ async fn stale_supervisor_lease_is_orphaned_and_reclaimable() -> anyhow::Result<
             .into_iter()
             .map(|event| event.event_type)
             .collect::<Vec<_>>(),
-        vec!["agent.orphaned".to_string()]
+        vec![
+            "agent.claimed".to_string(),
+            "agent.heartbeat".to_string(),
+            "agent.orphaned".to_string(),
+            "agent.claimed".to_string()
+        ]
     );
     Ok(())
 }
@@ -819,7 +1971,7 @@ async fn orphaning_waiting_run_terminalizes_pending_interactions() -> anyhow::Re
         .expect("status snapshot should exist");
     assert_eq!(status_snapshot.status, BackgroundAgentRunStatus::Orphaned);
     assert_eq!(status_snapshot.pending_interaction_count, 0);
-    assert_eq!(status_snapshot.last_event_seq, 3);
+    assert_eq!(status_snapshot.last_event_seq, 5);
     assert_eq!(
         runtime
             .list_background_agent_events_after(
@@ -830,6 +1982,8 @@ async fn orphaning_waiting_run_terminalizes_pending_interactions() -> anyhow::Re
             .map(|event| event.event_type)
             .collect::<Vec<_>>(),
         vec![
+            "agent.claimed".to_string(),
+            "agent.heartbeat".to_string(),
             "interaction.created".to_string(),
             "interaction.workerNoLongerWaiting".to_string(),
             "agent.orphaned".to_string()
@@ -866,6 +2020,32 @@ async fn stale_generation_cannot_update_status_or_create_interactions_after_recl
             stderr_log_path: Some("/tmp/run-1.stderr.log"),
         })
         .await?;
+    let handle_conflict = runtime
+        .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+            run_id: "run-1",
+            supervisor_id: "supervisor-1",
+            generation: first_generation,
+            pid: Some(200),
+            pgid: Some(200),
+            job_id: Some("different-job"),
+            start_token: Some("different-start"),
+            stderr_log_path: Some("/tmp/different.stderr.log"),
+        })
+        .await
+        .expect_err("execution handle receipt must bind the exact operation");
+    assert!(
+        handle_conflict
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
+    );
+    assert_eq!(
+        runtime
+            .get_background_agent_run("run-1")
+            .await?
+            .expect("run should remain current")
+            .pid,
+        Some(100)
+    );
     assert_eq!(
         runtime
             .orphan_stale_background_agent_runs(Duration::ZERO)
@@ -908,6 +2088,73 @@ async fn stale_generation_cannot_update_status_or_create_interactions_after_recl
             .await?
             .is_none()
     );
+    assert!(
+        runtime
+            .append_background_agent_event_for_supervisor(
+                "run-1",
+                "supervisor-1",
+                first_generation,
+                "agent.staleEvent",
+                &json!({"generation": first_generation}),
+                /*allow_terminal_current*/ false,
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        runtime
+            .create_background_agent_execution_snapshot_for_supervisor(
+                &BackgroundAgentExecutionSnapshotParams {
+                    run_id: "run-1".to_string(),
+                    snapshot_kind: "stale_generation".to_string(),
+                    payload_json: json!({"generation": first_generation}),
+                    recovery_policy: "resume_or_orphan".to_string(),
+                    config_fingerprint: None,
+                },
+                "supervisor-1",
+                first_generation,
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        runtime
+            .upsert_background_agent_status_snapshot_for_supervisor(
+                &BackgroundAgentStatusSnapshotParams {
+                    run_id: "run-1".to_string(),
+                    seq: 99,
+                    status: BackgroundAgentRunStatus::Completed,
+                    desired_state: BackgroundAgentDesiredState::Running,
+                    summary: Some("stale completion".to_string()),
+                    pending_interaction_count: 0,
+                    last_event_seq: 99,
+                    payload_json: json!({"generation": first_generation}),
+                },
+                "supervisor-1",
+                first_generation,
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        runtime
+            .append_background_agent_status_event_for_supervisor(
+                BackgroundAgentStatusEventForSupervisorParams {
+                    run_id: "run-1",
+                    supervisor_id: "supervisor-1",
+                    generation: first_generation,
+                    status: BackgroundAgentRunStatus::Completed,
+                    status_reason: Some("stale completion"),
+                    event_type: "agent.completed",
+                    event_payload_json: &json!({"generation": first_generation}),
+                    summary: Some("Completed"),
+                    pending_interaction_count: 0,
+                    status_payload_json: &json!({"phase": "completed"}),
+                },
+            )
+            .await?
+            .is_none()
+    );
 
     let run = runtime
         .get_background_agent_run("run-1")
@@ -921,6 +2168,63 @@ async fn stale_generation_cannot_update_status_or_create_interactions_after_recl
             .await?,
         Vec::<BackgroundAgentPendingInteraction>::new()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_generation_cannot_cancel_reclaimed_run() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    create_run(runtime.as_ref()).await?;
+    let first_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-1", "lease-1")
+        .await?
+        .expect("run should be claimed");
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+    let second_generation = runtime
+        .claim_background_agent_supervisor("run-1", "supervisor-2", "lease-2")
+        .await?
+        .expect("orphaned run should be reclaimed");
+
+    assert!(
+        !runtime
+            .request_background_agent_stop_for_generation(
+                "run-1",
+                Some("supervisor-1"),
+                first_generation,
+                "stale stop",
+                &json!({"reason": "stale_stop"}),
+            )
+            .await?
+    );
+    let running = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(running.desired_state, BackgroundAgentDesiredState::Running);
+    assert_eq!(running.supervisor_id.as_deref(), Some("supervisor-2"));
+
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                "run-1",
+                Some("supervisor-2"),
+                second_generation,
+                "current stop",
+                &json!({"reason": "current_stop"}),
+            )
+            .await?
+    );
+    let stopped = runtime
+        .get_background_agent_run("run-1")
+        .await?
+        .expect("run should exist");
+    assert_eq!(stopped.desired_state, BackgroundAgentDesiredState::Stopped);
+    assert_eq!(stopped.status, BackgroundAgentRunStatus::Stopping);
     Ok(())
 }
 
@@ -1016,7 +2320,7 @@ async fn stale_stopping_run_is_cancelled_and_lease_stopped() -> anyhow::Result<(
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 3);
+    assert_eq!(status_snapshot.last_event_seq, 5);
     let interaction = runtime
         .get_background_agent_pending_interaction("pending-1")
         .await?
@@ -1369,7 +2673,25 @@ async fn delete_request_for_claimed_run_becomes_stopping_and_stale_cancelled() -
         status_snapshot.summary.as_deref(),
         Some("stop heartbeat stale")
     );
-    assert_eq!(status_snapshot.last_event_seq, 1);
+    let events = runtime
+        .list_background_agent_events_after("run-1", /*after_seq*/ None, /*limit*/ None)
+        .await?;
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "agent.claimed",
+            "agent.heartbeat",
+            "agent.deleteRequested",
+            "agent.cancelled",
+        ]
+    );
+    assert_eq!(
+        status_snapshot.last_event_seq,
+        events.last().expect("terminal event should exist").seq
+    );
 
     Ok(())
 }

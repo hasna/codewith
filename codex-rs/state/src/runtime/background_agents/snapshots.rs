@@ -170,7 +170,7 @@ LIMIT 1
             .transpose()
     }
 
-    async fn get_background_agent_execution_snapshot(
+    pub(super) async fn get_background_agent_execution_snapshot(
         &self,
         snapshot_id: i64,
     ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {

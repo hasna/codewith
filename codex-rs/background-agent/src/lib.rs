@@ -29,15 +29,36 @@ pub use codex_state::BackgroundAgentWorktreeLeaseCreateParams;
 pub use supervisor::DurableAgentSupervisor;
 pub use supervisor::DurableAgentSupervisorConfig;
 
+pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str =
+    "codewith.background-agent.admission.v1";
+pub const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
+    "background_agent_admission_capacity_exceeded";
+pub const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
+    "background_agent_admission_identity_mismatch";
+pub const BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH: &str =
+    "background_agent_admission_profile_mismatch";
+pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH: &str =
+    "background_agent_admission_schema_mismatch";
+pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str = "background_agent_daemon_incompatible";
+pub const BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT: &str = concat!(
+    "codewith.background-agent.runtime.v1:",
+    env!("CARGO_PKG_VERSION")
+);
+pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
+
 /// Durable run roster used by the background-agent supervisor.
 ///
 /// Implementations are expected to persist run identity, desired state, liveness
 /// ownership, heartbeat, and status independently from loaded app-server
 /// threads or connected clients.
 pub trait AgentRunStore {
-    fn create_run(
+    fn admit_run(
         &self,
         params: BackgroundAgentRunCreateParams,
+        start_event_payload_json: &serde_json::Value,
+        execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+        max_active_runs: i64,
     ) -> impl Future<Output = anyhow::Result<BackgroundAgentRun>> + Send;
 
     fn get_run(
@@ -66,6 +87,11 @@ pub trait AgentRunStore {
         status_reason: Option<&str>,
     ) -> impl Future<Output = anyhow::Result<bool>> + Send;
 
+    fn append_status_event_for_supervisor(
+        &self,
+        params: BackgroundAgentStatusEventForSupervisorParams<'_>,
+    ) -> impl Future<Output = anyhow::Result<Option<BackgroundAgentEvent>>> + Send;
+
     fn set_desired_state(
         &self,
         run_id: &str,
@@ -75,16 +101,32 @@ pub trait AgentRunStore {
     fn request_delete_run(&self, run_id: &str)
     -> impl Future<Output = anyhow::Result<bool>> + Send;
 
+    fn request_stop_run(
+        &self,
+        run_id: &str,
+        expected_supervisor_id: Option<&str>,
+        expected_generation: i64,
+        status_reason: &str,
+        diagnostics_json: &serde_json::Value,
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send;
+
     fn orphan_stale_runs(
         &self,
         heartbeat_timeout: Duration,
     ) -> impl Future<Output = anyhow::Result<usize>> + Send;
+
+    /// Fails closed unclaimed runs that this binary can never claim because
+    /// their persisted admission schema or runtime package fingerprint predates
+    /// the installed build, releasing the admission capacity they hold.
+    fn terminalize_incompatible_runs(&self) -> impl Future<Output = anyhow::Result<usize>> + Send;
 
     fn claim_supervisor(
         &self,
         run_id: &str,
         supervisor_id: &str,
         process_lease_id: &str,
+        required_version_fingerprint: &str,
+        required_package_fingerprint: &str,
     ) -> impl Future<Output = anyhow::Result<Option<i64>>> + Send;
 
     fn record_execution_handle(
@@ -101,11 +143,21 @@ pub trait AgentRunStore {
 }
 
 impl AgentRunStore for codex_state::StateRuntime {
-    async fn create_run(
+    async fn admit_run(
         &self,
         params: BackgroundAgentRunCreateParams,
+        start_event_payload_json: &serde_json::Value,
+        execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
+        max_active_runs: i64,
     ) -> anyhow::Result<BackgroundAgentRun> {
-        self.create_background_agent_run(&params).await
+        self.admit_background_agent_run(
+            &params,
+            start_event_payload_json,
+            execution_snapshot_params,
+            max_active_runs,
+        )
+        .await
+        .map(|(run, _created, _event, _execution_snapshot, _status_snapshot)| run)
     }
 
     async fn get_run(&self, run_id: &str) -> anyhow::Result<Option<BackgroundAgentRun>> {
@@ -138,6 +190,14 @@ impl AgentRunStore for codex_state::StateRuntime {
             .await
     }
 
+    async fn append_status_event_for_supervisor(
+        &self,
+        params: BackgroundAgentStatusEventForSupervisorParams<'_>,
+    ) -> anyhow::Result<Option<BackgroundAgentEvent>> {
+        self.append_background_agent_status_event_for_supervisor(params)
+            .await
+    }
+
     async fn set_desired_state(
         &self,
         run_id: &str,
@@ -151,9 +211,35 @@ impl AgentRunStore for codex_state::StateRuntime {
         self.request_background_agent_delete(run_id).await
     }
 
+    async fn request_stop_run(
+        &self,
+        run_id: &str,
+        expected_supervisor_id: Option<&str>,
+        expected_generation: i64,
+        status_reason: &str,
+        diagnostics_json: &serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        self.request_background_agent_stop_for_generation(
+            run_id,
+            expected_supervisor_id,
+            expected_generation,
+            status_reason,
+            diagnostics_json,
+        )
+        .await
+    }
+
     async fn orphan_stale_runs(&self, heartbeat_timeout: Duration) -> anyhow::Result<usize> {
         self.orphan_stale_background_agent_runs(heartbeat_timeout)
             .await
+    }
+
+    async fn terminalize_incompatible_runs(&self) -> anyhow::Result<usize> {
+        self.terminalize_incompatible_background_agent_runs(
+            BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+        )
+        .await
     }
 
     async fn claim_supervisor(
@@ -161,9 +247,17 @@ impl AgentRunStore for codex_state::StateRuntime {
         run_id: &str,
         supervisor_id: &str,
         process_lease_id: &str,
+        required_version_fingerprint: &str,
+        required_package_fingerprint: &str,
     ) -> anyhow::Result<Option<i64>> {
-        self.claim_background_agent_supervisor(run_id, supervisor_id, process_lease_id)
-            .await
+        self.claim_background_agent_supervisor_compatible(
+            run_id,
+            supervisor_id,
+            process_lease_id,
+            required_version_fingerprint,
+            required_package_fingerprint,
+        )
+        .await
     }
 
     async fn record_execution_handle(

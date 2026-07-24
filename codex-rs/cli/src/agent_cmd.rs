@@ -4,22 +4,25 @@ use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
+use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
 use codex_background_agent::daemon::BackgroundAgentDaemon;
 use codex_background_agent::daemon::BackgroundAgentDaemonPaths;
 use codex_background_agent::daemon::background_agent_daemon_state_dir;
 use codex_background_agent::daemon::ensure_supported_platform as ensure_background_agent_supported_platform;
 use codex_core::config::find_codex_home;
 use codex_protocol::models::PermissionProfile;
-use codex_state::BackgroundAgentDesiredState;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
 use codex_state::BackgroundAgentPendingInteractionStatus;
 use codex_state::BackgroundAgentRun;
 use codex_state::BackgroundAgentRunCreateParams;
 use codex_state::BackgroundAgentRunStatus;
-use codex_state::BackgroundAgentStatusSnapshotParams;
 use codex_state::StateRuntime;
 use codex_state::busy_retry::retry_on_busy;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -356,37 +359,10 @@ pub(crate) async fn run_agent_command(
             )
         }
         AgentSubcommand::Delete(cmd) => {
-            let existing_run = state_db
-                .get_background_agent_run(cmd.agent_id.as_str())
-                .await
-                .context("failed to read background agent before delete")?;
             let deleted = state_db
                 .request_background_agent_delete(cmd.agent_id.as_str())
                 .await
                 .context("failed to request background agent delete")?;
-            if deleted {
-                if existing_run.as_ref().is_some_and(|run| {
-                    !background_agent_status_is_terminal(run.status)
-                        && should_terminalize_unclaimed_agent_run(run)
-                }) {
-                    state_db
-                        .update_background_agent_run_status(
-                            cmd.agent_id.as_str(),
-                            BackgroundAgentRunStatus::Cancelled,
-                            Some("delete requested by codewith agent delete before worker claim"),
-                        )
-                        .await
-                        .context("failed to update background agent status after delete")?;
-                }
-                state_db
-                    .append_background_agent_event(
-                        cmd.agent_id.as_str(),
-                        "agent.deleteRequested",
-                        &json!({"reason": "cli_requested_delete"}),
-                    )
-                    .await
-                    .context("failed to append background agent delete event")?;
-            }
             let run = state_db
                 .get_background_agent_run(cmd.agent_id.as_str())
                 .await
@@ -982,6 +958,48 @@ async fn attach_agent(state_db: &StateRuntime, cmd: AgentLogsCommand) -> anyhow:
     }))
 }
 
+/// Resolves the auth-profile alias that will be admitted with the run.
+///
+/// The admitted alias is always the one config resolution honored
+/// (`Config::selected_auth_profile`), never the raw `--auth-profile` string.
+/// The previous `.or(auth_profile)` fallback could admit a raw flag value that
+/// resolution had *not* selected, so the run carried an alias no layer had
+/// vetted; this fails closed instead whenever the two disagree.
+///
+/// Scope, deliberately: this checks agreement, not existence. Config resolution
+/// validates an alias's *syntax* and trims it, and nothing in codewith — the
+/// app-server admission path included — resolves an alias against the
+/// credential store before admitting. Adding a store lookup only here would
+/// make the CLI stricter than the app-server contract this run is admitted
+/// under, so alias existence stays the worker's failure to report. Comparison
+/// is against the trimmed request so a value resolution accepted verbatim is
+/// not rejected for whitespace alone.
+fn resolve_agent_start_auth_profile(
+    runtime_context: Option<&AgentStartRuntimeContext>,
+    auth_profile: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(context) = runtime_context else {
+        if let Some(requested) = auth_profile {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: cannot resolve auth profile \
+                 `{requested}` without a loaded configuration"
+            );
+        }
+        return Ok(None);
+    };
+    if let Some(requested) = auth_profile
+        && context.auth_profile_ref.as_deref() != Some(requested.trim())
+    {
+        let resolved = context.auth_profile_ref.as_deref().unwrap_or("<none>");
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: requested auth profile `{requested}` \
+             is not the profile configuration resolved (`{resolved}`); refusing to admit an alias \
+             no configuration layer selected"
+        );
+    }
+    Ok(context.auth_profile_ref.clone())
+}
+
 async fn start_agent(
     state_db: &StateRuntime,
     cmd: AgentStartCommand,
@@ -993,19 +1011,9 @@ async fn start_agent(
     if prompt.is_empty() {
         anyhow::bail!("agent prompt must not be empty");
     }
-    if let Some(idempotency_key) = cmd.idempotency_key.as_deref()
-        && let Some(run) = retry_on_busy("load background agent idempotency key", || {
-            state_db.get_background_agent_run_by_idempotency_key(idempotency_key)
-        })
-        .await
-        .context("failed to load background agent idempotency key")?
-    {
-        let daemon = background_agent_daemon()?;
-        let daemon_output = daemon.start().await?;
-        return Ok(json!({ "agent": run_json(run), "created": false, "daemon": daemon_output }));
-    }
 
     ensure_background_agent_supported_platform()?;
+    let daemon_output = background_agent_daemon()?.start().await?;
 
     let agent_id = new_agent_id();
     let explicit_cwd = cmd.cwd.is_some();
@@ -1016,17 +1024,65 @@ async fn start_agent(
     let workspace_roots = agent_start_snapshot_workspace_roots(runtime_context, &cwd, explicit_cwd);
     let permission_profile =
         agent_start_snapshot_permission_profile(runtime_context, &cwd, explicit_cwd)?;
-    let auth_profile_ref = runtime_context
-        .and_then(|context| context.auth_profile_ref.as_deref())
-        .or(auth_profile)
-        .map(str::to_string);
-    let prompt_snapshot_ref = format!("inline:{agent_id}:prompt");
+    let auth_profile_ref = resolve_agent_start_auth_profile(runtime_context, auth_profile)?;
+    let idempotency_key = cmd.idempotency_key;
+    let prompt_snapshot_identity = idempotency_key
+        .as_deref()
+        .map(|key| StateRuntime::background_agent_identity_sha256(key.as_bytes()))
+        .unwrap_or_else(|| agent_id.clone());
+    let prompt_snapshot_ref = format!("inline:{prompt_snapshot_identity}:prompt");
+    let config_identity = json!({
+        "cwd": cwd.display().to_string(),
+        "workspaceRoots": &workspace_roots,
+        "authProfileRef": &auth_profile_ref,
+        "approvalPolicy": runtime_context.and_then(|context| context.approval_policy.as_ref()),
+        "permissionProfile": &permission_profile,
+        "model": runtime_context.and_then(|context| context.model.as_deref()),
+        "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+        "serviceTier": runtime_context.and_then(|context| context.service_tier.as_deref()),
+        "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+    });
+    let config_fingerprint = StateRuntime::background_agent_identity_sha256(
+        serde_json::to_vec(&config_identity)?.as_slice(),
+    );
+    let start_event_payload = json!({
+        "cwd": cwd.display().to_string(),
+        "prompt": prompt,
+        "promptSha256": StateRuntime::background_agent_identity_sha256(prompt.as_bytes()),
+        "promptSnapshotRef": prompt_snapshot_ref.as_str(),
+    });
+    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
+        run_id: agent_id.clone(),
+        snapshot_kind: "initial_execution_context".to_string(),
+        payload_json: json!({
+            "snapshotSource": "codewith agent start",
+            "cwd": cwd.display().to_string(),
+            "workspaceRoots": workspace_roots,
+            "approvalPolicy": runtime_context
+                .and_then(|context| context.approval_policy.as_ref()),
+            "permissionProfile": permission_profile,
+            "model": runtime_context.and_then(|context| context.model.as_deref()),
+            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
+            "serviceTier": runtime_context
+                .and_then(|context| context.service_tier.as_deref()),
+            "authProfileIdentitySha256": auth_profile_ref.as_deref().map(|profile| {
+                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+            }),
+            "managedWorktreeId": null,
+            "configFingerprint": config_fingerprint.as_str(),
+            "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        }),
+        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        config_fingerprint: Some(config_fingerprint.clone()),
+    };
     // The state DB is shared across many concurrent processes; every write
     // below retries transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT contention
     // with backoff instead of failing the whole `agent start` invocation.
     let create_params = BackgroundAgentRunCreateParams {
         id: agent_id.clone(),
-        idempotency_key: cmd.idempotency_key,
+        idempotency_key,
         request_id: None,
         source: "cli".to_string(),
         prompt_snapshot_ref: prompt_snapshot_ref.clone(),
@@ -1040,71 +1096,37 @@ async fn start_agent(
         spawn_linkage_json: None,
         auth_profile_ref: auth_profile_ref.clone(),
         status_reason: Some("queued by codewith agent start".to_string()),
-        config_fingerprint: None,
-        version_fingerprint: Some(env!("CARGO_PKG_VERSION").to_string()),
+        config_fingerprint: Some(config_fingerprint),
+        version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
     };
-    let run = retry_on_busy("create background agent run", || {
-        state_db.create_background_agent_run(&create_params)
+    retry_on_busy("reconcile stale background agents before admission", || {
+        state_db.orphan_stale_background_agent_runs(Duration::from_secs(30))
     })
     .await
-    .context("failed to create background agent")?;
-    let start_event_payload = json!({
-        "cwd": cwd.display().to_string(),
-        "prompt": prompt,
-        "promptSnapshotRef": prompt_snapshot_ref,
-    });
-    let event = retry_on_busy("append background agent start event", || {
-        state_db.append_background_agent_event(
-            agent_id.as_str(),
-            "agent.started",
-            &start_event_payload,
+    .context("failed to reconcile stale background agents before admission")?;
+    // Runs admitted by an older codewith build can never be claimed by this
+    // binary, so release the admission capacity they still hold instead of
+    // failing every future start with a capacity error.
+    retry_on_busy("release incompatible background agent admissions", || {
+        state_db.terminalize_incompatible_background_agent_runs(
+            BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
         )
     })
     .await
-    .context("failed to append background agent start event")?;
-    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
-        run_id: agent_id.clone(),
-        snapshot_kind: "initial_execution_context".to_string(),
-        payload_json: json!({
-            "snapshotSource": "codewith agent start",
-            "cwd": cwd.display().to_string(),
-            "workspaceRoots": workspace_roots,
-            "authProfileRef": auth_profile_ref,
-            "approvalPolicy": runtime_context
-                .and_then(|context| context.approval_policy.as_ref()),
-            "permissionProfile": permission_profile,
-            "model": runtime_context.and_then(|context| context.model.as_deref()),
-            "provider": runtime_context.and_then(|context| context.provider.as_deref()),
-            "serviceTier": runtime_context
-                .and_then(|context| context.service_tier.as_deref()),
-            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-        }),
-        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-        config_fingerprint: None,
-    };
-    retry_on_busy("create background agent execution snapshot", || {
-        state_db.create_background_agent_execution_snapshot(&snapshot_params)
-    })
-    .await
-    .context("failed to create background agent execution snapshot")?;
-    let status_snapshot_params = BackgroundAgentStatusSnapshotParams {
-        run_id: agent_id,
-        seq: event.seq,
-        status: BackgroundAgentRunStatus::Queued,
-        desired_state: BackgroundAgentDesiredState::Running,
-        summary: Some("Queued".to_string()),
-        pending_interaction_count: 0,
-        last_event_seq: event.seq,
-        payload_json: json!({"phase": "queued"}),
-    };
-    retry_on_busy("create background agent status snapshot", || {
-        state_db.upsert_background_agent_status_snapshot(&status_snapshot_params)
-    })
-    .await
-    .context("failed to create background agent status snapshot")?;
-    let daemon = background_agent_daemon()?;
-    let daemon_output = daemon.start().await?;
-    Ok(json!({ "agent": run_json(run), "created": true, "daemon": daemon_output }))
+    .context("failed to release incompatible background agent admissions")?;
+    let (run, created, _event, _execution_snapshot, _status_snapshot) =
+        retry_on_busy("admit background agent run", || {
+            state_db.admit_background_agent_run(
+                &create_params,
+                &start_event_payload,
+                &snapshot_params,
+                DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS,
+            )
+        })
+        .await
+        .context("failed to admit background agent")?;
+    Ok(json!({ "agent": run_json(run), "created": created, "daemon": daemon_output }))
 }
 
 fn agent_start_snapshot_workspace_roots(
@@ -1156,34 +1178,53 @@ async fn stop_agent(
     else {
         return Ok(None);
     };
-    state_db
-        .set_background_agent_desired_state(agent_id, BackgroundAgentDesiredState::Stopped)
-        .await
-        .context("failed to update background agent desired state")?;
+    if matches!(
+        run.retention_state,
+        codex_state::BackgroundAgentRetentionState::DeleteRequested
+            | codex_state::BackgroundAgentRetentionState::Deleted
+    ) {
+        return Ok(Some(run));
+    }
     if !background_agent_status_is_terminal(run.status) {
-        let terminalize_immediately = should_terminalize_unclaimed_agent_run(&run);
-        let status = if terminalize_immediately {
-            BackgroundAgentRunStatus::Cancelled
-        } else {
-            BackgroundAgentRunStatus::Stopping
-        };
-        let status_reason = if terminalize_immediately {
-            "stop requested by codewith agent stop before worker claim"
-        } else {
-            "stop requested by codewith agent stop"
-        };
-        state_db
-            .update_background_agent_run_status(agent_id, status, Some(status_reason))
+        let mut observed = run;
+        let mut stopped = false;
+        let stop_diagnostics = json!({"reason": "cli_requested_stop"});
+        for _ in 0..2 {
+            let status_reason = if should_terminalize_unclaimed_agent_run(&observed) {
+                "stop requested by codewith agent stop before worker claim"
+            } else {
+                "stop requested by codewith agent stop"
+            };
+            stopped = retry_on_busy("request fenced background agent stop", || {
+                state_db.request_background_agent_stop_for_generation(
+                    agent_id,
+                    observed.supervisor_id.as_deref(),
+                    observed.generation,
+                    status_reason,
+                    &stop_diagnostics,
+                )
+            })
             .await
-            .context("failed to update background agent status")?;
-        state_db
-            .append_background_agent_event(
-                agent_id,
-                "agent.stopRequested",
-                &json!({"reason": "cli_requested_stop"}),
-            )
-            .await
-            .context("failed to append background agent stop event")?;
+            .context("failed to request background agent stop")?;
+            if stopped {
+                break;
+            }
+            let Some(latest) = state_db
+                .get_background_agent_run(agent_id)
+                .await
+                .context("failed to reload background agent during stop")?
+            else {
+                return Ok(None);
+            };
+            if background_agent_status_is_terminal(latest.status) {
+                stopped = true;
+                break;
+            }
+            observed = latest;
+        }
+        if !stopped {
+            anyhow::bail!("background agent ownership changed during stop request");
+        }
     }
     state_db
         .get_background_agent_run(agent_id)
@@ -1200,7 +1241,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
         .count_background_agent_pending_interactions(/*status*/ None)
         .await
         .context("failed to count background agent pending interactions")?;
-    let max_active_runs_per_user = 8_i64;
+    let max_active_runs_per_user = DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
     let active_run_count = counts
         .iter()
         .filter(|(status, _)| {
@@ -1212,6 +1253,7 @@ async fn diagnostics_json(state_db: &StateRuntime) -> anyhow::Result<Value> {
                     | BackgroundAgentRunStatus::WaitingOnApproval
                     | BackgroundAgentRunStatus::WaitingOnUser
                     | BackgroundAgentRunStatus::Stopping
+                    | BackgroundAgentRunStatus::Orphaned
             )
         })
         .map(|(_, count)| *count)
@@ -1283,7 +1325,8 @@ fn background_agent_status_is_terminal(status: BackgroundAgentRunStatus) -> bool
 fn run_json(run: BackgroundAgentRun) -> Value {
     json!({
         "agentId": run.id,
-        "idempotencyKey": run.idempotency_key,
+        // Persisted as a one-way digest; the original key is never stored.
+        "idempotencyKeySha256": run.idempotency_key,
         "source": run.source,
         "promptSnapshotRef": run.prompt_snapshot_ref,
         "threadId": run.thread_id,
@@ -1438,6 +1481,63 @@ mod tests {
             )
             .expect("serialize permission profile"),
             Some(serde_json::to_value(expected_permission_profile).expect("expected profile json"))
+        );
+    }
+
+    #[test]
+    fn agent_start_admits_only_the_auth_profile_configuration_resolved() {
+        let context = |auth_profile_ref: Option<&str>| AgentStartRuntimeContext {
+            cwd: PathBuf::from("/launcher"),
+            workspace_roots: vec![PathBuf::from("/launcher")],
+            auth_profile_ref: auth_profile_ref.map(str::to_string),
+            approval_policy: None,
+            permission_profile: PermissionProfile::read_only(),
+            model: None,
+            provider: None,
+            service_tier: None,
+        };
+
+        // The resolved alias is what gets admitted, with or without the flag.
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), Some("work"))
+                .expect("agreeing profile"),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), None)
+                .expect("env-resolved profile"),
+            Some("work".to_string())
+        );
+        // Config resolution trims the alias, so whitespace alone is not a mismatch.
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), Some("  work  "))
+                .expect("trimmed profile"),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(None)), None).expect("no profile"),
+            None
+        );
+
+        // A raw flag that resolution did not select must never reach admission,
+        // which is exactly what the previous `.or(auth_profile)` fallback did.
+        for (resolved, requested) in [(Some("work"), "personal"), (None, "personal")] {
+            let error = resolve_agent_start_auth_profile(Some(&context(resolved)), Some(requested))
+                .expect_err("diverging profile must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH),
+                "unexpected error: {error}"
+            );
+        }
+        let error = resolve_agent_start_auth_profile(/*runtime_context*/ None, Some("work"))
+            .expect_err("an unloaded configuration cannot resolve a profile");
+        assert!(
+            error
+                .to_string()
+                .contains(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH),
+            "unexpected error: {error}"
         );
     }
 
