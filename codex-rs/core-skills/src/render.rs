@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Component;
 use std::path::Path;
 
@@ -166,9 +167,8 @@ pub fn build_available_skills(
 ) -> Option<AvailableSkills> {
     let all_skills = outcome.allowed_skills_for_implicit_invocation();
     let total_count = all_skills.len();
-    let skills = ordered_skills_for_budget(&all_skills)
+    let skills = starter_skills(&all_skills, MAX_STARTER_SKILLS)
         .into_iter()
-        .take(MAX_STARTER_SKILLS)
         .cloned()
         .collect::<Vec<_>>();
     if skills.is_empty() {
@@ -904,6 +904,57 @@ fn ordered_skills_for_budget(skills: &[SkillMetadata]) -> Vec<&SkillMetadata> {
     ordered
 }
 
+/// Pick the starter subset of skills rendered into the model-visible list.
+///
+/// Every session also loads the bundled `System` skills, so taking the first
+/// `limit` entries of [`ordered_skills_for_budget`] would spend the whole starter
+/// budget on built-ins and starve a workspace's own Repo/User/Admin skills. Deal
+/// the slots round-robin across the scopes that are actually present instead, so
+/// each scope keeps a share, then emit the winners in the usual deterministic
+/// order.
+fn starter_skills(skills: &[SkillMetadata], limit: usize) -> Vec<&SkillMetadata> {
+    let ordered = ordered_skills_for_budget(skills);
+    if ordered.len() <= limit {
+        return ordered;
+    }
+
+    let mut scopes: Vec<u8> = Vec::new();
+    let mut buckets: Vec<VecDeque<usize>> = Vec::new();
+    for (position, skill) in ordered.iter().enumerate() {
+        let scope = prompt_scope_rank(skill.scope);
+        match scopes.iter().position(|candidate| *candidate == scope) {
+            Some(index) => buckets[index].push_back(position),
+            None => {
+                scopes.push(scope);
+                buckets.push(VecDeque::from([position]));
+            }
+        }
+    }
+
+    let mut selected = Vec::with_capacity(limit);
+    while selected.len() < limit {
+        let mut dealt = false;
+        for bucket in &mut buckets {
+            if selected.len() == limit {
+                break;
+            }
+            if let Some(position) = bucket.pop_front() {
+                selected.push(position);
+                dealt = true;
+            }
+        }
+        if !dealt {
+            break;
+        }
+    }
+
+    selected.sort_unstable();
+    selected
+        .into_iter()
+        .map(|position| ordered[position])
+        .collect()
+}
+
 fn prompt_scope_rank(scope: SkillScope) -> u8 {
     match scope {
         SkillScope::System => 0,
@@ -1254,6 +1305,32 @@ mod tests {
     }
 
     #[test]
+    fn starter_selection_does_not_let_bundled_system_skills_starve_other_scopes() {
+        // Every session loads the bundled `System` skills, and there are already
+        // enough of them to fill `MAX_STARTER_SKILLS` on their own. The starter
+        // subset must still surface the workspace's own skills.
+        let mut skills = (0..MAX_STARTER_SKILLS)
+            .map(|index| make_skill(&format!("system-{index}"), SkillScope::System))
+            .collect::<Vec<_>>();
+        skills.push(make_skill("repo-only", SkillScope::Repo));
+        skills.push(make_skill("user-only", SkillScope::User));
+
+        let selected = starter_skills(&skills, MAX_STARTER_SKILLS)
+            .into_iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected.len(), MAX_STARTER_SKILLS);
+        assert!(selected.contains(&"repo-only"), "got {selected:?}");
+        assert!(selected.contains(&"user-only"), "got {selected:?}");
+        // Deterministic render order is still scope-then-name.
+        assert_eq!(
+            selected,
+            vec!["system-0", "system-1", "system-2", "repo-only", "user-only"]
+        );
+    }
+
+    #[test]
     fn outcome_rendering_uses_aliases_when_they_allow_more_skills_to_fit() {
         let root = test_path_buf(
             "/Users/xl/.codewith/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix",
@@ -1266,23 +1343,22 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let outcome = outcome_with_roots(skills.clone(), vec![root]);
-        let starter_skills = ordered_skills_for_budget(&skills)
+        let starter = starter_skills(&skills, MAX_STARTER_SKILLS)
             .into_iter()
-            .take(MAX_STARTER_SKILLS)
             .cloned()
             .collect::<Vec<_>>();
-        let absolute_minimum = starter_skills.iter().fold(0usize, |cost, skill| {
+        let absolute_minimum = starter.iter().fold(0usize, |cost, skill| {
             cost.saturating_add(
                 SkillLine::new(skill).minimum_cost(SkillMetadataBudget::Characters(usize::MAX)),
             )
         });
         let plan = build_alias_plan(
             &outcome,
-            &starter_skills,
+            &starter,
             SkillMetadataBudget::Characters(usize::MAX),
         )
         .expect("alias plan should build");
-        let alias_minimum = starter_skills.iter().fold(plan.table_cost, |cost, skill| {
+        let alias_minimum = starter.iter().fold(plan.table_cost, |cost, skill| {
             cost.saturating_add(
                 SkillLine::with_path(skill, render_skill_path_with_aliases(skill, &plan))
                     .minimum_cost(SkillMetadataBudget::Characters(usize::MAX)),
