@@ -1945,8 +1945,13 @@ async fn reconcile_background_agents(
         let worker_context = context.clone();
         context.task_tracker.spawn(async move {
             let run_id = run.id.clone();
-            if let Err(err) =
-                run_background_agent_worker(worker_context.clone(), run, token, None).await
+            if let Err(err) = run_background_agent_worker(
+                worker_context.clone(),
+                run,
+                token,
+                /*preclaimed_generation*/ None,
+            )
+            .await
             {
                 error!(run_id, "background agent worker failed: {err}");
                 if let Err(mark_err) =
