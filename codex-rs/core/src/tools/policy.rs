@@ -12,7 +12,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_mcp::ToolInfo;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -33,11 +32,13 @@ use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
 
-const POLICY_SCHEMA_VERSION: &str = "codewith.tool-policy/v1";
+const POLICY_SCHEMA_VERSION: &str = "codewith.tool-policy/v2";
 const POLICY_ENVELOPE_SCHEMA_VERSION: &str = "codewith.signed-tool-policy-envelope/v1";
 const TRUST_KEY_SCHEMA_VERSION: &str = "codewith.trust-key/v1";
-const BINDINGS_SCHEMA_VERSION: &str = "codewith.launch-bindings/v1";
+const BINDINGS_SCHEMA_VERSION: &str = "codewith.launch-bindings/v2";
 const POLICY_AUDIENCE: &str = "infinity-auth-capsule";
+const INFINITY_MCP_SOURCE_ID: &str = "infinity";
+const INFINITY_MCP_NAMESPACE: &str = "mcp__infinity";
 const BINDINGS_FD: i32 = 3;
 const POLICY_FD: i32 = 4;
 const POLICY_SIGNATURE_CONTEXT: &[u8] = b"hasna.infinity.codewith-tool-policy-signature/v1\0";
@@ -197,10 +198,13 @@ struct SignedPolicyEntry {
 struct SignedPolicyPayload {
     schema_version: String,
     audience: String,
+    host_id: String,
+    session_id: String,
     capsule_id: String,
     principal_sha256: String,
     lane_id: String,
     launch_nonce: String,
+    source_manifest_sha256: String,
     codewith_sha256: String,
     mode: PolicyMode,
     issued_at: DateTime<Utc>,
@@ -230,18 +234,25 @@ struct TrustKeyRecord {
 #[serde(deny_unknown_fields)]
 struct LaunchBindingsRecord {
     schema_version: String,
+    host_id: String,
+    session_id: String,
     capsule_id: String,
     principal_sha256: String,
     lane_id: String,
     launch_nonce: String,
+    source_manifest_sha256: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub(crate) struct ExpectedLaunchBindings {
+    schema_version: String,
+    host_id: String,
+    session_id: String,
     capsule_id: String,
     principal_sha256: String,
     lane_id: String,
     launch_nonce: String,
+    source_manifest_sha256: String,
 }
 
 impl TryFrom<LaunchBindingsRecord> for ExpectedLaunchBindings {
@@ -251,15 +262,22 @@ impl TryFrom<LaunchBindingsRecord> for ExpectedLaunchBindings {
         if record.schema_version != BINDINGS_SCHEMA_VERSION {
             return Err(invalid("unsupported launch-bindings schema version"));
         }
+        validate_identifier("host_id", &record.host_id)?;
+        validate_identifier("session_id", &record.session_id)?;
         validate_identifier("capsule_id", &record.capsule_id)?;
         validate_sha256_claim("principal_sha256", &record.principal_sha256)?;
         validate_identifier("lane_id", &record.lane_id)?;
-        validate_identifier("launch_nonce", &record.launch_nonce)?;
+        validate_launch_nonce(&record.launch_nonce)?;
+        validate_sha256_claim("source_manifest_sha256", &record.source_manifest_sha256)?;
         Ok(Self {
+            schema_version: record.schema_version,
+            host_id: record.host_id,
+            session_id: record.session_id,
             capsule_id: record.capsule_id,
             principal_sha256: record.principal_sha256,
             lane_id: record.lane_id,
             launch_nonce: record.launch_nonce,
+            source_manifest_sha256: record.source_manifest_sha256,
         })
     }
 }
@@ -277,6 +295,8 @@ struct VerifiedPolicyEntry {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VerifiedToolPolicy {
     digest: String,
+    launch_bindings_sha256: String,
+    source_manifest_sha256: String,
     mode: PolicyMode,
     expires_at: DateTime<Utc>,
     entries: BTreeMap<ToolName, VerifiedPolicyEntry>,
@@ -293,6 +313,8 @@ pub struct InfinityAgentSafetyAttestation {
     pub codewith_version: &'static str,
     pub binary_sha256: String,
     pub policy_sha256: String,
+    pub launch_bindings_sha256: String,
+    pub source_manifest_sha256: String,
     pub effective_config_sha256: String,
     pub route_mode: &'static str,
     pub policy_expires_at: String,
@@ -318,6 +340,8 @@ pub(crate) struct EffectiveSafetyConfiguration<'a> {
     pub route_mode: &'static str,
     pub binary_sha256: &'a str,
     pub policy_sha256: &'a str,
+    pub launch_bindings_sha256: &'a str,
+    pub source_manifest_sha256: &'a str,
     pub bridge_sources: &'a [String],
     pub allowed_tools: &'a [String],
     pub denied_capabilities: &'a [&'static str],
@@ -371,6 +395,11 @@ impl VerifiedToolPolicy {
         binary_sha256: String,
     ) -> Result<InfinityAgentSafetyAttestation, PolicyError> {
         self.ensure_active(Utc::now())?;
+        if self.mode != PolicyMode::McpOnly {
+            return Err(invalid(
+                "the legacy dynamic route mode is forbidden for Infinity Agent",
+            ));
+        }
         if !state.all_optional_features_disabled
             || !state.ephemeral_session
             || !state.named_auth_profile_absent
@@ -382,10 +411,7 @@ impl VerifiedToolPolicy {
             ));
         }
 
-        let route_mode = match self.mode {
-            PolicyMode::DynamicCliOnly => "dynamic-cli-only",
-            PolicyMode::McpOnly => "mcp-only",
-        };
+        let route_mode = "mcp-only";
         let bridge_sources = self
             .entries
             .values()
@@ -407,6 +433,8 @@ impl VerifiedToolPolicy {
             route_mode,
             binary_sha256: &binary_sha256,
             policy_sha256: &self.digest,
+            launch_bindings_sha256: &self.launch_bindings_sha256,
+            source_manifest_sha256: &self.source_manifest_sha256,
             bridge_sources: &bridge_sources,
             allowed_tools: &allowed_tools,
             denied_capabilities: &denied_capabilities,
@@ -429,12 +457,14 @@ impl VerifiedToolPolicy {
             })?;
 
         Ok(InfinityAgentSafetyAttestation {
-            schema_version: "codewith.infinity-agent-safety-attestation/v1",
+            schema_version: "codewith.infinity-agent-safety-attestation/v2",
             safe: true,
             profile: "infinity-agent",
             codewith_version: env!("CARGO_PKG_VERSION"),
             binary_sha256,
             policy_sha256: self.digest.clone(),
+            launch_bindings_sha256: self.launch_bindings_sha256.clone(),
+            source_manifest_sha256: self.source_manifest_sha256.clone(),
             effective_config_sha256: sha256_claim(&effective_bytes),
             route_mode,
             policy_expires_at: self.expires_at.to_rfc3339(),
@@ -452,25 +482,6 @@ impl VerifiedToolPolicy {
         Ok(())
     }
 
-    pub(crate) fn authorize_dynamic(&self, tool: &DynamicToolSpec) -> Result<(), PolicyError> {
-        if tool.defer_loading {
-            return Err(invalid(
-                "deferred dynamic tools are forbidden by the Infinity Agent policy",
-            ));
-        }
-        let name = ToolName::new(tool.namespace.clone(), tool.name.clone());
-        let source_id = tool
-            .namespace
-            .as_deref()
-            .ok_or_else(|| invalid("dynamic tools require a namespace"))?;
-        self.authorize_candidate_identity(
-            PolicySource::Dynamic,
-            source_id,
-            tool.name.as_str(),
-            &name,
-        )
-    }
-
     pub(crate) fn authorize_mcp(&self, tool: &ToolInfo) -> Result<(), PolicyError> {
         self.authorize_candidate_identity(
             PolicySource::Mcp,
@@ -478,27 +489,6 @@ impl VerifiedToolPolicy {
             tool.tool.name.as_ref(),
             &tool.canonical_tool_name(),
         )
-    }
-
-    pub(crate) fn validate_dynamic_manifest(
-        &self,
-        tools: &[DynamicToolSpec],
-    ) -> Result<(), PolicyError> {
-        if self.mode != PolicyMode::DynamicCliOnly {
-            return Err(invalid(
-                "dynamic tools are forbidden by the selected route mode",
-            ));
-        }
-        let mut seen = BTreeSet::new();
-        for tool in tools {
-            self.authorize_dynamic(tool)?;
-            if !seen.insert(ToolName::new(tool.namespace.clone(), tool.name.clone())) {
-                return Err(invalid(
-                    "the dynamic tool manifest contains a duplicate name",
-                ));
-            }
-        }
-        self.require_exact_names(&seen)
     }
 
     pub(crate) fn validate_mcp_manifest(&self, tools: &[ToolInfo]) -> Result<(), PolicyError> {
@@ -607,59 +597,38 @@ impl VerifiedToolPolicy {
 }
 
 #[cfg(test)]
-pub(crate) fn test_dynamic_policy(tools: &[DynamicToolSpec]) -> Arc<VerifiedToolPolicy> {
-    let mut entries = BTreeMap::new();
-    for tool in tools {
-        let namespace = tool
-            .namespace
-            .as_deref()
-            .expect("test Infinity dynamic tool requires namespace");
-        let model_tool = codex_tools::dynamic_tool_to_responses_api_tool(tool)
-            .expect("test Infinity dynamic model tool");
-        let schema = serde_json::to_value(&model_tool.parameters).expect("test model schema");
-        entries.insert(
-            ToolName::new(tool.namespace.clone(), tool.name.clone()),
-            VerifiedPolicyEntry {
-                source: PolicySource::Dynamic,
-                source_id: namespace.to_string(),
-                raw_tool_name: tool.name.clone(),
-                input_schema_sha256: schema_sha256(&schema).expect("test schema digest"),
-                tool_description_sha256: sha256_claim(model_tool.description.as_bytes()),
-                namespace_description_sha256: sha256_claim(
-                    codex_tools::default_namespace_description(namespace).as_bytes(),
-                ),
-            },
-        );
-    }
-    Arc::new(VerifiedToolPolicy {
-        digest: sha256_claim(b"test-infinity-agent-policy"),
-        mode: PolicyMode::DynamicCliOnly,
-        expires_at: Utc::now() + chrono::Duration::hours(1),
-        entries,
-    })
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn test_mcp_policy(source_id: &str, raw_tool_names: &[&str]) -> Arc<VerifiedToolPolicy> {
-    let entries = raw_tool_names
+pub(crate) fn test_mcp_policy(tools: &[ToolInfo]) -> Arc<VerifiedToolPolicy> {
+    let entries = tools
         .iter()
-        .map(|raw_tool_name| {
+        .map(|tool| {
+            assert_eq!(tool.server_name, INFINITY_MCP_SOURCE_ID);
+            assert_eq!(tool.callable_namespace, INFINITY_MCP_NAMESPACE);
+            let handler =
+                crate::tools::handlers::McpHandler::new_infinity_agent_serial(tool.clone())
+                    .expect("test Infinity MCP handler");
+            let ToolSpec::Namespace(namespace) = codex_tools::ToolExecutor::spec(&handler) else {
+                panic!("test Infinity MCP handler must expose a namespace");
+            };
+            let ResponsesApiNamespaceTool::Function(model_tool) = &namespace.tools[0];
+            let schema =
+                serde_json::to_value(&model_tool.parameters).expect("test MCP model schema");
             (
-                ToolName::new(Some(source_id.to_string()), (*raw_tool_name).to_string()),
+                tool.canonical_tool_name(),
                 VerifiedPolicyEntry {
                     source: PolicySource::Mcp,
-                    source_id: source_id.to_string(),
-                    raw_tool_name: (*raw_tool_name).to_string(),
-                    input_schema_sha256: sha256_claim(b"test-input-schema"),
-                    tool_description_sha256: sha256_claim(b"test-tool-description"),
-                    namespace_description_sha256: sha256_claim(b"test-namespace-description"),
+                    source_id: tool.server_name.clone(),
+                    raw_tool_name: tool.tool.name.to_string(),
+                    input_schema_sha256: schema_sha256(&schema).expect("test MCP schema digest"),
+                    tool_description_sha256: sha256_claim(model_tool.description.as_bytes()),
+                    namespace_description_sha256: sha256_claim(namespace.description.as_bytes()),
                 },
             )
         })
         .collect();
     Arc::new(VerifiedToolPolicy {
         digest: sha256_claim(b"test-infinity-agent-mcp-policy"),
+        launch_bindings_sha256: sha256_claim(b"test-infinity-agent-launch-bindings"),
+        source_manifest_sha256: sha256_claim(b"test-infinity-agent-source-manifest"),
         mode: PolicyMode::McpOnly,
         expires_at: Utc::now() + chrono::Duration::hours(1),
         entries,
@@ -749,19 +718,30 @@ fn validate_payload(
     if payload.audience != POLICY_AUDIENCE {
         return Err(invalid("the policy audience is invalid"));
     }
-    if payload.capsule_id != expected.capsule_id
+    if payload.mode != PolicyMode::McpOnly {
+        return Err(invalid(
+            "the legacy dynamic route mode is forbidden for Infinity Agent",
+        ));
+    }
+    if payload.host_id != expected.host_id
+        || payload.session_id != expected.session_id
+        || payload.capsule_id != expected.capsule_id
         || payload.principal_sha256 != expected.principal_sha256
         || payload.lane_id != expected.lane_id
         || payload.launch_nonce != expected.launch_nonce
+        || payload.source_manifest_sha256 != expected.source_manifest_sha256
     {
         return Err(invalid(
             "the policy launch bindings do not match the launcher channel",
         ));
     }
+    validate_identifier("host_id", &payload.host_id)?;
+    validate_identifier("session_id", &payload.session_id)?;
     validate_identifier("capsule_id", &payload.capsule_id)?;
     validate_sha256_claim("principal_sha256", &payload.principal_sha256)?;
     validate_identifier("lane_id", &payload.lane_id)?;
-    validate_identifier("launch_nonce", &payload.launch_nonce)?;
+    validate_launch_nonce(&payload.launch_nonce)?;
+    validate_sha256_claim("source_manifest_sha256", &payload.source_manifest_sha256)?;
     validate_sha256_claim("codewith_sha256", &payload.codewith_sha256)?;
     if payload.codewith_sha256 != codewith_sha256 {
         return Err(invalid(
@@ -784,6 +764,14 @@ fn validate_payload(
 
     let mut entries = BTreeMap::new();
     for signed_entry in payload.entries {
+        if signed_entry.source != PolicySource::Mcp
+            || signed_entry.source_id != INFINITY_MCP_SOURCE_ID
+            || signed_entry.canonical_tool_name.namespace.as_deref() != Some(INFINITY_MCP_NAMESPACE)
+        {
+            return Err(invalid(
+                "a policy entry must use the canonical Infinity bridge source and namespace",
+            ));
+        }
         validate_identifier("source_id", &signed_entry.source_id)?;
         validate_identifier("raw_tool_name", &signed_entry.raw_tool_name)?;
         validate_sha256_claim("input_schema_sha256", &signed_entry.input_schema_sha256)?;
@@ -801,27 +789,6 @@ fn validate_payload(
         {
             return Err(invalid("the policy contains a non-agent public tool name"));
         }
-        match (payload.mode, signed_entry.source) {
-            (PolicyMode::DynamicCliOnly, PolicySource::Dynamic) => {
-                if signed_entry.source_id != "infinity_cli"
-                    || signed_entry.canonical_tool_name.namespace.as_deref() != Some("infinity_cli")
-                {
-                    return Err(invalid(
-                        "a dynamic route must use the fixed infinity_cli source and namespace",
-                    ));
-                }
-            }
-            (PolicyMode::McpOnly, PolicySource::Mcp) => {
-                if signed_entry.canonical_tool_name.namespace.is_none() {
-                    return Err(invalid("an MCP route must use a callable namespace"));
-                }
-            }
-            _ => {
-                return Err(invalid(
-                    "a tool source is incompatible with the selected route mode",
-                ));
-            }
-        }
         let tool_name = signed_entry.canonical_tool_name.into_tool_name();
         let entry = VerifiedPolicyEntry {
             source: signed_entry.source,
@@ -838,21 +805,24 @@ fn validate_payload(
         }
     }
 
-    if payload.mode == PolicyMode::McpOnly
-        && entries
-            .values()
-            .map(|entry| entry.source_id.as_str())
-            .collect::<BTreeSet<_>>()
-            .len()
-            != 1
+    if entries
+        .values()
+        .map(|entry| entry.source_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        != 1
     {
         return Err(invalid(
             "an MCP-only policy must bind exactly one protected bridge source",
         ));
     }
 
+    let launch_bindings_bytes = serde_json_canonicalizer::to_vec(expected)
+        .map_err(|error| invalid(format!("launch bindings JCS encoding failed: {error}")))?;
     Ok(VerifiedToolPolicy {
         digest: sha256_claim(payload_bytes),
+        launch_bindings_sha256: sha256_claim(&launch_bindings_bytes),
+        source_manifest_sha256: payload.source_manifest_sha256,
         mode: payload.mode,
         expires_at: payload.expires_at,
         entries,
@@ -868,12 +838,30 @@ fn validate_tool_name(name: &CanonicalToolName) -> Result<(), PolicyError> {
 }
 
 fn validate_identifier(field: &str, value: &str) -> Result<(), PolicyError> {
-    if value.is_empty() || value.len() > MAX_IDENTIFIER_BYTES || value.chars().any(char::is_control)
-    {
+    let mut bytes = value.bytes();
+    let valid_first = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    let valid_rest = bytes.all(|byte| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || matches!(byte, b'-' | b'_' | b'.' | b':')
+    });
+    if value.len() > MAX_IDENTIFIER_BYTES || !valid_first || !valid_rest {
         return Err(invalid(format!(
-            "{field} is empty, oversized, or contains controls"
+            "{field} is not a bounded canonical lowercase ASCII identifier"
         )));
     }
+    Ok(())
+}
+
+fn validate_launch_nonce(value: &str) -> Result<(), PolicyError> {
+    if value.is_empty() || value.len() > MAX_IDENTIFIER_BYTES {
+        return Err(invalid(
+            "launch_nonce is not bounded canonical unpadded base64url",
+        ));
+    }
+    decode_canonical_base64url("launch_nonce", value)?;
     Ok(())
 }
 
@@ -1427,10 +1415,14 @@ mod tests {
 
     fn expected() -> ExpectedLaunchBindings {
         ExpectedLaunchBindings {
+            schema_version: BINDINGS_SCHEMA_VERSION.to_string(),
+            host_id: "host-1".to_string(),
+            session_id: "session-1".to_string(),
             capsule_id: "capsule-1".to_string(),
             principal_sha256: format!("sha256:{}", "1".repeat(64)),
             lane_id: "lane-1".to_string(),
-            launch_nonce: "nonce-1".to_string(),
+            launch_nonce: "bm9uY2UtMQ".to_string(),
+            source_manifest_sha256: format!("sha256:{}", "3".repeat(64)),
         }
     }
 
@@ -1544,44 +1536,6 @@ mod tests {
         })
     }
 
-    fn dynamic_tool(name: &str) -> DynamicToolSpec {
-        DynamicToolSpec {
-            namespace: Some("infinity_cli".to_string()),
-            name: name.to_string(),
-            description: "submit".to_string(),
-            input_schema: schema(),
-            defer_loading: false,
-        }
-    }
-
-    fn dynamic_model_spec(name: &str) -> ToolSpec {
-        let tool = codex_tools::dynamic_tool_to_responses_api_tool(&dynamic_tool(name))
-            .expect("dynamic model tool");
-        ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
-            name: "infinity_cli".to_string(),
-            description: codex_tools::default_namespace_description("infinity_cli"),
-            tools: vec![ResponsesApiNamespaceTool::Function(tool)],
-        })
-    }
-
-    fn dynamic_entry_for_tool(tool: &DynamicToolSpec) -> Value {
-        let namespace = tool.namespace.as_deref().expect("dynamic namespace");
-        let model_tool =
-            codex_tools::dynamic_tool_to_responses_api_tool(tool).expect("dynamic model tool");
-        let model_schema =
-            serde_json::to_value(&model_tool.parameters).expect("model schema value");
-        let namespace_description = codex_tools::default_namespace_description(namespace);
-        json!({
-            "source": "dynamic",
-            "source_id": namespace,
-            "raw_tool_name": tool.name,
-            "canonical_tool_name": {"namespace": namespace, "name": tool.name},
-            "input_schema_sha256": schema_sha256(&model_schema).expect("schema digest"),
-            "tool_description_sha256": sha256_claim(model_tool.description.as_bytes()),
-            "namespace_description_sha256": sha256_claim(namespace_description.as_bytes())
-        })
-    }
-
     fn mcp_tool_info(
         server: &str,
         namespace: &str,
@@ -1608,7 +1562,15 @@ mod tests {
 
     fn mcp_entry(server: &str, namespace: &str, name: &str) -> Value {
         let info = mcp_tool_info(server, namespace, name, name);
-        let handler = crate::tools::handlers::McpHandler::new_infinity_agent_serial(info)
+        mcp_entry_for_tool(&info)
+    }
+
+    fn valid_mcp_entry(name: &str) -> Value {
+        mcp_entry(INFINITY_MCP_SOURCE_ID, INFINITY_MCP_NAMESPACE, name)
+    }
+
+    fn mcp_entry_for_tool(info: &ToolInfo) -> Value {
+        let handler = crate::tools::handlers::McpHandler::new_infinity_agent_serial(info.clone())
             .expect("MCP handler");
         let ToolSpec::Namespace(spec) = handler.spec() else {
             panic!("MCP handler must expose a namespace");
@@ -1617,9 +1579,12 @@ mod tests {
         let schema = serde_json::to_value(&tool.parameters).expect("MCP model schema");
         json!({
             "source": "mcp",
-            "source_id": server,
-            "raw_tool_name": name,
-            "canonical_tool_name": {"namespace": namespace, "name": name},
+            "source_id": info.server_name,
+            "raw_tool_name": info.tool.name,
+            "canonical_tool_name": {
+                "namespace": info.callable_namespace,
+                "name": info.callable_name,
+            },
             "input_schema_sha256": schema_sha256(&schema).expect("schema digest"),
             "tool_description_sha256": sha256_claim(tool.description.as_bytes()),
             "namespace_description_sha256": sha256_claim(spec.description.as_bytes())
@@ -1627,15 +1592,10 @@ mod tests {
     }
 
     fn entry(source: &str, source_id: &str, namespace: &str, name: &str) -> Value {
-        let mut value = dynamic_entry_for_tool(&DynamicToolSpec {
-            namespace: Some(namespace.to_string()),
-            name: name.to_string(),
-            description: "submit".to_string(),
-            input_schema: schema(),
-            defer_loading: false,
-        });
+        let mut value = valid_mcp_entry(name);
         value["source"] = json!(source);
         value["source_id"] = json!(source_id);
+        value["canonical_tool_name"]["namespace"] = json!(namespace);
         value
     }
 
@@ -1643,10 +1603,13 @@ mod tests {
         json!({
             "schema_version": POLICY_SCHEMA_VERSION,
             "audience": POLICY_AUDIENCE,
+            "host_id": "host-1",
+            "session_id": "session-1",
             "capsule_id": "capsule-1",
             "principal_sha256": format!("sha256:{}", "1".repeat(64)),
             "lane_id": "lane-1",
-            "launch_nonce": "nonce-1",
+            "launch_nonce": "bm9uY2UtMQ",
+            "source_manifest_sha256": format!("sha256:{}", "3".repeat(64)),
             "codewith_sha256": codewith_digest(),
             "mode": mode,
             "issued_at": "2026-07-10T00:00:00Z",
@@ -1687,29 +1650,31 @@ mod tests {
     }
 
     #[test]
-    fn infinity_agent_policy_verifies_and_authorizes_exact_dynamic_schema() {
-        let bytes = envelope(&payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
-        ));
+    fn infinity_agent_policy_verifies_and_authorizes_exact_mcp_schema() {
+        let info = mcp_tool_info(
+            INFINITY_MCP_SOURCE_ID,
+            INFINITY_MCP_NAMESPACE,
+            "infinity_run_submit",
+            "infinity_run_submit",
+        );
+        let bytes = envelope(&payload(vec![mcp_entry_for_tool(&info)], "mcp-only"));
         let policy =
             verify_policy_material(&bytes, &key_bytes(), &expected(), &codewith_digest(), now())
                 .expect("valid policy");
-        let dynamic = dynamic_tool("infinity_run_submit");
-        assert_eq!(policy.validate_dynamic_manifest(&[dynamic]), Ok(()));
         assert_eq!(
-            policy.validate_model_visible_manifest(&[dynamic_model_spec("infinity_run_submit")]),
+            policy.validate_mcp_manifest(std::slice::from_ref(&info)),
+            Ok(())
+        );
+        let handler = crate::tools::handlers::McpHandler::new_infinity_agent_serial(info)
+            .expect("MCP handler");
+        assert_eq!(
+            policy.validate_model_visible_manifest(&[handler.spec()]),
             Ok(vec![ToolName::namespaced(
-                "infinity_cli",
+                INFINITY_MCP_NAMESPACE,
                 "infinity_run_submit"
             )])
         );
-        assert_eq!(policy.mode(), PolicyMode::DynamicCliOnly);
+        assert_eq!(policy.mode(), PolicyMode::McpOnly);
     }
 
     #[test]
@@ -1725,50 +1690,45 @@ mod tests {
                 )
             })
             .collect::<Map<String, Value>>();
-        let tool = DynamicToolSpec {
-            namespace: Some("infinity_cli".to_string()),
-            name: "infinity_run_submit".to_string(),
-            description: "submit".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": properties,
-                "additionalProperties": false
-            }),
-            defer_loading: false,
-        };
-        let signed_entry = dynamic_entry_for_tool(&tool);
+        let mut tool = mcp_tool_info(
+            INFINITY_MCP_SOURCE_ID,
+            INFINITY_MCP_NAMESPACE,
+            "infinity_run_submit",
+            "infinity_run_submit",
+        );
+        tool.tool.input_schema = Arc::new(rmcp::model::object(json!({
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false
+        })));
+        let signed_entry = mcp_entry_for_tool(&tool);
         assert_ne!(
             signed_entry["input_schema_sha256"],
-            json!(schema_sha256(&tool.input_schema).expect("raw schema digest")),
+            json!(
+                schema_sha256(&Value::Object((*tool.tool.input_schema).clone()))
+                    .expect("raw schema digest")
+            ),
             "fixture must exercise model schema normalization rather than raw hashing"
         );
-        let bytes = envelope(&payload(vec![signed_entry], "dynamic-cli-only"));
+        let bytes = envelope(&payload(vec![signed_entry], "mcp-only"));
         let policy =
             verify_policy_material(&bytes, &key_bytes(), &expected(), &codewith_digest(), now())
                 .expect("valid large-schema policy");
         assert_eq!(
-            policy.validate_dynamic_manifest(std::slice::from_ref(&tool)),
+            policy.validate_mcp_manifest(std::slice::from_ref(&tool)),
             Ok(())
         );
 
-        let model_tool =
-            codex_tools::dynamic_tool_to_responses_api_tool(&tool).expect("model tool");
-        let spec = ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
-            name: "infinity_cli".to_string(),
-            description: codex_tools::default_namespace_description("infinity_cli"),
-            tools: vec![ResponsesApiNamespaceTool::Function(model_tool)],
-        });
+        let spec = crate::tools::handlers::McpHandler::new_infinity_agent_serial(tool.clone())
+            .expect("MCP handler")
+            .spec();
         assert!(policy.validate_model_visible_manifest(&[spec]).is_ok());
 
         let mut tampered = tool;
-        tampered.description = "untrusted prompt injection".to_string();
-        let tampered_model = codex_tools::dynamic_tool_to_responses_api_tool(&tampered)
-            .expect("tampered model tool");
-        let tampered_spec = ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
-            name: "infinity_cli".to_string(),
-            description: codex_tools::default_namespace_description("infinity_cli"),
-            tools: vec![ResponsesApiNamespaceTool::Function(tampered_model)],
-        });
+        tampered.tool.description = Some("untrusted prompt injection".into());
+        let tampered_spec = crate::tools::handlers::McpHandler::new_infinity_agent_serial(tampered)
+            .expect("tampered MCP handler")
+            .spec();
         assert!(
             policy
                 .validate_model_visible_manifest(&[tampered_spec])
@@ -1788,15 +1748,7 @@ mod tests {
 
     #[test]
     fn infinity_agent_policy_binds_key_id_base64url_and_signature_context() {
-        let policy_payload = payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
-        );
+        let policy_payload = payload(vec![valid_mcp_entry("infinity_run_submit")], "mcp-only");
         let valid = envelope(&policy_payload);
 
         let mut wrong_key: Value = serde_json::from_slice(&valid).expect("envelope value");
@@ -1862,15 +1814,7 @@ mod tests {
 
     #[test]
     fn infinity_agent_policy_rejects_noncanonical_signed_payload() {
-        let value = payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
-        );
+        let value = payload(vec![valid_mcp_entry("infinity_run_submit")], "mcp-only");
         let raw = serde_json::to_vec_pretty(&value).expect("pretty payload");
         let error = verify_policy_material(
             &envelope_for_raw_payload(&raw),
@@ -1886,13 +1830,8 @@ mod tests {
     #[test]
     fn infinity_agent_policy_rejects_tamper_and_wrong_binding() {
         let mut bytes = envelope(&payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
+            vec![valid_mcp_entry("infinity_run_submit")],
+            "mcp-only",
         ));
         let position = bytes
             .iter()
@@ -1907,13 +1846,8 @@ mod tests {
         let mut wrong = expected();
         wrong.lane_id = "lane-2".to_string();
         let clean = envelope(&payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
+            vec![valid_mcp_entry("infinity_run_submit")],
+            "mcp-only",
         ));
         assert!(
             verify_policy_material(&clean, &key_bytes(), &wrong, &codewith_digest(), now())
@@ -1924,16 +1858,11 @@ mod tests {
     #[test]
     fn infinity_agent_policy_rejects_nonce_replay_for_a_new_launch() {
         let bytes = envelope(&payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
+            vec![valid_mcp_entry("infinity_run_submit")],
+            "mcp-only",
         ));
         let mut second_launch = expected();
-        second_launch.launch_nonce = "nonce-2".to_string();
+        second_launch.launch_nonce = "bm9uY2UtMg".to_string();
         let error = verify_policy_material(
             &bytes,
             &key_bytes(),
@@ -1947,15 +1876,10 @@ mod tests {
 
     #[test]
     fn infinity_agent_policy_rejects_expired_duplicate_and_unknown_data() {
-        let signed_entry = entry(
-            "dynamic",
-            "infinity_cli",
-            "infinity_cli",
-            "infinity_run_submit",
-        );
+        let signed_entry = valid_mcp_entry("infinity_run_submit");
         let duplicate = envelope(&payload(
             vec![signed_entry.clone(), signed_entry],
-            "dynamic-cli-only",
+            "mcp-only",
         ));
         assert!(
             verify_policy_material(
@@ -1968,15 +1892,7 @@ mod tests {
             .is_err()
         );
 
-        let mut expired_payload = payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
-        );
+        let mut expired_payload = payload(vec![valid_mcp_entry("infinity_run_submit")], "mcp-only");
         expired_payload["expires_at"] = json!("2026-07-10T00:15:00Z");
         assert!(
             verify_policy_material(
@@ -1989,15 +1905,7 @@ mod tests {
             .is_err()
         );
 
-        let mut unknown = payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
-        );
+        let mut unknown = payload(vec![valid_mcp_entry("infinity_run_submit")], "mcp-only");
         unknown["extra"] = json!(true);
         assert!(
             verify_policy_material(
@@ -2024,10 +1932,7 @@ mod tests {
             "exec_command",
             "manage_auth_profiles",
         ] {
-            let bytes = envelope(&payload(
-                vec![entry("dynamic", "infinity_cli", "infinity_cli", name)],
-                "dynamic-cli-only",
-            ));
+            let bytes = envelope(&payload(vec![valid_mcp_entry(name)], "mcp-only"));
             let error = verify_policy_material(
                 &bytes,
                 &key_bytes(),
@@ -2043,13 +1948,8 @@ mod tests {
     #[test]
     fn infinity_agent_policy_rechecks_expiry_before_each_turn() {
         let bytes = envelope(&payload(
-            vec![entry(
-                "dynamic",
-                "infinity_cli",
-                "infinity_cli",
-                "infinity_run_submit",
-            )],
-            "dynamic-cli-only",
+            vec![valid_mcp_entry("infinity_run_submit")],
+            "mcp-only",
         ));
         let policy =
             verify_policy_material(&bytes, &key_bytes(), &expected(), &codewith_digest(), now())
@@ -2116,14 +2016,135 @@ mod tests {
         let error =
             verify_policy_material(&bytes, &key_bytes(), &expected(), &codewith_digest(), now())
                 .expect_err("two protected bridge sources must fail closed");
-        assert!(error.to_string().contains("exactly one protected bridge"));
+        assert!(error.to_string().contains("canonical Infinity bridge"));
+    }
+
+    #[test]
+    fn infinity_agent_policy_rejects_legacy_dynamic_route() {
+        let bytes = envelope(&payload(
+            vec![entry(
+                "dynamic",
+                "infinity_cli",
+                "infinity_cli",
+                "infinity_run_submit",
+            )],
+            "dynamic-cli-only",
+        ));
+        let error =
+            verify_policy_material(&bytes, &key_bytes(), &expected(), &codewith_digest(), now())
+                .expect_err("AuthCapsule sessions must reject client-supplied dynamic tools");
+        assert!(error.to_string().contains("route mode"));
+    }
+
+    #[test]
+    fn infinity_agent_policy_rejects_mcp_source_and_namespace_aliases() {
+        for (source, namespace) in [
+            ("Infinity", "mcp__Infinity"),
+            ("infinity_alias", "mcp__infinity_alias"),
+            ("infinity", "mcp__future"),
+            ("infinity", "MCP__INFINITY"),
+        ] {
+            let bytes = envelope(&payload(
+                vec![mcp_entry(source, namespace, "infinity_run_get")],
+                "mcp-only",
+            ));
+            let error = verify_policy_material(
+                &bytes,
+                &key_bytes(),
+                &expected(),
+                &codewith_digest(),
+                now(),
+            )
+            .expect_err("only the canonical Infinity bridge identity is admissible");
+            assert!(
+                error.to_string().contains("canonical Infinity bridge"),
+                "unexpected error for {source}/{namespace}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn infinity_agent_policy_requires_exact_runtime_and_source_bindings() {
+        let value = payload(vec![valid_mcp_entry("infinity_run_get")], "mcp-only");
+
+        verify_policy_material(
+            &envelope(&value),
+            &key_bytes(),
+            &expected(),
+            &codewith_digest(),
+            now(),
+        )
+        .expect("v2 policy bound to the exact launcher channel must verify");
+
+        for (field, replacement) in [
+            ("host_id", json!("host-2")),
+            ("session_id", json!("session-2")),
+            ("capsule_id", json!("capsule-2")),
+            (
+                "source_manifest_sha256",
+                json!(format!("sha256:{}", "4".repeat(64))),
+            ),
+        ] {
+            let mut mismatched = value.clone();
+            mismatched[field] = replacement;
+            let error = verify_policy_material(
+                &envelope(&mismatched),
+                &key_bytes(),
+                &expected(),
+                &codewith_digest(),
+                now(),
+            )
+            .expect_err("every runtime and source binding must match fd 3 exactly");
+            assert!(
+                error.to_string().contains("launch bindings"),
+                "unexpected mismatch error for {field}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn infinity_agent_policy_rejects_stale_v1_contract() {
+        let mut value = payload(vec![valid_mcp_entry("infinity_run_get")], "mcp-only");
+        value["schema_version"] = json!("codewith.tool-policy/v1");
+        let error = verify_policy_material(
+            &envelope(&value),
+            &key_bytes(),
+            &expected(),
+            &codewith_digest(),
+            now(),
+        )
+        .expect_err("stale v1 policy must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported policy schema version")
+        );
+    }
+
+    #[test]
+    fn infinity_agent_policy_preserves_case_sensitive_canonical_nonce() {
+        let nonce = "bm9uY2UgYnl0ZXM";
+        let mut expected = expected();
+        expected.launch_nonce = nonce.to_string();
+        let mut value = payload(vec![valid_mcp_entry("infinity_run_get")], "mcp-only");
+        value["launch_nonce"] = json!(nonce);
+
+        verify_policy_material(
+            &envelope(&value),
+            &key_bytes(),
+            &expected,
+            &codewith_digest(),
+            now(),
+        )
+        .expect("canonical base64url nonce is case-sensitive, not a lowercase identifier");
     }
 
     #[test]
     fn infinity_agent_policy_launch_bindings_are_closed_and_duplicate_rejecting() {
         let valid = format!(
-            r#"{{"schema_version":"{BINDINGS_SCHEMA_VERSION}","capsule_id":"capsule-1","principal_sha256":"sha256:{}","lane_id":"lane-1","launch_nonce":"nonce-1"}}"#,
-            "1".repeat(64)
+            r#"{{"schema_version":"{BINDINGS_SCHEMA_VERSION}","host_id":"host-1","session_id":"session-1","capsule_id":"capsule-1","principal_sha256":"sha256:{}","lane_id":"lane-1","launch_nonce":"bm9uY2UtMQ","source_manifest_sha256":"sha256:{}"}}"#,
+            "1".repeat(64),
+            "3".repeat(64),
         );
         assert_eq!(parse_launch_bindings(valid.as_bytes()), Ok(expected()));
         assert!(parse_launch_bindings(format!("{valid}\n{{}}").as_bytes()).is_err());
@@ -2141,8 +2162,76 @@ mod tests {
     }
 
     #[test]
+    fn infinity_agent_launch_bindings_require_host_session_and_source_manifest() {
+        let value = json!({
+            "schema_version": "codewith.launch-bindings/v2",
+            "host_id": "host-1",
+            "session_id": "session-1",
+            "capsule_id": "capsule-1",
+            "principal_sha256": format!("sha256:{}", "1".repeat(64)),
+            "lane_id": "lane-1",
+            "launch_nonce": "bm9uY2UtMQ",
+            "source_manifest_sha256": format!("sha256:{}", "3".repeat(64)),
+        });
+        let parsed = parse_launch_bindings(
+            &serde_json_canonicalizer::to_vec(&value).expect("canonical launch bindings"),
+        )
+        .expect("v2 launch bindings must carry exact runtime and source identity");
+        assert_eq!(
+            serde_json::to_value(parsed).expect("serialized verified launch bindings"),
+            value,
+            "the attested launch-binding digest must cover the complete v2 record"
+        );
+
+        for field in ["host_id", "session_id", "source_manifest_sha256"] {
+            let mut missing = value.clone();
+            missing
+                .as_object_mut()
+                .expect("bindings object")
+                .remove(field);
+            assert!(
+                parse_launch_bindings(
+                    &serde_json_canonicalizer::to_vec(&missing)
+                        .expect("canonical incomplete bindings"),
+                )
+                .is_err(),
+                "missing {field} must fail closed"
+            );
+        }
+
+        for field in ["host_id", "session_id", "capsule_id", "lane_id"] {
+            let mut aliased = value.clone();
+            aliased[field] = json!("CaseAlias");
+            let error = parse_launch_bindings(
+                &serde_json_canonicalizer::to_vec(&aliased)
+                    .expect("canonical case-aliased bindings"),
+            )
+            .expect_err("identity case aliases must fail closed");
+            assert!(
+                error.to_string().contains("canonical lowercase ASCII"),
+                "unexpected case-alias error for {field}: {error}"
+            );
+        }
+
+        let mut padded_nonce = value;
+        padded_nonce["launch_nonce"] = json!("bm9uY2UgYnl0ZXM=");
+        let error = parse_launch_bindings(
+            &serde_json_canonicalizer::to_vec(&padded_nonce)
+                .expect("canonical padded-nonce bindings"),
+        )
+        .expect_err("padded base64url nonce must fail closed");
+        assert!(error.to_string().contains("launch_nonce"));
+    }
+
+    #[test]
     fn infinity_agent_safety_attestation_is_machine_readable_and_digest_bound() {
-        let policy = test_dynamic_policy(&[dynamic_tool("infinity_run_submit")]);
+        let tool = mcp_tool_info(
+            INFINITY_MCP_SOURCE_ID,
+            INFINITY_MCP_NAMESPACE,
+            "infinity_run_submit",
+            "infinity_run_submit",
+        );
+        let policy = test_mcp_policy(&[tool]);
         let attestation = policy
             .safety_attestation_with_binary_sha256(
                 EffectiveSafetyState {
@@ -2159,13 +2248,19 @@ mod tests {
 
         assert!(attestation.safe);
         assert_eq!(attestation.profile, "infinity-agent");
-        assert_eq!(attestation.route_mode, "dynamic-cli-only");
+        assert_eq!(
+            attestation.schema_version,
+            "codewith.infinity-agent-safety-attestation/v2"
+        );
+        assert_eq!(attestation.route_mode, "mcp-only");
         assert_eq!(
             attestation.allowed_tools,
-            vec!["infinity_cli/infinity_run_submit"]
+            vec!["mcp__infinity/infinity_run_submit"]
         );
         assert!(attestation.binary_sha256.starts_with("sha256:"));
         assert!(attestation.policy_sha256.starts_with("sha256:"));
+        assert!(attestation.launch_bindings_sha256.starts_with("sha256:"));
+        assert!(attestation.source_manifest_sha256.starts_with("sha256:"));
         assert!(attestation.effective_config_sha256.starts_with("sha256:"));
         assert_eq!(
             value.get("bridgeProtection").and_then(Value::as_str),
@@ -2178,7 +2273,13 @@ mod tests {
 
     #[test]
     fn infinity_agent_safety_attestation_fails_on_effective_config_drift() {
-        let policy = test_dynamic_policy(&[dynamic_tool("infinity_run_submit")]);
+        let tool = mcp_tool_info(
+            INFINITY_MCP_SOURCE_ID,
+            INFINITY_MCP_NAMESPACE,
+            "infinity_run_submit",
+            "infinity_run_submit",
+        );
+        let policy = test_mcp_policy(&[tool]);
 
         let error = policy
             .safety_attestation_with_binary_sha256(

@@ -7,15 +7,22 @@ Audited release: installed `codewith 0.1.63` at
 `hasna/codewith` main commit
 `9f0883e28b6c38834f0ffca4fa346d610e8e1c0f` from 2026-07-10.
 
+Implementation addendum (2026-07-24): the v2 native policy contract below
+supersedes this audit's earlier dual-route recommendation. AuthCapsule sessions
+accept only the fixed, system-pinned `infinity` MCP bridge under namespace
+`mcp__infinity`; app-server dynamic tools remain historical audit evidence and
+are not an admissible Infinity Agent route.
+
 ## Decision
 
-Codewith can consume Infinity MCP with configuration only. A safe CLI-first
-integration can reuse existing Codewith app-server dynamic tools: a trusted
-Infinity client receives typed `item/tool/call` requests and relays them to the
-external OS/VM-isolated protected edge. Only that edge launches the pinned
-`infinity` executable from a static argv template, never through a shell;
-neither Codewith nor the app-server client spawns it or holds Infinity operator
-credential, bearer, PoP-key, or mTLS material.
+Codewith can consume Infinity MCP with configuration only. The original audit
+also found that an isolated CLI-first prototype could reuse existing Codewith
+app-server dynamic tools. That finding is retained below as historical
+evidence, but the v2 AuthCapsule production contract supersedes it: only the
+fixed `infinity` MCP source is admissible. The protected edge alone launches
+the pinned `infinity` executable from a static argv template, never through a
+shell; Codewith does not hold Infinity operator credential, bearer, PoP-key, or
+mTLS material.
 
 There is an important existing no-host-environment path. Ordinary headless exec
 can run as:
@@ -57,8 +64,8 @@ current behavior) and `infinity-agent` (fail closed). Install a system
 requirement forcing `infinity-agent` only on dedicated subscription/native
 AuthCapsule hosts. Ordinary Codewith running inside E2B/Daytona task sandboxes
 keeps `full`, including normal shell/edit tools. `infinity-agent` registers only
-client-supplied dynamic Infinity CLI tools or Infinity MCP tools whose origin,
-canonical name, and input-schema digest match a capsule-signed manifest. It
+Infinity MCP tools whose fixed origin, canonical name, and input-schema digest
+match a capsule-signed manifest. It
 filters both the model-visible list and runtime registry before code-mode
 nesting, then rechecks expiry and policy membership at dispatch. Use no
 environment as a second independent guard. No other Codewith feature work is
@@ -81,9 +88,10 @@ closed unless the effective profile is `infinity-agent`, every optional feature
 and external instruction source is disabled, the session is ephemeral, named
 auth profiles are absent, MCP credentials are forbidden, and the configured
 bridge sources exactly match the signed route. Success is one JSON object with
-`safe: true`, Codewith version, executable/policy/effective-config SHA-256
-claims, route mode, expiry, exact bridge sources and tool allowlist, plus the
-explicit denied-capability set. The supervisor must treat command failure,
+`safe: true`, Codewith version, executable/policy/launch-bindings/source-
+manifest/effective-config SHA-256 claims, route mode, expiry, exact bridge
+sources and tool allowlist, plus the explicit denied-capability set. The
+supervisor must require the v2 attestation schema and treat command failure,
 unknown fields, `safe != true`, or a digest mismatch as a launch denial.
 
 A supervised prototype may proceed without that patch only with
@@ -441,7 +449,7 @@ file or creates an anonymous pipe, validates it, and `dup2`s it to descriptor 3.
 It opens the service-owned `0400` signed envelope read-only, verifies/seals that
 handle against mutation, and `dup2`s it to descriptor 4 before direct `execve`;
 neither descriptor number comes from environment or caller input. `/usr/bin/env`
-and a shell are never involved. The `codewith.launch-bindings/v1` reader rejects
+and a shell are never involved. The `codewith.launch-bindings/v2` reader rejects
 duplicate keys, unknown fields, invalid UTF-8/JSON, oversized input, multiple
 objects, and trailing bytes, then closes descriptor 3 after the single read.
 The envelope reader applies the same bounded/closed checks, requires a read-only
@@ -465,9 +473,9 @@ policy = "infinity-agent"
 ```
 
 The AuthCapsule launcher supplies the signed policy envelope only on fixed,
-preopened, read-only descriptor 4; expected capsule/principal/lane/nonce
-bindings come only through fixed descriptor 3. Neither descriptor is selected
-through environment, config, or model input. The public verification-key path
+preopened, read-only descriptor 4; expected host/session/capsule/principal/lane/
+nonce/source-manifest bindings come only through fixed descriptor 3. Neither
+descriptor is selected through environment, config, or model input. The public verification-key path
 comes only from `/etc/codewith/requirements.toml`; it is not a `ToolsToml`, repo,
 or thread field. That root-owned file is closed JSON with exact schema
 `codewith.trust-key/v1` and fields `{schema_version,key_id,public_key_b64url}`.
@@ -494,18 +502,18 @@ parsed value. The signature preimage is the exact byte concatenation
 `UTF8("hasna.infinity.codewith-tool-policy-signature/v1") || 0x00 ||
 payload_bytes`; the NUL is part of the fixed domain separator and there is no
 JSON reserialization, prefix omission, or informal key sort. The redacted
-`policy_digest` is `sha256` over the exact payload bytes alone. The
-signed payload contains
-`schema_version`, audience, capsule/principal/lane bindings, Codewith binary
-digest, nonce, not-before/expiry, route mode (`dynamic-cli-only` or `mcp-only`),
-and exact entries `{source, source_id, raw_tool_name, canonical_tool_name,
+`policy_digest` is `sha256` over the exact payload bytes alone. The signed
+payload contains `schema_version`, audience, host/session/capsule/principal/lane
+bindings, Codewith binary digest, source-manifest digest, nonce,
+not-before/expiry, the fixed `mcp-only` route mode, and exact entries
+`{source, source_id, raw_tool_name, canonical_tool_name,
 input_schema_sha256, tool_description_sha256,
 namespace_description_sha256}`. The entry is a closed serde schema
-(`deny_unknown_fields`): `source` is exactly `dynamic` or `mcp`; `source_id` is
-the fixed `infinity_cli` adapter namespace or requirement-pinned MCP server ID;
-`raw_tool_name` is the exact adapter/MCP method dispatched; and
+(`deny_unknown_fields`): `source` is exactly `mcp`; `source_id` is exactly the
+requirement-pinned `infinity` MCP server ID; `raw_tool_name` is the exact MCP
+method dispatched; and
 `canonical_tool_name` is the structured Codewith representation
-`{"namespace": <string-or-null>, "name": <non-empty-string>}`. Never authorize
+`{"namespace": "mcp__infinity", "name": <non-empty-string>}`. Never authorize
 by concatenating those fields into one ambiguous string. The raw and canonical
 leaf names must be identical and belong to the closed public agent-operation
 allowlist in this document; core-looking, admin, approval-decision, discard,
@@ -541,14 +549,17 @@ resource-lease holder, operation executor, and audience remain separately typed
 roles in the preimage; a capsule owner or an arbitrary authenticated principal
 cannot be substituted for any of them.
 
-The launcher also writes a closed `codewith.launch-bindings/v1` record containing
-the expected `capsule_id`, `principal_sha256`, `lane_id`, and `launch_nonce` from
-the same atomically consumed supervisor journal row. It passes that record once
-on reserved inherited descriptor 3. Codewith reads and closes the
-descriptor before model startup and compares all four signed payload fields
-exactly. These expected values never come from `ToolsToml`, repository/user/
-thread config, environment, model input, or ordinary tool arguments. The signed
-envelope is independently read once from fixed descriptor 4 and closed.
+The launcher also writes a closed `codewith.launch-bindings/v2` record containing
+the expected `host_id`, `session_id`, `capsule_id`, `principal_sha256`, `lane_id`,
+`launch_nonce`, and `source_manifest_sha256` from the same atomically consumed
+supervisor journal row. It passes that record once on reserved inherited
+descriptor 3. Codewith reads and closes the descriptor before model startup and
+compares all seven signed payload fields exactly. These expected values never
+come from `ToolsToml`, repository/user/thread config, environment, model input,
+or ordinary tool arguments. The signed envelope is independently read once
+from fixed descriptor 4 and closed. The v2 attestation's launch-bindings digest
+is SHA-256 over the RFC 8785/JCS encoding of this complete record, including
+`schema_version`; its source-manifest digest is the exact bound claim above.
 
 The requirements-selected trust-key path must be absolute, root-owned,
 non-writable, and opened without symlink following. The launcher writes the
@@ -568,24 +579,27 @@ path substitution and verify/use races.
 
 ```json
 {
-  "schema_version": "codewith.tool-policy/v1",
+  "schema_version": "codewith.tool-policy/v2",
   "audience": "infinity-auth-capsule",
+  "host_id": "<opaque-host-id>",
+  "session_id": "<opaque-session-id>",
   "capsule_id": "<opaque-capsule-id>",
   "principal_sha256": "sha256:<principal-binding>",
   "lane_id": "<opaque-lane-id>",
-  "launch_nonce": "<one-time-supervisor-nonce>",
+  "launch_nonce": "<canonical-unpadded-base64url-one-time-supervisor-nonce>",
+  "source_manifest_sha256": "sha256:<exact-source-manifest-digest>",
   "codewith_sha256": "sha256:<pinned-native-binary-digest>",
-  "mode": "dynamic-cli-only",
+  "mode": "mcp-only",
   "issued_at": "2026-07-10T00:00:00Z",
   "not_before": "2026-07-10T00:00:00Z",
   "expires_at": "2026-07-10T01:00:00Z",
   "entries": [
     {
-      "source": "dynamic",
-      "source_id": "infinity_cli",
+      "source": "mcp",
+      "source_id": "infinity",
       "raw_tool_name": "infinity_run_submit",
       "canonical_tool_name": {
-        "namespace": "infinity_cli",
+        "namespace": "mcp__infinity",
         "name": "infinity_run_submit"
       },
       "input_schema_sha256": "sha256:<final-model-schema-digest>",
@@ -598,11 +612,10 @@ path substitution and verify/use races.
 
 When the policy is active:
 
-1. `add_tool_sources` may add only MCP runtime handlers or app-server dynamic
-   handlers supplied by the authenticated trusted client that exactly match
-   the verified source/name/schema digest. MCP resource helpers are not
-   implicit. CLI-primary and MCP-secondary manifests are separate and are
-   never combined in one turn.
+1. `add_tool_sources` may add only MCP runtime handlers from the single
+   system-pinned `infinity` bridge that exactly match the verified
+   source/name/schema digest. MCP resource helpers and app-server dynamic tools
+   are not implicit and never become part of an AuthCapsule turn.
 2. It must not add shell/unified-exec, apply-patch, view-image, plan/session,
    auth-profile, usage, loop/schedule/monitor, collaboration, extension/plugin,
    hosted web/image, browser/computer, `infinity_operation_resolve`,
@@ -619,15 +632,17 @@ When the policy is active:
 3. It filters before `ToolRegistry` construction, and the router rechecks
    membership and expiry immediately before dispatch. A hidden, hallucinated,
    stale, or expired call is unavailable, including through code mode/tool
-   search. Before either dynamic or MCP handler parses provider-emitted function
-   arguments into `serde_json::Value`, the router applies the same bounded
+   search. Before the MCP handler parses provider-emitted function arguments
+   into `serde_json::Value`, the router applies the same bounded
    complete-document duplicate-aware decoder and rejects duplicate keys or
    trailing documents.
 4. Code mode must be off or may only compose the already-filtered brokered
    registry. There can be no hidden local handler reachable by nested lookup.
 5. Missing, not-yet-valid, expired, bad-signature, wrong-capsule/principal/lane,
    wrong-audience, wrong-Codewith-digest, duplicate, extra, or schema-mismatched
-   policy data fails before the first model request. Revocation terminates the
+   policy data fails before the first model request. A stale v1 payload, dynamic
+   route, wrong host/session/source-manifest binding, source alias, or namespace
+   alias also fails closed. Revocation terminates the
    dedicated process; a new process needs a fresh nonce-bearing envelope. A
    configured `required` MCP server that does not initialize also prevents a
    turn.
@@ -645,10 +660,9 @@ Infinity Agent rejects resumed or forked rollout history before reconstruction;
 it never imports persisted base instructions, dynamic tools, or messages.
 Subagent creation is absent, while model and thread-config changes retain the
 system-constrained effective policy.
-For `dynamic-cli-only`, clear effective MCP servers before startup so an
-untrusted stdio MCP command cannot execute merely by being configured. For
-`mcp-only`, retain only the system-requirement-pinned protected no-secret bridge
-identity; exactly one signed MCP `source_id` is allowed per process. Require its
+For `mcp-only`, retain only the system-requirement-pinned protected no-secret
+`infinity` bridge identity; no other signed MCP `source_id`, namespace, or
+dynamic route is allowed. Require its
 effective raw `enabled_tools` set to equal the signed
 raw-method set exactly, with no disabled-tool, per-tool override, default
 approval, OAuth, header, bearer, scope, or environment overlay.
@@ -694,9 +708,10 @@ transport path. It does not add an app-server method.
    binary claims, canonicalize/hash schemas, and authorize source/name/schema
    and dispatch-time expiry.
 7. `codex-rs/core/src/tools/spec_plan.rs` and `tools/handlers/mcp.rs`: for
-   `InfinityAgent`, construct only matching dynamic or forced-serial MCP
-   runtimes; skip all intrinsic, hosted, extension, collaboration, code-mode,
-   and tool-search sources before registry construction.
+   `InfinityAgent`, construct only matching forced-serial MCP runtimes from the
+   fixed `infinity` source and `mcp__infinity` namespace; skip every dynamic,
+   intrinsic, hosted, extension, collaboration, code-mode, and tool-search
+   source before registry construction.
 8. `codex-rs/core/src/tools/router.rs`: fail closed immediately before dispatch
    if the effective policy does not authorize the canonical `ToolName` or has
    expired.
@@ -915,11 +930,10 @@ The conformance manifest refers to these stable reverse-coverage IDs:
    zero named profiles, `auth_profile_auto_switch.enabled = false`, empty
    plugins, `notify = []`, hooks/features disabled as above, and a synthetic
    credential canary. Hold the Accounts lane at concurrency one.
-2. Start `codewith app-server` with a valid CLI-only signed tool policy and
-   initialize `experimentalApi=true`.
-3. Start a thread with `authProfile:null`, `environments:[]`, and only the
-   reviewed `infinity_cli` dynamic tool schemas. Capture every model request's
-   tool manifest.
+2. Start Codewith with a valid v2 MCP-only signed tool policy and the exact
+   system-pinned `infinity` bridge.
+3. Start a thread with `authProfile:null`, `environments:[]`, and no dynamic
+   tools. Capture every model request's exact `mcp__infinity` tool manifest.
 4. The source repository is an exact immutable synthetic SHA in the Infinity
    test project. The RunSpec has no network, no secrets, a fixed image digest,
    proposal-only Git intent, and an expected trivial patch/test/checkpoint.
@@ -929,7 +943,7 @@ The conformance manifest refers to these stable reverse-coverage IDs:
 
 ### Golden sequence
 
-The model must use the CLI-backed tools to execute:
+The model must use the fixed MCP bridge tools to execute:
 
 ```text
 version -> capability list -> doctor -> run validate -> run plan ->

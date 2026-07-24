@@ -44,7 +44,7 @@ use serde_json::json;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
-use crate::tools::policy::test_dynamic_policy;
+use crate::tools::policy::test_mcp_policy;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 
@@ -2124,24 +2124,24 @@ async fn code_mode_excluded_imagegen_follows_hosted_negative_gates() {
 }
 
 #[tokio::test]
-async fn infinity_agent_policy_builds_only_the_exact_signed_dynamic_manifest() {
+async fn infinity_agent_policy_builds_only_the_exact_signed_mcp_manifest() {
     let tools = vec![
-        dynamic_tool(Some("infinity_cli"), "infinity_run_get", false),
-        dynamic_tool(Some("infinity_cli"), "infinity_result_get", false),
+        mcp_tool("infinity", "mcp__infinity", "infinity_run_get"),
+        mcp_tool("infinity", "mcp__infinity", "infinity_result_get"),
     ];
-    let policy = test_dynamic_policy(&tools);
+    let policy = test_mcp_policy(&tools);
     let plan = probe_with(
         move |turn| set_infinity_agent_policy(turn, policy),
         ToolPlanInputs {
-            dynamic_tools: tools,
+            mcp_tools: Some(tools),
             ..ToolPlanInputs::default()
         },
     )
     .await;
 
-    assert_eq!(plan.visible_names, vec!["infinity_cli"]);
+    assert_eq!(plan.visible_names, vec!["mcp__infinity"]);
     assert_eq!(
-        plan.namespace_function_names("infinity_cli"),
+        plan.namespace_function_names("mcp__infinity"),
         &[
             "infinity_result_get".to_string(),
             "infinity_run_get".to_string()
@@ -2153,8 +2153,8 @@ async fn infinity_agent_policy_builds_only_the_exact_signed_dynamic_manifest() {
     assert_eq!(
         plan.registered_names,
         vec![
-            ToolName::namespaced("infinity_cli", "infinity_result_get").to_string(),
-            ToolName::namespaced("infinity_cli", "infinity_run_get").to_string(),
+            ToolName::namespaced("mcp__infinity", "infinity_result_get").to_string(),
+            ToolName::namespaced("mcp__infinity", "infinity_run_get").to_string(),
         ]
     );
     plan.assert_registered_lacks(&[
@@ -2169,13 +2169,39 @@ async fn infinity_agent_policy_builds_only_the_exact_signed_dynamic_manifest() {
 }
 
 #[tokio::test]
-async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
-    let tools = vec![dynamic_tool(
+async fn infinity_agent_policy_rejects_dynamic_runtime_with_valid_mcp_manifest() {
+    let tools = vec![mcp_tool("infinity", "mcp__infinity", "infinity_run_get")];
+    let policy = test_mcp_policy(&tools);
+    let dynamic_tools = vec![dynamic_tool(
         Some("infinity_cli"),
         "infinity_run_get",
         false,
     )];
-    let policy = test_dynamic_policy(&tools);
+    let (_session, mut turn) = make_session_and_context().await;
+    set_infinity_agent_policy(&mut turn, policy);
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            mcp_tools: Some(tools),
+            deferred_mcp_tools: None,
+            discoverable_tools: None,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: &dynamic_tools,
+        },
+    );
+
+    let error = router
+        .ensure_policy_ready()
+        .expect_err("dynamic runtime must fail before any model request");
+    assert!(error.contains("forbidden dynamic runtime"));
+    assert!(router.model_visible_specs().is_empty());
+    assert!(router.registered_tool_names_for_test().is_empty());
+}
+
+#[tokio::test]
+async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
+    let tools = vec![mcp_tool("infinity", "mcp__infinity", "infinity_run_get")];
+    let policy = test_mcp_policy(&tools);
     let (_session, mut turn) = make_session_and_context().await;
     set_infinity_agent_policy(&mut turn, policy);
     use_provider_with_id(
@@ -2186,11 +2212,11 @@ async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
     let router = ToolRouter::from_turn_context(
         &turn,
         ToolRouterParams {
-            mcp_tools: None,
+            mcp_tools: Some(tools),
             deferred_mcp_tools: None,
             discoverable_tools: None,
             extension_tool_executors: Vec::new(),
-            dynamic_tools: &tools,
+            dynamic_tools: &[],
         },
     );
 

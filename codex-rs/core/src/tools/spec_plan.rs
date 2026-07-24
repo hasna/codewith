@@ -200,48 +200,30 @@ fn build_infinity_agent_tool_router(
         );
     }
 
+    if policy.mode() != PolicyMode::McpOnly {
+        return Err("Infinity Agent rejects the legacy dynamic route mode".to_string());
+    }
+    if !dynamic_tools.is_empty() {
+        return Err("Infinity Agent received a forbidden dynamic runtime".to_string());
+    }
     let direct_mcp = mcp_tools.unwrap_or_default();
     let deferred_mcp = deferred_mcp_tools.unwrap_or_default();
+    let all_mcp = direct_mcp
+        .iter()
+        .chain(deferred_mcp.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    policy
+        .validate_mcp_manifest(&all_mcp)
+        .map_err(|error| error.to_string())?;
     let mut planned_tools = PlannedTools::default();
-    match policy.mode() {
-        PolicyMode::DynamicCliOnly => {
-            if !direct_mcp.is_empty() || !deferred_mcp.is_empty() {
-                return Err(
-                    "dynamic-cli-only Infinity Agent policy received an MCP runtime".to_string(),
-                );
-            }
-            policy
-                .validate_dynamic_manifest(dynamic_tools)
-                .map_err(|error| error.to_string())?;
-            for tool in dynamic_tools {
-                let handler = DynamicToolHandler::new(tool).ok_or_else(|| {
-                    format!("failed to construct signed dynamic tool `{}`", tool.name)
-                })?;
-                planned_tools.add(handler);
-            }
-        }
-        PolicyMode::McpOnly => {
-            if !dynamic_tools.is_empty() {
-                return Err("mcp-only Infinity Agent policy received a dynamic runtime".to_string());
-            }
-            let all_mcp = direct_mcp
-                .iter()
-                .chain(deferred_mcp.iter())
-                .cloned()
-                .collect::<Vec<_>>();
-            policy
-                .validate_mcp_manifest(&all_mcp)
-                .map_err(|error| error.to_string())?;
-            for tool in all_mcp {
-                let handler = McpHandler::new_infinity_agent_serial(tool).map_err(|error| {
-                    format!("failed to construct signed MCP tool runtime: {error}")
-                })?;
-                // The restricted route has no tool search. A tool that arrived
-                // through an ordinary deferred bucket is deliberately made
-                // direct only after the exact signed manifest check above.
-                planned_tools.add(handler);
-            }
-        }
+    for tool in all_mcp {
+        let handler = McpHandler::new_infinity_agent_serial(tool)
+            .map_err(|error| format!("failed to construct signed MCP tool runtime: {error}"))?;
+        // The restricted route has no tool search. A tool that arrived through
+        // an ordinary deferred bucket is deliberately made direct only after
+        // the exact signed manifest check above.
+        planned_tools.add(handler);
     }
 
     let mut registered_names = planned_tools

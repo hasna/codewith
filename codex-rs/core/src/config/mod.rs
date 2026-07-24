@@ -646,6 +646,19 @@ fn validate_selected_auth_profile(profile: String, source: &str) -> std::io::Res
     Ok(trimmed.to_string())
 }
 
+fn reject_infinity_agent_auth_profile_inheritance(
+    tool_policy: ToolPolicy,
+    selected_auth_profile: Option<&str>,
+) -> std::io::Result<()> {
+    if tool_policy == ToolPolicy::InfinityAgent && selected_auth_profile.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Infinity Agent policy forbids named Codewith auth profiles",
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_auth_profile_auto_switch_config(
     config: Option<AuthProfileAutoSwitchToml>,
 ) -> std::io::Result<AuthProfileAutoSwitchConfig> {
@@ -1996,10 +2009,8 @@ impl Config {
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let bridge_config_matches = match policy.mode() {
-            PolicyMode::DynamicCliOnly => actual_mcp_sources.is_empty(),
-            PolicyMode::McpOnly => actual_mcp_sources == policy.mcp_source_ids(),
-        };
+        let bridge_config_matches =
+            policy.mode() == PolicyMode::McpOnly && actual_mcp_sources == policy.mcp_source_ids();
         if !bridge_config_matches {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -2570,7 +2581,10 @@ fn constrain_infinity_agent_mcp_servers(
     policy: &VerifiedToolPolicy,
 ) -> std::io::Result<Constrained<HashMap<String, McpServerConfig>>> {
     if policy.mode() == PolicyMode::DynamicCliOnly {
-        return Ok(Constrained::allow_any(HashMap::new()));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Infinity Agent rejects the legacy dynamic route mode",
+        ));
     }
 
     let requirements = requirements.ok_or_else(|| {
@@ -3669,12 +3683,10 @@ impl Config {
                 .transpose()?,
             None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
         };
-        if tool_policy == ToolPolicy::InfinityAgent && selected_auth_profile.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Infinity Agent policy forbids named Codewith auth profiles",
-            ));
-        }
+        reject_infinity_agent_auth_profile_inheritance(
+            tool_policy,
+            selected_auth_profile.as_deref(),
+        )?;
         let runtime_permission_overrides_present = sandbox_mode.is_some()
             || permission_profile.is_some()
             || default_permissions_override.is_some()

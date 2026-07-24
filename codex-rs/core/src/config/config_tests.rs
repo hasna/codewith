@@ -5108,6 +5108,23 @@ fn saved_auth_profile_permission_metadata(
     }
 }
 
+#[test]
+fn infinity_agent_rejects_cross_profile_inheritance() {
+    let error =
+        reject_infinity_agent_auth_profile_inheritance(ToolPolicy::InfinityAgent, Some("work"))
+            .expect_err("AuthCapsule sessions must never inherit a named auth profile");
+    assert!(
+        error
+            .to_string()
+            .contains("forbids named Codewith auth profiles")
+    );
+
+    assert!(
+        reject_infinity_agent_auth_profile_inheritance(ToolPolicy::InfinityAgent, None).is_ok()
+    );
+    assert!(reject_infinity_agent_auth_profile_inheritance(ToolPolicy::Full, Some("work")).is_ok());
+}
+
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
 async fn config_applies_saved_auth_profile_permissions() -> anyhow::Result<()> {
