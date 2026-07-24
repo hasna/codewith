@@ -97,6 +97,71 @@ pub(in crate::runtime) async fn append_background_agent_lifecycle_receipt_in_tx(
         return Ok(event);
     }
 
+    let orphaned_event = sqlx::query_as::<_, BackgroundAgentEventRow>(
+        r#"
+SELECT id, run_id, seq, event_type, payload_json, created_at
+FROM background_agent_events
+WHERE run_id = ? AND receipt_key = ?
+        "#,
+    )
+    .bind(run_id)
+    .bind(receipt_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(orphaned_event) = orphaned_event {
+        let payload_json: serde_json::Value =
+            serde_json::from_str(orphaned_event.payload_json.as_str())?;
+        let identity_matches = orphaned_event.event_type == event_type
+            && payload_json
+                .get("receiptKey")
+                .and_then(serde_json::Value::as_str)
+                == Some(receipt_key)
+            && payload_json
+                .get("generation")
+                .and_then(serde_json::Value::as_i64)
+                == Some(generation)
+            && payload_json
+                .get("attempt")
+                .and_then(serde_json::Value::as_i64)
+                == attempt
+            && payload_json.get("diagnostics") == Some(&diagnostics_json);
+        if !identity_matches {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_RECEIPT_IDENTITY_MISMATCH}: \
+                 orphaned receipt event is bound to a different lifecycle operation"
+            );
+        }
+        sqlx::query(
+            r#"
+INSERT INTO background_agent_lifecycle_receipts (
+    run_id,
+    receipt_key,
+    event_id,
+    event_seq,
+    event_type,
+    generation,
+    attempt,
+    operation_identity_sha256,
+    payload_json,
+    created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(run_id)
+        .bind(receipt_key)
+        .bind(orphaned_event.id)
+        .bind(orphaned_event.seq)
+        .bind(event_type)
+        .bind(generation)
+        .bind(attempt)
+        .bind(operation_identity_sha256)
+        .bind(orphaned_event.payload_json.as_str())
+        .bind(orphaned_event.created_at)
+        .execute(&mut **tx)
+        .await?;
+        return BackgroundAgentEvent::try_from(orphaned_event);
+    }
+
     let mut payload = diagnostics_json
         .get("eventPayload")
         .and_then(serde_json::Value::as_object)
