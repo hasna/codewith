@@ -13,4 +13,4 @@ expression: popup
   6. 8            Allow up to 8 concurrent subagent threads per agent run.
   7. 12           Allow up to 12 concurrent subagent threads per agent run.
 
-  Enter selects; Left or Esc goes back
+  enter selects; ← or esc goes back
