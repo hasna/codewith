@@ -40,9 +40,14 @@ pub(crate) struct GoalRuntimeConfig {
 }
 
 pub(crate) enum ActiveGoalStopReason {
-    TurnError(CodexErrorInfo),
+    TurnError {
+        error: CodexErrorInfo,
+        fingerprint: String,
+    },
     UsageLimit,
 }
+
+const REQUIRED_CONSECUTIVE_BLOCKER_TURNS: u8 = 3;
 
 struct GoalRuntimeInner {
     thread_id: ThreadId,
@@ -450,6 +455,12 @@ impl GoalRuntimeHandle {
             );
         }
         self.inner.accounting_state.clear_active_goal();
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .clear_thread_goal_blocker_audit(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
         Ok(())
     }
 
@@ -479,13 +490,9 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let (event_name, status) = match &reason {
-            ActiveGoalStopReason::TurnError(_) => {
-                ("turn-error", codex_state::ThreadGoalStatus::Blocked)
-            }
-            ActiveGoalStopReason::UsageLimit => {
-                ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
-            }
+        let event_name = match &reason {
+            ActiveGoalStopReason::TurnError { .. } => "turn-error",
+            ActiveGoalStopReason::UsageLimit => "usage-limit",
         };
         self.account_active_goal_progress(
             turn_id,
@@ -506,35 +513,89 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         };
-        let can_stop = active_goal.status == codex_state::ThreadGoalStatus::Active
-            || (active_goal.status == codex_state::ThreadGoalStatus::BudgetLimited
-                && status == codex_state::ThreadGoalStatus::UsageLimited);
-        if !can_stop {
-            self.inner.accounting_state.clear_active_goal();
-            return Ok(());
-        }
         let previous_status = Some(active_goal.status);
-        let Some(goal) = self
-            .inner
-            .state_dbs
-            .thread_goals()
-            .update_thread_goal(
-                self.thread_id(),
-                codex_state::GoalUpdate {
-                    objective: None,
-                    title: None,
-                    status: Some(status),
-                    token_budget: None,
-                    expected_goal_id: Some(active_goal.goal_id),
-                },
-            )
-            .await
-            .map_err(|err| err.to_string())?
-        else {
-            return Ok(());
+        let goal = match &reason {
+            ActiveGoalStopReason::TurnError { fingerprint, .. } => {
+                match self
+                    .inner
+                    .state_dbs
+                    .thread_goals()
+                    .observe_active_thread_goal_blocker(
+                        self.thread_id(),
+                        active_goal.goal_id.as_str(),
+                        turn_id,
+                        fingerprint,
+                        REQUIRED_CONSECUTIVE_BLOCKER_TURNS,
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?
+                {
+                    codex_state::GoalBlockerAuditOutcome::Updated { goal, .. } => goal,
+                    codex_state::GoalBlockerAuditOutcome::Unchanged(goal) => {
+                        self.inner.accounting_state.clear_active_goal();
+                        if let Some(goal) = goal
+                            && !matches!(
+                                goal.status,
+                                codex_state::ThreadGoalStatus::Active
+                                    | codex_state::ThreadGoalStatus::Paused
+                            )
+                        {
+                            self.inner
+                                .state_dbs
+                                .thread_goals()
+                                .clear_thread_goal_blocker_audit_for_goal(
+                                    self.thread_id(),
+                                    goal.goal_id.as_str(),
+                                )
+                                .await
+                                .map_err(|err| err.to_string())?;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            ActiveGoalStopReason::UsageLimit => {
+                let can_stop = active_goal.status == codex_state::ThreadGoalStatus::Active
+                    || active_goal.status == codex_state::ThreadGoalStatus::BudgetLimited;
+                if !can_stop {
+                    self.inner.accounting_state.clear_active_goal();
+                    return Ok(());
+                }
+                let Some(goal) = self
+                    .inner
+                    .state_dbs
+                    .thread_goals()
+                    .update_thread_goal(
+                        self.thread_id(),
+                        codex_state::GoalUpdate {
+                            objective: None,
+                            title: None,
+                            status: Some(codex_state::ThreadGoalStatus::UsageLimited),
+                            token_budget: None,
+                            expected_goal_id: Some(active_goal.goal_id),
+                        },
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?
+                else {
+                    return Ok(());
+                };
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .clear_thread_goal_blocker_audit_for_goal(
+                        self.thread_id(),
+                        goal.goal_id.as_str(),
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                goal
+            }
         };
         match &reason {
-            ActiveGoalStopReason::TurnError(error) => {
+            ActiveGoalStopReason::TurnError { error, .. }
+                if goal.status == codex_state::ThreadGoalStatus::Blocked =>
+            {
                 crate::pending_interaction::record_goal_turn_error_status_wait(
                     self.inner.state_dbs.as_ref(),
                     self.thread_id(),
@@ -544,6 +605,7 @@ impl GoalRuntimeHandle {
                 )
                 .await?;
             }
+            ActiveGoalStopReason::TurnError { .. } => {}
             ActiveGoalStopReason::UsageLimit => {
                 crate::pending_interaction::record_goal_status_wait(
                     self.inner.state_dbs.as_ref(),

@@ -19,6 +19,7 @@ use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
+use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
@@ -43,8 +44,11 @@ use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TruncationPolicy;
+use codex_protocol::protocol::TurnAbortReason;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -1896,7 +1900,7 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
 }
 
 #[tokio::test]
-async fn turn_error_blocks_goal() -> anyhow::Result<()> {
+async fn one_turn_error_keeps_goal_active_without_blocking_it() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -1921,12 +1925,22 @@ async fn turn_error_blocks_goal() -> anyhow::Result<()> {
         .get_thread_goal(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    assert!(
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+        .is_empty(),
+        "one exhausted turn must not create a blocked wait"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyhow::Result<()> {
+async fn third_consecutive_matching_turn_error_blocks_goal_plan_node() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -1956,6 +1970,62 @@ async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyh
 
     harness
         .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+    harness.stop_turn("turn-1").await;
+
+    let active_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, active_goal.status);
+
+    let active_plan = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("goal plan should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Active,
+        active_plan.plan.status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Active,
+        active_plan.nodes[0].status
+    );
+    assert_eq!(
+        codex_state::ThreadGoalPlanNodeStatus::Pending,
+        active_plan.nodes[1].status
+    );
+    assert!(
+        pending_interactions_for_kind(
+            runtime.as_ref(),
+            thread_id,
+            codex_state::PendingInteractionKind::Blocked,
+        )
+        .await?
+        .is_empty(),
+        "a pre-threshold goal plan must remain active without being reported as blocked"
+    );
+
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-2", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+    harness.stop_turn("turn-2").await;
+
+    let active_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, active_goal.status);
+
+    harness.start_turn("turn-3", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
         .await;
 
     let goal = runtime
@@ -1990,7 +2060,7 @@ async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyh
     .await?;
     assert_eq!(1, pending.len());
     assert_eq!(Some(goal.goal_id.as_str()), pending[0].source_id.as_deref());
-    assert_eq!(Some("turn-1"), pending[0].turn_id.as_deref());
+    assert_eq!(Some("turn-3"), pending[0].turn_id.as_deref());
     assert_eq!(pending[0].request_payload_json["reason"], "turn-error");
     assert_eq!(
         pending[0].request_payload_json["terminalError"],
@@ -2000,6 +2070,587 @@ async fn turn_error_blocks_goal_plan_node_with_actionable_wait_payload() -> anyh
             "action": "The turn exceeded the model context window. Reduce prompt/history size or run a cleanup/compaction before retrying the loop.",
         })
     );
+
+    harness.stop_turn("turn-3").await;
+    resume_goal_in_turn(&harness, "turn-4").await?;
+    harness
+        .notify_turn_error("turn-4", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+
+    let resumed_goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("resumed goal should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalStatus::Active,
+        resumed_goal.status,
+        "resuming a blocked goal must start a fresh blocker audit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocker_audit_survives_restarts_and_deduplicates_replayed_turns() -> anyhow::Result<()> {
+    let tempdir = TempDir::new()?;
+    let codex_home = tempdir.path().to_path_buf();
+    let thread_id = test_thread_id()?;
+
+    {
+        let runtime =
+            codex_state::StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+                .await?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+        {
+            let tools = harness.tools();
+            tool_by_name(&tools, "create_goal")
+                .handle(tool_call(
+                    "create_goal",
+                    "call-create-restart-goal",
+                    json!({ "objective": "preserve blocker audit across restarts" }),
+                ))
+                .await?;
+        }
+        harness
+            .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+            .await;
+        harness.stop_turn("turn-1").await;
+    }
+
+    {
+        let runtime =
+            codex_state::StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+                .await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.resume_thread().await;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+        harness
+            .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+            .await;
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist after replay"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Active,
+            goal.status,
+            "redelivering one host turn after restart must not advance the audit"
+        );
+        harness.stop_turn("turn-1").await;
+    }
+
+    {
+        let runtime =
+            codex_state::StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+                .await?;
+        let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+        harness.resume_thread().await;
+        harness.start_turn("turn-2", &TokenUsage::default()).await;
+        harness
+            .notify_turn_error("turn-2", CodexErrorInfo::ContextWindowExceeded)
+            .await;
+        harness.stop_turn("turn-2").await;
+    }
+
+    {
+        let runtime =
+            codex_state::StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+                .await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.resume_thread().await;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+        harness
+            .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+            .await;
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist after delayed replay"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Active,
+            goal.status,
+            "a delayed replay of any already-counted turn must not advance the audit"
+        );
+        harness.stop_turn("turn-1").await;
+    }
+
+    {
+        let runtime =
+            codex_state::StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.resume_thread().await;
+        harness.start_turn("turn-3", &TokenUsage::default()).await;
+        harness
+            .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
+            .await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist after restart"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Blocked,
+            goal.status,
+            "three distinct matching blocker turns must survive fresh goal and SQLite runtimes"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_stop_after_error_does_not_clear_active_goal_audit() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-error-cleanup-goal",
+            json!({ "objective": "preserve committed error audit through turn stop" }),
+        ))
+        .await?;
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+
+    harness.stop_turn("turn-1").await;
+
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-2", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+    harness.stop_turn("turn-2").await;
+
+    harness.start_turn("turn-3", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-3", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalStatus::Blocked,
+        goal.status,
+        "turn stop after an error must not erase the committed blocker observation"
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TurnFinalizer {
+    Stop,
+    Abort,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InjectedFinalizationFailure {
+    AuditClear,
+    Accounting,
+}
+
+#[tokio::test]
+async fn turn_finalization_failures_discard_stale_accounting_and_allow_the_next_turn()
+-> anyhow::Result<()> {
+    for (case_index, (finalizer, failure)) in [
+        (TurnFinalizer::Stop, InjectedFinalizationFailure::AuditClear),
+        (TurnFinalizer::Stop, InjectedFinalizationFailure::Accounting),
+        (
+            TurnFinalizer::Abort,
+            InjectedFinalizationFailure::AuditClear,
+        ),
+        (
+            TurnFinalizer::Abort,
+            InjectedFinalizationFailure::Accounting,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tempdir = TempDir::new()?;
+        let runtime = codex_state::StateRuntime::init(
+            tempdir.path().to_path_buf(),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let thread_id = test_thread_id()?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        let turn_id = format!("turn-finalization-failure-{case_index}");
+        harness
+            .start_turn(turn_id.as_str(), &TokenUsage::default())
+            .await;
+
+        let tools = harness.tools();
+        tool_by_name(&tools, "create_goal")
+            .handle(tool_call_for_turn(
+                turn_id.as_str(),
+                "create_goal",
+                format!("call-create-finalization-failure-{case_index}").as_str(),
+                json!({ "objective": format!("recover after {finalizer:?} {failure:?}") }),
+            ))
+            .await?;
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist for failure injection"))?;
+
+        let fault_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(codex_state::goals_db_path(runtime.codex_home())),
+            )
+            .await?;
+        if matches!(failure, InjectedFinalizationFailure::AuditClear) {
+            sqlx::query(
+                r#"
+INSERT INTO thread_goal_blocker_audits (
+    thread_id,
+    goal_id,
+    fingerprint,
+    first_turn_id,
+    last_turn_id,
+    consecutive_turns,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, 'codex_err:injected_audit', ?, ?, 1, 1, 1)
+                "#,
+            )
+            .bind(thread_id.to_string())
+            .bind(goal.goal_id.as_str())
+            .bind(turn_id.as_str())
+            .bind(turn_id.as_str())
+            .execute(&fault_pool)
+            .await?;
+        }
+        harness
+            .record_token_usage(
+                turn_id.as_str(),
+                &token_usage(
+                    /*input_tokens*/ 8, /*cached_input_tokens*/ 0,
+                    /*output_tokens*/ 3, /*reasoning_output_tokens*/ 0,
+                    /*total_tokens*/ 11,
+                ),
+            )
+            .await;
+
+        let (trigger_sql, drop_trigger_sql) = match failure {
+            InjectedFinalizationFailure::AuditClear => (
+                r#"
+CREATE TRIGGER inject_goal_audit_clear_failure
+BEFORE DELETE ON thread_goal_blocker_audits
+BEGIN
+    SELECT RAISE(FAIL, 'injected goal audit clear failure');
+END
+                "#,
+                "DROP TRIGGER inject_goal_audit_clear_failure",
+            ),
+            InjectedFinalizationFailure::Accounting => (
+                r#"
+CREATE TRIGGER inject_goal_accounting_failure
+BEFORE UPDATE OF time_used_seconds, tokens_used ON thread_goals
+BEGIN
+    SELECT RAISE(FAIL, 'injected goal accounting failure');
+END
+                "#,
+                "DROP TRIGGER inject_goal_accounting_failure",
+            ),
+        };
+        sqlx::query(trigger_sql).execute(&fault_pool).await?;
+
+        match finalizer {
+            TurnFinalizer::Stop => harness.stop_turn(turn_id.as_str()).await,
+            TurnFinalizer::Abort => harness.abort_turn(turn_id.as_str()).await,
+        }
+        sqlx::query(drop_trigger_sql).execute(&fault_pool).await?;
+
+        harness
+            .runtime_handle()
+            .usage_limit_active_goal_for_turn(turn_id.as_str())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let after_stale_turn_probe = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should survive the stale turn probe"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Active,
+            after_stale_turn_probe.status,
+            "{finalizer:?} must finish stale turn state even when {failure:?} fails"
+        );
+
+        let next_turn_id = format!("turn-after-finalization-failure-{case_index}");
+        harness
+            .start_turn(next_turn_id.as_str(), &TokenUsage::default())
+            .await;
+        harness
+            .record_token_usage(
+                next_turn_id.as_str(),
+                &token_usage(
+                    /*input_tokens*/ 4, /*cached_input_tokens*/ 0,
+                    /*output_tokens*/ 3, /*reasoning_output_tokens*/ 0,
+                    /*total_tokens*/ 7,
+                ),
+            )
+            .await;
+        match finalizer {
+            TurnFinalizer::Stop => harness.stop_turn(next_turn_id.as_str()).await,
+            TurnFinalizer::Abort => harness.abort_turn(next_turn_id.as_str()).await,
+        }
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should accept a subsequent turn"))?;
+        let expected_tokens = match failure {
+            InjectedFinalizationFailure::AuditClear => 18,
+            InjectedFinalizationFailure::Accounting => 7,
+        };
+        assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+        assert_eq!(
+            expected_tokens, goal.tokens_used,
+            "the next turn must account once without reviving failed-turn usage"
+        );
+        let remaining_audits: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_blocker_audits")
+                .fetch_one(&fault_pool)
+                .await?;
+        assert_eq!(
+            0, remaining_audits,
+            "the next successful finalization must clear any audit left by the injected failure"
+        );
+        fault_pool.close().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn different_turn_error_resets_consecutive_blocker_count() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::ContextWindowExceeded)
+        .await;
+    harness.stop_turn("turn-1").await;
+
+    for turn_id in ["turn-2", "turn-3"] {
+        harness.start_turn(turn_id, &TokenUsage::default()).await;
+        harness
+            .notify_turn_error(turn_id, CodexErrorInfo::Other)
+            .await;
+        harness.stop_turn(turn_id).await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Active,
+            goal.status,
+            "a changed blocker must restart the three-turn audit"
+        );
+    }
+
+    harness.start_turn("turn-4", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-4", CodexErrorInfo::Other)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn broad_turn_error_variants_use_distinct_stable_fingerprints() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-broad-error-goal",
+            json!({ "objective": "keep broad turn failures separate" }),
+        ))
+        .await?;
+
+    harness
+        .notify_turn_error_with_fingerprint(
+            "turn-1",
+            CodexErrorInfo::Other,
+            "codex_err:turn_aborted",
+        )
+        .await;
+    harness.stop_turn("turn-1").await;
+
+    for turn_id in ["turn-2", "turn-3"] {
+        harness.start_turn(turn_id, &TokenUsage::default()).await;
+        harness
+            .notify_turn_error_with_fingerprint(
+                turn_id,
+                CodexErrorInfo::Other,
+                "codex_err:request_timeout",
+            )
+            .await;
+        harness.stop_turn(turn_id).await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        assert_eq!(
+            codex_state::ThreadGoalStatus::Active,
+            goal.status,
+            "unrelated broad error variants must not share blocker turns"
+        );
+    }
+
+    harness.start_turn("turn-4", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error_with_fingerprint(
+            "turn-4",
+            CodexErrorInfo::Other,
+            "codex_err:request_timeout",
+        )
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn successful_goal_turn_resets_consecutive_blocker_count() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::Other)
+        .await;
+    harness.stop_turn("turn-1").await;
+
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+    harness.stop_turn("turn-2").await;
+
+    harness.start_turn("turn-3", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-3", CodexErrorInfo::Other)
+        .await;
+    harness.stop_turn("turn-3").await;
+
+    harness.start_turn("turn-4", &TokenUsage::default()).await;
+    harness
+        .notify_turn_error("turn-4", CodexErrorInfo::Other)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(
+        codex_state::ThreadGoalStatus::Active,
+        goal.status,
+        "a successful intervening goal turn must reset the blocker audit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_usage_turn_error_preserves_budget_limited_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "ship goal extension backend",
+                "token_budget": 1,
+            }),
+        ))
+        .await?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 2, /*cached_input_tokens*/ 0, /*output_tokens*/ 0,
+                /*reasoning_output_tokens*/ 0, /*total_tokens*/ 2,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-shell", "shell")
+        .await;
+
+    harness
+        .notify_turn_error("turn-1", CodexErrorInfo::Other)
+        .await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::BudgetLimited, goal.status);
     Ok(())
 }
 
@@ -3805,6 +4456,20 @@ impl GoalExtensionHarness {
         }
     }
 
+    async fn abort_turn(&self, turn_id: &str) {
+        let turn_store = ExtensionData::new(turn_id);
+        for contributor in self.registry.turn_lifecycle_contributors() {
+            contributor
+                .on_turn_abort(TurnAbortInput {
+                    reason: TurnAbortReason::Interrupted,
+                    session_store: &self.session_store,
+                    thread_store: &self.thread_store,
+                    turn_store: &turn_store,
+                })
+                .await;
+        }
+    }
+
     async fn record_token_usage(&self, turn_id: &str, usage: &TokenUsage) {
         let turn_store = ExtensionData::new(turn_id);
         let token_usage = TokenUsageInfo {
@@ -3866,16 +4531,30 @@ impl GoalExtensionHarness {
     }
 
     async fn notify_turn_error(&self, turn_id: &str, error: CodexErrorInfo) {
+        let error_fingerprint = test_error_fingerprint(&error);
+        self.notify_turn_error_with_fingerprint(turn_id, error, error_fingerprint.as_str())
+            .await;
+    }
+
+    async fn notify_turn_error_with_fingerprint(
+        &self,
+        turn_id: &str,
+        error: CodexErrorInfo,
+        error_fingerprint: &str,
+    ) {
         let turn_store = ExtensionData::new(turn_id);
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
-                .on_turn_error(TurnErrorInput {
-                    turn_id,
-                    error: error.clone(),
-                    session_store: &self.session_store,
-                    thread_store: &self.thread_store,
-                    turn_store: &turn_store,
-                })
+                .on_turn_error_with_fingerprint(
+                    TurnErrorInput {
+                        turn_id,
+                        error: error.clone(),
+                        session_store: &self.session_store,
+                        thread_store: &self.thread_store,
+                        turn_store: &turn_store,
+                    },
+                    error_fingerprint,
+                )
                 .await;
         }
     }
@@ -3885,6 +4564,29 @@ impl GoalExtensionHarness {
             .get::<GoalRuntimeHandle>()
             .unwrap_or_else(|| panic!("goal runtime handle should exist"))
     }
+}
+
+fn test_error_fingerprint(error: &CodexErrorInfo) -> String {
+    let kind = match error {
+        CodexErrorInfo::ContextWindowExceeded => "context_window_exceeded",
+        CodexErrorInfo::UsageLimitExceeded => "usage_limit_exceeded",
+        CodexErrorInfo::ServerOverloaded => "server_overloaded",
+        CodexErrorInfo::CyberPolicy => "cyber_policy",
+        CodexErrorInfo::HttpConnectionFailed { .. } => "http_connection_failed",
+        CodexErrorInfo::ResponseStreamConnectionFailed { .. } => {
+            "response_stream_connection_failed"
+        }
+        CodexErrorInfo::InternalServerError => "internal_server_error",
+        CodexErrorInfo::Unauthorized => "unauthorized",
+        CodexErrorInfo::BadRequest => "bad_request",
+        CodexErrorInfo::SandboxError => "sandbox_error",
+        CodexErrorInfo::ResponseStreamDisconnected { .. } => "response_stream_disconnected",
+        CodexErrorInfo::ResponseTooManyFailedAttempts { .. } => "response_too_many_failed_attempts",
+        CodexErrorInfo::ActiveTurnNotSteerable { .. } => "active_turn_not_steerable",
+        CodexErrorInfo::ThreadRollbackFailed => "thread_rollback_failed",
+        CodexErrorInfo::Other => "other",
+    };
+    format!("codex_err:test_{kind}")
 }
 
 fn tool_by_name<'a>(
@@ -3898,8 +4600,17 @@ fn tool_by_name<'a>(
 }
 
 fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> ToolCall {
+    tool_call_for_turn("turn-1", tool_name, call_id, arguments)
+}
+
+fn tool_call_for_turn(
+    turn_id: &str,
+    tool_name: &str,
+    call_id: &str,
+    arguments: serde_json::Value,
+) -> ToolCall {
     ToolCall {
-        turn_id: "turn-1".to_string(),
+        turn_id: turn_id.to_string(),
         call_id: call_id.to_string(),
         tool_name: codex_extension_api::ToolName::plain(tool_name),
         model: "gpt-test".to_string(),
@@ -3910,6 +4621,20 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
             arguments: arguments.to_string(),
         },
     }
+}
+
+async fn resume_goal_in_turn(harness: &GoalExtensionHarness, turn_id: &str) -> anyhow::Result<()> {
+    harness.start_turn(turn_id, &TokenUsage::default()).await;
+    let tools = harness.tools();
+    tool_by_name(&tools, "resume_goal")
+        .handle(tool_call_for_turn(
+            turn_id,
+            "resume_goal",
+            &format!("call-resume-{turn_id}"),
+            json!({}),
+        ))
+        .await?;
+    Ok(())
 }
 
 async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
