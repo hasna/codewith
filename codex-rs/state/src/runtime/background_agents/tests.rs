@@ -362,16 +362,15 @@ async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow
     let auth_profile_ref = format!("{}{}", "sk-proj-", "b".repeat(32));
     assert!(crate::local_state_string_contains_secret(&idempotency_key));
     assert!(crate::local_state_string_contains_secret(&auth_profile_ref));
-    let (run, created) = admit_run(
-        runtime.as_ref(),
-        &admission_params(
-            "opaque-admission",
-            idempotency_key.as_str(),
-            auth_profile_ref.as_str(),
-        ),
-        2,
-    )
-    .await?;
+    let mut params = admission_params(
+        "opaque-admission",
+        idempotency_key.as_str(),
+        auth_profile_ref.as_str(),
+    );
+    params.request_id = Some("opaque-admission-request".to_string());
+    params.prompt_snapshot_ref = "inline:opaque-admission:prompt".to_string();
+    params.thread_id = Some("thread-opaque-admission".to_string());
+    let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 2).await?;
 
     assert!(created);
     assert_eq!(
