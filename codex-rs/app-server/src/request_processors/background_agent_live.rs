@@ -4047,7 +4047,7 @@ async fn background_agent_initial_prompt_is_recorded(
 }
 
 async fn record_background_agent_initial_prompt_receipt(
-    state_db: &StateDbHandle,
+    state_db: &codex_state::StateRuntime,
     run_id: &str,
     thread_id: codex_protocol::ThreadId,
     submission_id: &str,
