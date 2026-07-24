@@ -3457,6 +3457,176 @@ async fn usage_heartbeat_suppressed_for_exhausted_profile_until_reset() {
     );
 }
 
+#[tokio::test]
+async fn same_name_relogin_clears_exhausted_profile_heartbeat_suppression() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+
+    let stale_exhausted = rate_limit_snapshot_display_for_limit(
+        &profile_usage_snapshot(
+            /*secondary_used_percent*/ 100, /*primary_used_percent*/ 100,
+        ),
+        "codex".to_string(),
+        Local::now() - chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES + 1),
+    );
+    chat.auth_profile_rate_limit_snapshots_by_profile.insert(
+        Some("work".to_string()),
+        BTreeMap::from([("codex".to_string(), stale_exhausted)]),
+    );
+    chat.auth_profile_usage_exhausted_reset_at_by_profile
+        .insert(
+            Some("work".to_string()),
+            chrono::Utc::now().timestamp() + 3600,
+        );
+    assert!(chat.auth_profile_usage_refresh_targets().is_empty());
+
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.finish_selected_auth_profile_credential_mutation(
+        "work", /*credentials_changed*/ true,
+    );
+
+    assert!(
+        chat.auth_profile_usage_exhausted_reset_at_by_profile
+            .is_empty()
+    );
+    assert!(chat.auth_profile_rate_limit_snapshots_by_profile.is_empty());
+    assert_eq!(
+        chat.auth_profile_usage_refresh_targets(),
+        vec![RateLimitRefreshTarget::Named("work".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn relogin_invalidates_captured_profile_after_selection_changes() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "personal@example.com");
+
+    let stale_exhausted = rate_limit_snapshot_display_for_limit(
+        &profile_usage_snapshot(
+            /*secondary_used_percent*/ 100, /*primary_used_percent*/ 100,
+        ),
+        "codex".to_string(),
+        Local::now() - chrono::Duration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES + 1),
+    );
+    chat.auth_profile_rate_limit_snapshots_by_profile.insert(
+        Some("work".to_string()),
+        BTreeMap::from([("codex".to_string(), stale_exhausted)]),
+    );
+    chat.auth_profile_usage_exhausted_reset_at_by_profile
+        .insert(
+            Some("work".to_string()),
+            chrono::Utc::now().timestamp() + 3600,
+        );
+
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.config.selected_auth_profile = Some("personal".to_string());
+    chat.finish_selected_auth_profile_credential_mutation(
+        "work", /*credentials_changed*/ true,
+    );
+
+    assert!(
+        !chat
+            .auth_profile_rate_limit_snapshots_by_profile
+            .contains_key(&Some("work".to_string()))
+    );
+    assert!(
+        !chat
+            .auth_profile_usage_exhausted_reset_at_by_profile
+            .contains_key(&Some("work".to_string()))
+    );
+
+    chat.config.selected_auth_profile = Some("work".to_string());
+    assert!(
+        chat.auth_profile_usage_refresh_targets()
+            .contains(&RateLimitRefreshTarget::Named("work".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn profile_relogin_invalidation_preserves_unrelated_profile_usage_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.selected_auth_profile = Some("work".to_string());
+    save_popup_chatgpt_auth_profile(&chat, "work", "work@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "personal", "personal@example.com");
+
+    for profile in ["work", "personal"] {
+        let snapshot = rate_limit_snapshot_display_for_limit(
+            &profile_usage_snapshot(
+                /*secondary_used_percent*/ 80, /*primary_used_percent*/ 60,
+            ),
+            "codex".to_string(),
+            Local::now(),
+        );
+        let profile = Some(profile.to_string());
+        chat.auth_profile_rate_limit_snapshots_by_profile
+            .insert(profile.clone(), BTreeMap::from([("codex".to_string(), snapshot)]));
+        chat.auth_profile_usage_heartbeat_requested_at_by_profile
+            .insert(profile.clone(), std::time::Instant::now());
+        chat.auth_profile_usage_heartbeat_failed_at_by_profile
+            .insert(profile.clone(), std::time::Instant::now());
+        chat.auth_profile_usage_exhausted_reset_at_by_profile
+            .insert(profile, chrono::Utc::now().timestamp() + 3600);
+    }
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        rate_limit_snapshot_display_for_limit(
+            &profile_usage_snapshot(
+                /*secondary_used_percent*/ 20, /*primary_used_percent*/ 10,
+            ),
+            "codex".to_string(),
+            Local::now(),
+        ),
+    );
+
+    chat.begin_selected_auth_profile_credential_mutation("work");
+    chat.config.selected_auth_profile = Some("personal".to_string());
+    chat.finish_selected_auth_profile_credential_mutation(
+        "work", /*credentials_changed*/ true,
+    );
+
+    let work = Some("work".to_string());
+    let personal = Some("personal".to_string());
+    assert!(!chat.auth_profile_rate_limit_snapshots_by_profile.contains_key(&work));
+    assert!(chat.auth_profile_rate_limit_snapshots_by_profile.contains_key(&personal));
+    assert!(
+        !chat
+            .auth_profile_usage_heartbeat_requested_at_by_profile
+            .contains_key(&work)
+    );
+    assert!(
+        chat.auth_profile_usage_heartbeat_requested_at_by_profile
+            .contains_key(&personal)
+    );
+    assert!(
+        !chat
+            .auth_profile_usage_heartbeat_failed_at_by_profile
+            .contains_key(&work)
+    );
+    assert!(
+        chat.auth_profile_usage_heartbeat_failed_at_by_profile
+            .contains_key(&personal)
+    );
+    assert!(
+        !chat
+            .auth_profile_usage_exhausted_reset_at_by_profile
+            .contains_key(&work)
+    );
+    assert!(
+        chat.auth_profile_usage_exhausted_reset_at_by_profile
+            .contains_key(&personal)
+    );
+    assert!(
+        !chat.rate_limit_snapshots_by_limit_id.is_empty(),
+        "relogin for the previously selected profile must preserve the current profile snapshot"
+    );
+}
+
 fn assert_no_rate_limit_refresh_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) {
     while let Ok(event) = rx.try_recv() {
         assert!(
