@@ -48,6 +48,15 @@ jobs:
         with:
           testbox_id: ${{ inputs.testbox_id }}
 
+      # codex-bwrap's build.rs needs libcap.pc; the Blacksmith image does not ship it,
+      # so without this every codex-rs build fails in ~1 min at the linker/pkg-config step.
+      # Mirrors what rust-ci-full.yml installs for the same reason.
+      - name: Install system build deps
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config libcap-dev bubblewrap
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: clippy,rustfmt
