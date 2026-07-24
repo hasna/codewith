@@ -114,8 +114,39 @@ impl ChatWidget {
         }
     }
 
+    /// Requeue the pending steer that the server actually rejected.
+    ///
+    /// A rejection response is not necessarily for the oldest in-flight steer: merged
+    /// flushes and interleaved steers routinely leave the rejected one behind other pending
+    /// entries, so popping the front would requeue the wrong message and drop the rejected
+    /// one. Match on the same `compare_key` the pending steer was recorded with, and fall
+    /// back to the caller's error path when nothing matches.
+    pub(crate) fn enqueue_rejected_steer_matching_items(&mut self, items: &[UserInput]) -> bool {
+        let compare_key = Self::pending_steer_compare_key_from_items(items);
+        let Some(index) = self
+            .input_queue
+            .pending_steers
+            .iter()
+            .position(|pending| pending.compare_key == compare_key)
+        else {
+            tracing::warn!(
+                "received active-turn-not-steerable response without a matching pending steer"
+            );
+            return false;
+        };
+        self.enqueue_rejected_steer_at(index)
+    }
+
+    /// Requeue the oldest pending steer.
+    ///
+    /// Used by the notification path, which reports that the active turn is not steerable
+    /// without echoing back the rejected items.
     pub(crate) fn enqueue_rejected_steer(&mut self) -> bool {
-        let Some(pending_steer) = self.input_queue.pending_steers.pop_front() else {
+        self.enqueue_rejected_steer_at(/*index*/ 0)
+    }
+
+    fn enqueue_rejected_steer_at(&mut self, index: usize) -> bool {
+        let Some(pending_steer) = self.input_queue.pending_steers.remove(index) else {
             tracing::warn!(
                 "received active-turn-not-steerable error without a matching pending steer"
             );

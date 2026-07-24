@@ -11,11 +11,11 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 
 
-
 • Working (0s • esc to interrupt)
 
 • Messages to be submitted at end of turn
   ↳ Steer submitted while /review was running.
+    shift + enter submit all now
 
 › Ask Codewith to do anything
 
