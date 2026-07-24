@@ -3,8 +3,15 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::models::FunctionCallOutputPayload;
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed_with_tokens;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::sse;
+use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::time::Instant;
 
 struct RewriteAgentMessageContributor;
 
@@ -23,6 +30,33 @@ impl TurnItemContributor for RewriteAgentMessageContributor {
         }
         Ok(())
     }
+}
+
+struct RecordTurnItemContribution;
+
+#[derive(Debug)]
+struct TurnItemContributionRecorded;
+
+#[async_trait::async_trait]
+impl TurnItemContributor for RecordTurnItemContribution {
+    async fn contribute(
+        &self,
+        _thread_store: &ExtensionData,
+        turn_store: &ExtensionData,
+        _item: &mut TurnItem,
+    ) -> Result<(), String> {
+        turn_store.insert(TurnItemContributionRecorded);
+        Ok(())
+    }
+}
+
+fn with_turn_item_contribution_recorder(session: Arc<Session>) -> Arc<Session> {
+    let mut session = Arc::try_unwrap(session)
+        .unwrap_or_else(|_| panic!("test should hold the only session reference"));
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
+    builder.turn_item_contributor(Arc::new(RecordTurnItemContribution));
+    session.services.extensions = Arc::new(builder.build());
+    Arc::new(session)
 }
 
 fn assistant_output_text(text: &str) -> ResponseItem {
@@ -135,6 +169,142 @@ async fn oversized_sampling_prompt_is_rejected_before_streaming() {
         reject_oversized_sampling_prompt(&prompt, &turn_context),
         Err(CodexErr::ContextWindowExceeded)
     ));
+}
+
+#[tokio::test]
+async fn infinity_planner_error_fails_before_sampling_or_turn_side_effects() {
+    const PLANNER_ERROR: &str = "Infinity Agent tool planning has no verified process policy";
+
+    let server = start_mock_server().await;
+    let model_request = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("response-must-not-run"),
+            ev_assistant_message("message-must-not-run", "must not reach the turn"),
+            ev_completed_with_tokens("response-must-not-run", /*total_tokens*/ 37),
+        ]),
+    )
+    .await;
+    let base_url = format!("{}/v1", server.uri());
+    let (session, turn_context, _rx_event) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            move |config| {
+                config.model_provider.base_url = Some(base_url);
+            },
+        )
+        .await;
+    let session = with_turn_item_contribution_recorder(session);
+    let mut turn_context = Arc::try_unwrap(turn_context)
+        .unwrap_or_else(|_| panic!("test should hold the only turn context reference"));
+    let mut config = (*turn_context.config).clone();
+    config.tools_policy = Some(codex_config::config_toml::ToolPolicy::InfinityAgent);
+    config.infinity_agent_policy = None;
+    turn_context.config = Arc::new(config);
+    let turn_context = Arc::new(turn_context);
+    turn_context
+        .turn_timing_state
+        .mark_turn_started(Instant::now())
+        .await;
+
+    let history_before = session.clone_history().await.raw_items().to_vec();
+    let usage_before = session.token_usage_info().await;
+    let turn_store = Arc::new(ExtensionData::new(turn_context.sub_id.clone()));
+    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let mut client_session = session.runtime_model_client().new_session();
+
+    let error = run_sampling_request(
+        Arc::clone(&session),
+        Arc::clone(&turn_context),
+        Arc::clone(&turn_store),
+        turn_diff_tracker,
+        &mut client_session,
+        /*turn_metadata_header*/ None,
+        Vec::new(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("planner failure must reach the caller before sampling");
+
+    let CodexErr::InvalidRequest(message) = error else {
+        panic!("expected structured invalid-request planner error, got {error:?}");
+    };
+    assert_eq!(message, PLANNER_ERROR);
+    assert!(model_request.requests().is_empty());
+    assert_eq!(session.token_usage_info().await, usage_before);
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        history_before.as_slice()
+    );
+    assert_eq!(
+        turn_context
+            .turn_timing_state
+            .complete_profile()
+            .sampling_request_count,
+        0
+    );
+    assert!(turn_store.get::<TurnItemContributionRecorded>().is_none());
+}
+
+#[tokio::test]
+async fn non_infinity_turn_still_samples_after_policy_readiness_gate() {
+    let server = start_mock_server().await;
+    let model_request = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("response-control"),
+            ev_assistant_message("message-control", "control sampled"),
+            ev_completed_with_tokens("response-control", /*total_tokens*/ 37),
+        ]),
+    )
+    .await;
+    let base_url = format!("{}/v1", server.uri());
+    let (session, turn_context, _rx_event) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            move |config| {
+                config.model_provider.base_url = Some(base_url);
+            },
+        )
+        .await;
+    let session = with_turn_item_contribution_recorder(session);
+    turn_context
+        .turn_timing_state
+        .mark_turn_started(Instant::now())
+        .await;
+
+    let turn_store = Arc::new(ExtensionData::new(turn_context.sub_id.clone()));
+    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let mut client_session = session.runtime_model_client().new_session();
+
+    let result = run_sampling_request(
+        Arc::clone(&session),
+        Arc::clone(&turn_context),
+        Arc::clone(&turn_store),
+        turn_diff_tracker,
+        &mut client_session,
+        /*turn_metadata_header*/ None,
+        Vec::new(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("non-Infinity control must still sample");
+
+    assert_eq!(
+        result.last_agent_message.as_deref(),
+        Some("control sampled")
+    );
+    assert_eq!(model_request.requests().len(), 1);
+    assert_eq!(
+        turn_context
+            .turn_timing_state
+            .complete_profile()
+            .sampling_request_count,
+        1
+    );
+    assert!(turn_store.get::<TurnItemContributionRecorded>().is_some());
 }
 
 #[tokio::test]

@@ -997,7 +997,7 @@ Seed the prompt, repository instructions, CLI stderr, MCP content, and
 The test passes only if all of the following are proven from captured requests,
 process/file audit, Infinity events, and receipts:
 
-1. Visible and registered tools equal the signed CLI (or MCP) allowlist and the
+1. Visible and registered tools equal the signed MCP allowlist and the
    thread/audit record contains its digest;
    `exec_command`, `write_stdin`, `shell_command`, `apply_patch`, `view_image`,
    `manage_auth_profiles`, `get_usage`, loop/schedule, browser/computer, plugins,

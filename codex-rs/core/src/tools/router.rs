@@ -38,10 +38,7 @@ pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Vec<ToolSpec>,
     // Fail-closed policy-build error recorded by `from_policy_error` and surfaced
-    // via the unit-tested `ensure_policy_ready` readiness gate. Production dispatch
-    // fail-closes independently on a missing verified policy, so this is not yet
-    // wired into the hot path.
-    #[allow(dead_code)]
+    // by `built_tools` before the router reaches a prompt or model request.
     policy_error: Option<String>,
     infinity_agent_policy: Option<Arc<VerifiedToolPolicy>>,
 }
@@ -92,7 +89,6 @@ impl ToolRouter {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn ensure_policy_ready(&self) -> Result<(), String> {
         if let Some(error) = &self.policy_error {
             return Err(error.clone());
