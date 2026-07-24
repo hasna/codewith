@@ -139,6 +139,7 @@ pub(crate) use background_agent::BackgroundAgentPendingInteractionRow;
 pub(crate) use background_agent::BackgroundAgentRunRow;
 pub(crate) use background_agent::BackgroundAgentStatusSnapshotRow;
 pub(crate) use background_agent::BackgroundAgentWorktreeLeaseRow;
+pub(crate) use background_agent::encode_background_agent_opaque_identity;
 pub(crate) use machine_registry::MachineEndpointRow;
 pub(crate) use machine_registry::MachineRecordRow;
 pub(crate) use mailbox::MailboxDeliveryAttemptRow;

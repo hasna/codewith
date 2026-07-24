@@ -148,6 +148,9 @@ const BACKGROUND_AGENT_WORKER_STDERR_DIR: &str = "workers";
 const MANAGED_WORKTREE_CLEANUP_BATCH_LIMIT: u32 = 20;
 const MANAGED_WORKTREE_CLEANUP_RETRY_DELAY: ChronoDuration = ChronoDuration::minutes(15);
 const BACKGROUND_AGENT_USAGE_PROFILE_WAIT_PREFIX: &str = "usage_profile_wait_until:";
+const BACKGROUND_AGENT_WORKER_GENERATION_ENV: &str = "CODEWITH_BACKGROUND_AGENT_WORKER_GENERATION";
+const BACKGROUND_AGENT_WORKER_SUPERVISOR_ID_ENV: &str =
+    "CODEWITH_BACKGROUND_AGENT_WORKER_SUPERVISOR_ID";
 
 struct AgentStartManagedWorktree {
     worktree_id: String,
@@ -272,7 +275,9 @@ impl ThreadRequestProcessor {
         let Some(run) = context.state_db.get_run(run_id.as_str()).await? else {
             anyhow::bail!("background-agent run not found: {run_id}");
         };
-        if !should_start_background_run(&run) {
+        let preclaimed_generation =
+            background_agent_worker_preclaimed_generation(&run, context.supervisor_id.as_str())?;
+        if preclaimed_generation.is_none() && !should_start_background_run(&run) {
             debug!(run_id = %run.id, status = ?run.status, "background-agent worker had nothing to start");
             return Ok(());
         }
@@ -281,7 +286,9 @@ impl ThreadRequestProcessor {
             let mut active = context.active_workers.lock().await;
             active.insert(run.id.clone(), token.clone());
         }
-        let result = run_background_agent_worker(context.clone(), run.clone(), token).await;
+        let result =
+            run_background_agent_worker(context.clone(), run.clone(), token, preclaimed_generation)
+                .await;
         context.active_workers.lock().await.remove(run.id.as_str());
         match &result {
             Err(err) if is_background_agent_ownership_lost(err) => {
@@ -1901,7 +1908,8 @@ async fn reconcile_background_agents(
         let worker_context = context.clone();
         context.task_tracker.spawn(async move {
             let run_id = run.id.clone();
-            if let Err(err) = run_background_agent_worker(worker_context.clone(), run, token).await
+            if let Err(err) =
+                run_background_agent_worker(worker_context.clone(), run, token, None).await
             {
                 error!(run_id, "background agent worker failed: {err}");
                 if let Err(mark_err) =
@@ -1935,7 +1943,7 @@ async fn reconcile_background_agent_worker_processes(
     reconcile_managed_worktree_cleanup(&context.state_db).await?;
     rehydrate_background_agent_worker_processes(&context).await?;
     let cleanup_retried_run_ids =
-        retry_pending_background_agent_worker_process_cleanup(&context).await;
+        retry_pending_background_agent_worker_process_cleanup(&context).await?;
     prune_finished_background_agent_worker_processes(&context).await?;
     let runs = match only_run_id {
         Some(run_id) => context
@@ -1994,14 +2002,54 @@ async fn reconcile_background_agent_worker_processes(
         {
             continue;
         }
+        let process_lease_id = format!(
+            "{}:{}:{}",
+            context.supervisor_id,
+            run.id,
+            run.generation.saturating_add(1)
+        );
+        let Some(generation) = context
+            .state_db
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                context.supervisor_id.as_str(),
+                process_lease_id.as_str(),
+                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+            )
+            .await?
+        else {
+            continue;
+        };
         let stderr_log_path = background_agent_worker_stderr_log_path(&context, run.id.as_str());
         let command = WorkerProcessCommand::new(&context.codex_bin, &stderr_log_path)
             .arg(OsString::from("app-server"))
             .arg(OsString::from("--listen"))
             .arg(OsString::from("off"))
             .arg(OsString::from("--background-agent-worker"))
-            .arg(OsString::from(run.id.clone()));
-        let handle = WorkerProcessController::default().spawn(command).await?;
+            .arg(OsString::from(run.id.clone()))
+            .env(
+                BACKGROUND_AGENT_WORKER_SUPERVISOR_ID_ENV,
+                context.supervisor_id.as_str(),
+            )
+            .env(
+                BACKGROUND_AGENT_WORKER_GENERATION_ENV,
+                generation.to_string(),
+            );
+        let handle = match WorkerProcessController::default().spawn(command).await {
+            Ok(handle) => handle,
+            Err(err) => {
+                fail_claimed_background_agent_worker_process(
+                    &context,
+                    run.id.as_str(),
+                    generation,
+                    "failed to spawn background-agent worker process",
+                    &json!({"reason": "worker_process_spawn_failed"}),
+                )
+                .await?;
+                return Err(err);
+            }
+        };
         context
             .active_worker_processes
             .lock()
@@ -2012,19 +2060,44 @@ async fn reconcile_background_agent_worker_processes(
             if let Some(hook) = context.worker_process_spawn_hook.as_ref() {
                 hook(&handle)?;
             }
+            let stderr_log_path = stderr_log_path.display().to_string();
+            let job_id = format!("worker-process:{}", run.id);
+            if !context
+                .state_db
+                .record_background_agent_execution_handle(BackgroundAgentExecutionHandleParams {
+                    run_id: run.id.as_str(),
+                    supervisor_id: context.supervisor_id.as_str(),
+                    generation,
+                    pid: Some(i64::from(handle.pid)),
+                    pgid: handle.pgid.map(i64::from),
+                    job_id: Some(job_id.as_str()),
+                    start_token: handle.start_token.as_deref(),
+                    stderr_log_path: Some(stderr_log_path.as_str()),
+                })
+                .await?
+            {
+                anyhow::bail!("background-agent worker process lost ownership after spawn");
+            }
             context
                 .state_db
-                .append_background_agent_event(
+                .append_background_agent_event_for_supervisor(
                     run.id.as_str(),
+                    context.supervisor_id.as_str(),
+                    generation,
                     "agent.workerProcessSpawned",
                     &json!({
                         "supervisorId": context.supervisor_id,
+                        "generation": generation,
                         "pid": handle.pid,
                         "pgid": handle.pgid,
-                        "stderrLogPath": stderr_log_path.display().to_string(),
+                        "stderrLogPath": stderr_log_path,
                     }),
+                    /*allow_terminal_current*/ false,
                 )
-                .await
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("background-agent worker process lost ownership after spawn")
+                })
         }
         .await;
         if let Err(err) = event_result {
@@ -2045,6 +2118,14 @@ async fn reconcile_background_agent_worker_processes(
                         .lock()
                         .await
                         .remove(run.id.as_str());
+                    fail_claimed_background_agent_worker_process(
+                        &context,
+                        run.id.as_str(),
+                        generation,
+                        "background-agent worker process bookkeeping failed",
+                        &json!({"reason": "worker_process_bookkeeping_failed"}),
+                    )
+                    .await?;
                     return Err(err);
                 }
                 Err(stop_err) => {
@@ -2055,6 +2136,51 @@ async fn reconcile_background_agent_worker_processes(
             }
         }
     }
+    Ok(())
+}
+
+async fn fail_claimed_background_agent_worker_process(
+    context: &BackgroundAgentProcessSupervisorContext,
+    run_id: &str,
+    generation: i64,
+    status_reason: &str,
+    event_payload_json: &Value,
+) -> anyhow::Result<()> {
+    let status_payload_json = json!({
+        "phase": "failed",
+        "reason": event_payload_json,
+    });
+    let status_event = context
+        .state_db
+        .append_background_agent_status_event_for_supervisor(
+            BackgroundAgentStatusEventForSupervisorParams {
+                run_id,
+                supervisor_id: context.supervisor_id.as_str(),
+                generation,
+                status: BackgroundAgentRunStatus::Failed,
+                status_reason: Some(status_reason),
+                event_type: "agent.failed",
+                event_payload_json,
+                summary: Some("Failed"),
+                pending_interaction_count: 0,
+                status_payload_json: &status_payload_json,
+            },
+        )
+        .await?;
+    if status_event.is_none() {
+        return Err(background_agent_ownership_lost(run_id, generation));
+    }
+    context
+        .state_db
+        .finish_background_agent_process_lease(
+            run_id,
+            context.supervisor_id.as_str(),
+            generation,
+            /*exit_code*/ Some(1),
+            /*exit_signal*/ None,
+            Some(status_reason),
+        )
+        .await?;
     Ok(())
 }
 
@@ -2113,7 +2239,7 @@ async fn stop_background_agent_worker_process_with_context(
 
 async fn retry_pending_background_agent_worker_process_cleanup(
     context: &BackgroundAgentProcessSupervisorContext,
-) -> HashSet<String> {
+) -> anyhow::Result<HashSet<String>> {
     let run_ids = context
         .worker_process_cleanup_pending
         .lock()
@@ -2149,6 +2275,20 @@ async fn retry_pending_background_agent_worker_process_cleanup(
                     .lock()
                     .await
                     .remove(run_id.as_str());
+                if let Some(run) = context.state_db.get_run(run_id.as_str()).await?
+                    && run.desired_state == BackgroundAgentDesiredState::Running
+                    && run.supervisor_id.as_deref() == Some(context.supervisor_id.as_str())
+                    && run.status == BackgroundAgentRunStatus::Starting
+                {
+                    fail_claimed_background_agent_worker_process(
+                        context,
+                        run_id.as_str(),
+                        run.generation,
+                        "background-agent worker process bookkeeping failed",
+                        &json!({"reason": "worker_process_bookkeeping_failed"}),
+                    )
+                    .await?;
+                }
                 retried.insert(run_id);
             }
             Err(err) => {
@@ -2159,7 +2299,7 @@ async fn retry_pending_background_agent_worker_process_cleanup(
             }
         }
     }
-    retried
+    Ok(retried)
 }
 
 async fn finalize_stopped_background_agent_process_for_run(
@@ -2795,6 +2935,30 @@ async fn prune_finished_background_agent_worker_processes(
                         }),
                     )
                     .await?;
+                    if run.desired_state == BackgroundAgentDesiredState::Running
+                        && run.supervisor_id.as_deref() == Some(context.supervisor_id.as_str())
+                        && matches!(
+                            run.status,
+                            BackgroundAgentRunStatus::Starting
+                                | BackgroundAgentRunStatus::Running
+                                | BackgroundAgentRunStatus::WaitingOnApproval
+                                | BackgroundAgentRunStatus::WaitingOnUser
+                        )
+                    {
+                        fail_claimed_background_agent_worker_process(
+                            context,
+                            run.id.as_str(),
+                            run.generation,
+                            "worker process exited after durable claim",
+                            &json!({
+                                "reason": "worker_process_exited_after_claim",
+                                "pid": handle.pid,
+                                "pgid": handle.pgid,
+                                "stderrLogPath": handle.stderr_log_path.display().to_string(),
+                            }),
+                        )
+                        .await?;
+                    }
                 }
                 context
                     .state_db
@@ -2890,6 +3054,63 @@ fn should_start_background_run(run: &BackgroundAgentRun) -> bool {
     true
 }
 
+fn background_agent_worker_preclaimed_generation(
+    run: &BackgroundAgentRun,
+    supervisor_id: &str,
+) -> anyhow::Result<Option<i64>> {
+    let Some(value) = std::env::var_os(BACKGROUND_AGENT_WORKER_GENERATION_ENV) else {
+        return Ok(None);
+    };
+    let generation = value
+        .to_string_lossy()
+        .parse::<i64>()
+        .context("invalid preclaimed background-agent worker generation")?;
+    if run.supervisor_id.as_deref() != Some(supervisor_id)
+        || run.generation != generation
+        || run.status != BackgroundAgentRunStatus::Starting
+    {
+        anyhow::bail!(
+            "preclaimed background-agent worker ownership does not match durable run state"
+        );
+    }
+    Ok(Some(generation))
+}
+
+async fn wait_for_background_agent_worker_spawn_receipt(
+    context: &BackgroundAgentWorkerContext,
+    run_id: &str,
+    generation: i64,
+    last_event_seq: i64,
+) -> anyhow::Result<()> {
+    let after_seq = last_event_seq.saturating_sub(20);
+    let wait = async {
+        loop {
+            let events = context
+                .state_db
+                .list_events_after(run_id, Some(after_seq), Some(50))
+                .await?;
+            if events.iter().any(|event| {
+                event.event_type == "agent.workerProcessSpawned"
+                    && event
+                        .payload_json
+                        .get("supervisorId")
+                        .and_then(Value::as_str)
+                        == Some(context.supervisor_id.as_str())
+                    && event.payload_json.get("generation").and_then(Value::as_i64)
+                        == Some(generation)
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .with_context(|| {
+            format!("timed out waiting for durable worker-process spawn receipt for run {run_id}")
+        })?
+}
+
 fn is_terminal_background_agent_status(status: BackgroundAgentRunStatus) -> bool {
     matches!(
         status,
@@ -2910,29 +3131,46 @@ async fn run_background_agent_worker(
     context: BackgroundAgentWorkerContext,
     run: BackgroundAgentRun,
     cancel_token: CancellationToken,
+    preclaimed_generation: Option<i64>,
 ) -> anyhow::Result<()> {
-    let process_lease_id = format!(
-        "{}:{}:{}",
-        context.supervisor_id,
-        run.id,
-        run.generation.saturating_add(1)
-    );
-    let Some(generation) = retry_transient_sqlite_busy("claim background agent supervisor", || {
-        context
-            .state_db
-            .claim_background_agent_supervisor_compatible(
-                run.id.as_str(),
-                context.supervisor_id.as_str(),
-                process_lease_id.as_str(),
-                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
-                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
-            )
-    })
-    .await?
-    else {
-        debug!(run_id = %run.id, "background agent run was not claimable");
-        return Ok(());
+    let generation = match preclaimed_generation {
+        Some(generation) => generation,
+        None => {
+            let process_lease_id = format!(
+                "{}:{}:{}",
+                context.supervisor_id,
+                run.id,
+                run.generation.saturating_add(1)
+            );
+            let Some(generation) =
+                retry_transient_sqlite_busy("claim background agent supervisor", || {
+                    context
+                        .state_db
+                        .claim_background_agent_supervisor_compatible(
+                            run.id.as_str(),
+                            context.supervisor_id.as_str(),
+                            process_lease_id.as_str(),
+                            BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                            BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                        )
+                })
+                .await?
+            else {
+                debug!(run_id = %run.id, "background agent run was not claimable");
+                return Ok(());
+            };
+            generation
+        }
     };
+    if context.worker_process && preclaimed_generation.is_some() {
+        wait_for_background_agent_worker_spawn_receipt(
+            &context,
+            run.id.as_str(),
+            generation,
+            run.last_event_seq,
+        )
+        .await?;
+    }
 
     let (config, initial_execution_payload) =
         match resolve_background_agent_config(&context, &run).await? {
@@ -3006,12 +3244,10 @@ async fn run_background_agent_worker(
     )
     .await?;
 
-    let should_submit_prompt = run.thread_id.is_none() && run.rollout_path.is_none();
-    let prompt = if should_submit_prompt {
-        Some(load_background_agent_prompt(&context.state_db, run.id.as_str()).await?)
-    } else {
-        None
-    };
+    let prompt = load_background_agent_prompt(&context.state_db, run.id.as_str()).await?;
+    let initial_prompt_submission_id = background_agent_initial_prompt_submission_id(&run.id);
+    let initial_prompt_sha256 =
+        codex_state::StateRuntime::background_agent_identity_sha256(prompt.as_bytes());
     let NewThread {
         thread_id,
         thread,
@@ -3027,10 +3263,17 @@ async fn run_background_agent_worker(
         }),
     )
     .await?;
-    let rollout_path = session_configured
+    let durable_rollout_path = session_configured
         .rollout_path
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string());
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("background-agent thread has no durable rollout path"))?;
+    let rollout_path = Some(durable_rollout_path.to_string_lossy().to_string());
+    let initial_prompt_recorded = background_agent_initial_prompt_is_recorded(
+        durable_rollout_path,
+        initial_prompt_submission_id.as_str(),
+        prompt.as_str(),
+    )
+    .await?;
     let thread_id_string = thread_id.to_string();
     let session_id_string = session_configured.session_id.to_string();
     let binding_params = BackgroundAgentThreadBindingParams {
@@ -3100,9 +3343,16 @@ async fn run_background_agent_worker(
     )
     .await?;
 
-    if should_submit_prompt {
-        let prompt =
-            prompt.ok_or_else(|| anyhow::anyhow!("background agent prompt missing for new run"))?;
+    if initial_prompt_recorded {
+        record_background_agent_initial_prompt_receipt(
+            &context.state_db,
+            run.id.as_str(),
+            thread_id,
+            initial_prompt_submission_id.as_str(),
+            initial_prompt_sha256.as_str(),
+        )
+        .await?;
+    } else {
         with_startup_heartbeat(
             &context,
             run.id.as_str(),
@@ -3110,17 +3360,21 @@ async fn run_background_agent_worker(
             "submit initial prompt",
             async {
                 thread
-                    .submit(Op::UserInput {
-                        items: vec![UserInput::Text {
-                            text: prompt,
-                            text_elements: Vec::new(),
-                        }],
-                        final_output_json_schema: None,
-                        responsesapi_client_metadata: None,
-                        additional_context: Default::default(),
-                        environments: None,
-                        thread_settings: Default::default(),
-                    })
+                    .submit_user_input_with_client_user_message_id(
+                        Op::UserInput {
+                            items: vec![UserInput::Text {
+                                text: prompt,
+                                text_elements: Vec::new(),
+                            }],
+                            final_output_json_schema: None,
+                            responsesapi_client_metadata: None,
+                            additional_context: Default::default(),
+                            environments: None,
+                            thread_settings: Default::default(),
+                        },
+                        /*trace*/ None,
+                        Some(initial_prompt_submission_id.clone()),
+                    )
                     .await?;
                 Ok(())
             },
@@ -3146,6 +3400,21 @@ async fn run_background_agent_worker(
             }
             event = thread.next_event() => {
                 let event = event?;
+                if matches!(
+                    &event.msg,
+                    EventMsg::UserMessage(message)
+                        if message.client_id.as_deref()
+                            == Some(initial_prompt_submission_id.as_str())
+                ) {
+                    record_background_agent_initial_prompt_receipt(
+                        &context.state_db,
+                        run.id.as_str(),
+                        thread_id,
+                        initial_prompt_submission_id.as_str(),
+                        initial_prompt_sha256.as_str(),
+                    )
+                    .await?;
+                }
                 if handle_background_agent_event(
                     &context,
                     run.id.as_str(),
@@ -3424,7 +3693,10 @@ fn validate_background_agent_initial_execution_snapshot(
             "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: initial execution snapshot field permissionProfile must be an object or null"
         );
     }
-    if optional_string("authProfileRef")? != run.auth_profile_ref.as_deref() {
+    let expected_auth_profile_identity = run.auth_profile_ref.as_deref().map(|profile| {
+        codex_state::StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+    });
+    if optional_string("authProfileIdentitySha256")? != expected_auth_profile_identity.as_deref() {
         anyhow::bail!(
             "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: persisted execution snapshot auth profile does not match the admitted run"
         );
@@ -3668,6 +3940,75 @@ fn background_agent_snapshot_sandbox_mode(value: &Value) -> anyhow::Result<Optio
         .map(serde_json::from_value::<SandboxMode>)
         .transpose()
         .map_err(anyhow::Error::from)
+}
+
+fn background_agent_initial_prompt_submission_id(run_id: &str) -> String {
+    let identity = codex_state::StateRuntime::background_agent_identity_sha256(run_id.as_bytes());
+    format!("background-agent-initial-prompt:{identity}")
+}
+
+fn background_agent_initial_prompt_is_in_history(
+    history: &InitialHistory,
+    submission_id: &str,
+    prompt: &str,
+) -> bool {
+    history.scan_rollout_items(|item| {
+        matches!(
+            item,
+            codex_protocol::protocol::RolloutItem::EventMsg(EventMsg::UserMessage(message))
+                if message.client_id.as_deref() == Some(submission_id)
+                    || (message.client_id.is_none() && message.message == prompt)
+        )
+    })
+}
+
+async fn background_agent_initial_prompt_is_recorded(
+    rollout_path: &Path,
+    submission_id: &str,
+    prompt: &str,
+) -> anyhow::Result<bool> {
+    let history = codex_rollout::RolloutRecorder::get_rollout_history(rollout_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to inspect background-agent rollout {} for initial prompt",
+                rollout_path.display()
+            )
+        })?;
+    Ok(background_agent_initial_prompt_is_in_history(
+        &history,
+        submission_id,
+        prompt,
+    ))
+}
+
+async fn record_background_agent_initial_prompt_receipt(
+    state_db: &StateDbHandle,
+    run_id: &str,
+    thread_id: codex_protocol::ThreadId,
+    submission_id: &str,
+    prompt_sha256: &str,
+) -> anyhow::Result<()> {
+    let receipt_identity =
+        codex_state::StateRuntime::background_agent_identity_sha256(submission_id.as_bytes());
+    let receipt_key = format!("initial-prompt:{receipt_identity}");
+    let diagnostics = json!({
+        "threadId": thread_id.to_string(),
+        "submissionId": submission_id,
+        "promptSha256": prompt_sha256,
+    });
+    retry_transient_sqlite_busy("record background agent initial prompt receipt", || {
+        state_db.append_background_agent_lifecycle_receipt(
+            run_id,
+            "agent.initialPromptRecorded",
+            receipt_key.as_str(),
+            /*generation*/ 0,
+            /*attempt*/ None,
+            &diagnostics,
+        )
+    })
+    .await?;
+    Ok(())
 }
 
 async fn load_background_agent_prompt(
@@ -4801,7 +5142,13 @@ fn status_snapshot_payload(
         }
     }
     if let Some(execution_payload) = execution_payload {
-        for key in ["model", "provider", "serviceTier", "cwd", "authProfileRef"] {
+        for key in [
+            "model",
+            "provider",
+            "serviceTier",
+            "cwd",
+            "authProfileIdentitySha256",
+        ] {
             if let Some(value) = execution_payload.get(key).cloned() {
                 object.insert(key.to_string(), value);
             }
@@ -5020,6 +5367,9 @@ fn tolerate_transient_busy<T>(
 }
 
 pub(super) fn new_background_agent_supervisor_id() -> String {
+    if let Some(supervisor_id) = std::env::var_os(BACKGROUND_AGENT_WORKER_SUPERVISOR_ID_ENV) {
+        return supervisor_id.to_string_lossy().into_owned();
+    }
     format!(
         "{}:{}:{}",
         BACKGROUND_AGENT_SUPERVISOR_PREFIX,
@@ -5594,7 +5944,13 @@ done
             .collect::<Vec<_>>();
         assert_eq!(
             event_types,
-            vec!["agent.started", "agent.workerProcessSpawned"]
+            vec![
+                "agent.admitted",
+                "agent.started",
+                "agent.claimed",
+                "agent.heartbeat",
+                "agent.workerProcessSpawned",
+            ]
         );
         let spawn_event = events
             .last()
@@ -5613,6 +5969,38 @@ done
             spawn_event.get("pgid").and_then(Value::as_u64),
             Some(u64::from(handle.pid))
         );
+        let run = state_db
+            .get_background_agent_run("run/with path")
+            .await?
+            .expect("run should remain durable");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Starting);
+        assert_eq!(
+            run.supervisor_id.as_deref(),
+            Some("process-supervisor-test")
+        );
+
+        let duplicate_spawned = Arc::new(AtomicBool::new(false));
+        let duplicate_spawned_for_hook = Arc::clone(&duplicate_spawned);
+        let competing_context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "competing-process-supervisor".to_string(),
+            active_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: fixture.program.clone(),
+            worker_process_spawn_hook: Some(Arc::new(move |_| {
+                duplicate_spawned_for_hook.store(true, Ordering::SeqCst);
+                Ok(())
+            })),
+            worker_process_stop_hook: None,
+        };
+        reconcile_background_agent_worker_processes(
+            competing_context,
+            Some("run/with path".to_string()),
+        )
+        .await?;
+        assert!(!duplicate_spawned.load(Ordering::SeqCst));
+
         fixture.release()?;
         wait_for_worker_process_exit(&WorkerProcessController::default(), &handle).await?;
 
@@ -5723,6 +6111,97 @@ done
             initial_goal_objective_from_execution_payload(&json!({})),
             None
         );
+    }
+
+    #[test]
+    fn initial_prompt_recovery_uses_deterministic_rollout_identity() {
+        let run_id = "initial-prompt-run";
+        let submission_id = background_agent_initial_prompt_submission_id(run_id);
+        let history =
+            InitialHistory::Forked(vec![codex_protocol::protocol::RolloutItem::EventMsg(
+                EventMsg::UserMessage(codex_protocol::protocol::UserMessageEvent {
+                    client_id: Some(submission_id.clone()),
+                    message: "durable prompt".to_string(),
+                    ..Default::default()
+                }),
+            )]);
+        let unrelated =
+            InitialHistory::Forked(vec![codex_protocol::protocol::RolloutItem::EventMsg(
+                EventMsg::UserMessage(codex_protocol::protocol::UserMessageEvent {
+                    client_id: Some("another-submission".to_string()),
+                    message: "durable prompt".to_string(),
+                    ..Default::default()
+                }),
+            )]);
+        let legacy = InitialHistory::Forked(vec![codex_protocol::protocol::RolloutItem::EventMsg(
+            EventMsg::UserMessage(codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
+                message: "durable prompt".to_string(),
+                ..Default::default()
+            }),
+        )]);
+
+        assert!(background_agent_initial_prompt_is_in_history(
+            &history,
+            submission_id.as_str(),
+            "durable prompt"
+        ));
+        assert!(!background_agent_initial_prompt_is_in_history(
+            &unrelated,
+            submission_id.as_str(),
+            "durable prompt"
+        ));
+        assert!(background_agent_initial_prompt_is_in_history(
+            &legacy,
+            submission_id.as_str(),
+            "durable prompt"
+        ));
+    }
+
+    #[tokio::test]
+    async fn initial_prompt_receipt_replays_after_rollout_recovery() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "initial-prompt-receipt").await?;
+        let thread_id = codex_protocol::ThreadId::new();
+        let submission_id = background_agent_initial_prompt_submission_id("initial-prompt-receipt");
+        let prompt_sha256 =
+            codex_state::StateRuntime::background_agent_identity_sha256(b"durable prompt");
+
+        record_background_agent_initial_prompt_receipt(
+            state_db.as_ref(),
+            "initial-prompt-receipt",
+            thread_id,
+            submission_id.as_str(),
+            prompt_sha256.as_str(),
+        )
+        .await?;
+        record_background_agent_initial_prompt_receipt(
+            state_db.as_ref(),
+            "initial-prompt-receipt",
+            thread_id,
+            submission_id.as_str(),
+            prompt_sha256.as_str(),
+        )
+        .await?;
+
+        let events = state_db
+            .list_background_agent_events_after(
+                "initial-prompt-receipt",
+                /*after_seq*/ None,
+                None,
+            )
+            .await?;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "agent.initialPromptRecorded")
+                .count(),
+            1
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -5866,7 +6345,7 @@ done
         assert_eq!(run.status, BackgroundAgentRunStatus::Failed);
         assert_eq!(
             run.status_reason.as_deref(),
-            Some("worker process exited before claiming run")
+            Some("worker process exited after durable claim")
         );
         let snapshot = context
             .state_db
@@ -6240,6 +6719,7 @@ done
                 "cwd": null,
                 "configFingerprint": "cfg-test",
                 "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
                 "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
             }),
             recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),

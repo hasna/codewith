@@ -3,6 +3,39 @@ use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use serde_json::Value;
+
+const BACKGROUND_AGENT_OPAQUE_IDENTITY_STORAGE_PREFIX: &str = "codewith-opaque-v1:";
+
+pub(crate) fn encode_background_agent_opaque_identity(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(
+        BACKGROUND_AGENT_OPAQUE_IDENTITY_STORAGE_PREFIX.len() + value.len() * 2,
+    );
+    encoded.push_str(BACKGROUND_AGENT_OPAQUE_IDENTITY_STORAGE_PREFIX);
+    for byte in value.bytes() {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+pub(crate) fn decode_background_agent_opaque_identity(value: &str) -> Result<String> {
+    let Some(encoded) = value.strip_prefix(BACKGROUND_AGENT_OPAQUE_IDENTITY_STORAGE_PREFIX) else {
+        return Ok(value.to_string());
+    };
+    if !encoded.len().is_multiple_of(2) {
+        anyhow::bail!("invalid encoded background agent opaque identity");
+    }
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair)?;
+            Ok(u8::from_str_radix(pair, 16)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    String::from_utf8(bytes).map_err(Into::into)
+}
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,7 +306,11 @@ impl TryFrom<BackgroundAgentRunRow> for BackgroundAgentRun {
     fn try_from(value: BackgroundAgentRunRow) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
-            idempotency_key: value.idempotency_key,
+            idempotency_key: value
+                .idempotency_key
+                .as_deref()
+                .map(decode_background_agent_opaque_identity)
+                .transpose()?,
             request_id: value.request_id,
             source: value.source,
             prompt_snapshot_ref: value.prompt_snapshot_ref,
@@ -290,7 +327,11 @@ impl TryFrom<BackgroundAgentRunRow> for BackgroundAgentRun {
                 .map(serde_json::from_str)
                 .transpose()?,
             worktree_lease_id: value.worktree_lease_id,
-            auth_profile_ref: value.auth_profile_ref,
+            auth_profile_ref: value
+                .auth_profile_ref
+                .as_deref()
+                .map(decode_background_agent_opaque_identity)
+                .transpose()?,
             desired_state: BackgroundAgentDesiredState::parse(value.desired_state.as_str())?,
             status: BackgroundAgentRunStatus::parse(value.status.as_str())?,
             status_reason: value.status_reason,

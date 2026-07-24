@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::encode_background_agent_opaque_identity;
 use crate::runtime::background_agents::append_background_agent_event_in_tx;
 use crate::runtime::workflow_automation::arm_workflow_timers_for_succeeded_step_in_tx;
 use crate::runtime::workflows::WorkflowRunEventAppend;
@@ -1098,7 +1099,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
     )
-    .bind(idempotency_key)
+    .bind(encode_background_agent_opaque_identity(idempotency_key))
     .fetch_optional(&mut **tx)
     .await
     .map_err(anyhow::Error::from)
@@ -1182,7 +1183,7 @@ INSERT INTO background_agent_runs (
         "#,
     )
     .bind(background_agent_run_id)
-    .bind(redact_state_string(idempotency_key))
+    .bind(encode_background_agent_opaque_identity(idempotency_key))
     .bind(source)
     .bind(redact_state_string(prompt_snapshot_ref.as_str()))
     .bind(WORKFLOW_BRANCH_THREAD_STORE_KIND)
@@ -1193,7 +1194,12 @@ INSERT INTO background_agent_runs (
     )
     .bind(params.parent_agent_run_id.as_deref())
     .bind(spawn_linkage_json.as_str())
-    .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
+    .bind(
+        params
+            .auth_profile_ref
+            .as_deref()
+            .map(encode_background_agent_opaque_identity),
+    )
     .bind(BackgroundAgentDesiredState::Running.as_str())
     .bind(BackgroundAgentRunStatus::Queued.as_str())
     .bind(redact_state_string("queued by workflow branch admission"))
@@ -1372,7 +1378,10 @@ fn branch_execution_payload(
         "serviceTier": model_route_json.get("service_tier"),
         "approvalPolicy": model_route_json.get("approval_policy"),
         "permissionProfile": model_route_json.get("permission_profile"),
-        "authProfileRef": params.auth_profile_ref.as_deref(),
+        "authProfileIdentitySha256": params
+            .auth_profile_ref
+            .as_deref()
+            .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes())),
         "workspace": workspace_json,
         "envSnapshotPolicy": "inherit-minimal",
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),

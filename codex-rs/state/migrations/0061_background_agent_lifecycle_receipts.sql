@@ -7,6 +7,19 @@ ALTER TABLE background_agent_runs
 ALTER TABLE background_agent_events
     ADD COLUMN receipt_key TEXT;
 
+-- Opaque routing and idempotency references must survive the generic secrets
+-- doctor byte-for-byte. Store them in a reversible non-secret-shaped envelope;
+-- the runtime decodes them at the model boundary.
+UPDATE background_agent_runs
+SET idempotency_key =
+    'codewith-opaque-v1:' || lower(hex(CAST(idempotency_key AS BLOB)))
+WHERE idempotency_key IS NOT NULL;
+
+UPDATE background_agent_runs
+SET auth_profile_ref =
+    'codewith-opaque-v1:' || lower(hex(CAST(auth_profile_ref AS BLOB)))
+WHERE auth_profile_ref IS NOT NULL;
+
 -- Runs admitted before lifecycle receipts existed cannot prove a complete,
 -- replayable admission. Fail them closed during the upgrade instead of
 -- leaving them permanently active but unclaimable.

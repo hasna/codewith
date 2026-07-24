@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::encode_background_agent_opaque_identity;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -1715,7 +1716,7 @@ INSERT INTO background_agent_process_leases (
             "agent.claimed",
             receipt_key.as_str(),
             generation,
-            Some(generation),
+            /*attempt*/ None,
             &serde_json::json!({
                 "supervisorId": supervisor_id,
                 "processLeaseId": process_lease_id,
@@ -1993,7 +1994,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
             "#,
         )
-        .bind(idempotency_key)
+        .bind(encode_background_agent_opaque_identity(idempotency_key))
         .fetch_optional(self.pool.as_ref())
         .await?;
         row.map(BackgroundAgentRun::try_from).transpose()
@@ -2084,7 +2085,12 @@ INSERT INTO background_agent_runs (
         "#,
     )
     .bind(params.id.as_str())
-    .bind(params.idempotency_key.as_deref())
+    .bind(
+        params
+            .idempotency_key
+            .as_deref()
+            .map(encode_background_agent_opaque_identity),
+    )
     .bind(params.request_id.as_deref().map(redact_state_string))
     .bind(params.source.as_str())
     .bind(params.prompt_snapshot_ref.as_str())
@@ -2101,7 +2107,12 @@ INSERT INTO background_agent_runs (
     .bind(params.parent_thread_id.as_deref())
     .bind(params.parent_agent_run_id.as_deref())
     .bind(spawn_linkage_json.as_deref())
-    .bind(params.auth_profile_ref.as_deref())
+    .bind(
+        params
+            .auth_profile_ref
+            .as_deref()
+            .map(encode_background_agent_opaque_identity),
+    )
     .bind(BackgroundAgentDesiredState::Running.as_str())
     .bind(BackgroundAgentRunStatus::Queued.as_str())
     .bind(params.status_reason.as_deref().map(redact_state_string))
@@ -2176,7 +2187,7 @@ async fn append_background_agent_admission_receipt_in_tx(
         "agent.admitted",
         receipt_key.as_str(),
         /*generation*/ 0,
-        Some(1),
+        /*attempt*/ None,
         &serde_json::json!({
             "source": params.source,
             "requestId": params.request_id,
@@ -2471,7 +2482,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
     )
-    .bind(idempotency_key)
+    .bind(encode_background_agent_opaque_identity(idempotency_key))
     .fetch_optional(&mut **tx)
     .await?;
     let Some((
@@ -2514,7 +2525,11 @@ WHERE idempotency_key = ?
         && parent_thread_id == params.parent_thread_id
         && parent_agent_run_id == params.parent_agent_run_id
         && spawn_linkage_json == requested_spawn_linkage_json
-        && auth_profile_ref == params.auth_profile_ref
+        && auth_profile_ref
+            == params
+                .auth_profile_ref
+                .as_deref()
+                .map(encode_background_agent_opaque_identity)
         && config_fingerprint == params.config_fingerprint
         && version_fingerprint == params.version_fingerprint;
     if !identity_matches {
