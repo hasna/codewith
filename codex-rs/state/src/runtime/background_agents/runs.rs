@@ -2005,7 +2005,20 @@ async fn ensure_background_agent_capacity_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     max_active_runs: i64,
 ) -> anyhow::Result<()> {
-    let active_run_count: i64 = sqlx::query_scalar(
+    let active_run_count = count_live_or_recoverable_background_agent_runs_in_tx(tx).await?;
+    if active_run_count >= max_active_runs {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED}: \
+             {active_run_count} live or recoverable run(s), max {max_active_runs}"
+        );
+    }
+    Ok(())
+}
+
+pub(in crate::runtime) async fn count_live_or_recoverable_background_agent_runs_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> anyhow::Result<i64> {
+    sqlx::query_scalar(
         r#"
 SELECT COUNT(*)
 FROM background_agent_runs
@@ -2036,17 +2049,11 @@ WHERE
         "#,
     )
     .fetch_one(&mut **tx)
-    .await?;
-    if active_run_count >= max_active_runs {
-        anyhow::bail!(
-            "{BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED}: \
-             {active_run_count} live or recoverable run(s), max {max_active_runs}"
-        );
-    }
-    Ok(())
+    .await
+    .map_err(anyhow::Error::from)
 }
 
-async fn insert_background_agent_run_in_tx(
+pub(in crate::runtime) async fn insert_background_agent_run_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     params: &BackgroundAgentRunCreateParams,
     now: i64,
@@ -2135,7 +2142,7 @@ INSERT INTO background_agent_runs (
     Ok(())
 }
 
-fn background_agent_admission_identity_sha256(
+pub(in crate::runtime) fn background_agent_admission_identity_sha256(
     params: &BackgroundAgentRunCreateParams,
     start_event_payload_json: &serde_json::Value,
     execution_snapshot_params: &BackgroundAgentExecutionSnapshotParams,
@@ -2262,7 +2269,7 @@ WHERE id = ?
     Ok(id)
 }
 
-async fn recover_or_validate_background_agent_initial_state_in_tx(
+pub(in crate::runtime) async fn recover_or_validate_background_agent_initial_state_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
     params: &BackgroundAgentRunCreateParams,
@@ -2436,7 +2443,7 @@ fn legacy_background_agent_start_event_matches(
         .all(|key| stored.get(key) == proposed.get(key))
 }
 
-async fn validate_existing_background_agent_admission_in_tx(
+pub(in crate::runtime) async fn validate_existing_background_agent_admission_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     idempotency_key: &str,
     params: &BackgroundAgentRunCreateParams,
