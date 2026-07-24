@@ -101,6 +101,51 @@ impl ToolRouter {
         Ok(())
     }
 
+    pub(crate) fn validate_tool_call(
+        &self,
+        turn: &TurnContext,
+        call: &ToolCall,
+    ) -> Result<(), FunctionCallError> {
+        if !turn.config.is_infinity_agent() {
+            return Ok(());
+        }
+
+        self.ensure_policy_ready().map_err(|error| {
+            FunctionCallError::Fatal(format!(
+                "Infinity Agent tool dispatch rejected before handler execution: {error}"
+            ))
+        })?;
+        let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "Infinity Agent tool dispatch has no router-bound verified process policy"
+                    .to_string(),
+            )
+        })?;
+        let config_policy = turn.config.infinity_agent_policy.as_ref().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "Infinity Agent turn has no verified process policy".to_string(),
+            )
+        })?;
+        if policy.digest() != config_policy.digest() {
+            return Err(FunctionCallError::Fatal(
+                "Infinity Agent router policy does not match the turn policy".to_string(),
+            ));
+        }
+        policy
+            .authorize_dispatch(&call.tool_name, chrono::Utc::now())
+            .map_err(|error| {
+                FunctionCallError::Fatal(format!(
+                    "Infinity Agent tool dispatch rejected before handler execution: {error}"
+                ))
+            })?;
+        let ToolPayload::Function { arguments } = &call.payload else {
+            return Err(FunctionCallError::Fatal(
+                "Infinity Agent received a non-function tool payload".to_string(),
+            ));
+        };
+        validate_infinity_agent_arguments(arguments)
+    }
+
     pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
         self.model_visible_specs.clone()
     }
@@ -246,43 +291,13 @@ impl ToolRouter {
         source: ToolCallSource,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
+        self.validate_tool_call(turn.as_ref(), &call)?;
+
         let ToolCall {
             tool_name,
             call_id,
             payload,
         } = call;
-
-        if turn.config.is_infinity_agent() {
-            let policy = self.infinity_agent_policy.as_ref().ok_or_else(|| {
-                FunctionCallError::Fatal(
-                    "Infinity Agent tool dispatch has no router-bound verified process policy"
-                        .to_string(),
-                )
-            })?;
-            let config_policy = turn.config.infinity_agent_policy.as_ref().ok_or_else(|| {
-                FunctionCallError::Fatal(
-                    "Infinity Agent turn has no verified process policy".to_string(),
-                )
-            })?;
-            if policy.digest() != config_policy.digest() {
-                return Err(FunctionCallError::Fatal(
-                    "Infinity Agent router policy does not match the turn policy".to_string(),
-                ));
-            }
-            policy
-                .authorize_dispatch(&tool_name, chrono::Utc::now())
-                .map_err(|error| {
-                    FunctionCallError::Fatal(format!(
-                        "Infinity Agent tool dispatch rejected before handler execution: {error}"
-                    ))
-                })?;
-            let ToolPayload::Function { arguments } = &payload else {
-                return Err(FunctionCallError::Fatal(
-                    "Infinity Agent received a non-function tool payload".to_string(),
-                ));
-            };
-            validate_infinity_agent_arguments(arguments)?;
-        }
 
         let invocation = ToolInvocation {
             session,

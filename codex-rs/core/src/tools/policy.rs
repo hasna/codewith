@@ -598,6 +598,19 @@ impl VerifiedToolPolicy {
 
 #[cfg(test)]
 pub(crate) fn test_mcp_policy(tools: &[ToolInfo]) -> Arc<VerifiedToolPolicy> {
+    test_mcp_policy_with_state(
+        tools,
+        sha256_claim(b"test-infinity-agent-mcp-policy"),
+        Utc::now() + chrono::Duration::hours(1),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_mcp_policy_with_state(
+    tools: &[ToolInfo],
+    digest: String,
+    expires_at: DateTime<Utc>,
+) -> Arc<VerifiedToolPolicy> {
     let entries = tools
         .iter()
         .map(|tool| {
@@ -626,11 +639,11 @@ pub(crate) fn test_mcp_policy(tools: &[ToolInfo]) -> Arc<VerifiedToolPolicy> {
         })
         .collect();
     Arc::new(VerifiedToolPolicy {
-        digest: sha256_claim(b"test-infinity-agent-mcp-policy"),
+        digest,
         launch_bindings_sha256: sha256_claim(b"test-infinity-agent-launch-bindings"),
         source_manifest_sha256: sha256_claim(b"test-infinity-agent-source-manifest"),
         mode: PolicyMode::McpOnly,
-        expires_at: Utc::now() + chrono::Duration::hours(1),
+        expires_at,
         entries,
     })
 }

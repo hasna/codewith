@@ -285,6 +285,9 @@ async fn schedule_startup_prewarm_inner(
         .current_header_value_for_prewarm(&window_id);
     let mut client_session = session.runtime_model_client().new_session();
     let websocket_warmup_started_at = Instant::now();
+    startup_router
+        .ensure_policy_ready()
+        .map_err(CodexErr::InvalidRequest)?;
     client_session
         .prewarm_websocket(
             &startup_prompt,

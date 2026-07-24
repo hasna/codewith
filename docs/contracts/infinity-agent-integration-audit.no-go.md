@@ -1026,9 +1026,8 @@ process/file audit, Infinity events, and receipts:
    CAS, brokered draft-PR receipt, and typed cleanup receipt exist before the
    final terminal result.
 8. Authority- or instruction-bearing turn/model/environment overrides,
-   resume/fork, and subagent attempts fail closed. Dynamic-CLI mode starts
-   no MCP process; MCP mode
-   starts only the system-pinned protected no-secret bridge. The separate
+   resume/fork, and subagent attempts fail closed. The MCP-only mode starts
+   only the system-pinned protected no-secret bridge. The separate
    control fixture still has the ordinary full shell/edit manifest, proving the
    hotfix did not
    degrade task-sandbox Codewith.

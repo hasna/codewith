@@ -1,9 +1,20 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use crate::config::Config;
+use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnContext;
+use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::policy::test_mcp_policy;
+use crate::tools::policy::test_mcp_policy_with_state;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolRegistry;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_config::ToolPolicy;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -18,12 +29,17 @@ use codex_protocol::models::ResponseItem;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
+use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+use tracing::Level;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_test::internal::MockWriter;
 
+use super::MAX_INFINITY_AGENT_ARGUMENT_BYTES;
 use super::ToolCall;
 use super::ToolCallSource;
 use super::ToolRouter;
@@ -31,6 +47,47 @@ use super::ToolRouterParams;
 use super::extension_tool_executors;
 
 struct ExtensionEchoContributor;
+
+struct CountingHandler {
+    tool_name: ToolName,
+    invocations: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for CountingHandler {
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: self.tool_name.name.clone(),
+            description: "Counting test tool.".to_string(),
+            strict: true,
+            parameters: codex_extension_api::parse_tool_input_schema(&json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }))
+            .expect("counting schema should parse"),
+            output_schema: None,
+            defer_loading: None,
+        })
+    }
+
+    async fn handle(
+        &self,
+        _invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        self.invocations.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(FunctionToolOutput::from_text(
+            "ok".to_string(),
+            Some(true),
+        )))
+    }
+}
+
+impl CoreToolRuntime for CountingHandler {}
 
 impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
     fn tools(
@@ -345,6 +402,273 @@ fn mcp_tool_info(
         connector_name: None,
         plugin_display_names: Vec::new(),
     }
+}
+
+fn set_turn_infinity_policy(
+    turn: &mut TurnContext,
+    policy: Option<Arc<crate::tools::policy::VerifiedToolPolicy>>,
+) {
+    let mut config = (*turn.config).clone();
+    config.tools_policy = Some(ToolPolicy::InfinityAgent);
+    config.infinity_agent_policy = policy;
+    turn.config = Arc::new(config);
+}
+
+fn counting_infinity_router(
+    policy: Arc<crate::tools::policy::VerifiedToolPolicy>,
+    tool_name: ToolName,
+    invocations: Arc<AtomicUsize>,
+) -> ToolRouter {
+    let handler = Arc::new(CountingHandler {
+        tool_name,
+        invocations,
+    }) as Arc<dyn CoreToolRuntime>;
+    ToolRouter::from_infinity_policy(ToolRegistry::from_tools([handler]), Vec::new(), policy)
+}
+
+fn infinity_call(tool_name: ToolName, arguments: String) -> ToolCall {
+    ToolCall {
+        tool_name,
+        call_id: "call-infinity".to_string(),
+        payload: ToolPayload::Function { arguments },
+    }
+}
+
+async fn assert_infinity_dispatch_rejected_without_handler(
+    router: &ToolRouter,
+    session: Arc<crate::session::session::Session>,
+    turn: Arc<TurnContext>,
+    call: ToolCall,
+    invocations: &AtomicUsize,
+) {
+    let result = router
+        .dispatch_tool_call_with_code_mode_result(
+            session,
+            turn,
+            CancellationToken::new(),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call,
+            ToolCallSource::Direct,
+        )
+        .await;
+
+    assert!(result.is_err(), "invalid AuthCapsule call must be rejected");
+    assert_eq!(
+        invocations.load(Ordering::SeqCst),
+        0,
+        "rejected AuthCapsule call must not reach the handler"
+    );
+}
+
+#[tokio::test]
+async fn infinity_agent_dispatch_rejections_never_invoke_handlers() {
+    let tool = mcp_tool_info(
+        "infinity",
+        /*supports_parallel_tool_calls*/ false,
+        "mcp__infinity",
+        "infinity_run_get",
+    );
+    let tool_name = tool.canonical_tool_name();
+    let valid_policy = test_mcp_policy(std::slice::from_ref(&tool));
+    let (session, mut turn) = make_session_and_context().await;
+    set_turn_infinity_policy(&mut turn, Some(Arc::clone(&valid_policy)));
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let router = ToolRouter::from_parts(
+        ToolRegistry::from_tools([Arc::new(CountingHandler {
+            tool_name: tool_name.clone(),
+            invocations: Arc::clone(&invocations),
+        }) as Arc<dyn CoreToolRuntime>]),
+        Vec::new(),
+    );
+    assert_infinity_dispatch_rejected_without_handler(
+        &router,
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        infinity_call(tool_name.clone(), "{}".to_string()),
+        invocations.as_ref(),
+    )
+    .await;
+
+    let (_, mut missing_policy_turn) = make_session_and_context().await;
+    set_turn_infinity_policy(&mut missing_policy_turn, None);
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let router = counting_infinity_router(
+        Arc::clone(&valid_policy),
+        tool_name.clone(),
+        Arc::clone(&invocations),
+    );
+    assert_infinity_dispatch_rejected_without_handler(
+        &router,
+        Arc::clone(&session),
+        Arc::new(missing_policy_turn),
+        infinity_call(tool_name.clone(), "{}".to_string()),
+        invocations.as_ref(),
+    )
+    .await;
+
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let mismatched_policy = test_mcp_policy_with_state(
+        std::slice::from_ref(&tool),
+        "different-policy-digest".to_string(),
+        chrono::Utc::now() + chrono::Duration::hours(1),
+    );
+    let router = counting_infinity_router(
+        mismatched_policy,
+        tool_name.clone(),
+        Arc::clone(&invocations),
+    );
+    assert_infinity_dispatch_rejected_without_handler(
+        &router,
+        Arc::clone(&session),
+        Arc::clone(&turn),
+        infinity_call(tool_name.clone(), "{}".to_string()),
+        invocations.as_ref(),
+    )
+    .await;
+
+    let expired_policy = test_mcp_policy_with_state(
+        std::slice::from_ref(&tool),
+        valid_policy.digest().to_string(),
+        chrono::Utc::now() - chrono::Duration::seconds(1),
+    );
+    let (_, mut expired_turn) = make_session_and_context().await;
+    set_turn_infinity_policy(&mut expired_turn, Some(Arc::clone(&expired_policy)));
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let router =
+        counting_infinity_router(expired_policy, tool_name.clone(), Arc::clone(&invocations));
+    assert_infinity_dispatch_rejected_without_handler(
+        &router,
+        Arc::clone(&session),
+        Arc::new(expired_turn),
+        infinity_call(tool_name.clone(), "{}".to_string()),
+        invocations.as_ref(),
+    )
+    .await;
+
+    for invalid_call in [
+        infinity_call(
+            ToolName::namespaced("mcp__infinity", "infinity_result_get"),
+            "{}".to_string(),
+        ),
+        infinity_call(tool_name.clone(), r#"{"value":1,"value":2}"#.to_string()),
+        infinity_call(
+            tool_name.clone(),
+            "x".repeat(MAX_INFINITY_AGENT_ARGUMENT_BYTES + 1),
+        ),
+    ] {
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let router = counting_infinity_router(
+            Arc::clone(&valid_policy),
+            tool_name.clone(),
+            Arc::clone(&invocations),
+        );
+        assert_infinity_dispatch_rejected_without_handler(
+            &router,
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            invalid_call,
+            invocations.as_ref(),
+        )
+        .await;
+    }
+
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let router = counting_infinity_router(
+        Arc::clone(&valid_policy),
+        tool_name.clone(),
+        Arc::clone(&invocations),
+    );
+    router
+        .dispatch_tool_call_with_code_mode_result(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            CancellationToken::new(),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            infinity_call(tool_name, "{}".to_string()),
+            ToolCallSource::Direct,
+        )
+        .await
+        .expect("valid AuthCapsule call should reach the handler");
+    assert_eq!(invocations.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn infinity_agent_rejected_arguments_are_redacted_before_history() {
+    const FIRST_CANARY: &str = "rejected-canary-one";
+    const SECOND_CANARY: &str = "rejected-canary-two";
+
+    let tool = mcp_tool_info(
+        "infinity",
+        /*supports_parallel_tool_calls*/ false,
+        "mcp__infinity",
+        "infinity_run_get",
+    );
+    let tool_name = tool.canonical_tool_name();
+    let policy = test_mcp_policy(std::slice::from_ref(&tool));
+    let (session, mut turn) = make_session_and_context().await;
+    set_turn_infinity_policy(&mut turn, Some(Arc::clone(&policy)));
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let router = Arc::new(counting_infinity_router(
+        policy,
+        tool_name,
+        Arc::clone(&invocations),
+    ));
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let mut ctx = crate::stream_events_utils::HandleOutputCtx {
+        sess: Arc::clone(&session),
+        turn_context: Arc::clone(&turn),
+        turn_store: Arc::new(ExtensionData::new(turn.sub_id.clone())),
+        tool_runtime: crate::tools::parallel::ToolCallRuntime::new(
+            router,
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            tracker,
+        ),
+        cancellation_token: CancellationToken::new(),
+    };
+    let item = ResponseItem::FunctionCall {
+        id: None,
+        name: "infinity_run_get".to_string(),
+        namespace: Some("mcp__infinity".to_string()),
+        arguments: format!(r#"{{"value":"{FIRST_CANARY}","value":"{SECOND_CANARY}"}}"#),
+        call_id: "call-redacted".to_string(),
+    };
+    let log_buffer: &'static std::sync::Mutex<Vec<u8>> =
+        Box::leak(Box::new(std::sync::Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt()
+        .with_level(true)
+        .with_ansi(false)
+        .with_max_level(Level::INFO)
+        .with_span_events(FmtSpan::NONE)
+        .with_writer(MockWriter::new(log_buffer))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let output = crate::stream_events_utils::handle_output_item_done(&mut ctx, item, None)
+        .await
+        .expect("ambiguous arguments should be answered without executing");
+
+    assert!(output.needs_follow_up);
+    assert!(output.tool_future.is_none());
+    assert_eq!(invocations.load(Ordering::SeqCst), 0);
+    let history = session.clone_history().await.raw_items().to_vec();
+    let serialized = serde_json::to_string(&history).expect("history should serialize");
+    let logs =
+        String::from_utf8(log_buffer.lock().expect("log buffer lock").clone()).expect("utf8 logs");
+    assert!(!serialized.contains(FIRST_CANARY));
+    assert!(!serialized.contains(SECOND_CANARY));
+    assert!(!logs.contains(FIRST_CANARY));
+    assert!(!logs.contains(SECOND_CANARY));
+    assert!(!logs.contains("ToolCall:"));
+    assert!(matches!(
+        history.first(),
+        Some(ResponseItem::FunctionCall { arguments, .. }) if arguments == "{}"
+    ));
 }
 
 #[tokio::test]

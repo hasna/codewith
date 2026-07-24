@@ -2007,6 +2007,9 @@ async fn try_run_sampling_request(
     prompt: &Prompt,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
+    tool_runtime
+        .ensure_policy_ready()
+        .map_err(CodexErr::InvalidRequest)?;
     feedback_tags!(
         model = turn_context.model_info.slug.clone(),
         approval_policy = turn_context.approval_policy.value(),

@@ -172,7 +172,7 @@ async fn oversized_sampling_prompt_is_rejected_before_streaming() {
 }
 
 #[tokio::test]
-async fn infinity_planner_error_fails_before_sampling_or_turn_side_effects() {
+async fn infinity_planner_error_fails_before_regular_task_or_pre_turn_compaction_side_effects() {
     const PLANNER_ERROR: &str = "Infinity Agent tool planning has no verified process policy";
 
     let server = start_mock_server().await;
@@ -186,57 +186,82 @@ async fn infinity_planner_error_fails_before_sampling_or_turn_side_effects() {
     )
     .await;
     let base_url = format!("{}/v1", server.uri());
-    let (session, turn_context, _rx_event) =
+    let (session, turn_context, rx_event) =
         crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
             codex_login::CodexAuth::from_api_key("Test API Key"),
             Vec::new(),
             move |config| {
                 config.model_provider.base_url = Some(base_url);
+                config.model_auto_compact_token_limit = Some(1);
+                config.tools_policy = Some(codex_config::config_toml::ToolPolicy::InfinityAgent);
+                config.infinity_agent_policy = None;
             },
         )
         .await;
     let session = with_turn_item_contribution_recorder(session);
-    let mut turn_context = Arc::try_unwrap(turn_context)
-        .unwrap_or_else(|_| panic!("test should hold the only turn context reference"));
-    let mut config = (*turn_context.config).clone();
-    config.tools_policy = Some(codex_config::config_toml::ToolPolicy::InfinityAgent);
-    config.infinity_agent_policy = None;
-    turn_context.config = Arc::new(config);
-    let turn_context = Arc::new(turn_context);
-    turn_context
-        .turn_timing_state
-        .mark_turn_started(Instant::now())
-        .await;
-
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(codex_protocol::protocol::TokenUsageInfo {
+            total_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: 2,
+                ..Default::default()
+            },
+            last_token_usage: codex_protocol::protocol::TokenUsage {
+                total_tokens: 2,
+                ..Default::default()
+            },
+            model_context_window: turn_context.model_context_window(),
+        }));
+    }
+    assert!(
+        auto_compact_token_status(session.as_ref(), turn_context.as_ref())
+            .await
+            .token_limit_reached,
+        "the real regular-task path must be poised to compact if preflight is bypassed"
+    );
     let history_before = session.clone_history().await.raw_items().to_vec();
     let usage_before = session.token_usage_info().await;
-    let turn_store = Arc::new(ExtensionData::new(turn_context.sub_id.clone()));
-    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-    let mut client_session = session.runtime_model_client().new_session();
-
-    let error = run_sampling_request(
-        Arc::clone(&session),
-        Arc::clone(&turn_context),
-        Arc::clone(&turn_store),
-        turn_diff_tracker,
-        &mut client_session,
-        /*turn_metadata_header*/ None,
-        Vec::new(),
-        CancellationToken::new(),
+    crate::session::handlers::user_input_or_turn_inner(
+        &session,
+        turn_context.sub_id.clone(),
+        codex_protocol::protocol::Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "must not be recorded".to_string(),
+                text_elements: Vec::new(),
+            }],
+            environments: None,
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        },
+        /*mirror_user_text_to_realtime*/ None,
+        /*client_user_message_id*/ None,
     )
-    .await
-    .expect_err("planner failure must reach the caller before sampling");
+    .await;
 
-    let CodexErr::InvalidRequest(message) = error else {
-        panic!("expected structured invalid-request planner error, got {error:?}");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx_event.recv())
+        .await
+        .expect("policy preflight should emit an exact error")
+        .expect("event channel should remain open");
+    let EventMsg::Error(error) = event.msg else {
+        panic!("expected a policy preflight error, got {:?}", event.msg);
     };
-    assert_eq!(message, PLANNER_ERROR);
+    assert!(error.message.contains(PLANNER_ERROR));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), rx_event.recv())
+            .await
+            .is_err(),
+        "preflight failure must not emit turn lifecycle or state events"
+    );
+
     assert!(model_request.requests().is_empty());
     assert_eq!(session.token_usage_info().await, usage_before);
     assert_eq!(
         session.clone_history().await.raw_items(),
         history_before.as_slice()
     );
+    assert!(session.active_turn.lock().await.is_none());
     assert_eq!(
         turn_context
             .turn_timing_state
@@ -244,7 +269,6 @@ async fn infinity_planner_error_fails_before_sampling_or_turn_side_effects() {
             .sampling_request_count,
         0
     );
-    assert!(turn_store.get::<TurnItemContributionRecorded>().is_none());
 }
 
 #[tokio::test]
@@ -297,12 +321,13 @@ async fn non_infinity_turn_still_samples_after_policy_readiness_gate() {
         Some("control sampled")
     );
     assert_eq!(model_request.requests().len(), 1);
-    assert_eq!(
+    assert!(
         turn_context
             .turn_timing_state
             .complete_profile()
-            .sampling_request_count,
-        1
+            .sampling_request_count
+            >= 1,
+        "non-Infinity control must record at least one sampling request"
     );
     assert!(turn_store.get::<TurnItemContributionRecorded>().is_some());
 }

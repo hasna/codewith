@@ -59,6 +59,15 @@ impl ToolCallRuntime {
         self.router.create_diff_consumer(tool_name)
     }
 
+    pub(crate) fn ensure_policy_ready(&self) -> Result<(), String> {
+        self.router.ensure_policy_ready()
+    }
+
+    pub(crate) fn validate_tool_call(&self, call: &ToolCall) -> Result<(), FunctionCallError> {
+        self.router
+            .validate_tool_call(self.turn_context.as_ref(), call)
+    }
+
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call(
         self,

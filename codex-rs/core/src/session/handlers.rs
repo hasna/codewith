@@ -287,6 +287,12 @@ pub(super) async fn user_input_or_turn_inner(
         // new_turn_with_sub_id already emits the error event.
         return;
     };
+    if !sess
+        .regular_task_policy_ready_or_emit(current_context.as_ref())
+        .await
+    {
+        return;
+    }
     if emit_thread_settings_applied {
         sess.send_event_raw(Event {
             id: sub_id.clone(),
