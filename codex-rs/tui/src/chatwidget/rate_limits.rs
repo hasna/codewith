@@ -29,6 +29,11 @@ pub(super) struct RateLimitWarningState {
     pub(super) primary_index: usize,
 }
 
+pub(super) struct RateLimitWarningContext<'a> {
+    pub(super) observed_at: &'a chrono::DateTime<Local>,
+    pub(super) profile: Option<&'a str>,
+}
+
 impl RateLimitWarningState {
     pub(super) fn take_warnings(
         &mut self,
@@ -36,6 +41,7 @@ impl RateLimitWarningState {
         secondary_window_minutes: Option<i64>,
         primary_used_percent: Option<f64>,
         primary_window_minutes: Option<i64>,
+        context: &RateLimitWarningContext<'_>,
     ) -> Vec<String> {
         let reached_secondary_cap =
             matches!(secondary_used_percent, Some(percent) if percent == 100.0);
@@ -47,43 +53,58 @@ impl RateLimitWarningState {
         let mut warnings = Vec::new();
 
         if let Some(secondary_used_percent) = secondary_used_percent {
-            let mut highest_secondary: Option<f64> = None;
+            let mut crossed_threshold = false;
             while self.secondary_index < RATE_LIMIT_WARNING_THRESHOLDS.len()
                 && secondary_used_percent >= RATE_LIMIT_WARNING_THRESHOLDS[self.secondary_index]
             {
-                highest_secondary = Some(RATE_LIMIT_WARNING_THRESHOLDS[self.secondary_index]);
+                crossed_threshold = true;
                 self.secondary_index += 1;
             }
-            if let Some(threshold) = highest_secondary {
+            if crossed_threshold {
                 let limit_label =
                     limit_label_for_window(secondary_window_minutes, /*is_secondary*/ true);
-                let remaining_percent = 100.0 - threshold;
-                warnings.push(format!(
-                    "Heads up, you have less than {remaining_percent:.0}% of your {limit_label} limit left. Run /status for a breakdown."
+                warnings.push(rate_limit_warning_message(
+                    secondary_used_percent,
+                    &limit_label,
+                    context,
                 ));
             }
         }
 
         if let Some(primary_used_percent) = primary_used_percent {
-            let mut highest_primary: Option<f64> = None;
+            let mut crossed_threshold = false;
             while self.primary_index < RATE_LIMIT_WARNING_THRESHOLDS.len()
                 && primary_used_percent >= RATE_LIMIT_WARNING_THRESHOLDS[self.primary_index]
             {
-                highest_primary = Some(RATE_LIMIT_WARNING_THRESHOLDS[self.primary_index]);
+                crossed_threshold = true;
                 self.primary_index += 1;
             }
-            if let Some(threshold) = highest_primary {
+            if crossed_threshold {
                 let limit_label =
                     limit_label_for_window(primary_window_minutes, /*is_secondary*/ false);
-                let remaining_percent = 100.0 - threshold;
-                warnings.push(format!(
-                    "Heads up, you have less than {remaining_percent:.0}% of your {limit_label} limit left. Run /status for a breakdown."
+                warnings.push(rate_limit_warning_message(
+                    primary_used_percent,
+                    &limit_label,
+                    context,
                 ));
             }
         }
 
         warnings
     }
+}
+
+fn rate_limit_warning_message(
+    used_percent: f64,
+    limit_label: &str,
+    context: &RateLimitWarningContext<'_>,
+) -> String {
+    let observed_at = context.observed_at.format("%-I:%M %p %b %-d");
+    let profile = context.profile.unwrap_or("default");
+    let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
+    format!(
+        "As of {observed_at}, profile {profile} has {remaining_percent:.0}% of its {limit_label} limit remaining."
+    )
 }
 
 pub(crate) fn limit_label_for_window(window_minutes: Option<i64>, is_secondary: bool) -> String {
@@ -131,14 +152,18 @@ pub(super) fn is_app_server_cyber_policy_error(info: &AppServerCodexErrorInfo) -
 }
 
 #[derive(Clone, Copy)]
-enum RateLimitSnapshotSource {
+pub(super) enum RateLimitSnapshotSource {
     AccountUsage,
     RollingUpdate,
 }
 
 impl ChatWidget {
     pub(crate) fn on_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshot>) {
-        self.on_rate_limit_snapshot_from(snapshot, RateLimitSnapshotSource::AccountUsage);
+        self.on_rate_limit_snapshot_from(
+            snapshot,
+            RateLimitSnapshotSource::AccountUsage,
+            Local::now(),
+        );
     }
 
     pub(crate) fn on_auth_profile_rate_limit_snapshots(
@@ -207,7 +232,11 @@ impl ChatWidget {
 
     pub(crate) fn on_rolling_rate_limit_snapshot(&mut self, snapshot: RateLimitSnapshot) {
         // Rolling app-server notifications are sparse. Preserve metadata learned from the full read.
-        self.on_rate_limit_snapshot_from(Some(snapshot), RateLimitSnapshotSource::RollingUpdate);
+        self.on_rate_limit_snapshot_from(
+            Some(snapshot),
+            RateLimitSnapshotSource::RollingUpdate,
+            Local::now(),
+        );
     }
 
     pub(crate) fn begin_authoritative_selected_rate_limit_refresh(&mut self) {
@@ -215,10 +244,11 @@ impl ChatWidget {
         self.codex_rate_limit_reached_type = None;
     }
 
-    fn on_rate_limit_snapshot_from(
+    pub(super) fn on_rate_limit_snapshot_from(
         &mut self,
         snapshot: Option<RateLimitSnapshot>,
         source: RateLimitSnapshotSource,
+        observed_at: chrono::DateTime<Local>,
     ) {
         if let Some(mut snapshot) = snapshot {
             let limit_id = snapshot
@@ -258,28 +288,36 @@ impl ChatWidget {
             {
                 self.codex_rate_limit_reached_type = Some(rate_limit_reached_type);
             }
-            let warnings = if is_codex_limit {
-                self.rate_limit_warnings.take_warnings(
-                    snapshot
-                        .secondary
-                        .as_ref()
-                        .map(|window| f64::from(window.used_percent)),
-                    snapshot
-                        .secondary
-                        .as_ref()
-                        .and_then(|window| window.window_duration_mins),
-                    snapshot
-                        .primary
-                        .as_ref()
-                        .map(|window| f64::from(window.used_percent)),
-                    snapshot
-                        .primary
-                        .as_ref()
-                        .and_then(|window| window.window_duration_mins),
-                )
-            } else {
-                vec![]
-            };
+            // Rolling notifications do not identify their profile, so only an authoritative
+            // account-usage read can emit or consume profile-attributed warning thresholds.
+            let warnings =
+                if is_codex_limit && matches!(source, RateLimitSnapshotSource::AccountUsage) {
+                    let selected_auth_profile = self.config.selected_auth_profile.clone();
+                    self.rate_limit_warnings.take_warnings(
+                        snapshot
+                            .secondary
+                            .as_ref()
+                            .map(|window| f64::from(window.used_percent)),
+                        snapshot
+                            .secondary
+                            .as_ref()
+                            .and_then(|window| window.window_duration_mins),
+                        snapshot
+                            .primary
+                            .as_ref()
+                            .map(|window| f64::from(window.used_percent)),
+                        snapshot
+                            .primary
+                            .as_ref()
+                            .and_then(|window| window.window_duration_mins),
+                        &RateLimitWarningContext {
+                            observed_at: &observed_at,
+                            profile: selected_auth_profile.as_deref(),
+                        },
+                    )
+                } else {
+                    vec![]
+                };
 
             let high_usage = is_codex_limit
                 && (snapshot
@@ -339,7 +377,7 @@ impl ChatWidget {
             }
 
             let mut display =
-                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, Local::now());
+                rate_limit_snapshot_display_for_limit(&snapshot, limit_label, observed_at);
             if display.individual_limit.is_none() {
                 display.individual_limit = preserved_individual_limit;
             }

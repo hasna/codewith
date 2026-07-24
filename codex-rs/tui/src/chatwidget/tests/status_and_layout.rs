@@ -1,7 +1,10 @@
 use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
+use crate::chatwidget::rate_limits::RateLimitSnapshotSource;
+use crate::chatwidget::rate_limits::RateLimitWarningContext;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use chrono::TimeZone;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_app_server_protocol::SpendControlLimitSnapshot;
@@ -62,6 +65,17 @@ fn rate_limit_snapshot_for_window(
         plan_type: None,
         rate_limit_reached_type: None,
     }
+}
+
+fn weekly_rate_limit_snapshot(used_percent: i32) -> RateLimitSnapshot {
+    let mut limits = snapshot(f64::from(used_percent));
+    limits.primary = None;
+    limits.secondary = Some(RateLimitWindow {
+        used_percent,
+        window_duration_mins: Some(7 * 24 * 60),
+        resets_at: None,
+    });
+    limits
 }
 
 fn status_line_test_schedule(
@@ -648,28 +662,36 @@ async fn prefetch_rate_limits_is_gated_on_chatgpt_auth_provider() {
 async fn rate_limit_warnings_emit_thresholds() {
     let mut state = RateLimitWarningState::default();
     let mut warnings: Vec<String> = Vec::new();
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
+    let context = RateLimitWarningContext {
+        observed_at: &observed_at,
+        profile: Some("account006"),
+    };
 
-    warnings.extend(state.take_warnings(Some(10.0), Some(10079), Some(55.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(55.0), Some(10081), Some(10.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(80.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(80.0), Some(10081), Some(10.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(95.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(95.0), Some(10079), Some(10.0), Some(299)));
+    warnings.extend(state.take_warnings(Some(10.0), Some(10079), Some(55.0), Some(299), &context));
+    warnings.extend(state.take_warnings(Some(55.0), Some(10081), Some(10.0), Some(299), &context));
+    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(80.0), Some(299), &context));
+    warnings.extend(state.take_warnings(Some(80.0), Some(10081), Some(10.0), Some(299), &context));
+    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(95.0), Some(299), &context));
+    warnings.extend(state.take_warnings(Some(95.0), Some(10079), Some(10.0), Some(299), &context));
 
     assert_eq!(
         warnings,
         vec![
             String::from(
-                "Heads up, you have less than 25% of your 5h limit left. Run /status for a breakdown."
+                "As of 5:00 PM Jul 23, profile account006 has 20% of its 5h limit remaining."
             ),
             String::from(
-                "Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.",
+                "As of 5:00 PM Jul 23, profile account006 has 20% of its weekly limit remaining.",
             ),
             String::from(
-                "Heads up, you have less than 5% of your 5h limit left. Run /status for a breakdown."
+                "As of 5:00 PM Jul 23, profile account006 has 5% of its 5h limit remaining."
             ),
             String::from(
-                "Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.",
+                "As of 5:00 PM Jul 23, profile account006 has 5% of its weekly limit remaining.",
             ),
         ],
         "expected one warning per limit for the highest crossed threshold"
@@ -677,20 +699,89 @@ async fn rate_limit_warnings_emit_thresholds() {
 }
 
 #[tokio::test]
+async fn authoritative_rate_limit_warning_snapshot_uses_live_context_and_actual_remaining() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("account006".to_string());
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
+
+    chat.on_rate_limit_snapshot_from(
+        Some(weekly_rate_limit_snapshot(/*used_percent*/ 95)),
+        RateLimitSnapshotSource::RollingUpdate,
+        observed_at,
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert_eq!(chat.rate_limit_warnings.secondary_index, 0);
+
+    chat.on_rate_limit_snapshot_from(
+        Some(weekly_rate_limit_snapshot(/*used_percent*/ 80)),
+        RateLimitSnapshotSource::AccountUsage,
+        observed_at,
+    );
+    let history = drain_insert_history(&mut rx);
+    assert_eq!(history.len(), 1);
+    insta::assert_snapshot!(
+        lines_to_single_string(&history[0]).trim(),
+        @"
+⚠ As of 5:00 PM Jul 23, profile account006 has 20% of its weekly limit
+  remaining.
+"
+    );
+    assert_eq!(chat.rate_limit_warnings.secondary_index, 1);
+}
+
+#[tokio::test]
+async fn rate_limit_warnings_ignore_caps_and_non_codex_limits() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.selected_auth_profile = Some("account006".to_string());
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
+
+    chat.on_rate_limit_snapshot_from(
+        Some(weekly_rate_limit_snapshot(/*used_percent*/ 100)),
+        RateLimitSnapshotSource::AccountUsage,
+        observed_at,
+    );
+    let mut non_codex_limits = weekly_rate_limit_snapshot(/*used_percent*/ 95);
+    non_codex_limits.limit_id = Some("other".to_string());
+    chat.on_rate_limit_snapshot_from(
+        Some(non_codex_limits),
+        RateLimitSnapshotSource::AccountUsage,
+        observed_at,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert_eq!(chat.rate_limit_warnings.secondary_index, 0);
+    assert_eq!(chat.rate_limit_warnings.primary_index, 0);
+}
+
+#[tokio::test]
 async fn test_rate_limit_warnings_monthly() {
     let mut state = RateLimitWarningState::default();
     let mut warnings: Vec<String> = Vec::new();
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
 
     warnings.extend(state.take_warnings(
         Some(75.0),
         Some(43199),
         /*primary_used_percent*/ None,
         /*primary_window_minutes*/ None,
+        &RateLimitWarningContext {
+            observed_at: &observed_at,
+            profile: Some("account006"),
+        },
     ));
     assert_eq!(
         warnings,
         vec![String::from(
-            "Heads up, you have less than 25% of your monthly limit left. Run /status for a breakdown.",
+            "As of 5:00 PM Jul 23, profile account006 has 25% of its monthly limit remaining.",
         ),],
         "expected one warning per limit for the highest crossed threshold"
     );
@@ -709,6 +800,10 @@ fn rate_limit_duration_labels_only_render_supported_windows() {
 #[tokio::test]
 async fn test_rate_limit_warnings_use_generic_fallback_labels() {
     let mut state = RateLimitWarningState::default();
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
 
     assert_eq!(
         state.take_warnings(
@@ -716,13 +811,17 @@ async fn test_rate_limit_warnings_use_generic_fallback_labels() {
             /*secondary_window_minutes*/ None,
             /*primary_used_percent*/ Some(75.0),
             /*primary_window_minutes*/ None,
+            &RateLimitWarningContext {
+                observed_at: &observed_at,
+                profile: None,
+            },
         ),
         vec![
             String::from(
-                "Heads up, you have less than 25% of your secondary usage limit left. Run /status for a breakdown.",
+                "As of 5:00 PM Jul 23, profile default has 25% of its secondary usage limit remaining.",
             ),
             String::from(
-                "Heads up, you have less than 25% of your usage limit left. Run /status for a breakdown.",
+                "As of 5:00 PM Jul 23, profile default has 25% of its usage limit remaining.",
             ),
         ],
     );
@@ -731,6 +830,10 @@ async fn test_rate_limit_warnings_use_generic_fallback_labels() {
 #[tokio::test]
 async fn test_rate_limit_warnings_use_secondary_fallback_for_unsupported_window() {
     let mut state = RateLimitWarningState::default();
+    let observed_at = chrono::Local
+        .with_ymd_and_hms(2026, 7, 23, 17, 0, 0)
+        .single()
+        .expect("valid local timestamp");
 
     assert_eq!(
         state.take_warnings(
@@ -738,9 +841,13 @@ async fn test_rate_limit_warnings_use_secondary_fallback_for_unsupported_window(
             /*secondary_window_minutes*/ Some(2 * 60),
             /*primary_used_percent*/ None,
             /*primary_window_minutes*/ None,
+            &RateLimitWarningContext {
+                observed_at: &observed_at,
+                profile: Some("account006"),
+            },
         ),
         vec![String::from(
-            "Heads up, you have less than 25% of your secondary usage limit left. Run /status for a breakdown.",
+            "As of 5:00 PM Jul 23, profile account006 has 25% of its secondary usage limit remaining.",
         )],
     );
 }
