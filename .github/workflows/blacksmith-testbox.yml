@@ -13,6 +13,11 @@ on:
         required: false
         default: true
         type: boolean
+      build_command:
+        description: Build/test command to run on the Blacksmith box (empty = just warm). Run from repo root.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -105,6 +110,15 @@ jobs:
         run: |
           . "$HOME/.codewith-testbox-env"
           cargo check --workspace --all-targets
+
+      - name: Run build command on Blacksmith box
+        if: ${{ inputs.build_command != '' }}
+        run: |
+          . "$HOME/.codewith-testbox-env"
+          echo "::group::${{ inputs.build_command }}"
+          set -o pipefail
+          bash -lc "${{ inputs.build_command }}"
+          echo "::endgroup::"
 
       # Must be the LAST step: hands the box over and holds it open for
       # `blacksmith testbox run --id <id> "<cmd>"`.
