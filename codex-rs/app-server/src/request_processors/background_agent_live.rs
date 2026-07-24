@@ -1666,6 +1666,43 @@ impl ThreadRequestProcessor {
             .get(run_id)
             .cloned();
         if let Some(handle) = process_handle {
+            if let Some(state_db) = self.state_db.as_ref() {
+                match state_db.get_background_agent_run(run_id).await {
+                    Ok(Some(run)) => {
+                        if let Err(err) = stop_tracked_background_agent_worker_process(
+                            state_db,
+                            &self.background_agent_worker_processes,
+                            &run,
+                            &handle,
+                        )
+                        .await
+                        {
+                            warn!(
+                                run_id,
+                                "failed to stop and finalize background-agent worker process: {err}"
+                            );
+                        }
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(load_err) => {
+                        warn!(
+                            run_id,
+                            "failed to load background-agent run before stopping worker process: {load_err}"
+                        );
+                        if let Err(stop_err) = stop_background_agent_worker_process(&handle).await {
+                            warn!(
+                                run_id,
+                                "failed to stop background-agent worker process after state read failure: {stop_err}"
+                            );
+                        }
+                        // Retain the tracked handle so periodic pruning can
+                        // retry durable finalization after the state read
+                        // recovers, even when the OS process is already gone.
+                        return;
+                    }
+                }
+            }
             match stop_background_agent_worker_process(&handle).await {
                 Ok(_) => {
                     self.background_agent_worker_processes
@@ -2146,6 +2183,21 @@ async fn fail_claimed_background_agent_worker_process(
     status_reason: &str,
     event_payload_json: &Value,
 ) -> anyhow::Result<()> {
+    if let Some(run) = context.state_db.get_background_agent_run(run_id).await?
+        && run.supervisor_id.as_deref() == Some(context.supervisor_id.as_str())
+        && run.generation == generation
+        && run.desired_state != BackgroundAgentDesiredState::Running
+    {
+        return finalize_stopped_background_agent_process_for_run(
+            &context.state_db,
+            &run,
+            json!({
+                "reason": "worker_process_stopped_after_desired_state_change",
+                "failure": event_payload_json,
+            }),
+        )
+        .await;
+    }
     let status_payload_json = json!({
         "phase": "failed",
         "reason": event_payload_json,
@@ -6573,6 +6625,85 @@ done
             .expect("status snapshot should exist");
         assert_eq!(snapshot.status, BackgroundAgentRunStatus::Cancelled);
         assert_eq!(snapshot.last_event_seq, run.last_event_seq);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claimed_spawn_failure_finalizes_concurrent_stop() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_queued_run(state_db.as_ref(), "stopped-before-spawn").await?;
+        let generation = state_db
+            .claim_background_agent_supervisor(
+                "stopped-before-spawn",
+                "process-supervisor-test",
+                "lease-1",
+            )
+            .await?
+            .expect("run should be claimed");
+        state_db
+            .set_background_agent_desired_state(
+                "stopped-before-spawn",
+                BackgroundAgentDesiredState::Stopped,
+            )
+            .await?;
+        state_db
+            .update_background_agent_run_status(
+                "stopped-before-spawn",
+                BackgroundAgentRunStatus::Stopping,
+                Some("stop requested"),
+            )
+            .await?;
+        let context = BackgroundAgentProcessSupervisorContext {
+            state_db: Arc::clone(&state_db),
+            supervisor_id: "process-supervisor-test".to_string(),
+            active_worker_processes: Arc::new(Mutex::new(HashMap::new())),
+            worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
+            codex_home: temp.path().to_path_buf(),
+            codex_bin: PathBuf::from("/bin/true"),
+            worker_process_spawn_hook: None,
+            worker_process_stop_hook: None,
+        };
+
+        fail_claimed_background_agent_worker_process(
+            &context,
+            "stopped-before-spawn",
+            generation,
+            "failed to spawn background-agent worker process",
+            &json!({"reason": "worker_process_spawn_failed"}),
+        )
+        .await?;
+
+        let run = state_db
+            .get_background_agent_run("stopped-before-spawn")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process stopped after stop request")
+        );
+        let event_types = state_db
+            .list_background_agent_events_after(
+                "stopped-before-spawn",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
+            .await?
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_types,
+            vec![
+                "agent.admitted",
+                "agent.started",
+                "agent.claimed",
+                "agent.cancelled",
+            ]
+        );
         Ok(())
     }
 
