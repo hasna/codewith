@@ -23,4 +23,4 @@ expression: account_popup
   [ ] Automated goal plans                Advance goal plans when exactly one next goal
                                           is ready.
 
-  Right or Enter opens; Space toggles; Left or Esc goes back
+  → or enter opens; space toggles; ← or esc goes back
