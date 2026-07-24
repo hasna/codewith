@@ -2034,6 +2034,10 @@ fn thread_schedule_create_for_unloaded_thread_prefers_session_auth_profile_over_
             &RolloutItem::TurnContext(TurnContextItem {
                 thread_id: Some(parsed_thread_id),
                 turn_id: Some("turn-root".to_string()),
+                session_id: None,
+                profile_id: None,
+                tmux_session: None,
+                tmux_window: None,
                 cwd: harness.workspace.path().to_path_buf(),
                 workspace_roots: None,
                 current_date: None,

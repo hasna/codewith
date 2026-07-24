@@ -58,6 +58,10 @@ impl TurnEnvironment {
 #[derive(Debug)]
 pub struct TurnContext {
     pub(crate) thread_id: ThreadId,
+    pub(crate) session_id: SessionId,
+    pub(crate) profile_id: Option<String>,
+    pub(crate) tmux_session: Option<String>,
+    pub(crate) tmux_window: Option<String>,
     pub(crate) sub_id: String,
     pub(crate) trace_id: Option<String>,
     pub(crate) realtime_active: bool,
@@ -389,6 +393,10 @@ impl TurnContext {
         TurnContextItem {
             thread_id: Some(self.thread_id),
             turn_id: Some(self.sub_id.clone()),
+            session_id: Some(self.session_id),
+            profile_id: self.profile_id.clone(),
+            tmux_session: self.tmux_session.clone(),
+            tmux_window: self.tmux_window.clone(),
             #[allow(deprecated)]
             cwd: self.cwd.to_path_buf(),
             workspace_roots: (!workspace_roots.is_empty()).then_some(workspace_roots),
@@ -628,10 +636,20 @@ impl Session {
             network.is_some(),
         ));
         let (current_date, timezone) = local_time_context();
+        let profile_id = session_configuration
+            .active_permission_profile()
+            .map(|profile| profile.id);
+        let tmux_environment = codex_terminal_detection::tmux_environment();
         let extension_data = Arc::new(codex_extension_api::ExtensionData::new(sub_id.clone()));
         extension_data.insert(HostLoadedSkills::new(Arc::clone(&skills_outcome)));
         TurnContext {
             thread_id,
+            session_id,
+            profile_id,
+            tmux_session: tmux_environment
+                .as_ref()
+                .map(|environment| environment.session.clone()),
+            tmux_window: tmux_environment.map(|environment| environment.window),
             sub_id,
             trace_id: current_span_trace_id(),
             realtime_active: false,

@@ -3051,6 +3051,18 @@ pub struct TurnContextItem {
     pub thread_id: Option<ThreadId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Runtime Codewith session id that produced this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    /// Active permission profile id for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    /// Live tmux session name for the pane that produced this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_session: Option<String>,
+    /// Live tmux window name for the pane that produced this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_window: Option<String>,
     pub cwd: PathBuf,
     /// Effective workspace roots used to materialize symbolic
     /// `:workspace_roots` filesystem permissions in `permission_profile`.
@@ -5636,6 +5648,10 @@ mod tests {
         }))?;
 
         assert_eq!(item.network, None);
+        assert_eq!(item.session_id, None);
+        assert_eq!(item.profile_id, None);
+        assert_eq!(item.tmux_session, None);
+        assert_eq!(item.tmux_window, None);
         assert_eq!(item.machine_id, None);
         assert_eq!(item.machine_name, None);
         assert_eq!(item.file_system_sandbox_policy, None);
@@ -5680,6 +5696,10 @@ mod tests {
         let item = TurnContextItem {
             thread_id: None,
             turn_id: None,
+            session_id: None,
+            profile_id: None,
+            tmux_session: None,
+            tmux_window: None,
             cwd: test_path_buf("/tmp"),
             workspace_roots: None,
             current_date: None,

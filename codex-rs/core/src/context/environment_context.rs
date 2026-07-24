@@ -21,6 +21,7 @@ pub(crate) struct EnvironmentContext {
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
     pub(crate) machine: Option<MachineContext>,
+    pub(crate) session: Option<SessionContext>,
     pub(crate) network: Option<NetworkContext>,
     pub(crate) filesystem: Option<FileSystemContext>,
     pub(crate) subagents: Option<String>,
@@ -119,6 +120,55 @@ impl MachineContext {
             push_text_element(&mut rendered, "name", name);
         }
         rendered.push_str("</machine>");
+        rendered
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionContext {
+    id: Option<String>,
+    profile_id: Option<String>,
+    tmux_session: Option<String>,
+    tmux_window: Option<String>,
+}
+
+impl SessionContext {
+    fn new(
+        id: Option<String>,
+        profile_id: Option<String>,
+        tmux_session: Option<String>,
+        tmux_window: Option<String>,
+    ) -> Option<Self> {
+        if id.is_none()
+            && profile_id.is_none()
+            && tmux_session.is_none()
+            && tmux_window.is_none()
+        {
+            return None;
+        }
+        Some(Self {
+            id,
+            profile_id,
+            tmux_session,
+            tmux_window,
+        })
+    }
+
+    fn render(&self) -> String {
+        let mut rendered = "<session>".to_string();
+        if let Some(id) = &self.id {
+            push_text_element(&mut rendered, "id", id);
+        }
+        if let Some(profile_id) = &self.profile_id {
+            push_text_element(&mut rendered, "profile_id", profile_id);
+        }
+        if let Some(tmux_session) = &self.tmux_session {
+            push_text_element(&mut rendered, "tmux_session", tmux_session);
+        }
+        if let Some(tmux_window) = &self.tmux_window {
+            push_text_element(&mut rendered, "tmux_window", tmux_window);
+        }
+        rendered.push_str("</session>");
         rendered
     }
 }
@@ -371,6 +421,7 @@ impl EnvironmentContext {
             current_date,
             timezone,
             machine: None,
+            session: None,
             network,
             filesystem: None,
             subagents,
@@ -391,6 +442,7 @@ impl EnvironmentContext {
             current_date,
             timezone,
             machine,
+            session: None,
             network,
             filesystem,
             subagents,
@@ -405,6 +457,7 @@ impl EnvironmentContext {
             && self.current_date == other.current_date
             && self.timezone == other.timezone
             && self.machine == other.machine
+            && self.session == other.session
             && self.network == other.network
             && self.filesystem == other.filesystem
             && self.subagents == other.subagents
@@ -417,6 +470,7 @@ impl EnvironmentContext {
         let before_network = Self::network_from_turn_context_item(before);
         let before_filesystem = Self::filesystem_from_turn_context_item(before);
         let before_machine = Self::machine_from_turn_context_item(before);
+        let before_session = Self::session_from_turn_context_item(before);
         let environments = match &after.environments {
             EnvironmentContextEnvironments::Single(environment) => {
                 if before.cwd.as_path() != environment.cwd.as_path() {
@@ -448,7 +502,12 @@ impl EnvironmentContext {
         } else {
             before_machine
         };
-        EnvironmentContext::new_with_environments(
+        let session = if before_session != after.session {
+            after.session.clone()
+        } else {
+            before_session
+        };
+        let mut context = EnvironmentContext::new_with_environments(
             environments,
             after.current_date.clone(),
             after.timezone.clone(),
@@ -456,7 +515,9 @@ impl EnvironmentContext {
             network,
             filesystem,
             /*subagents*/ None,
-        )
+        );
+        context.session = session;
+        context
     }
 
     pub(crate) fn from_turn_context(turn_context: &TurnContext, shell: &Shell) -> Self {
@@ -478,6 +539,12 @@ impl EnvironmentContext {
             turn_context.machine_id.clone(),
             turn_context.machine_name.clone(),
         );
+        context.session = SessionContext::new(
+            Some(turn_context.session_id.to_string()),
+            turn_context.profile_id.clone(),
+            turn_context.tmux_session.clone(),
+            turn_context.tmux_window.clone(),
+        );
         context
     }
 
@@ -489,7 +556,7 @@ impl EnvironmentContext {
             Ok(cwd) => cwd,
             Err(_) => AbsolutePathBuf::resolve_path_against_base(&turn_context_item.cwd, "/"),
         };
-        Self::new_with_environments(
+        let mut context = Self::new_with_environments(
             EnvironmentContextEnvironments::from_vec(vec![EnvironmentContextEnvironment::legacy(
                 cwd, shell,
             )]),
@@ -499,7 +566,9 @@ impl EnvironmentContext {
             Self::network_from_turn_context_item(turn_context_item),
             Self::filesystem_from_turn_context_item(turn_context_item),
             /*subagents*/ None,
-        )
+        );
+        context.session = Self::session_from_turn_context_item(turn_context_item);
+        context
     }
 
     pub(crate) fn with_subagents(mut self, subagents: String) -> Self {
@@ -551,6 +620,17 @@ impl EnvironmentContext {
             allowed_domains.clone(),
             denied_domains.clone(),
         ))
+    }
+
+    fn session_from_turn_context_item(
+        turn_context_item: &TurnContextItem,
+    ) -> Option<SessionContext> {
+        SessionContext::new(
+            turn_context_item.session_id.map(|id| id.to_string()),
+            turn_context_item.profile_id.clone(),
+            turn_context_item.tmux_session.clone(),
+            turn_context_item.tmux_window.clone(),
+        )
     }
 
     fn filesystem_from_turn_context_item(
@@ -627,6 +707,9 @@ impl ContextualUserFragment for EnvironmentContext {
         }
         if let Some(machine) = &self.machine {
             lines.push(format!("  {}", machine.render()));
+        }
+        if let Some(session) = &self.session {
+            lines.push(format!("  {}", session.render()));
         }
         match &self.network {
             Some(network) => {

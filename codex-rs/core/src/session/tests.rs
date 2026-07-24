@@ -3144,6 +3144,10 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -8508,6 +8512,48 @@ async fn build_settings_update_items_emits_environment_item_for_machine_changes(
 }
 
 #[tokio::test]
+async fn resumed_session_emits_environment_item_for_tmux_window_rename() {
+    let (session, previous_context) = make_session_and_context().await;
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.tmux_session = Some("codewith".to_string());
+    current_context.tmux_window = Some("renamed-window".to_string());
+
+    let mut persisted_context_item = previous_context.to_turn_context_item();
+    persisted_context_item.tmux_session = Some("codewith".to_string());
+    persisted_context_item.tmux_window = Some("original-window".to_string());
+    let persisted_context_item: TurnContextItem = serde_json::from_value(
+        serde_json::to_value(persisted_context_item).expect("serialize persisted turn context"),
+    )
+    .expect("deserialize persisted turn context");
+
+    let update_items = session
+        .build_settings_update_items(Some(&persisted_context_item), &current_context)
+        .await;
+
+    let environment_update = user_input_texts(&update_items)
+        .into_iter()
+        .find(|text| text.contains("<environment_context>"))
+        .expect("tmux rename should emit an environment update after resume");
+    assert!(
+        environment_update.contains("<tmux_session>codewith</tmux_session>"),
+        "{environment_update}"
+    );
+    assert!(
+        environment_update.contains("<tmux_window>renamed-window</tmux_window>"),
+        "{environment_update}"
+    );
+    assert!(
+        !environment_update.contains("original-window"),
+        "{environment_update}"
+    );
+}
+
+#[tokio::test]
 async fn build_settings_update_items_omits_environment_item_when_disabled() {
     let (session, previous_context) = make_session_and_context().await;
     let previous_context = Arc::new(previous_context);
@@ -9323,6 +9369,32 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
     assert_eq!(
         item.permission_profile,
         Some(turn_context.permission_profile())
+    );
+}
+
+#[tokio::test]
+async fn turn_context_item_persists_session_environment() {
+    let (_session, mut turn_context) = make_session_and_context().await;
+    turn_context.profile_id = Some("workspace".to_string());
+    turn_context.tmux_session = Some("codewith".to_string());
+    turn_context.tmux_window = Some("implementation".to_string());
+    let expected = (
+        Some(turn_context.session_id),
+        turn_context.profile_id.clone(),
+        turn_context.tmux_session.clone(),
+        turn_context.tmux_window.clone(),
+    );
+
+    let item = turn_context.to_turn_context_item();
+
+    assert_eq!(
+        (
+            item.session_id,
+            item.profile_id,
+            item.tmux_session,
+            item.tmux_window,
+        ),
+        expected
     );
 }
 

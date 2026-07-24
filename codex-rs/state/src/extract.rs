@@ -350,6 +350,10 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
+                session_id: None,
+                profile_id: None,
+                tmux_session: None,
+                tmux_window: None,
                 cwd: PathBuf::from("/parent/workspace"),
                 workspace_roots: None,
                 current_date: None,
@@ -395,6 +399,10 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
+                session_id: None,
+                profile_id: None,
+                tmux_session: None,
+                tmux_window: None,
                 cwd: PathBuf::from("/workspace"),
                 workspace_roots: None,
                 current_date: None,
@@ -437,6 +445,10 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
+                session_id: None,
+                profile_id: None,
+                tmux_session: None,
+                tmux_window: None,
                 cwd: PathBuf::from("/fallback/workspace"),
                 workspace_roots: None,
                 current_date: None,
@@ -475,6 +487,10 @@ mod tests {
             &mut metadata,
             &RolloutItem::TurnContext(TurnContextItem {
                 turn_id: Some("turn-1".to_string()),
+                session_id: None,
+                profile_id: None,
+                tmux_session: None,
+                tmux_window: None,
                 cwd: PathBuf::from("/fallback/workspace"),
                 workspace_roots: None,
                 current_date: None,

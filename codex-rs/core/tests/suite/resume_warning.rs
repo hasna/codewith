@@ -29,6 +29,10 @@ fn resume_history(
     let turn_ctx = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         cwd: config.cwd.to_path_buf(),
         workspace_roots: None,
         current_date: None,

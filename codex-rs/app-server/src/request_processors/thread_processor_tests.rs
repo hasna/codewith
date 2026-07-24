@@ -985,6 +985,10 @@ mod thread_processor_behavior_tests {
         RolloutItem::TurnContext(TurnContextItem {
             thread_id: Some(thread_id),
             turn_id: Some("turn-1".to_string()),
+            session_id: None,
+            profile_id: None,
+            tmux_session: None,
+            tmux_window: None,
             cwd: PathBuf::from("/tmp"),
             workspace_roots: None,
             current_date: None,

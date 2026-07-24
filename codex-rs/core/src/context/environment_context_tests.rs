@@ -1,6 +1,7 @@
 use crate::shell::ShellType;
 
 use super::*;
+use codex_protocol::SessionId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -123,6 +124,29 @@ fn serialize_environment_context_with_machine() {
     assert_eq!(context.render(), expected);
 }
 
+#[test]
+fn serialize_environment_context_with_xml_safe_session() {
+    let mut context = EnvironmentContext::new(
+        Vec::new(),
+        /*current_date*/ None,
+        /*timezone*/ None,
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+    context.session = SessionContext::new(
+        Some("session-<&\"'>".to_string()),
+        Some("profile-<&\"'>".to_string()),
+        Some("tmux-<&\"'>".to_string()),
+        Some("window-<&\"'>".to_string()),
+    );
+
+    let expected = r#"<environment_context>
+  <session><id>session-&lt;&amp;&quot;&apos;&gt;</id><profile_id>profile-&lt;&amp;&quot;&apos;&gt;</profile_id><tmux_session>tmux-&lt;&amp;&quot;&apos;&gt;</tmux_session><tmux_window>window-&lt;&amp;&quot;&apos;&gt;</tmux_window></session>
+</environment_context>"#;
+
+    assert_eq!(context.render(), expected);
+}
+
 fn workspace_write_permission_profile_with_private_denials() -> PermissionProfile {
     PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![
@@ -201,6 +225,13 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
     let item = TurnContextItem {
         thread_id: None,
         turn_id: None,
+        session_id: Some(
+            SessionId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")
+                .expect("valid session id"),
+        ),
+        profile_id: Some("workspace".to_string()),
+        tmux_session: Some("codewith".to_string()),
+        tmux_window: Some("implementation".to_string()),
         cwd: test_path_buf("/not-the-workspace"),
         workspace_roots: Some(vec![repo.clone(), other_repo.clone()]),
         current_date: None,
@@ -229,6 +260,12 @@ fn turn_context_item_filesystem_uses_workspace_roots_instead_of_cwd() {
 
     assert!(
         context.contains("<machine><id>machine-123</id><name>spark01</name></machine>"),
+        "{context}"
+    );
+    assert!(
+        context.contains(
+            "<session><id>67e55044-10b1-426f-9247-bb680e5fe0c8</id><profile_id>workspace</profile_id><tmux_session>codewith</tmux_session><tmux_window>implementation</tmux_window></session>"
+        ),
         "{context}"
     );
     assert!(
@@ -353,6 +390,31 @@ fn equals_except_shell_ignores_shell() {
     );
 
     assert!(context1.equals_except_shell(&context2));
+}
+
+#[test]
+fn equals_except_shell_detects_tmux_window_rename() {
+    let mut before = EnvironmentContext::new(
+        Vec::new(),
+        /*current_date*/ None,
+        /*timezone*/ None,
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+    before.session = SessionContext::new(
+        Some("session-id".to_string()),
+        Some("workspace".to_string()),
+        Some("codewith".to_string()),
+        Some("before".to_string()),
+    );
+    let mut after = before.clone();
+    after
+        .session
+        .as_mut()
+        .expect("session context")
+        .tmux_window = Some("after".to_string());
+
+    assert!(!before.equals_except_shell(&after));
 }
 
 #[test]

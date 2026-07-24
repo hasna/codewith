@@ -315,6 +315,38 @@ fn detects_tmux_multiplexer() {
 }
 
 #[test]
+fn parses_tmux_environment_output() {
+    assert_eq!(
+        parse_tmux_environment("codewith\u{1f}implementation"),
+        Some(TmuxEnvironment {
+            session: "codewith".to_string(),
+            window: "implementation".to_string(),
+        })
+    );
+    assert_eq!(parse_tmux_environment("missing-separator"), None);
+    assert_eq!(parse_tmux_environment("\u{1f}window"), None);
+    assert_eq!(parse_tmux_environment("session\u{1f}"), None);
+    assert_eq!(
+        parse_tmux_environment("session\u{1f}window\u{1f}extra"),
+        None
+    );
+}
+
+#[test]
+fn tmux_environment_lookup_targets_stable_pane_id() {
+    assert_eq!(
+        tmux_environment_display_args("%42"),
+        [
+            "display-message",
+            "-p",
+            "-t",
+            "%42",
+            "#{session_name}\u{1f}#{window_name}",
+        ]
+    );
+}
+
+#[test]
 fn detects_zellij_multiplexer() {
     let env = FakeEnvironment::new().with_var("ZELLIJ", "1");
     let terminal = detect_terminal_info_from_env(&env);

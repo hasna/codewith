@@ -109,6 +109,10 @@ pub(super) async fn spawn_review_thread(
 
     let review_turn_context = TurnContext {
         thread_id: parent_turn_context.thread_id,
+        session_id: parent_turn_context.session_id,
+        profile_id: parent_turn_context.profile_id.clone(),
+        tmux_session: parent_turn_context.tmux_session.clone(),
+        tmux_window: parent_turn_context.tmux_window.clone(),
         sub_id: review_turn_id.clone(),
         trace_id: current_span_trace_id(),
         realtime_active: parent_turn_context.realtime_active,

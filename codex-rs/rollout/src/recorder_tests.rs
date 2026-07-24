@@ -1341,6 +1341,10 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
         item: RolloutItem::TurnContext(TurnContextItem {
             thread_id: None,
             turn_id: Some("turn-1".to_string()),
+            session_id: None,
+            profile_id: None,
+            tmux_session: None,
+            tmux_window: None,
             cwd: latest_cwd.clone(),
             workspace_roots: None,
             current_date: None,

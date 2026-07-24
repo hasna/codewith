@@ -119,6 +119,10 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -166,6 +170,10 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
     let mut previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -1087,6 +1095,10 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -1174,6 +1186,10 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         serde_json::to_value(Some(TurnContextItem {
             thread_id: None,
             turn_id: Some(turn_context.sub_id.clone()),
+            session_id: None,
+            profile_id: None,
+            tmux_session: None,
+            tmux_window: None,
             #[allow(deprecated)]
             cwd: turn_context.cwd.to_path_buf(),
             workspace_roots: None,
@@ -1210,6 +1226,10 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -1337,6 +1357,10 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
     let current_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(current_turn_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -1463,6 +1487,10 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
@@ -1631,6 +1659,10 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
     let previous_context_item = TurnContextItem {
         thread_id: None,
         turn_id: Some(turn_context.sub_id.clone()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         workspace_roots: None,
