@@ -91,6 +91,11 @@ pub enum AgentLifecycleEffect {
 #[ts(export_to = "v2/")]
 pub struct AgentRun {
     pub agent_id: String,
+    // Stable identity of the admitted idempotency key, not the key itself:
+    // admission persists only a one-way SHA-256 digest so a caller-supplied
+    // key can never be recovered from local state. Kept under the original
+    // wire name to avoid an unversioned protocol break; use it for
+    // correlation, never as an echo of the submitted key.
     #[ts(type = "string | null")]
     pub idempotency_key: Option<String>,
     #[ts(type = "string | null")]

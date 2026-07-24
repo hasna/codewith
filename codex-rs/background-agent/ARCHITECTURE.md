@@ -35,9 +35,17 @@ capacity; queued, owned, waiting, stopping, and recoverable orphaned rows do.
 The CLI, TUI, app server, persisted run, execution snapshot, and daemon pid
 record use `codewith.background-agent.admission.v1` as the fail-closed schema
 contract. A running daemon is reused only when package version, daemon protocol,
-admission schema, and required capability set all match. An explicitly admitted
-auth-profile alias must match the app-server profile and remains exact during
-recovery; it is never silently replaced by profile auto-switching.
+admission schema, and required capability set all match. That check stays
+fail-closed but recoverable: `agent start` stops and replaces a mismatched
+daemon instead of dead-ending, while read-only daemon status reports the
+mismatch together with the exact remediation command. For the same reason,
+reconciliation fails closed any queued or orphaned run whose persisted admission
+schema or execution-snapshot package fingerprint no longer matches the installed
+binary. Such a run can never be claimed again, so releasing its admission slot
+(with an explicit lifecycle receipt) is what keeps a routine upgrade from
+permanently consuming capacity. An explicitly admitted auth-profile alias must
+match the app-server profile and remains exact during recovery; it is never
+silently replaced by profile auto-switching.
 
 Cross-system execution references remain a projection, not a second task or PR
 lifecycle store. Callers place the authoritative Todos root, PR group, leaf,
@@ -45,12 +53,17 @@ worker-run, writer-generation, and attempt references in `spawn_linkage_json`;
 the Repos-owned lease remains `worktree_lease_id`. Both are reached from every
 lifecycle receipt through its foreign-keyed `runId`. The supervisor
 `generation` is only a local process-fencing counter and must never be
-interpreted as the projected writer generation. Auth-profile references are
-opaque validated aliases stored in a reversible non-secret-shaped envelope:
-state redaction runs before persistence, the generic secrets doctor cannot
-rewrite their identity, and credential or account payloads do not belong in
-either reference projection. Execution snapshots persist only the alias digest,
-not the alias.
+interpreted as the projected writer generation.
+
+Neither opaque identity reference is persisted in a recoverable form.
+Idempotency keys are caller-controlled and are stored only as a one-way SHA-256
+digest; dedupe, replay, and immutable-identity comparisons all run against that
+digest, and the plaintext key is never written to or read back from local state.
+Auth-profile references are validated aliases — the alias itself has to survive
+so the worker can load the same profile — and are written through state
+redaction before persistence, so a credential-shaped value is redacted rather
+than stored. Execution snapshots persist only the alias digest, never the alias,
+and credential or account payloads do not belong in either reference projection.
 
 ## Run And Thread Relationship
 

@@ -1,8 +1,8 @@
 use super::*;
-use crate::model::encode_background_agent_opaque_identity;
 use crate::runtime::background_agents::ExistingBackgroundAgentAdmissionIdentity;
 use crate::runtime::background_agents::append_background_agent_event_in_tx;
 use crate::runtime::background_agents::background_agent_admission_identity_sha256;
+use crate::runtime::background_agents::background_agent_idempotency_key_digest;
 use crate::runtime::background_agents::count_live_or_recoverable_background_agent_runs_in_tx;
 use crate::runtime::background_agents::insert_background_agent_run_in_tx;
 use crate::runtime::background_agents::recover_or_validate_background_agent_initial_state_in_tx;
@@ -1090,7 +1090,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
     )
-    .bind(encode_background_agent_opaque_identity(idempotency_key))
+    .bind(background_agent_idempotency_key_digest(idempotency_key))
     .fetch_optional(&mut **tx)
     .await
     .map_err(anyhow::Error::from)

@@ -410,7 +410,8 @@ async fn background_agent_admission_retry_uses_immutable_identity_after_thread_b
 }
 
 #[tokio::test]
-async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow::Result<()> {
+async fn background_agent_admission_never_persists_recoverable_identity_plaintext()
+-> anyhow::Result<()> {
     let sqlite_home = unique_temp_dir();
     let runtime = StateRuntime::init(sqlite_home.clone(), "test-provider".to_string()).await?;
     let idempotency_key = format!("{}{}", "sk-proj-", "a".repeat(32));
@@ -428,13 +429,25 @@ async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow
     let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 2).await?;
 
     assert!(created);
+    // The idempotency key is caller-controlled and opaque, so it is persisted
+    // only as a one-way digest and is never reconstructed on read.
+    let expected_digest =
+        StateRuntime::background_agent_identity_sha256(idempotency_key.as_bytes());
     assert_eq!(
+        run.idempotency_key.as_deref(),
+        Some(expected_digest.as_str())
+    );
+    assert_ne!(
         run.idempotency_key.as_deref(),
         Some(idempotency_key.as_str())
     );
+    // The auth-profile alias stays usable for config loading, but it is written
+    // through state redaction so a secret-shaped alias never lands in plaintext.
+    let expected_redacted_profile = crate::redact_local_state_string(&auth_profile_ref);
+    assert_ne!(expected_redacted_profile, auth_profile_ref);
     assert_eq!(
         run.auth_profile_ref.as_deref(),
-        Some(auth_profile_ref.as_str())
+        Some(expected_redacted_profile.as_str())
     );
     let stored = sqlx::query_as::<_, (String, String)>(
         "SELECT idempotency_key, auth_profile_ref FROM background_agent_runs WHERE id = ?",
@@ -442,10 +455,10 @@ async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow
     .bind(run.id.as_str())
     .fetch_one(runtime.pool.as_ref())
     .await?;
-    assert_ne!(stored.0, idempotency_key);
-    assert_ne!(stored.1, auth_profile_ref);
-    assert_eq!(crate::redact_local_state_string(&stored.0), stored.0);
-    assert_eq!(crate::redact_local_state_string(&stored.1), stored.1);
+    assert_eq!(stored.0, expected_digest);
+    assert_eq!(stored.1, expected_redacted_profile);
+    assert!(!crate::local_state_string_contains_secret(&stored.0));
+    assert!(!crate::local_state_string_contains_secret(&stored.1));
     let execution_snapshot = runtime
         .get_background_agent_initial_execution_snapshot(run.id.as_str())
         .await?
@@ -459,6 +472,8 @@ async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow
         )))
     );
     assert!(!serde_json::to_string(&execution_snapshot.payload_json)?.contains(&auth_profile_ref));
+    // The secrets doctor must never find plaintext to redact here, because
+    // admission already refused to write any.
     let doctor_report =
         crate::run_local_state_secrets_doctor(crate::LocalStateSecretsDoctorOptions {
             codex_home: sqlite_home.clone(),
@@ -467,25 +482,152 @@ async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow
         })
         .await?;
     assert_eq!(doctor_report.redacted_sqlite_cells, 0);
+    assert!(!doctor_report.has_findings());
     let after_doctor = runtime
         .get_background_agent_run(run.id.as_str())
         .await?
         .expect("run should survive secrets repair");
     assert_eq!(
         after_doctor.idempotency_key.as_deref(),
-        Some(idempotency_key.as_str())
+        Some(expected_digest.as_str())
     );
     assert_eq!(
         after_doctor.auth_profile_ref.as_deref(),
-        Some(auth_profile_ref.as_str())
+        Some(expected_redacted_profile.as_str())
     );
+    // Byte-exact idempotent replay still works off the digest.
     assert_eq!(
         runtime
             .get_background_agent_run_by_idempotency_key(idempotency_key.as_str())
             .await?
             .map(|run| run.id),
-        Some(run.id)
+        Some(run.id.clone())
     );
+    assert_eq!(
+        runtime
+            .get_background_agent_run_by_idempotency_key(
+                format!("{}{}", "sk-proj-", "c".repeat(32)).as_str()
+            )
+            .await?
+            .map(|run| run.id),
+        None
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_runtime_upgrade_reclaims_stranded_admission_capacity()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let params = admission_params("stranded-run", "stranded-key", "profile:default");
+    let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1).await?;
+    assert!(created);
+
+    // The daemon dies mid-run, so the row goes to `orphaned` while still
+    // holding the single admission slot.
+    runtime
+        .claim_background_agent_supervisor(run.id.as_str(), "supervisor-old", "lease-old")
+        .await?
+        .expect("queued run should be claimable by the admitting runtime");
+    assert_eq!(
+        runtime
+            .orphan_stale_background_agent_runs(Duration::ZERO)
+            .await?,
+        1
+    );
+    assert_eq!(
+        runtime
+            .get_background_agent_run(run.id.as_str())
+            .await?
+            .map(|run| run.status),
+        Some(BackgroundAgentRunStatus::Orphaned)
+    );
+
+    // Operator upgrades codewith: the persisted package fingerprint no longer
+    // matches the running binary, so the row can never be claimed again.
+    let upgraded_package_fingerprint = "codex-state:test-upgraded";
+    let upgraded_version_fingerprint = params
+        .version_fingerprint
+        .as_deref()
+        .expect("admission fixtures set a version fingerprint");
+    assert_eq!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "supervisor-new",
+                "lease-new",
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        None
+    );
+    let capacity_error = admit_run(
+        runtime.as_ref(),
+        &admission_params("post-upgrade-run", "post-upgrade-key", "profile:default"),
+        /*max_active_runs*/ 1,
+    )
+    .await
+    .expect_err("the stranded run must still be holding the only admission slot");
+    assert!(
+        capacity_error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded"),
+        "unexpected error: {capacity_error}"
+    );
+
+    // Reconciliation must release the slot instead of leaking it forever.
+    assert_eq!(
+        runtime
+            .terminalize_incompatible_background_agent_runs(
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        1
+    );
+    let stranded = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("stranded run should still be readable");
+    assert_eq!(stranded.status, BackgroundAgentRunStatus::Failed);
+    assert_eq!(stranded.desired_state, BackgroundAgentDesiredState::Stopped);
+    assert!(stranded.completed_at.is_some());
+    assert!(
+        stranded
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("runtime package is incompatible")),
+        "unexpected status reason: {:?}",
+        stranded.status_reason
+    );
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM background_agent_lifecycle_receipts \
+         WHERE run_id = ? AND event_type = 'agent.failed'",
+    )
+    .bind(run.id.as_str())
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_eq!(receipts, 1);
+
+    // A repeat pass is a no-op, and new admissions succeed again.
+    assert_eq!(
+        runtime
+            .terminalize_incompatible_background_agent_runs(
+                upgraded_version_fingerprint,
+                upgraded_package_fingerprint,
+            )
+            .await?,
+        0
+    );
+    let (recovered, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("post-upgrade-run", "post-upgrade-key", "profile:default"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+    assert_eq!(recovered.status, BackgroundAgentRunStatus::Queued);
     Ok(())
 }
 

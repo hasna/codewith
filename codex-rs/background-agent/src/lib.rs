@@ -115,6 +115,11 @@ pub trait AgentRunStore {
         heartbeat_timeout: Duration,
     ) -> impl Future<Output = anyhow::Result<usize>> + Send;
 
+    /// Fails closed unclaimed runs that this binary can never claim because
+    /// their persisted admission schema or runtime package fingerprint predates
+    /// the installed build, releasing the admission capacity they hold.
+    fn terminalize_incompatible_runs(&self) -> impl Future<Output = anyhow::Result<usize>> + Send;
+
     fn claim_supervisor(
         &self,
         run_id: &str,
@@ -227,6 +232,14 @@ impl AgentRunStore for codex_state::StateRuntime {
     async fn orphan_stale_runs(&self, heartbeat_timeout: Duration) -> anyhow::Result<usize> {
         self.orphan_stale_background_agent_runs(heartbeat_timeout)
             .await
+    }
+
+    async fn terminalize_incompatible_runs(&self) -> anyhow::Result<usize> {
+        self.terminalize_incompatible_background_agent_runs(
+            BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+        )
+        .await
     }
 
     async fn claim_supervisor(
