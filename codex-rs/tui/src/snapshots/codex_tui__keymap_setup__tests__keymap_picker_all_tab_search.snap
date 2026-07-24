@@ -10,7 +10,7 @@ Toggle Vim Mode | unbound | Global toggle_vim_mode Toggle Vim Mode Turn Vim comp
 Toggle Raw Output | alt-r | Global toggle_raw_output Toggle Raw Output Toggle raw scrollback mode. alt-r Default
 Cycle Permissions | shift-tab | Global cycle_permissions Cycle Permissions Cycle to the next permissions preset. shift-tab Default
 Interrupt Turn | esc | Chat interrupt_turn Interrupt Turn Interrupt the active turn. esc Default
+Flush Queued Messages | shift-enter | Chat flush_queued_messages Flush Queued Messages Flush queued follow-ups into the active turn as one steer. shift-enter Default
 Decrease Reasoning Effort | alt-,, shift-down | Chat decrease_reasoning_effort Decrease Reasoning Effort Decrease reasoning effort. alt-,, shift-down Default
 Increase Reasoning Effort | alt-., shift-up | Chat increase_reasoning_effort Increase Reasoning Effort Increase reasoning effort. alt-., shift-up Default
 Edit Queued Message | alt-up, shift-left | Chat edit_queued_message Edit Queued Message Edit the most recently queued message. alt-up, shift-left Default
-Submit | enter | Composer submit Submit Submit the current composer draft. enter Default

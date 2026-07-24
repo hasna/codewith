@@ -122,6 +122,8 @@ pub struct TuiGlobalKeymap {
 pub struct TuiChatKeymap {
     /// Interrupt the active turn.
     pub interrupt_turn: Option<KeybindingsSpec>,
+    /// Flush all queued follow-up messages into the active turn as one steer.
+    pub flush_queued_messages: Option<KeybindingsSpec>,
     /// Decrease the active reasoning effort.
     pub decrease_reasoning_effort: Option<KeybindingsSpec>,
     /// Increase the active reasoning effort.

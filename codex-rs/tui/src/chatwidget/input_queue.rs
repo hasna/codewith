@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 
 use super::PendingSteer;
+use super::QueuedInputAction;
 use super::QueuedUserMessage;
 use super::UserMessage;
 use super::UserMessageHistoryRecord;
@@ -47,6 +48,27 @@ pub(super) struct InputQueueState {
 impl InputQueueState {
     pub(super) fn has_queued_follow_up_messages(&self) -> bool {
         !self.rejected_steers_queue.is_empty() || !self.queued_user_messages.is_empty()
+    }
+
+    /// True when the next queued follow-up is plain text that can be merged into a steer.
+    ///
+    /// Queued `/slash` and `!shell` entries carry a dispatch action, so they must be
+    /// replayed by the queue drain instead of being folded into a text message.
+    pub(super) fn next_queued_message_is_plain(&self) -> bool {
+        matches!(
+            self.queued_user_messages
+                .front()
+                .map(|queued_message| queued_message.action),
+            Some(QueuedInputAction::Plain)
+        )
+    }
+
+    /// True when a flush would merge at least one queued follow-up into the active turn.
+    ///
+    /// Rejected steers are always plain follow-up text; locally queued messages only
+    /// qualify while the head of the queue is plain.
+    pub(super) fn has_flushable_queued_messages(&self) -> bool {
+        !self.rejected_steers_queue.is_empty() || self.next_queued_message_is_plain()
     }
 
     pub(super) fn clear(&mut self) {

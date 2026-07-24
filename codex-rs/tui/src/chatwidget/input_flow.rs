@@ -99,6 +99,51 @@ impl ChatWidget {
         }
     }
 
+    /// Merge the queued follow-ups visible at this keypress into one active-turn steer.
+    ///
+    /// Rejected steers retain dequeue priority, followed by locally queued messages in FIFO
+    /// order, which preserves each queue's message/history alignment. Queued `/slash` and
+    /// `!shell` entries are dispatch actions rather than prose, so the merge stops at the
+    /// first one and leaves it (and everything behind it) queued for the normal drain.
+    /// Already-submitted pending steers and the live composer draft are left untouched.
+    pub(super) fn flush_queued_messages(&mut self) {
+        let rejected_messages = std::mem::take(&mut self.input_queue.rejected_steers_queue);
+        let mut rejected_history_records =
+            std::mem::take(&mut self.input_queue.rejected_steer_history_records);
+        rejected_history_records.resize(
+            rejected_messages.len(),
+            UserMessageHistoryRecord::UserMessageText,
+        );
+
+        let mut messages = rejected_messages
+            .into_iter()
+            .zip(rejected_history_records)
+            .collect::<Vec<_>>();
+        while self.input_queue.next_queued_message_is_plain() {
+            let Some(queued_message) = self.input_queue.queued_user_messages.pop_front() else {
+                break;
+            };
+            let history_record = self
+                .input_queue
+                .queued_user_message_history_records
+                .pop_front()
+                .unwrap_or(UserMessageHistoryRecord::UserMessageText);
+            messages.push((queued_message.into_user_message(), history_record));
+        }
+
+        if messages.is_empty() {
+            return;
+        }
+
+        let (message, history_record) = merge_user_messages_with_history_record(messages);
+        self.resubmit_queued_user_message_with_history_record(
+            message,
+            history_record,
+            ShellEscapePolicy::Disallow,
+        );
+        self.refresh_pending_input_preview();
+    }
+
     /// If idle and there are queued inputs, submit exactly one to start the next turn.
     pub(crate) fn maybe_send_next_queued_input(&mut self) -> bool {
         if self.input_queue.suppress_queue_autosend {
