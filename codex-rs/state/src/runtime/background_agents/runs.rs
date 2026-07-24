@@ -2286,7 +2286,10 @@ impl RedactedBackgroundAgentRunColumns {
             request_id: params.request_id.as_deref().map(redact_state_string),
             source: redact_state_string(params.source.as_str()),
             prompt_snapshot_ref: redact_state_string(params.prompt_snapshot_ref.as_str()),
-            input_snapshot_ref: params.input_snapshot_ref.as_deref().map(redact_state_string),
+            input_snapshot_ref: params
+                .input_snapshot_ref
+                .as_deref()
+                .map(redact_state_string),
             thread_id: params.thread_id.as_deref().map(redact_state_string),
             thread_store_kind: redact_state_string(params.thread_store_kind.as_str()),
             thread_store_id: params.thread_store_id.as_deref().map(redact_state_string),
@@ -2303,7 +2306,10 @@ impl RedactedBackgroundAgentRunColumns {
                 .transpose()?,
             auth_profile_ref: params.auth_profile_ref.as_deref().map(redact_state_string),
             status_reason: params.status_reason.as_deref().map(redact_state_string),
-            config_fingerprint: params.config_fingerprint.as_deref().map(redact_state_string),
+            config_fingerprint: params
+                .config_fingerprint
+                .as_deref()
+                .map(redact_state_string),
             version_fingerprint: params
                 .version_fingerprint
                 .as_deref()
@@ -2331,7 +2337,10 @@ impl RedactedBackgroundAgentExecutionSnapshotColumns {
             snapshot_kind: redact_state_string(params.snapshot_kind.as_str()),
             payload_json: redact_state_json_string(&params.payload_json)?,
             recovery_policy: redact_state_string(params.recovery_policy.as_str()),
-            config_fingerprint: params.config_fingerprint.as_deref().map(redact_state_string),
+            config_fingerprint: params
+                .config_fingerprint
+                .as_deref()
+                .map(redact_state_string),
         })
     }
 }

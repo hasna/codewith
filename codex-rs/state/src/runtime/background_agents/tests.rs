@@ -585,12 +585,11 @@ async fn background_agent_admission_persists_no_plaintext_secret_in_any_column()
     let mut scanned_columns = 0usize;
     let mut conn = runtime.pool.acquire().await?;
     for table in &tables {
-        let columns = sqlx::query_scalar::<_, String>(
-            "SELECT name FROM pragma_table_info(?) ORDER BY cid",
-        )
-        .bind(table.clone())
-        .fetch_all(&mut *conn)
-        .await?;
+        let columns =
+            sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                .bind(table.clone())
+                .fetch_all(&mut *conn)
+                .await?;
         for column in &columns {
             scanned_columns += 1;
             // The sqlite driver requires `'static` SQL, and the table/column
