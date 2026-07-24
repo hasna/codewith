@@ -6,6 +6,20 @@
 
 use super::*;
 
+/// Remove the `count` entries that a flush merged, skipping any entries the submission
+/// itself pushed onto the front of `queue` after the merge snapshot was taken.
+fn drain_flushed_entries<T>(
+    queue: &mut std::collections::VecDeque<T>,
+    len_before_submit: usize,
+    count: usize,
+) {
+    let added = queue.len().saturating_sub(len_before_submit);
+    let end = added.saturating_add(count).min(queue.len());
+    if added < end {
+        queue.drain(added..end);
+    }
+}
+
 impl ChatWidget {
     pub(super) fn handle_composer_input_result(
         &mut self,
@@ -105,30 +119,45 @@ impl ChatWidget {
     /// order, which preserves each queue's message/history alignment. Queued `/slash` and
     /// `!shell` entries are dispatch actions rather than prose, so the merge stops at the
     /// first one and leaves it (and everything behind it) queued for the normal drain.
-    /// Already-submitted pending steers and the live composer draft are left untouched.
+    /// Already-submitted pending steers are left untouched.
+    ///
+    /// The merge is built from clones and the queues are only drained once the submission is
+    /// accepted. Submission can legitimately be refused (unavailable thread model, blocked
+    /// image attachments, a closed op channel), and those refusal paths push the attempted
+    /// message back into the composer, so the live draft is snapshotted and restored too.
+    /// Draining up front would silently destroy every queued follow-up and overwrite whatever
+    /// the user was still typing.
     pub(super) fn flush_queued_messages(&mut self) {
-        let rejected_messages = std::mem::take(&mut self.input_queue.rejected_steers_queue);
-        let mut rejected_history_records =
-            std::mem::take(&mut self.input_queue.rejected_steer_history_records);
-        rejected_history_records.resize(
-            rejected_messages.len(),
-            UserMessageHistoryRecord::UserMessageText,
-        );
+        let rejected_count = self.input_queue.rejected_steers_queue.len();
+        let mut rejected_history_records = self
+            .input_queue
+            .rejected_steer_history_records
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        rejected_history_records.resize(rejected_count, UserMessageHistoryRecord::UserMessageText);
 
-        let mut messages = rejected_messages
-            .into_iter()
+        let mut messages = self
+            .input_queue
+            .rejected_steers_queue
+            .iter()
+            .cloned()
             .zip(rejected_history_records)
             .collect::<Vec<_>>();
-        while self.input_queue.next_queued_message_is_plain() {
-            let Some(queued_message) = self.input_queue.queued_user_messages.pop_front() else {
+        let mut queued_count = 0usize;
+        while let Some(queued_message) = self.input_queue.queued_user_messages.get(queued_count) {
+            if !matches!(queued_message.action, QueuedInputAction::Plain) {
                 break;
-            };
+            }
+            let user_message = queued_message.clone().into_user_message();
             let history_record = self
                 .input_queue
                 .queued_user_message_history_records
-                .pop_front()
+                .get(queued_count)
+                .cloned()
                 .unwrap_or(UserMessageHistoryRecord::UserMessageText);
-            messages.push((queued_message.into_user_message(), history_record));
+            messages.push((user_message, history_record));
+            queued_count += 1;
         }
 
         if messages.is_empty() {
@@ -136,11 +165,58 @@ impl ChatWidget {
         }
 
         let (message, history_record) = merge_user_messages_with_history_record(messages);
-        self.resubmit_queued_user_message_with_history_record(
+        let actual_chars = message.text.chars().count();
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+            self.add_error_message(format!(
+                "Queued messages exceed the maximum combined length of \
+                 {MAX_USER_INPUT_TEXT_CHARS} characters ({actual_chars} provided). \
+                 Edit or remove queued messages before submitting them together."
+            ));
+            return;
+        }
+
+        let composer_snapshot = self.bottom_pane.composer_draft_snapshot();
+        let rejected_len_before = self.input_queue.rejected_steers_queue.len();
+        let rejected_history_len_before = self.input_queue.rejected_steer_history_records.len();
+        let queued_len_before = self.input_queue.queued_user_messages.len();
+        let queued_history_len_before = self.input_queue.queued_user_message_history_records.len();
+
+        let accepted = self.resubmit_queued_user_message_with_history_record(
             message,
             history_record,
             ShellEscapePolicy::Disallow,
         );
+
+        if accepted {
+            // An accepted submission can still be re-queued at the *front* while session,
+            // auth-profile, or usage-limit state resolves. Remove only the original entries
+            // that were merged, skipping anything the submission itself pushed on top.
+            drain_flushed_entries(
+                &mut self.input_queue.rejected_steers_queue,
+                rejected_len_before,
+                rejected_count,
+            );
+            drain_flushed_entries(
+                &mut self.input_queue.rejected_steer_history_records,
+                rejected_history_len_before,
+                rejected_count,
+            );
+            drain_flushed_entries(
+                &mut self.input_queue.queued_user_messages,
+                queued_len_before,
+                queued_count,
+            );
+            drain_flushed_entries(
+                &mut self.input_queue.queued_user_message_history_records,
+                queued_history_len_before,
+                queued_count,
+            );
+        } else {
+            // The refusal paths (`restore_user_message_to_composer`,
+            // `restore_blocked_image_submission`) replaced the draft with the merged text.
+            self.bottom_pane
+                .restore_composer_draft_snapshot(composer_snapshot);
+        }
         self.refresh_pending_input_preview();
     }
 
@@ -206,10 +282,13 @@ impl ChatWidget {
     /// Rebuild and update the bottom-pane pending-input preview.
     pub(super) fn refresh_pending_input_preview(&mut self) {
         let preview = self.input_queue.preview();
+        let flush_available = self.turn_lifecycle.agent_turn_running
+            && self.input_queue.has_flushable_queued_messages();
         self.bottom_pane.set_pending_input_preview(
             preview.queued_messages,
             preview.pending_steers,
             preview.rejected_steers,
+            flush_available,
         );
     }
 

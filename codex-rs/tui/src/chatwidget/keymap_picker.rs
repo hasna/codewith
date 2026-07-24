@@ -176,6 +176,9 @@ impl ChatWidget {
         );
         self.bottom_pane
             .set_queued_message_edit_binding(self.queued_message_edit_hint_binding);
+        self.bottom_pane.set_queued_message_flush_binding(
+            self.chat_keymap.flush_queued_messages.first().copied(),
+        );
         self.bottom_pane.set_keymap_bindings(runtime_keymap);
         self.request_redraw();
     }

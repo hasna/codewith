@@ -958,6 +958,225 @@ async fn shift_enter_flushes_plain_messages_before_a_queued_shell_command() {
     assert_eq!(chat.input_queue.pending_steers.len(), 1);
 }
 
+/// Regression: the flush used to drain the queues before submitting and then throw away the
+/// submit result, so a refused submission destroyed every queued follow-up and pasted the
+/// merged text over whatever the user was still typing.
+#[tokio::test]
+async fn unavailable_model_flush_preserves_queued_messages_and_composer_draft() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.set_model("");
+    chat.input_queue
+        .pending_steers
+        .push_back(pending_steer("already pending"));
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("rejected first"));
+    chat.input_queue
+        .rejected_steer_history_records
+        .push_back(UserMessageHistoryRecord::Override(
+            UserMessageHistoryOverride {
+                text: "rejected history".to_string(),
+                text_elements: Vec::new(),
+            },
+        ));
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("queued second").into());
+    chat.input_queue
+        .queued_user_message_history_records
+        .push_back(UserMessageHistoryRecord::UserMessageText);
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+    drain_insert_history(&mut rx);
+
+    let input_before = chat.capture_thread_input_state();
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(
+        chat.capture_thread_input_state(),
+        input_before,
+        "a refused flush must leave every queue and the composer draft untouched"
+    );
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+    let inserted = drain_insert_history(&mut rx);
+    assert_eq!(inserted.len(), 1);
+    assert!(
+        lines_to_single_string(&inserted[0]).contains("Thread model is unavailable."),
+        "expected the unavailable-model error"
+    );
+}
+
+/// Regression: a submit that never reaches core (closed op channel) must not eat the queue.
+#[tokio::test]
+async fn failed_flush_submit_preserves_queued_messages_and_composer_draft() {
+    let (mut chat, _rx, op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("rejected first"));
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("queued second").into());
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+    drop(op_rx);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["rejected first".to_string(), "queued second".to_string()]
+    );
+    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+}
+
+/// An accepted flush can still be re-queued at the front while the session is being
+/// configured. Only the merged originals may be removed, never the accepted replacement.
+#[tokio::test]
+async fn accepted_flush_preserves_front_requeued_merged_message() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = None;
+    chat.input_queue
+        .rejected_steers_queue
+        .push_back(UserMessage::from("rejected first"));
+    chat.input_queue
+        .rejected_steer_history_records
+        .push_back(UserMessageHistoryRecord::UserMessageText);
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("queued second").into());
+    chat.input_queue
+        .queued_user_message_history_records
+        .push_back(UserMessageHistoryRecord::UserMessageText);
+
+    chat.flush_queued_messages();
+
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.input_queue.rejected_steers_queue.is_empty());
+    assert!(chat.input_queue.rejected_steer_history_records.is_empty());
+    assert_eq!(
+        chat.input_queue.queued_user_messages,
+        VecDeque::from([QueuedUserMessage::new_with_shell_escape_policy(
+            UserMessage::from("rejected first\nqueued second"),
+            QueuedInputAction::Plain,
+            ShellEscapePolicy::Disallow,
+        )])
+    );
+    assert_eq!(
+        chat.input_queue.queued_user_message_history_records,
+        VecDeque::from([UserMessageHistoryRecord::UserMessageText])
+    );
+    assert!(chat.input_queue.pending_steers.is_empty());
+}
+
+/// Regression: the rejected steer is identified by its compare key. After a merged flush the
+/// rejected steer sits *behind* older pending steers, so popping the front requeued the wrong
+/// message and silently dropped the rejected one.
+#[tokio::test]
+async fn rejected_steer_is_matched_by_compare_key_not_queue_position() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.input_queue
+        .pending_steers
+        .push_back(pending_steer("already pending"));
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("first queued").into());
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("second queued").into());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    let Op::UserTurn { items, .. } = next_submit_op(&mut op_rx) else {
+        panic!("expected one merged queued-message steer");
+    };
+    assert_eq!(
+        chat.input_queue
+            .pending_steers
+            .iter()
+            .map(|pending| pending.user_message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["already pending", "first queued\nsecond queued"],
+        "the merged steer must be behind the older pending steer"
+    );
+
+    assert!(chat.enqueue_rejected_steer_matching_items(&items));
+
+    assert_eq!(
+        chat.input_queue
+            .pending_steers
+            .iter()
+            .map(|pending| pending.user_message.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["already pending"],
+        "the untouched older steer must stay pending"
+    );
+    assert_eq!(
+        chat.input_queue.rejected_steers_queue,
+        VecDeque::from([UserMessage::from("first queued\nsecond queued")])
+    );
+    assert_eq!(
+        chat.input_queue.rejected_steer_history_records,
+        VecDeque::from([UserMessageHistoryRecord::UserMessageText])
+    );
+}
+
+#[tokio::test]
+async fn rejected_steer_matching_items_reports_no_match() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.input_queue
+        .pending_steers
+        .push_back(pending_steer("already pending"));
+
+    assert!(
+        !chat.enqueue_rejected_steer_matching_items(&[UserInput::Text {
+            text: "never submitted".to_string(),
+            text_elements: Vec::new(),
+        }])
+    );
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert!(chat.input_queue.rejected_steers_queue.is_empty());
+}
+
+/// The merged steer is a single user input and must respect the same length cap as any other
+/// user input instead of being rejected server-side after the queues were already drained.
+#[tokio::test]
+async fn oversized_flush_preserves_queued_messages_and_composer_draft() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("a".repeat(MAX_USER_INPUT_TEXT_CHARS)).into());
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("b").into());
+    chat.bottom_pane
+        .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
+    drain_insert_history(&mut rx);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 2);
+    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+    let inserted = drain_insert_history(&mut rx);
+    assert_eq!(inserted.len(), 1);
+    assert!(
+        lines_to_single_string(&inserted[0]).contains("maximum combined length"),
+        "expected an actionable combined-length error"
+    );
+}
+
 #[tokio::test]
 async fn manual_interrupt_restores_pending_steers_to_composer() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

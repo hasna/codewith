@@ -678,7 +678,10 @@ impl App {
                                 if let Some(turn_error) =
                                     active_turn_not_steerable_turn_error(&error)
                                 {
-                                    if !self.chat_widget.enqueue_rejected_steer() {
+                                    if !self
+                                        .chat_widget
+                                        .enqueue_rejected_steer_matching_items(items)
+                                    {
                                         self.chat_widget.add_error_message(turn_error.message);
                                     }
                                     return Ok(true);
