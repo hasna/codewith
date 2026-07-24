@@ -375,8 +375,8 @@ async fn background_agent_admission_retry_uses_immutable_identity_after_thread_b
     assert!(
         runtime
             .bind_background_agent_thread(&BackgroundAgentThreadBindingParams {
-                run_id: first.id.as_str(),
-                supervisor_id: "binding-supervisor",
+                run_id: first.id.clone(),
+                supervisor_id: "binding-supervisor".to_string(),
                 generation,
                 thread_id: "bound-thread".to_string(),
                 thread_store_kind: "thread-store".to_string(),
