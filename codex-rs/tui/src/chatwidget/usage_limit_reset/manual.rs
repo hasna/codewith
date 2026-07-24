@@ -157,9 +157,18 @@ impl ChatWidget {
                 selected,
                 reset_label(i64::try_from(selected).unwrap_or(i64::MAX))
             )),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(tree_navigation_hint_line(
+                &self.bottom_pane.list_keymap(),
+                TreeNavigationHint {
+                    accept_label: "selects",
+                    include_move_right: false,
+                    include_space_toggle: false,
+                    cancel_label: "goes back",
+                },
+            )),
             items,
             initial_selected_idx: Some(selected),
+            tree_navigation_enabled: true,
             on_cancel: Some(Box::new(move |tx| {
                 tx.send(AppEvent::CancelRateLimitResetCreditSelection { generation });
             })),
