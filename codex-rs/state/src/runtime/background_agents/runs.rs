@@ -17,6 +17,15 @@ struct BackgroundAgentSupervisorClaimState {
     admission_ready_at: Option<i64>,
 }
 
+#[derive(sqlx::FromRow)]
+struct BackgroundAgentDeleteState {
+    supervisor_id: Option<String>,
+    generation: i64,
+    status: String,
+    retention_state: String,
+    status_reason: Option<String>,
+}
+
 impl StateRuntime {
     /// Returns a stable digest for opaque background-agent admission identity.
     pub fn background_agent_identity_sha256(bytes: &[u8]) -> String {
@@ -879,19 +888,23 @@ WHERE id = ?
     pub async fn request_background_agent_delete(&self, run_id: &str) -> anyhow::Result<bool> {
         let now = Utc::now().timestamp();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let current: Option<(Option<String>, i64, String, String, Option<String>)> =
-            sqlx::query_as(
-                r#"
+        let current = sqlx::query_as::<_, BackgroundAgentDeleteState>(
+            r#"
 SELECT supervisor_id, generation, status, retention_state, status_reason
 FROM background_agent_runs
 WHERE id = ?
             "#,
-            )
-            .bind(run_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some((supervisor_id, generation, status, retention_state, stored_status_reason)) =
-            current
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(BackgroundAgentDeleteState {
+            supervisor_id,
+            generation,
+            status,
+            retention_state,
+            status_reason: stored_status_reason,
+        }) = current
         else {
             tx.commit().await?;
             return Ok(false);
