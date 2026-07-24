@@ -3,21 +3,21 @@
 use super::*;
 use crate::chatwidget::auth_profile_popups::AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF;
 use crate::chatwidget::usage_profile_broker::UsageProfileAutoSwitchWindow;
+use crate::chatwidget::usage_profile_broker::UsageProfileSwitchOutcome;
 use crate::chatwidget::usage_profile_broker::auth_profile_auto_switch_target as broker_auth_profile_auto_switch_target;
 use crate::chatwidget::usage_profile_broker::auto_switch_trigger_key;
 use crate::chatwidget::usage_profile_broker::earliest_exhausted_reset_at;
 use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window;
 use crate::chatwidget::usage_profile_broker::exhausted_auto_switch_window_for_snapshot;
-use crate::chatwidget::usage_profile_broker::UsageProfileSwitchOutcome;
 use crate::chatwidget::usage_profile_broker::fallback_limit_label as broker_fallback_limit_label;
 use crate::chatwidget::usage_profile_broker::get_limits_duration as broker_get_limits_duration;
 use crate::chatwidget::usage_profile_broker::limit_label_for_window as broker_limit_label_for_window;
 use crate::chatwidget::user_messages::QueueInsertionPosition;
+use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
+use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
 use crate::status::format_reset_timestamp;
 use chrono::DateTime;
 use chrono::Utc;
-use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
-use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_login::list_auth_profiles;
 use tokio::time::MissedTickBehavior;
@@ -587,10 +587,17 @@ impl ChatWidget {
                 Some((target.profile, target.trigger_key))
             }
             UsageProfileSwitchOutcome::NoEligibleProfile { earliest_reset_at } => {
-                self.add_info_message(
-                    Self::no_eligible_auth_profile_message(earliest_reset_at),
-                    /*hint*/ None,
-                );
+                // Dedupe like the auto-switch trigger: emit the info message once
+                // per exhaustion window instead of on every rate-limit poll.
+                if self.last_no_eligible_auth_profile_trigger.as_deref()
+                    != Some(trigger_key.as_str())
+                {
+                    self.last_no_eligible_auth_profile_trigger = Some(trigger_key);
+                    self.add_info_message(
+                        Self::no_eligible_auth_profile_message(earliest_reset_at),
+                        /*hint*/ None,
+                    );
+                }
                 None
             }
         }
