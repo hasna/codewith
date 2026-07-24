@@ -3312,6 +3312,7 @@ async fn run_background_agent_worker(
     let initial_prompt_submission_id = background_agent_initial_prompt_submission_id(&run.id);
     let initial_prompt_sha256 =
         codex_state::StateRuntime::background_agent_identity_sha256(prompt.as_bytes());
+    let resuming_durable_thread = run.rollout_path.is_some();
     let NewThread {
         thread_id,
         thread,
@@ -3332,12 +3333,16 @@ async fn run_background_agent_worker(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("background-agent thread has no durable rollout path"))?;
     let rollout_path = Some(durable_rollout_path.to_string_lossy().to_string());
-    let initial_prompt_recorded = background_agent_initial_prompt_is_recorded(
-        durable_rollout_path,
-        initial_prompt_submission_id.as_str(),
-        prompt.as_str(),
-    )
-    .await?;
+    let initial_prompt_recorded = if resuming_durable_thread {
+        background_agent_initial_prompt_is_recorded(
+            durable_rollout_path,
+            initial_prompt_submission_id.as_str(),
+            prompt.as_str(),
+        )
+        .await?
+    } else {
+        false
+    };
     let thread_id_string = thread_id.to_string();
     let session_id_string = session_configured.session_id.to_string();
     let binding_params = BackgroundAgentThreadBindingParams {
@@ -3483,11 +3488,13 @@ async fn run_background_agent_worker(
                     &context,
                     run.id.as_str(),
                     generation,
-                    run.auth_profile_ref.as_deref(),
                     thread.clone(),
                     event.msg,
                     &cancel_token,
-                    &mut turn_error,
+                    BackgroundAgentTurnState {
+                        auth_profile_ref: run.auth_profile_ref.as_deref(),
+                        turn_error: &mut turn_error,
+                    },
                 ).await? {
                     return Ok(());
                 }
@@ -3765,7 +3772,7 @@ fn validate_background_agent_initial_execution_snapshot(
             "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: persisted execution snapshot auth profile does not match the admitted run"
         );
     }
-    if optional_string("managedWorktreeId")?.is_some_and(|worktree_id| worktree_id.is_empty()) {
+    if optional_string("managedWorktreeId")?.is_some_and(str::is_empty) {
         anyhow::bail!(
             "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: managed worktree id must not be empty"
         );
@@ -4104,19 +4111,23 @@ async fn load_background_agent_prompt(
         .ok_or_else(|| anyhow::anyhow!("background agent prompt missing from start event"))
 }
 
+struct BackgroundAgentTurnState<'a> {
+    auth_profile_ref: Option<&'a str>,
+    turn_error: &'a mut Option<String>,
+}
+
 async fn handle_background_agent_event(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
     generation: i64,
-    auth_profile_ref: Option<&str>,
     thread: Arc<codex_core::CodexThread>,
     msg: EventMsg,
     cancel_token: &CancellationToken,
-    turn_error: &mut Option<String>,
+    turn_state: BackgroundAgentTurnState<'_>,
 ) -> anyhow::Result<bool> {
     match msg {
         EventMsg::TurnStarted(event) => {
-            *turn_error = None;
+            *turn_state.turn_error = None;
             tolerate_transient_busy(
                 append_status(
                     context,
@@ -4392,17 +4403,20 @@ async fn handle_background_agent_event(
         EventMsg::Error(event) => {
             if background_agent_error_is_usage_limit(&event) {
                 let config = thread.config().await;
-                let retry_at =
-                    background_agent_exact_profile_retry_at(context, &config, auth_profile_ref)
-                        .await
-                        .unwrap_or_else(|| {
-                            background_agent_usage_retry_at(
-                                /*reset_at*/ None,
-                                config.usage_self_heal.reset_retry_buffer_secs,
-                                config.usage_self_heal.initial_backoff_secs,
-                                Utc::now().timestamp(),
-                            )
-                        });
+                let retry_at = background_agent_exact_profile_retry_at(
+                    context,
+                    &config,
+                    turn_state.auth_profile_ref,
+                )
+                .await
+                .unwrap_or_else(|| {
+                    background_agent_usage_retry_at(
+                        /*reset_at*/ None,
+                        config.usage_self_heal.reset_retry_buffer_secs,
+                        config.usage_self_heal.initial_backoff_secs,
+                        Utc::now().timestamp(),
+                    )
+                });
                 defer_background_agent_for_usage_profile_wait(
                     context, run_id, generation, retry_at,
                 )
@@ -4413,7 +4427,7 @@ async fn handle_background_agent_event(
             // (e.g. pre-sampling/auto compaction failed with
             // `context_length_exceeded`). Record it so the trailing `TurnComplete`
             // can be reclassified as a failure instead of a silent success.
-            *turn_error = Some(event.message.clone());
+            *turn_state.turn_error = Some(event.message.clone());
             tolerate_transient_busy(
                 append_background_agent_event_with_retry(
                     context,
@@ -4436,9 +4450,10 @@ async fn handle_background_agent_event(
             // re-growing) the run. A no-message turn without an observed error is
             // still classified as a failure by `background_agent_turn_complete_status`
             // below, but with the generic reason.
-            if let Some(reason) =
-                turn_completion_failure_reason(event.last_agent_message.as_deref(), turn_error)
-            {
+            if let Some(reason) = turn_completion_failure_reason(
+                event.last_agent_message.as_deref(),
+                turn_state.turn_error,
+            ) {
                 let status_reason = format!("turn failed: {reason}");
                 append_status(
                     context,
