@@ -42,6 +42,18 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Fixed
+
+- Auth-profile auto-switch now resumes the interrupted turn on the new profile.
+  When a turn fails on a rate-limited profile and no usage reset is available,
+  the agent switches to a healthier profile and automatically re-runs the failed
+  request, instead of switching silently and forcing the user to re-type `go`.
+- Auto-switch selection preserves each cached profile's server-reported reset
+  time, so exhausted profiles are ranked by their real reset instead of being
+  treated as reset-unknown. When every alternate profile is also rate-limited,
+  the agent no longer switches onto an exhausted profile and instead reports the
+  earliest reset time so the user knows when a profile becomes usable again.
+
 ## [0.1.77] - 2026-07-23
 
 Tag: `rust-v0.1.77`

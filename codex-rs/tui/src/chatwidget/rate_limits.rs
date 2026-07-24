@@ -3,6 +3,7 @@
 use super::*;
 use crate::chatwidget::auth_profile_popups::AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF;
 use crate::chatwidget::usage_profile_broker::UsageProfileAutoSwitchWindow;
+use crate::chatwidget::usage_profile_broker::UsageProfileSwitchOutcome;
 use crate::chatwidget::usage_profile_broker::auth_profile_auto_switch_target as broker_auth_profile_auto_switch_target;
 use crate::chatwidget::usage_profile_broker::auto_switch_trigger_key;
 use crate::chatwidget::usage_profile_broker::earliest_exhausted_reset_at;
@@ -14,6 +15,9 @@ use crate::chatwidget::usage_profile_broker::limit_label_for_window as broker_li
 use crate::chatwidget::user_messages::QueueInsertionPosition;
 use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
 use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
+use crate::status::format_reset_timestamp;
+use chrono::DateTime;
+use chrono::Utc;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_login::list_auth_profiles;
 use tokio::time::MissedTickBehavior;
@@ -569,7 +573,7 @@ impl ChatWidget {
             }
         };
         let recently_failed = self.recently_failed_auth_profile_usage_heartbeats();
-        if let Some(target) = broker_auth_profile_auto_switch_target(
+        match broker_auth_profile_auto_switch_target(
             &self.config.auth_profile_auto_switch,
             self.config.selected_auth_profile.as_deref(),
             &profiles,
@@ -578,16 +582,42 @@ impl ChatWidget {
             limit_id,
             window,
         ) {
-            self.mark_auth_profile_auto_switch_cooldown(cooldown_key);
-            return Some((target.profile, target.trigger_key));
+            UsageProfileSwitchOutcome::Switch(target) => {
+                self.mark_auth_profile_auto_switch_cooldown(cooldown_key);
+                Some((target.profile, target.trigger_key))
+            }
+            UsageProfileSwitchOutcome::NoEligibleProfile { earliest_reset_at } => {
+                // Dedupe like the auto-switch trigger: emit the info message once
+                // per exhaustion window instead of on every rate-limit poll.
+                if self.last_no_eligible_auth_profile_trigger.as_deref()
+                    != Some(trigger_key.as_str())
+                {
+                    self.last_no_eligible_auth_profile_trigger = Some(trigger_key);
+                    self.add_info_message(
+                        Self::no_eligible_auth_profile_message(earliest_reset_at),
+                        /*hint*/ None,
+                    );
+                }
+                None
+            }
         }
+    }
 
-        self.add_info_message(
-            "Auth profile auto-switch is enabled, but no alternate profile with available usage is known."
-                .to_string(),
-            /*hint*/ None,
-        );
-        None
+    /// User-facing message when auto-switch is on but no alternate profile has available usage.
+    /// Includes the soonest known reset so the user knows when a profile becomes usable again.
+    fn no_eligible_auth_profile_message(earliest_reset_at: Option<i64>) -> String {
+        const BASE: &str =
+            "Auth profile auto-switch is enabled, but every alternate profile is also rate-limited";
+        match earliest_reset_at
+            .and_then(|reset| DateTime::<Utc>::from_timestamp(reset, 0))
+            .map(|dt| dt.with_timezone(&Local))
+        {
+            Some(reset_local) => format!(
+                "{BASE}. The earliest profile resets at {}.",
+                format_reset_timestamp(reset_local, Local::now())
+            ),
+            None => format!("{BASE} or unavailable."),
+        }
     }
 
     fn auth_profile_auto_switch_cooldown_key(

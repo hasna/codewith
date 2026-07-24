@@ -1676,6 +1676,114 @@ async fn exhausted_limit_auto_switches_to_profile_with_most_fresh_usage() {
 }
 
 #[tokio::test]
+async fn all_alternate_profiles_exhausted_reports_earliest_reset_without_switching() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    save_test_auth_profile(&chat, "backup");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles = vec![
+        "work".to_string(),
+        "personal".to_string(),
+        "backup".to_string(),
+    ];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // Both alternates are exhausted on the 5h window with distinct resets; `backup` resets
+    // soonest, so its reset must be surfaced.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 5_000,
+        )],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("backup".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 4_000,
+        )],
+    );
+    drain_insert_history(&mut rx);
+
+    chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+        /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 3_000,
+    )));
+
+    // No eligible profile: the agent must not switch onto an also-exhausted profile.
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, AppEvent::SwitchAuthProfile { .. })),
+        "must not switch when every alternate profile is exhausted"
+    );
+
+    // A graceful message is shown, including the soonest reset so the user knows when a
+    // profile becomes usable again.
+    let message = events
+        .into_iter()
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .find(|text| text.contains("every alternate profile is also rate-limited"))
+        .expect("graceful no-eligible-profile message");
+    assert!(
+        message.contains("resets at"),
+        "message should include the earliest reset time, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn no_eligible_profile_message_is_not_repeated_on_every_poll() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // Only alternate profile is exhausted, so no switch is possible.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 5_000,
+        )],
+    );
+    drain_insert_history(&mut rx);
+
+    // Poll the same exhausted window three times, mirroring the rate-limit poller.
+    for _ in 0..3 {
+        chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 3_000,
+        )));
+    }
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let notice_count = events
+        .into_iter()
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .filter(|text| text.contains("every alternate profile is also rate-limited"))
+        .count();
+    assert_eq!(
+        notice_count, 1,
+        "no-eligible-profile notice must be emitted once per exhaustion window, not per poll"
+    );
+}
+
+#[tokio::test]
 async fn ordered_auto_switch_strategy_preserves_configured_order() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     save_test_auth_profile(&chat, "work");
