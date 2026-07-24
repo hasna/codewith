@@ -355,6 +355,61 @@ async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> a
 }
 
 #[tokio::test]
+async fn background_agent_admission_retry_uses_immutable_identity_after_thread_binding()
+-> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let first_params = admission_params("admitted-1", "admission-key", "profile-a");
+    let (first, created) =
+        admit_run(runtime.as_ref(), &first_params, /*max_active_runs*/ 2).await?;
+    assert!(created);
+    let generation = runtime
+        .claim_background_agent_supervisor_compatible(
+            first.id.as_str(),
+            "binding-supervisor",
+            "binding-process-lease",
+            "codewith.background-agent.admission.v1",
+            "codex-state:test",
+        )
+        .await?
+        .expect("admitted run should be claimable");
+    assert!(
+        runtime
+            .bind_background_agent_thread(&BackgroundAgentThreadBindingParams {
+                run_id: first.id.as_str(),
+                supervisor_id: "binding-supervisor",
+                generation,
+                thread_id: "bound-thread".to_string(),
+                thread_store_kind: "thread-store".to_string(),
+                thread_store_id: Some("bound-thread".to_string()),
+                rollout_path: Some("/tmp/bound-rollout.jsonl".to_string()),
+            })
+            .await?
+    );
+
+    let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
+    let (retry, created) =
+        admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
+    assert!(!created);
+    assert_eq!(retry.id, first.id);
+
+    let mut conflicting_params = retry_params;
+    conflicting_params.prompt_snapshot_ref = "inline:different:prompt".to_string();
+    let error = admit_run(
+        runtime.as_ref(),
+        &conflicting_params,
+        /*max_active_runs*/ 2,
+    )
+    .await
+    .expect_err("changed immutable admission identity must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_identity_mismatch")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow::Result<()> {
     let sqlite_home = unique_temp_dir();
     let runtime = StateRuntime::init(sqlite_home.clone(), "test-provider".to_string()).await?;

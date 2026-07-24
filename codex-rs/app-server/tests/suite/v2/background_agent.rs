@@ -3421,10 +3421,10 @@ async fn seed_queued_agent_run(
         "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
     });
     if let SeededAgentExecution::Claimable { cwd } = execution {
-        let payload = execution_payload
-            .as_object_mut()
-            .expect("seeded execution payload should be an object");
-        payload.insert("workspaceRoots".to_string(), json!([cwd.clone()]));
+        let Some(payload) = execution_payload.as_object_mut() else {
+            anyhow::bail!("seeded execution payload should be an object");
+        };
+        payload.insert("workspaceRoots".to_string(), json!([cwd.as_str()]));
         payload.insert("cwd".to_string(), json!(cwd));
         payload.insert("model".to_string(), json!("mock-model"));
         payload.insert("provider".to_string(), json!("mock_provider"));
