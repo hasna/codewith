@@ -99,11 +99,13 @@ impl ChatWidget {
         }
     }
 
-    /// Merge every queued follow-up visible at this keypress into one active-turn steer.
+    /// Merge the queued follow-ups visible at this keypress into one active-turn steer.
     ///
     /// Rejected steers retain dequeue priority, followed by locally queued messages in FIFO
-    /// order. Taking all four deques together preserves their message/history alignment while
-    /// leaving already-submitted pending steers and the live composer draft untouched.
+    /// order, which preserves each queue's message/history alignment. Queued `/slash` and
+    /// `!shell` entries are dispatch actions rather than prose, so the merge stops at the
+    /// first one and leaves it (and everything behind it) queued for the normal drain.
+    /// Already-submitted pending steers and the live composer draft are left untouched.
     pub(super) fn flush_queued_messages(&mut self) {
         let rejected_messages = std::mem::take(&mut self.input_queue.rejected_steers_queue);
         let mut rejected_history_records =
@@ -113,24 +115,26 @@ impl ChatWidget {
             UserMessageHistoryRecord::UserMessageText,
         );
 
-        let queued_messages = std::mem::take(&mut self.input_queue.queued_user_messages);
-        let mut queued_history_records =
-            std::mem::take(&mut self.input_queue.queued_user_message_history_records);
-        queued_history_records.resize(
-            queued_messages.len(),
-            UserMessageHistoryRecord::UserMessageText,
-        );
-
         let mut messages = rejected_messages
             .into_iter()
             .zip(rejected_history_records)
             .collect::<Vec<_>>();
-        messages.extend(
-            queued_messages
-                .into_iter()
-                .zip(queued_history_records)
-                .map(|(message, history_record)| (message.into_user_message(), history_record)),
-        );
+        while self.input_queue.next_queued_message_is_plain() {
+            let Some(queued_message) = self.input_queue.queued_user_messages.pop_front() else {
+                break;
+            };
+            let history_record = self
+                .input_queue
+                .queued_user_message_history_records
+                .pop_front()
+                .unwrap_or(UserMessageHistoryRecord::UserMessageText);
+            messages.push((queued_message.into_user_message(), history_record));
+        }
+
+        if messages.is_empty() {
+            return;
+        }
+
         let (message, history_record) = merge_user_messages_with_history_record(messages);
         self.resubmit_queued_user_message_with_history_record(
             message,

@@ -127,14 +127,16 @@ impl ChatWidget {
         if self.turn_lifecycle.agent_turn_running
             && self.chat_keymap.flush_queued_messages.is_pressed(key_event)
             && self.bottom_pane.no_modal_or_popup_active()
+            && self.input_queue.has_flushable_queued_messages()
         {
-            if key_event.kind == KeyEventKind::Repeat {
-                return;
-            }
-            if key_event.kind == KeyEventKind::Press && self.has_queued_follow_up_messages() {
+            // Swallow auto-repeat and release events for the same chord so holding the
+            // binding cannot append stray newlines to the draft around the flush. When
+            // nothing is flushable the event falls through to the composer, which keeps
+            // the default newline behavior of this binding intact.
+            if key_event.kind == KeyEventKind::Press {
                 self.flush_queued_messages();
-                return;
             }
+            return;
         }
 
         if self.chat_keymap.interrupt_turn.is_pressed(key_event)
