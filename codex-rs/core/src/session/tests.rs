@@ -10445,6 +10445,39 @@ async fn try_start_user_input_turn_if_idle_rejects_plan_mode_update_without_muta
 }
 
 #[tokio::test]
+async fn scheduled_materialization_failure_releases_reservation_without_turn_effect() {
+    let (sess, _tc, mut rx) = make_session_and_context_with_rx().await;
+    let now = chrono::Utc::now();
+    let err = sess
+        .try_start_scheduled_user_input_turn_if_idle(
+            codex_state::ThreadScheduleRunStartParams {
+                schedule_id: "missing-schedule",
+                run_id: "missing-run",
+                lease_id: "missing-lease",
+                turn_id: "scheduled-materialization-failure",
+                goal_id: None,
+                now,
+                lease_duration: std::time::Duration::from_secs(30),
+            },
+            "durable scheduled input".to_string(),
+            vec![UserInput::Text {
+                text: "must not execute".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Default::default(),
+            SessionSettingsUpdate::default(),
+        )
+        .await
+        .expect_err("missing schedule state must fail materialization");
+    assert!(matches!(err, TryStartUserInputTurnIfIdleError::State(_)));
+    assert!(sess.active_turn.lock().await.is_none());
+    assert!(
+        rx.try_recv().is_err(),
+        "blocked scheduled task must not emit lifecycle, turn, or input effects before materialization ack"
+    );
+}
+
+#[tokio::test]
 async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.spawn_task(

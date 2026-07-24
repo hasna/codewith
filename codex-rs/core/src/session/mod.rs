@@ -2042,6 +2042,46 @@ impl Session {
         }
     }
 
+    pub(crate) async fn send_event_strict(
+        &self,
+        turn_context: &TurnContext,
+        msg: EventMsg,
+    ) -> anyhow::Result<()> {
+        let legacy_source = msg.clone();
+        let rollout_items = [RolloutItem::EventMsg(msg.clone())];
+        self.persist_rollout_items_strict(&rollout_items).await?;
+        self.services
+            .rollout_thread_trace
+            .record_codex_turn_event(&turn_context.sub_id, &legacy_source);
+        self.services
+            .rollout_thread_trace
+            .record_tool_call_event(turn_context.sub_id.clone(), &legacy_source);
+        self.services
+            .rollout_thread_trace
+            .record_protocol_event(&msg);
+        self.deliver_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg,
+        })
+        .await;
+        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+            .await;
+        self.maybe_mirror_event_text_to_realtime(&legacy_source)
+            .await;
+        self.maybe_clear_realtime_handoff_for_event(&legacy_source)
+            .await;
+
+        let show_raw_agent_reasoning = self.show_raw_agent_reasoning();
+        for legacy in legacy_source.as_legacy_events(show_raw_agent_reasoning) {
+            self.send_event_raw(Event {
+                id: turn_context.sub_id.clone(),
+                msg: legacy,
+            })
+            .await;
+        }
+        Ok(())
+    }
+
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
     async fn maybe_notify_parent_of_terminal_turn(
         &self,
@@ -3393,6 +3433,14 @@ impl Session {
         {
             error!("failed to record rollout items: {e:#}");
         }
+    }
+
+    async fn persist_rollout_items_strict(&self, items: &[RolloutItem]) -> anyhow::Result<()> {
+        let live_thread = self
+            .live_thread()
+            .ok_or_else(|| anyhow::anyhow!("thread store unavailable for durable turn start"))?;
+        live_thread.append_items(items).await?;
+        Ok(())
     }
 
     pub(crate) async fn clone_history(&self) -> ContextManager {

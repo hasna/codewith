@@ -53,6 +53,8 @@ use tokio::sync::watch;
 
 use codex_rollout::state_db::StateDbHandle;
 
+use crate::tasks::TaskStartGateHandle;
+
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
     pub model: String,
@@ -130,6 +132,8 @@ pub enum TryStartUserInputTurnIfIdleError {
     Rejected(TryStartTurnIfIdleRejectionReason),
     /// The requested turn settings were rejected before the turn started.
     InvalidRequest(CodexErr),
+    /// Durable scheduled-turn execution ownership could not be acquired.
+    State(anyhow::Error),
 }
 
 impl TryStartUserInputTurnIfIdleError {
@@ -137,7 +141,7 @@ impl TryStartUserInputTurnIfIdleError {
         match self {
             Self::EmptyInput => None,
             Self::Rejected(reason) => Some(*reason),
-            Self::InvalidRequest(_) => None,
+            Self::InvalidRequest(_) | Self::State(_) => None,
         }
     }
 }
@@ -148,11 +152,42 @@ impl std::fmt::Display for TryStartUserInputTurnIfIdleError {
             Self::EmptyInput => write!(f, "turn input must not be empty"),
             Self::Rejected(reason) => write!(f, "thread is not idle: {reason:?}"),
             Self::InvalidRequest(err) => write!(f, "{err}"),
+            Self::State(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl std::error::Error for TryStartUserInputTurnIfIdleError {}
+
+pub struct ScheduledUserInputTurnStart {
+    run: codex_state::ThreadScheduleRun,
+    start_gate: TaskStartGateHandle,
+}
+
+impl std::fmt::Debug for ScheduledUserInputTurnStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduledUserInputTurnStart")
+            .field("run", &self.run)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScheduledUserInputTurnStart {
+    pub(crate) fn new(
+        run: codex_state::ThreadScheduleRun,
+        start_gate: TaskStartGateHandle,
+    ) -> Self {
+        Self { run, start_gate }
+    }
+
+    pub fn run(&self) -> &codex_state::ThreadScheduleRun {
+        &self.run
+    }
+
+    pub fn release(self) {
+        self.start_gate.release();
+    }
+}
 
 impl ThreadConfigSnapshot {
     pub fn sandbox_policy(&self) -> SandboxPolicy {
@@ -449,6 +484,27 @@ impl CodexThread {
         self.codex
             .session
             .try_start_user_input_turn_if_idle(sub_id, items, additional_context, updates)
+            .await
+    }
+
+    pub async fn try_start_scheduled_user_input_turn_if_idle(
+        &self,
+        materialization: codex_state::ThreadScheduleRunStartParams<'_>,
+        materialized_turn_input: String,
+        items: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        overrides: CodexThreadSettingsOverrides,
+    ) -> Result<ScheduledUserInputTurnStart, TryStartUserInputTurnIfIdleError> {
+        let updates = self.thread_settings_update(overrides).await;
+        self.codex
+            .session
+            .try_start_scheduled_user_input_turn_if_idle(
+                materialization,
+                materialized_turn_input,
+                items,
+                additional_context,
+                updates,
+            )
             .await
     }
 

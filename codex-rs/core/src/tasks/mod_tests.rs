@@ -1,4 +1,6 @@
 use super::TASK_COMPACT_METRIC;
+use super::TaskStartGate;
+use super::TaskStartGateHandle;
 use super::emit_compact_metric;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
@@ -17,6 +19,9 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 fn test_session_telemetry() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
@@ -73,6 +78,26 @@ fn metric_point(resource_metrics: &ResourceMetrics, name: &str) -> (BTreeMap<Str
         },
         _ => panic!("unexpected counter data type"),
     }
+}
+
+#[tokio::test]
+async fn dropped_task_start_gate_abandons_waiter() {
+    let gate = Arc::new(TaskStartGate::default());
+    let handle = TaskStartGateHandle {
+        gate: Arc::clone(&gate),
+        released: false,
+    };
+    let cancellation_token = CancellationToken::new();
+    let waiter = tokio::spawn(async move { gate.wait(&cancellation_token).await });
+
+    drop(handle);
+
+    assert!(
+        !tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("abandoned gate should wake promptly")
+            .expect("gate waiter should not panic")
+    );
 }
 
 #[test]

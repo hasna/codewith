@@ -23,6 +23,11 @@ const MAX_SCHEDULE_RUN_ERROR_CHARS: usize = 1_000;
 const SCHEDULE_IDLE_RETRY_DELAY_SECONDS: i64 = 30;
 const SCHEDULE_LOCAL_ACTIVE_SESSION_STALE_AFTER: Duration = Duration::from_secs(15);
 
+struct ScheduleLeaseHeartbeat {
+    ownership_lost: CancellationToken,
+    stop: CancellationToken,
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadScheduleRuntime {
     auth_manager: Arc<AuthManager>,
@@ -278,22 +283,60 @@ impl ThreadScheduleRuntime {
             let thread_state = thread_state.lock().await;
             thread_state.listener_command_tx()
         };
+        let retrying_dispatched_occurrence = claim.run.materialized_at.is_some();
         let (turn_prompt, scheduled_goal_id) =
             if let Some(objective) = scheduled_goal_objective.as_deref() {
-                let scheduled_goal_id = self
-                    .prepare_scheduled_goal(
-                        thread_id,
-                        &state_db,
-                        objective,
-                        listener_command_tx.clone(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        let goal_id = error
-                            .downcast_ref::<ScheduledGoalHeld>()
-                            .map(|held| held.goal_id.clone());
-                        ScheduleSubmitError { error, goal_id }
-                    })?;
+                if retrying_dispatched_occurrence && claim.run.goal_id.is_none() {
+                    return Err(ScheduleSubmitError {
+                        error: anyhow::anyhow!(
+                            "materialized scheduled goal run {} has no goal id",
+                            claim.run.run_id
+                        ),
+                        goal_id: None,
+                    });
+                }
+                let scheduled_goal_id = if let Some(goal_id) = claim.run.goal_id.clone() {
+                    goal_id
+                } else {
+                    let goal_id = self
+                        .prepare_scheduled_goal(
+                            thread_id,
+                            &state_db,
+                            objective,
+                            listener_command_tx.clone(),
+                        )
+                        .await
+                        .map_err(|error| {
+                            let goal_id = error
+                                .downcast_ref::<ScheduledGoalHeld>()
+                                .map(|held| held.goal_id.clone());
+                            ScheduleSubmitError { error, goal_id }
+                        })?;
+                    let attached = state_db
+                        .thread_schedules()
+                        .attach_thread_schedule_run_goal(
+                            claim.run.schedule_id.as_str(),
+                            claim.run.run_id.as_str(),
+                            claim.run.lease_id.as_str(),
+                            goal_id.as_str(),
+                            Utc::now(),
+                        )
+                        .await
+                        .map_err(|error| ScheduleSubmitError {
+                            error,
+                            goal_id: Some(goal_id.clone()),
+                        })?;
+                    if !attached {
+                        return Err(ScheduleSubmitError {
+                            error: anyhow::anyhow!(
+                                "claimed schedule run {} lost lease ownership before goal binding",
+                                claim.run.run_id
+                            ),
+                            goal_id: Some(goal_id),
+                        });
+                    }
+                    goal_id
+                };
                 (
                     scheduled_goal_thread_prompt(
                         objective,
@@ -318,40 +361,75 @@ impl ThreadScheduleRuntime {
             thread.config_snapshot().await,
             claim_auth_profile,
         );
-        let turn_id = Uuid::now_v7().to_string();
-
-        let run_start = state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: claim.schedule.schedule_id.as_str(),
-                run_id: claim.run.run_id.as_str(),
-                lease_id: claim.run.lease_id.as_str(),
-                turn_id: turn_id.as_str(),
-                goal_id: scheduled_goal_id.as_deref(),
-                now: Utc::now(),
-                lease_duration: SCHEDULE_LEASE_DURATION,
-            })
-            .await;
-        let run = match run_start {
-            Ok(Some(run)) => run,
-            Ok(None) => {
-                return Err(ScheduleSubmitError {
-                    error: anyhow::anyhow!(
-                        "claimed schedule run {} no longer owns the current unexpired lease",
-                        claim.run.run_id
-                    ),
-                    goal_id: scheduled_goal_id,
-                });
-            }
-            Err(error) => {
-                return Err(ScheduleSubmitError {
+        let proposed_turn_id = claim
+            .run
+            .turn_id
+            .clone()
+            .ok_or_else(|| ScheduleSubmitError {
+                error: anyhow::anyhow!(
+                    "claimed schedule occurrence {} has no canonical turn id",
+                    claim.run.occurrence_id
+                ),
+                goal_id: scheduled_goal_id.clone(),
+            })?;
+        if retrying_dispatched_occurrence {
+            let paused = state_db
+                .thread_schedules()
+                .fail_thread_schedule_run_and_pause(
+                    claim.run.schedule_id.as_str(),
+                    claim.run.run_id.as_str(),
+                    claim.run.lease_id.as_str(),
+                    Utc::now(),
+                    "materialized scheduled turn lost owner before terminal evidence; schedule paused to prevent redispatch"
+                        .to_string(),
+                )
+                .await
+                .map_err(|error| ScheduleSubmitError {
                     error,
-                    goal_id: scheduled_goal_id,
-                });
+                    goal_id: scheduled_goal_id.clone(),
+                })?;
+            if paused {
+                let schedule = state_db
+                    .thread_schedules()
+                    .get_thread_schedule(claim.run.schedule_id.as_str())
+                    .await
+                    .map_err(|error| ScheduleSubmitError {
+                        error,
+                        goal_id: scheduled_goal_id.clone(),
+                    })?
+                    .ok_or_else(|| ScheduleSubmitError {
+                        error: anyhow::anyhow!(
+                            "schedule {} disappeared after interrupted materialization",
+                            claim.run.schedule_id
+                        ),
+                        goal_id: scheduled_goal_id.clone(),
+                    })?;
+                let finished_run = state_db
+                    .thread_schedules()
+                    .get_thread_schedule_run(claim.run.run_id.as_str())
+                    .await
+                    .map_err(|error| ScheduleSubmitError {
+                        error,
+                        goal_id: scheduled_goal_id.clone(),
+                    })?
+                    .ok_or_else(|| ScheduleSubmitError {
+                        error: anyhow::anyhow!(
+                            "schedule run {} disappeared after interrupted materialization",
+                            claim.run.run_id
+                        ),
+                        goal_id: scheduled_goal_id.clone(),
+                    })?;
+                self.emit_schedule_updated(thread_id, schedule).await;
+                self.emit_schedule_run_updated(thread_id, finished_run)
+                    .await;
             }
-        };
-        let ownership_lost = match self.start_lease_heartbeat(state_db.clone(), &run).await {
-            Ok(Some(ownership_lost)) => ownership_lost,
+            return Ok(());
+        }
+        let heartbeat = match self
+            .start_lease_heartbeat(state_db.clone(), &claim.run)
+            .await
+        {
+            Ok(Some(heartbeat)) => heartbeat,
             Ok(None) => {
                 return Err(ScheduleSubmitError {
                     error: anyhow::anyhow!(
@@ -371,12 +449,15 @@ impl ThreadScheduleRuntime {
         {
             let mut thread_state = thread_state.lock().await;
             thread_state.track_scheduled_run(
-                turn_id.clone(),
+                proposed_turn_id.clone(),
                 crate::thread_state::ScheduledThreadScheduleRun {
-                    schedule_id: run.schedule_id.clone(),
-                    run_id: run.run_id.clone(),
-                    lease_id: run.lease_id.clone(),
-                    goal_id: run.goal_id.clone(),
+                    schedule_id: claim.run.schedule_id.clone(),
+                    run_id: claim.run.run_id.clone(),
+                    occurrence_id: claim.run.occurrence_id.clone(),
+                    lease_id: claim.run.lease_id.clone(),
+                    turn_id: proposed_turn_id.clone(),
+                    goal_id: scheduled_goal_id.clone(),
+                    heartbeat_stop: Some(heartbeat.stop.clone()),
                     state_db: state_db.clone(),
                 },
             );
@@ -384,15 +465,24 @@ impl ThreadScheduleRuntime {
         let start_result = match submit_scheduled_turn_if_owned(
             &state_db,
             codex_state::ThreadScheduleRunLeaseParams {
-                schedule_id: run.schedule_id.as_str(),
-                run_id: run.run_id.as_str(),
-                lease_id: run.lease_id.as_str(),
+                schedule_id: claim.run.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
                 now: Utc::now(),
                 lease_duration: SCHEDULE_LEASE_DURATION,
             },
-            &ownership_lost,
-            thread.try_start_user_input_turn_if_idle(
-                turn_id.clone(),
+            &heartbeat.ownership_lost,
+            thread.try_start_scheduled_user_input_turn_if_idle(
+                codex_state::ThreadScheduleRunStartParams {
+                    schedule_id: claim.run.schedule_id.as_str(),
+                    run_id: claim.run.run_id.as_str(),
+                    lease_id: claim.run.lease_id.as_str(),
+                    turn_id: proposed_turn_id.as_str(),
+                    goal_id: scheduled_goal_id.as_deref(),
+                    now: Utc::now(),
+                    lease_duration: SCHEDULE_LEASE_DURATION,
+                },
+                turn_prompt.clone(),
                 vec![CoreInputItem::Text {
                     text: turn_prompt,
                     text_elements: Vec::new(),
@@ -405,10 +495,11 @@ impl ThreadScheduleRuntime {
         {
             Ok(Some(start_result)) => start_result,
             Ok(None) => {
+                heartbeat.stop.cancel();
                 thread_state
                     .lock()
                     .await
-                    .take_scheduled_run(turn_id.as_str());
+                    .take_scheduled_run(proposed_turn_id.as_str());
                 return Err(ScheduleSubmitError {
                     error: anyhow::anyhow!(
                         "claimed schedule run {} lost lease ownership before turn submission",
@@ -418,33 +509,40 @@ impl ThreadScheduleRuntime {
                 });
             }
             Err(error) => {
+                heartbeat.stop.cancel();
                 thread_state
                     .lock()
                     .await
-                    .take_scheduled_run(turn_id.as_str());
+                    .take_scheduled_run(proposed_turn_id.as_str());
                 return Err(ScheduleSubmitError {
                     error,
                     goal_id: scheduled_goal_id,
                 });
             }
         };
-        if let Err(err) = start_result {
-            thread_state
-                .lock()
-                .await
-                .take_scheduled_run(turn_id.as_str());
-            if let Some(deferral) = schedule_deferral_for_idle_rejection(&err, Utc::now()) {
+        let start = match start_result {
+            Ok(start) => start,
+            Err(err) => {
+                heartbeat.stop.cancel();
+                thread_state
+                    .lock()
+                    .await
+                    .take_scheduled_run(proposed_turn_id.as_str());
+                if let Some(deferral) = schedule_deferral_for_idle_rejection(&err, Utc::now()) {
+                    return Err(ScheduleSubmitError {
+                        error: anyhow::Error::new(deferral),
+                        goal_id: scheduled_goal_id,
+                    });
+                }
                 return Err(ScheduleSubmitError {
-                    error: anyhow::Error::new(deferral),
+                    error: anyhow::anyhow!("failed to start scheduled prompt: {err}"),
                     goal_id: scheduled_goal_id,
                 });
             }
-            return Err(ScheduleSubmitError {
-                error: anyhow::anyhow!("failed to start scheduled prompt: {err}"),
-                goal_id: scheduled_goal_id,
-            });
-        }
-        self.emit_schedule_run_updated(thread_id, run).await;
+        };
+        self.emit_schedule_run_updated(thread_id, start.run().clone())
+            .await;
+        start.release();
         Ok(())
     }
 
@@ -580,11 +678,12 @@ impl ThreadScheduleRuntime {
         &self,
         state_db: StateDbHandle,
         run: &codex_state::ThreadScheduleRun,
-    ) -> anyhow::Result<Option<CancellationToken>> {
+    ) -> anyhow::Result<Option<ScheduleLeaseHeartbeat>> {
         let schedule_id = run.schedule_id.clone();
         let run_id = run.run_id.clone();
         let lease_id = run.lease_id.clone();
         let ownership_lost = CancellationToken::new();
+        let stop = CancellationToken::new();
         let owns_lease = state_db
             .thread_schedules()
             .extend_thread_schedule_lease(codex_state::ThreadScheduleRunLeaseParams {
@@ -601,6 +700,7 @@ impl ThreadScheduleRuntime {
         }
 
         let cancel_token = self.cancel_token.clone();
+        let heartbeat_stop = stop.clone();
         let heartbeat_ownership_lost = ownership_lost.clone();
         self.tasks.spawn(async move {
             loop {
@@ -609,6 +709,7 @@ impl ThreadScheduleRuntime {
                         heartbeat_ownership_lost.cancel();
                         break;
                     }
+                    _ = heartbeat_stop.cancelled() => break,
                     _ = tokio::time::sleep(SCHEDULE_LEASE_HEARTBEAT_INTERVAL) => {}
                 }
                 match state_db
@@ -638,7 +739,10 @@ impl ThreadScheduleRuntime {
                 }
             }
         });
-        Ok(Some(ownership_lost))
+        Ok(Some(ScheduleLeaseHeartbeat {
+            ownership_lost,
+            stop,
+        }))
     }
 
     async fn load_or_resume_thread(
@@ -727,6 +831,59 @@ impl ThreadScheduleRuntime {
         goal_id: Option<String>,
         error: String,
     ) {
+        let materialized_with_same_lease = match state_db
+            .thread_schedules()
+            .get_thread_schedule_run(&claim.run.run_id)
+            .await
+        {
+            Ok(Some(run)) => run.lease_id == claim.run.lease_id && run.materialized_at.is_some(),
+            Ok(None) => false,
+            Err(err) => {
+                warn!(
+                    schedule_id = %claim.schedule.schedule_id,
+                    "failed to inspect scheduled run materialization after submit error: {err}"
+                );
+                false
+            }
+        };
+        if materialized_with_same_lease {
+            match state_db
+                .thread_schedules()
+                .fail_thread_schedule_run_and_pause(
+                    &claim.schedule.schedule_id,
+                    &claim.run.run_id,
+                    &claim.run.lease_id,
+                    Utc::now(),
+                    error,
+                )
+                .await
+            {
+                Ok(true) => {
+                    if let Ok(Some(schedule)) = state_db
+                        .thread_schedules()
+                        .get_thread_schedule(&claim.schedule.schedule_id)
+                        .await
+                    {
+                        self.emit_schedule_updated(claim.schedule.thread_id, schedule)
+                            .await;
+                    }
+                    if let Ok(Some(run)) = state_db
+                        .thread_schedules()
+                        .get_thread_schedule_run(&claim.run.run_id)
+                        .await
+                    {
+                        self.emit_schedule_run_updated(claim.schedule.thread_id, run)
+                            .await;
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => warn!(
+                    schedule_id = %claim.schedule.schedule_id,
+                    "failed to pause materialized scheduled run after submit error: {err}"
+                ),
+            }
+            return;
+        }
         match finish_scheduled_run_state(
             &state_db,
             &claim.schedule.schedule_id,
@@ -895,12 +1052,7 @@ async fn submit_scheduled_turn_if_owned<T>(
     {
         return Ok(None);
     }
-    tokio::pin!(submit);
-    tokio::select! {
-        biased;
-        _ = ownership_lost.cancelled() => Ok(None),
-        result = &mut submit => Ok(Some(result)),
-    }
+    Ok(Some(submit.await))
 }
 
 fn scheduled_thread_prompt(
@@ -1134,6 +1286,9 @@ pub(super) async fn finish_scheduled_run_after_turn(
     turn_error: Option<codex_app_server_protocol::TurnError>,
     outgoing: &Arc<OutgoingMessageSender>,
 ) {
+    if let Some(stop) = scheduled_run.heartbeat_stop.as_ref() {
+        stop.cancel();
+    }
     let completed_at = Utc::now();
     let error = match (scheduled_turn_finish(event), turn_error) {
         (Some(_), Some(error)) => Some(schedule_turn_error(&error)),
@@ -1141,17 +1296,46 @@ pub(super) async fn finish_scheduled_run_after_turn(
         (Some(ScheduledTurnFinish::Failed(error)), None) => Some(error),
         (None, _) => return,
     };
-    match finish_scheduled_run_state(
+    let first_finish = finish_scheduled_run_state(
         &scheduled_run.state_db,
         scheduled_run.schedule_id.as_str(),
         scheduled_run.run_id.as_str(),
         scheduled_run.lease_id.as_str(),
         scheduled_run.goal_id.as_deref(),
-        error,
+        error.clone(),
         completed_at,
     )
-    .await
-    {
+    .await;
+    let finish = match first_finish {
+        Ok(None) => {
+            let adopted = scheduled_run
+                .state_db
+                .thread_schedules()
+                .get_active_materialized_thread_schedule_run_for_turn(
+                    thread_id,
+                    scheduled_run.turn_id.as_str(),
+                )
+                .await;
+            match adopted {
+                Ok(Some(run)) if run.occurrence_id == scheduled_run.occurrence_id => {
+                    finish_scheduled_run_state(
+                        &scheduled_run.state_db,
+                        run.schedule_id.as_str(),
+                        run.run_id.as_str(),
+                        run.lease_id.as_str(),
+                        run.goal_id.as_deref(),
+                        error,
+                        completed_at,
+                    )
+                    .await
+                }
+                Ok(Some(_)) | Ok(None) => Ok(None),
+                Err(err) => Err(err),
+            }
+        }
+        other => other,
+    };
+    match finish {
         Ok(Some((schedule, run))) => {
             outgoing
                 .send_server_notification(ServerNotification::ThreadScheduleUpdated(
@@ -1186,7 +1370,7 @@ pub(super) async fn recover_scheduled_run_for_terminal_turn(
 ) -> anyhow::Result<Option<crate::thread_state::ScheduledThreadScheduleRun>> {
     let Some(run) = state_db
         .thread_schedules()
-        .get_running_thread_schedule_run_for_turn(thread_id, turn_id)
+        .get_active_materialized_thread_schedule_run_for_turn(thread_id, turn_id)
         .await?
     else {
         return Ok(None);
@@ -1194,8 +1378,11 @@ pub(super) async fn recover_scheduled_run_for_terminal_turn(
     Ok(Some(crate::thread_state::ScheduledThreadScheduleRun {
         schedule_id: run.schedule_id,
         run_id: run.run_id,
+        occurrence_id: run.occurrence_id,
         lease_id: run.lease_id,
+        turn_id: turn_id.to_string(),
         goal_id: run.goal_id,
+        heartbeat_stop: None,
         state_db: state_db.clone(),
     }))
 }
@@ -1306,7 +1493,9 @@ fn schedule_deferral_for_idle_rejection(
         codex_core::TryStartTurnIfIdleRejectionReason::PendingTriggerTurn => {
             "scheduled thread has pending mailbox trigger-turn work".to_string()
         }
-        codex_core::TryStartTurnIfIdleRejectionReason::PlanMode => return None,
+        codex_core::TryStartTurnIfIdleRejectionReason::PlanMode => {
+            "scheduled thread is in plan mode".to_string()
+        }
     };
     Some(ScheduleRunDeferral {
         retry_at: now + ChronoDuration::seconds(SCHEDULE_IDLE_RETRY_DELAY_SECONDS),
@@ -2724,7 +2913,10 @@ mod tests {
             )
         );
         assert_eq!(
-            None,
+            Some(ScheduleRunDeferral {
+                retry_at: at(/*seconds*/ 1_700_000_030),
+                error: "scheduled thread is in plan mode".to_string(),
+            }),
             schedule_deferral_for_idle_rejection(
                 &codex_core::TryStartUserInputTurnIfIdleError::Rejected(
                     codex_core::TryStartTurnIfIdleRejectionReason::PlanMode,
@@ -2808,7 +3000,6 @@ mod tests {
         assert_eq!(
             codex_state::ThreadScheduleRun {
                 status: codex_state::ThreadScheduleRunStatus::Deferred,
-                turn_id: None,
                 error: Some(deferral.error),
                 completed_at: Some(completed_at),
                 ..claim.run
@@ -2901,7 +3092,6 @@ mod tests {
         assert_eq!(
             codex_state::ThreadScheduleRun {
                 status: codex_state::ThreadScheduleRunStatus::Deferred,
-                turn_id: None,
                 error: Some(wait.to_string()),
                 completed_at: Some(completed_at),
                 ..claim.run
@@ -2976,7 +3166,7 @@ mod tests {
             .await
             .expect("retry claim should succeed")
             .expect("retry should claim deferred schedule");
-        assert_eq!(Some(wait.retry_at), retry_claim.run.scheduled_for);
+        assert_eq!(first_claim.run.scheduled_for, retry_claim.run.scheduled_for);
         let completed_at = wait.retry_at + chrono::Duration::seconds(5);
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
@@ -3247,13 +3437,18 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
+        let canonical_turn_id = claim
+            .run
+            .turn_id
+            .clone()
+            .expect("claim should persist a canonical turn id");
         state_db
             .thread_schedules()
             .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
                 schedule_id: schedule.schedule_id.as_str(),
                 run_id: claim.run.run_id.as_str(),
                 lease_id: claim.run.lease_id.as_str(),
-                turn_id: "turn-after-restart",
+                turn_id: canonical_turn_id.as_str(),
                 goal_id: Some(goal.goal_id.as_str()),
                 now: scheduled_for,
                 lease_duration: Duration::from_secs(300),
@@ -3270,7 +3465,7 @@ mod tests {
         .await
         .expect("state db should reopen");
         let recovered =
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart")
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, &canonical_turn_id)
                 .await
                 .expect("run recovery should succeed")
                 .expect("running schedule should recover after restart");
@@ -3299,7 +3494,7 @@ mod tests {
         );
         assert_eq!(Some(completed_at), finished.1.completed_at);
         assert!(
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart",)
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, &canonical_turn_id)
                 .await
                 .expect("completed run lookup should succeed")
                 .is_none()
@@ -3328,7 +3523,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_started_run_cannot_submit_after_reaper_replacement() {
+    async fn stale_started_run_cannot_submit_after_occurrence_lease_adoption() {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let state_db = codex_state::StateRuntime::init(
             temp_dir.path().to_path_buf(),
@@ -3374,13 +3569,18 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
+        let canonical_turn_id = claim
+            .run
+            .turn_id
+            .clone()
+            .expect("claim should persist a canonical turn id");
         state_db
             .thread_schedules()
             .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
                 schedule_id: schedule.schedule_id.as_str(),
                 run_id: claim.run.run_id.as_str(),
                 lease_id: claim.run.lease_id.as_str(),
-                turn_id: "turn-suspended",
+                turn_id: canonical_turn_id.as_str(),
                 goal_id: None,
                 now,
                 lease_duration: Duration::from_secs(30),
@@ -3401,7 +3601,17 @@ mod tests {
             .claim_due_thread_schedule(resumed_at, "lease-replacement", Duration::from_secs(30))
             .await
             .expect("expired lease reaper should not error")
-            .expect("expired started run should be replaced");
+            .expect("expired started run should be adopted");
+        assert_eq!(claim.run.run_id, replacement.run.run_id);
+        assert_eq!(Some(canonical_turn_id.clone()), replacement.run.turn_id);
+        let recovered =
+            recover_scheduled_run_for_terminal_turn(&state_db, thread_id, &canonical_turn_id)
+                .await
+                .expect("adopted materialization lookup should succeed")
+                .expect("adopted materialization should remain terminally recoverable");
+        assert_eq!(replacement.run.run_id, recovered.run_id);
+        assert_eq!(replacement.run.lease_id, recovered.lease_id);
+        assert_eq!(replacement.run.occurrence_id, recovered.occurrence_id);
         let submitted = Arc::new(AtomicBool::new(false));
         let submission_observer = Arc::clone(&submitted);
         let ownership_lost = CancellationToken::new();
@@ -3426,7 +3636,7 @@ mod tests {
         assert_eq!(None, submission);
         assert!(!submitted.load(Ordering::SeqCst));
         assert_eq!(
-            codex_state::ThreadScheduleRunStatus::Failed,
+            codex_state::ThreadScheduleRunStatus::Leased,
             state_db
                 .thread_schedules()
                 .get_thread_schedule_run(claim.run.run_id.as_str())
@@ -3447,7 +3657,7 @@ mod tests {
                 schedule_id: schedule.schedule_id.as_str(),
                 run_id: replacement.run.run_id.as_str(),
                 lease_id: replacement.run.lease_id.as_str(),
-                turn_id: "turn-replacement",
+                turn_id: canonical_turn_id.as_str(),
                 goal_id: None,
                 now: replacement_started_at,
                 lease_duration: Duration::from_secs(30),
@@ -3455,6 +3665,16 @@ mod tests {
             .await
             .expect("replacement start should persist")
             .expect("replacement should start");
+        assert_eq!(
+            Some(canonical_turn_id),
+            state_db
+                .thread_schedules()
+                .get_thread_schedule_run(replacement.run.run_id.as_str())
+                .await
+                .expect("replacement run should load")
+                .expect("replacement run should exist")
+                .turn_id
+        );
         ownership_lost.cancel();
         let cancelled_submission_observer = Arc::clone(&submitted);
         let cancelled_submission = submit_scheduled_turn_if_owned(

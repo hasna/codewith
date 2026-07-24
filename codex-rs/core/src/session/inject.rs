@@ -2,6 +2,7 @@ use super::input_queue::TurnInput;
 use super::session::Session;
 use super::session::SessionSettingsUpdate;
 use super::turn_context::TurnContext;
+use crate::codex_thread::ScheduledUserInputTurnStart;
 use crate::codex_thread::TryStartTurnIfIdleError;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::codex_thread::TryStartUserInputTurnIfIdleError;
@@ -11,9 +12,12 @@ use crate::tasks::RegularTask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 impl Session {
     /// Returns the input if there is no active turn to inject into.
@@ -149,6 +153,56 @@ impl Session {
         additional_context: BTreeMap<String, AdditionalContextEntry>,
         updates: SessionSettingsUpdate,
     ) -> Result<String, TryStartUserInputTurnIfIdleError> {
+        self.try_start_user_input_turn_if_idle_inner(
+            sub_id,
+            input,
+            additional_context,
+            updates,
+            None,
+        )
+        .await
+        .map(|outcome| match outcome {
+            UserInputTurnStartOutcome::Started(turn_id) => turn_id,
+            UserInputTurnStartOutcome::Scheduled { .. } => {
+                unreachable!("plain idle turn does not materialize a schedule run")
+            }
+        })
+    }
+
+    pub(crate) async fn try_start_scheduled_user_input_turn_if_idle(
+        self: &Arc<Self>,
+        materialization: codex_state::ThreadScheduleRunStartParams<'_>,
+        materialized_turn_input: String,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        updates: SessionSettingsUpdate,
+    ) -> Result<ScheduledUserInputTurnStart, TryStartUserInputTurnIfIdleError> {
+        self.try_start_user_input_turn_if_idle_inner(
+            materialization.turn_id.to_string(),
+            input,
+            additional_context,
+            updates,
+            Some((materialization, materialized_turn_input)),
+        )
+        .await
+        .map(|outcome| match outcome {
+            UserInputTurnStartOutcome::Scheduled { run, start_gate } => {
+                ScheduledUserInputTurnStart::new(run, start_gate)
+            }
+            UserInputTurnStartOutcome::Started(_) => {
+                unreachable!("scheduled idle turn must materialize its run")
+            }
+        })
+    }
+
+    async fn try_start_user_input_turn_if_idle_inner(
+        self: &Arc<Self>,
+        sub_id: String,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        updates: SessionSettingsUpdate,
+        schedule_materialization: Option<(codex_state::ThreadScheduleRunStartParams<'_>, String)>,
+    ) -> Result<UserInputTurnStartOutcome, TryStartUserInputTurnIfIdleError> {
         if input.is_empty() {
             return Err(TryStartUserInputTurnIfIdleError::EmptyInput);
         }
@@ -208,11 +262,51 @@ impl Session {
             ));
         }
 
+        let materialized_run = match schedule_materialization.as_ref() {
+            Some((materialization, materialized_turn_input)) => {
+                let result = match self.state_db() {
+                    Some(state_db) => {
+                        state_db
+                            .thread_schedules()
+                            .materialize_thread_schedule_run(
+                                materialization.clone(),
+                                Some(materialized_turn_input.as_str()),
+                            )
+                            .await
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "sqlite state db unavailable for scheduled turn materialization"
+                    )),
+                };
+                match result {
+                    Ok(Some(run)) => Some(run),
+                    Ok(None) => {
+                        self.clear_reserved_idle_turn(&turn_state).await;
+                        self.maybe_start_turn_for_pending_work().await;
+                        return Err(TryStartUserInputTurnIfIdleError::State(anyhow::anyhow!(
+                            "scheduled turn no longer owns the current unexpired lease"
+                        )));
+                    }
+                    Err(err) => {
+                        self.clear_reserved_idle_turn(&turn_state).await;
+                        self.maybe_start_turn_for_pending_work().await;
+                        return Err(TryStartUserInputTurnIfIdleError::State(err));
+                    }
+                }
+            }
+            None => None,
+        };
+        let scheduled_turn_materialized = materialized_run.is_some();
         let mut turn_context = match self.new_turn_with_sub_id(sub_id.clone(), updates).await {
             Ok(turn_context) => turn_context,
             Err(err) => {
                 self.clear_reserved_idle_turn(&turn_state).await;
                 self.maybe_start_turn_for_pending_work().await;
+                if scheduled_turn_materialized {
+                    return Err(TryStartUserInputTurnIfIdleError::State(anyhow::anyhow!(
+                        "failed to construct materialized scheduled turn: {err}"
+                    )));
+                }
                 return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(err));
             }
         };
@@ -223,6 +317,11 @@ impl Session {
         if turn_context.collaboration_mode.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
+            if scheduled_turn_materialized {
+                return Err(TryStartUserInputTurnIfIdleError::State(anyhow::anyhow!(
+                    "materialized scheduled turn resolved to plan mode"
+                )));
+            }
             return Err(TryStartUserInputTurnIfIdleError::Rejected(
                 TryStartTurnIfIdleRejectionReason::PlanMode,
             ));
@@ -243,9 +342,52 @@ impl Session {
             content: input,
             client_id: None,
         });
-        self.start_task(turn_context, task_input, RegularTask::new())
+        let Some(materialized_run) = materialized_run else {
+            self.start_task(turn_context, task_input, RegularTask::new())
+                .await;
+            return Ok(UserInputTurnStartOutcome::Started(sub_id));
+        };
+        let Some(start_gate) = self
+            .start_task_blocked(
+                &turn_state,
+                Arc::clone(&turn_context),
+                task_input,
+                RegularTask::with_persisted_turn_started(),
+            )
+            .await
+        else {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            self.maybe_start_turn_for_pending_work().await;
+            return Err(TryStartUserInputTurnIfIdleError::State(anyhow::anyhow!(
+                "materialized scheduled turn lost its exact idle reservation"
+            )));
+        };
+        let turn_started_at_unix_ms = turn_context
+            .turn_timing_state
+            .mark_turn_started(Instant::now())
             .await;
-        Ok(sub_id)
+        turn_context
+            .turn_metadata_state
+            .set_turn_started_at_unix_ms(turn_started_at_unix_ms);
+        let turn_started = EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_context.sub_id.clone(),
+            trace_id: turn_context.trace_id.clone(),
+            started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
+            model_context_window: turn_context.model_context_window(),
+            collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        });
+        if let Err(err) = self
+            .send_event_strict(turn_context.as_ref(), turn_started)
+            .await
+        {
+            self.clear_blocked_task_without_turn_effect(turn_context.sub_id.as_str())
+                .await;
+            return Err(TryStartUserInputTurnIfIdleError::State(err));
+        }
+        Ok(UserInputTurnStartOutcome::Scheduled {
+            run: materialized_run,
+            start_gate,
+        })
     }
 
     async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
@@ -277,4 +419,12 @@ impl Session {
         };
         self.record_conversation_items(turn_context, &items).await;
     }
+}
+
+enum UserInputTurnStartOutcome {
+    Started(String),
+    Scheduled {
+        run: codex_state::ThreadScheduleRun,
+        start_gate: crate::tasks::TaskStartGateHandle,
+    },
 }

@@ -1408,6 +1408,13 @@ INSERT INTO thread_schedule_runs (
         assert_eq!(run.status, crate::ThreadScheduleRunStatus::Running);
         assert_eq!(run.turn_id.as_deref(), Some("turn-1"));
         assert_eq!(run.goal_id, None);
+        let occurrence: (String, i64) = sqlx::query_as(
+            "SELECT occurrence_id, materialized_at_ms FROM thread_schedule_runs WHERE run_id = 'run-1'",
+        )
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("read migrated occurrence identity");
+        assert_eq!(("run-1".to_string(), 60000), occurrence);
 
         drop(runtime);
         let _ = tokio::fs::remove_dir_all(codex_home).await;

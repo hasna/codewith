@@ -26,6 +26,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
@@ -53,8 +54,11 @@ pub(crate) struct PendingThreadResumeRequest {
 pub(crate) struct ScheduledThreadScheduleRun {
     pub(crate) schedule_id: String,
     pub(crate) run_id: String,
+    pub(crate) occurrence_id: String,
     pub(crate) lease_id: String,
+    pub(crate) turn_id: String,
     pub(crate) goal_id: Option<String>,
+    pub(crate) heartbeat_stop: Option<CancellationToken>,
     pub(crate) state_db: StateDbHandle,
 }
 
@@ -152,6 +156,11 @@ impl ThreadState {
     pub(crate) fn clear_listener(&mut self) {
         if let Some(cancel_tx) = self.cancel_tx.take() {
             let _ = cancel_tx.send(());
+        }
+        for scheduled_run in self.scheduled_runs_by_turn_id.drain().map(|(_, run)| run) {
+            if let Some(heartbeat_stop) = scheduled_run.heartbeat_stop {
+                heartbeat_stop.cancel();
+            }
         }
         self.listener_command_tx = None;
         self.current_turn_history.reset();

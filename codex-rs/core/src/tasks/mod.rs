@@ -5,6 +5,8 @@ mod review;
 mod user_shell;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -62,6 +64,54 @@ pub(crate) use user_shell::execute_user_shell_command;
 
 const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
+
+#[derive(Default)]
+struct TaskStartGate {
+    released: AtomicBool,
+    released_notify: Notify,
+    abandoned: CancellationToken,
+}
+
+impl TaskStartGate {
+    async fn wait(&self, cancellation_token: &CancellationToken) -> bool {
+        loop {
+            if self.released.load(Ordering::Acquire) {
+                return true;
+            }
+            let released = self.released_notify.notified();
+            tokio::pin!(released);
+            if self.released.load(Ordering::Acquire) {
+                return true;
+            }
+            tokio::select! {
+                _ = cancellation_token.cancelled() => return false,
+                _ = self.abandoned.cancelled() => return false,
+                _ = &mut released => {}
+            }
+        }
+    }
+}
+
+pub(crate) struct TaskStartGateHandle {
+    gate: Arc<TaskStartGate>,
+    released: bool,
+}
+
+impl TaskStartGateHandle {
+    pub(crate) fn release(mut self) {
+        self.released = true;
+        self.gate.released.store(true, Ordering::Release);
+        self.gate.released_notify.notify_one();
+    }
+}
+
+impl Drop for TaskStartGateHandle {
+    fn drop(&mut self) {
+        if !self.released {
+            self.gate.abandoned.cancel();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
@@ -439,6 +489,183 @@ impl Session {
             };
             turn.task = Some(running_task);
         }
+    }
+
+    pub(crate) async fn start_task_blocked<T: SessionTask>(
+        self: &Arc<Self>,
+        expected_turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+    ) -> Option<TaskStartGateHandle> {
+        let task: Arc<dyn AnySessionTask> = Arc::new(task);
+        let task_kind = task.kind();
+        let span_name = task.span_name();
+        let cancellation_token = CancellationToken::new();
+        let done = Arc::new(Notify::new());
+        let gate = Arc::new(TaskStartGate::default());
+        let turn_extension_data = Arc::clone(&turn_context.extension_data);
+        let session_ctx = Arc::new(SessionTaskContext::new(
+            Arc::clone(self),
+            Arc::clone(&turn_extension_data),
+        ));
+        let ctx = Arc::clone(&turn_context);
+        let task_for_run = Arc::clone(&task);
+        let task_cancellation_token = cancellation_token.child_token();
+        let done_clone = Arc::clone(&done);
+        let gate_for_run = Arc::clone(&gate);
+        let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
+        let task_span = info_span!(
+            "turn",
+            otel.name = span_name,
+            thread.id = %self.thread_id,
+            turn.id = %turn_context.sub_id,
+            model = %turn_context.model_info.slug,
+            codex.turn.reasoning_effort = %reasoning_effort,
+            codex.turn.token_usage.input_tokens = field::Empty,
+            codex.turn.token_usage.cached_input_tokens = field::Empty,
+            codex.turn.token_usage.cache_write_input_tokens = field::Empty,
+            codex.turn.token_usage.non_cached_input_tokens = field::Empty,
+            codex.turn.token_usage.output_tokens = field::Empty,
+            codex.turn.token_usage.reasoning_output_tokens = field::Empty,
+            codex.turn.token_usage.total_tokens = field::Empty,
+        );
+        let handle = tokio::spawn(
+            async move {
+                if !gate_for_run.wait(&task_cancellation_token).await {
+                    session_ctx
+                        .clone_session()
+                        .clear_abandoned_blocked_task_from_within(ctx.sub_id.as_str())
+                        .await;
+                    done_clone.notify_waiters();
+                    return;
+                }
+                let sess = session_ctx.clone_session();
+                let _timer = ctx
+                    .session_telemetry
+                    .start_timer(TURN_E2E_DURATION_METRIC, &[])
+                    .ok();
+                let token_usage_at_turn_start = sess.total_token_usage().await.unwrap_or_default();
+                sess.services
+                    .guardian_rejection_circuit_breaker
+                    .lock()
+                    .await
+                    .clear_turn(&ctx.sub_id);
+                let pending_items = sess.input_queue.get_pending_input(&sess.active_turn).await;
+                let turn_state = {
+                    let active = sess.active_turn.lock().await;
+                    active
+                        .as_ref()
+                        .map(|turn| Arc::clone(&turn.turn_state))
+                        .expect("blocked task remains installed until gate release")
+                };
+                turn_state.lock().await.token_usage_at_turn_start =
+                    token_usage_at_turn_start.clone();
+                sess.input_queue
+                    .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
+                    .await;
+                sess.emit_turn_start_lifecycle(ctx.as_ref(), &token_usage_at_turn_start)
+                    .await;
+
+                let ctx_for_finish = Arc::clone(&ctx);
+                let last_agent_message = task_for_run
+                    .run(
+                        Arc::clone(&session_ctx),
+                        ctx,
+                        input,
+                        task_cancellation_token.child_token(),
+                    )
+                    .await;
+                if let Err(err) = sess.flush_rollout().await {
+                    warn!("failed to flush rollout before completing turn: {err}");
+                    sess.send_event(
+                        ctx_for_finish.as_ref(),
+                        EventMsg::Warning(WarningEvent {
+                            message: format!(
+                                "Failed to save the conversation transcript; Codewith will continue retrying. Error: {err}"
+                            ),
+                        }),
+                    )
+                    .await;
+                }
+                if !task_cancellation_token.is_cancelled() {
+                    sess.on_task_finished(Arc::clone(&ctx_for_finish), last_agent_message)
+                        .await;
+                }
+                done_clone.notify_waiters();
+            }
+            .instrument(task_span),
+        );
+        let running_task = RunningTask {
+            done,
+            handle: AbortOnDropHandle::new(handle),
+            kind: task_kind,
+            task,
+            cancellation_token,
+            turn_context: Arc::clone(&turn_context),
+            turn_extension_data,
+            _timer: None,
+        };
+        let mut active = self.active_turn.lock().await;
+        let Some(turn) = active.as_mut().filter(|turn| {
+            turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, expected_turn_state)
+        }) else {
+            running_task.cancellation_token.cancel();
+            drop(active);
+            drop(running_task);
+            return None;
+        };
+        turn.task = Some(running_task);
+        Some(TaskStartGateHandle {
+            gate,
+            released: false,
+        })
+    }
+
+    async fn clear_abandoned_blocked_task_from_within(&self, turn_id: &str) -> bool {
+        let task = {
+            let mut active = self.active_turn.lock().await;
+            if active
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .is_some_and(|task| task.turn_context.sub_id == turn_id)
+            {
+                active
+                    .take()
+                    .and_then(|mut active_turn| active_turn.task.take())
+            } else {
+                None
+            }
+        };
+        let Some(task) = task else {
+            return false;
+        };
+        task.cancellation_token.cancel();
+        task.handle.detach();
+        true
+    }
+
+    pub(crate) async fn clear_blocked_task_without_turn_effect(&self, turn_id: &str) -> bool {
+        let task = {
+            let mut active = self.active_turn.lock().await;
+            if active
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .is_some_and(|task| task.turn_context.sub_id == turn_id)
+            {
+                active
+                    .take()
+                    .and_then(|mut active_turn| active_turn.task.take())
+            } else {
+                None
+            }
+        };
+        let Some(task) = task else {
+            return false;
+        };
+        task.cancellation_token.cancel();
+        drop(task);
+        true
     }
 
     /// Starts a regular turn when the session is idle and pending work is waiting.

@@ -2843,8 +2843,11 @@ mod tests {
             crate::thread_state::ScheduledThreadScheduleRun {
                 schedule_id: "schedule-1".to_string(),
                 run_id: "run-1".to_string(),
+                occurrence_id: "run-1".to_string(),
                 lease_id: "lease-1".to_string(),
+                turn_id: "turn-1".to_string(),
                 goal_id: None,
+                heartbeat_stop: None,
                 state_db,
             },
         );
