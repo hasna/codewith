@@ -1,0 +1,96 @@
+name: Blacksmith Testbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      testbox_id:
+        description: Blacksmith Testbox session ID
+        required: false
+        default: ""
+        type: string
+      warm_target:
+        description: Pre-build the workspace so testbox shells start with a warm target dir
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  light-checks-testbox:
+    name: codex-rs Testbox
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 60
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+      RUST_MIN_STACK: "8388608"
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # pin: v1
+
+      - uses: useblacksmith/begin-testbox@d0e04585c26905fdd92c94a09c159544c7ee1b67 # pin: v2
+        with:
+          testbox_id: ${{ inputs.testbox_id }}
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: clippy,rustfmt
+
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: just,cargo-nextest
+
+      # Testbox shells are fresh logins: they do NOT inherit this job's env or PATH.
+      # Persist the Rust toolchain + build env so `blacksmith testbox run` works out of the box.
+      - name: Persist toolchain for Testbox shells
+        run: |
+          CARGO_BIN="$(dirname "$(command -v cargo)")"
+          cat > "$HOME/.codewith-testbox-env" <<EOF
+          export PATH="$CARGO_BIN:\$PATH"
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/codex-rs/target"
+          export CARGO_NET_GIT_FETCH_WITH_CLI="true"
+          export CARGO_TERM_COLOR="always"
+          export RUST_MIN_STACK="8388608"
+          EOF
+          for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+            grep -q 'codewith-testbox-env' "$rc" 2>/dev/null || \
+              printf '\n. "$HOME/.codewith-testbox-env"\n' >> "$rc"
+          done
+          sudo ln -sf "$CARGO_BIN/cargo" /usr/local/bin/cargo
+          sudo ln -sf "$CARGO_BIN/rustc" /usr/local/bin/rustc
+          sudo ln -sf "$(command -v just)" /usr/local/bin/just
+          sudo ln -sf "$(command -v cargo-nextest)" /usr/local/bin/cargo-nextest
+
+      - name: Prime toolchain
+        run: |
+          . "$HOME/.codewith-testbox-env"
+          rustc --version
+          cargo --version
+          just --version
+          cargo nextest --version
+
+      # Fetch deps (and optionally pre-build) so an interactive testbox is immediately usable
+      # instead of spending the first 10+ minutes cold-compiling the workspace.
+      - name: Warm cargo registry
+        run: |
+          . "$HOME/.codewith-testbox-env"
+          cargo fetch --manifest-path codex-rs/Cargo.toml --locked
+
+      - name: Warm target dir
+        if: ${{ inputs.warm_target }}
+        run: |
+          . "$HOME/.codewith-testbox-env"
+          cargo check --manifest-path codex-rs/Cargo.toml --workspace --all-targets
+
+      # Must be the LAST step: hands the box over and holds it open for
+      # `blacksmith testbox run --id <id> "<cmd>"`.
+      - uses: useblacksmith/run-testbox@5ca05834db1d3813554d1dd109e5f2087a8d7cbc # pin: v2
