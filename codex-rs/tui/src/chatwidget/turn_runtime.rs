@@ -443,6 +443,12 @@ impl ChatWidget {
             }
         });
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
+        if matches!(error_kind, RateLimitErrorKind::UsageLimit) {
+            // Remember the server's own description of this block: the reset-unavailable
+            // fallback runs later, off an async reset-check response that carries no error
+            // text, and needs the advertised reset instant to identify the exhausted window.
+            self.last_usage_limit_error_message = Some(message.clone());
+        }
 
         let should_retry = matches!(error_kind, RateLimitErrorKind::UsageLimit)
             && matches!(
