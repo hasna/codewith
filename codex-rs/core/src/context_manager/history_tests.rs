@@ -122,6 +122,10 @@ fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
         thread_id: None,
         turn_id: Some("reference-turn".to_string()),
+        session_id: None,
+        profile_id: None,
+        tmux_session: None,
+        tmux_window: None,
         cwd: PathBuf::from("/tmp/reference-cwd"),
         workspace_roots: None,
         current_date: Some("2026-03-23".to_string()),

@@ -70,6 +70,15 @@ pub enum Multiplexer {
     },
 }
 
+/// Live tmux names associated with the pane running Codewith.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TmuxEnvironment {
+    /// Current tmux session name.
+    pub session: String,
+    /// Current tmux window name.
+    pub window: String,
+}
+
 /// tmux client terminal identification captured via `tmux display-message`.
 ///
 /// `termtype` corresponds to `#{client_termtype}` and typically reflects the
@@ -284,6 +293,19 @@ pub fn terminal_info() -> TerminalInfo {
         .clone()
 }
 
+/// Returns the current pane's tmux session and window names.
+///
+/// The lookup targets the stable `TMUX_PANE` id so names are resolved live on
+/// every call and follow tmux renames. Missing environment, command failures,
+/// and malformed output all return `None`.
+pub fn tmux_environment() -> Option<TmuxEnvironment> {
+    let pane = std::env::var("TMUX_PANE")
+        .ok()
+        .and_then(none_if_whitespace)?;
+    let output = run_tmux_display_message(tmux_environment_display_args(&pane))?;
+    parse_tmux_environment(&output)
+}
+
 /// Detects structured terminal metadata from an injectable environment.
 ///
 /// Detection order favors explicit identifiers before falling back to capability strings:
@@ -458,17 +480,39 @@ fn tmux_client_info() -> TmuxClientInfo {
 }
 
 fn tmux_display_message(format: &str) -> Option<String> {
+    let value = run_tmux_display_message(["display-message", "-p", format])?;
+    none_if_whitespace(value.trim().to_string())
+}
+
+const TMUX_ENVIRONMENT_SEPARATOR: char = '\u{1f}';
+const TMUX_ENVIRONMENT_FORMAT: &str = "#{session_name}\u{1f}#{window_name}";
+
+fn tmux_environment_display_args(pane: &str) -> [&str; 5] {
+    ["display-message", "-p", "-t", pane, TMUX_ENVIRONMENT_FORMAT]
+}
+
+fn run_tmux_display_message<const N: usize>(args: [&str; N]) -> Option<String> {
     let output = std::process::Command::new("tmux")
-        .args(["display-message", "-p", format])
+        .args(args)
         .output()
         .ok()?;
-
     if !output.status.success() {
         return None;
     }
 
     let value = String::from_utf8(output.stdout).ok()?;
-    none_if_whitespace(value.trim().to_string())
+    none_if_whitespace(value.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn parse_tmux_environment(value: &str) -> Option<TmuxEnvironment> {
+    let (session, window) = value.split_once(TMUX_ENVIRONMENT_SEPARATOR)?;
+    if window.contains(TMUX_ENVIRONMENT_SEPARATOR) {
+        return None;
+    }
+    Some(TmuxEnvironment {
+        session: none_if_whitespace(session.to_string())?,
+        window: none_if_whitespace(window.to_string())?,
+    })
 }
 
 fn zellij_version_from_command() -> Option<String> {
