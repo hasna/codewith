@@ -27,6 +27,12 @@ pub(crate) struct PendingInputPreview {
     /// Key combination rendered in the hint line.  Defaults to Alt+Up but may
     /// be overridden for terminals where that chord is unavailable.
     edit_binding: Option<key_hint::KeyBinding>,
+    /// Key combination rendered for merging every queued follow-up into the active turn.
+    /// Supplied by the resolved runtime keymap so a remapped binding is displayed.
+    flush_binding: Option<key_hint::KeyBinding>,
+    /// Whether a flush would actually do something right now. The flush only applies to a
+    /// running turn whose queue head is mergeable, so the hint stays hidden otherwise.
+    flush_available: bool,
     /// Key combination rendered for immediately interrupting and sending steers.
     interrupt_binding: Option<key_hint::KeyBinding>,
 }
@@ -40,6 +46,8 @@ impl PendingInputPreview {
             rejected_steers: Vec::new(),
             queued_messages: Vec::new(),
             edit_binding: Some(key_hint::alt(KeyCode::Up)),
+            flush_binding: None,
+            flush_available: false,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc)),
         }
     }
@@ -49,6 +57,14 @@ impl PendingInputPreview {
     /// corresponding key event handler.
     pub(crate) fn set_edit_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
         self.edit_binding = binding;
+    }
+
+    pub(crate) fn set_flush_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
+        self.flush_binding = binding;
+    }
+
+    pub(crate) fn set_flush_available(&mut self, available: bool) {
+        self.flush_available = available;
     }
 
     pub(crate) fn set_interrupt_binding(&mut self, binding: Option<key_hint::KeyBinding>) {
@@ -149,6 +165,19 @@ impl PendingInputPreview {
                     Line::from("    …".dim().italic()),
                 );
             }
+        }
+
+        if self.flush_available
+            && let Some(flush_binding) = self.flush_binding
+        {
+            lines.push(
+                Line::from(vec![
+                    "    ".into(),
+                    flush_binding.into(),
+                    " submit all now".into(),
+                ])
+                .dim(),
+            );
         }
 
         if !self.queued_messages.is_empty()
@@ -345,6 +374,39 @@ mod tests {
         assert_snapshot!(
             "render_one_pending_steer_with_remapped_interrupt_binding",
             format!("{buf:?}")
+        );
+    }
+
+    #[test]
+    fn render_queued_message_with_remapped_flush_binding() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_messages.push("Please continue.".to_string());
+        queue.set_flush_binding(Some(key_hint::plain(KeyCode::F(12))));
+        queue.set_flush_available(true);
+        let width = 48;
+        let height = queue.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        queue.render(Rect::new(0, 0, width, height), &mut buf);
+        assert_snapshot!(
+            "render_queued_message_with_remapped_flush_binding",
+            format!("{buf:?}")
+        );
+    }
+
+    #[test]
+    fn flush_hint_is_hidden_when_flush_is_unavailable() {
+        let mut queue = PendingInputPreview::new();
+        queue.queued_messages.push("Please continue.".to_string());
+        queue.set_flush_binding(Some(key_hint::shift(KeyCode::Enter)));
+        let width = 48;
+        let without_hint = queue.desired_height(width);
+
+        queue.set_flush_available(true);
+
+        assert_eq!(
+            queue.desired_height(width),
+            without_hint + 1,
+            "the flush hint should only add a row once a flush would do something"
         );
     }
 

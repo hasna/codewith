@@ -473,6 +473,13 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Update the key hint for merging every queued follow-up into the active turn so it
+    /// matches the binding that `ChatWidget` actually listens for.
+    pub(crate) fn set_queued_message_flush_binding(&mut self, binding: Option<KeyBinding>) {
+        self.pending_input_preview.set_flush_binding(binding);
+        self.request_redraw();
+    }
+
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
         self.composer.set_vim_enabled(enabled);
         self.request_redraw();
@@ -858,6 +865,14 @@ impl BottomPane {
         self.composer.draft_snapshot()
     }
 
+    pub(crate) fn restore_composer_draft_snapshot(
+        &mut self,
+        snapshot: chat_composer::ComposerDraftSnapshot,
+    ) {
+        self.composer.restore_draft_snapshot(snapshot);
+        self.request_redraw();
+    }
+
     #[cfg(test)]
     pub(crate) fn composer_text_elements(&self) -> Vec<TextElement> {
         self.composer.text_elements()
@@ -1212,10 +1227,13 @@ impl BottomPane {
         queued: Vec<String>,
         pending_steers: Vec<String>,
         rejected_steers: Vec<String>,
+        flush_available: bool,
     ) {
         self.pending_input_preview.pending_steers = pending_steers;
         self.pending_input_preview.rejected_steers = rejected_steers;
         self.pending_input_preview.queued_messages = queued;
+        self.pending_input_preview
+            .set_flush_available(flush_available);
         self.request_redraw();
     }
 
@@ -2422,6 +2440,7 @@ mod tests {
             vec!["Queued follow-up question".to_string()],
             Vec::new(),
             Vec::new(),
+            /*flush_available*/ false,
         );
 
         let width = 48;
@@ -2453,6 +2472,7 @@ mod tests {
             vec!["Queued follow-up question".to_string()],
             Vec::new(),
             Vec::new(),
+            /*flush_available*/ false,
         );
         pane.hide_status_indicator();
 
@@ -2485,6 +2505,7 @@ mod tests {
             vec!["Queued follow-up question".to_string()],
             Vec::new(),
             Vec::new(),
+            /*flush_available*/ false,
         );
 
         let width = 48;
