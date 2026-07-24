@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::encode_background_agent_opaque_identity;
+use crate::runtime::background_agents::ExistingBackgroundAgentAdmissionIdentity;
 use crate::runtime::background_agents::append_background_agent_event_in_tx;
 use crate::runtime::background_agents::background_agent_admission_identity_sha256;
 use crate::runtime::background_agents::count_live_or_recoverable_background_agent_runs_in_tx;
@@ -1174,10 +1175,16 @@ async fn create_background_branch_run_if_missing_in_tx(
         &start_event_payload,
         &execution_snapshot_params,
     )?;
-    let created =
-        validate_existing_background_agent_admission_in_tx(tx, idempotency_key, &run_params)
-            .await?
-            .is_none();
+    let created = validate_existing_background_agent_admission_in_tx(
+        tx,
+        idempotency_key,
+        &run_params,
+        ExistingBackgroundAgentAdmissionIdentity::AdmissionDigest(
+            admission_identity_sha256.as_str(),
+        ),
+    )
+    .await?
+    .is_none();
     if created {
         insert_background_agent_run_in_tx(tx, &run_params, now).await?;
     }

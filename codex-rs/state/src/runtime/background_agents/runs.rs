@@ -27,6 +27,11 @@ struct BackgroundAgentDeleteState {
     status_reason: Option<String>,
 }
 
+pub(in crate::runtime) enum ExistingBackgroundAgentAdmissionIdentity<'a> {
+    RunFields,
+    AdmissionDigest(&'a str),
+}
+
 impl StateRuntime {
     /// Returns a stable digest for opaque background-agent admission identity.
     pub fn background_agent_identity_sha256(bytes: &[u8]) -> String {
@@ -65,9 +70,15 @@ impl StateRuntime {
         )?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some(idempotency_key) = idempotency_key
-            && let Some(existing_id) =
-                validate_existing_background_agent_admission_in_tx(&mut tx, idempotency_key, params)
-                    .await?
+            && let Some(existing_id) = validate_existing_background_agent_admission_in_tx(
+                &mut tx,
+                idempotency_key,
+                params,
+                ExistingBackgroundAgentAdmissionIdentity::AdmissionDigest(
+                    admission_identity_sha256.as_str(),
+                ),
+            )
+            .await?
         {
             let (event, execution_snapshot_id) =
                 recover_or_validate_background_agent_initial_state_in_tx(
@@ -159,9 +170,13 @@ WHERE id = ?
         let idempotency_key = params.idempotency_key.as_deref();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some(idempotency_key) = idempotency_key
-            && let Some(existing_id) =
-                validate_existing_background_agent_admission_in_tx(&mut tx, idempotency_key, params)
-                    .await?
+            && let Some(existing_id) = validate_existing_background_agent_admission_in_tx(
+                &mut tx,
+                idempotency_key,
+                params,
+                ExistingBackgroundAgentAdmissionIdentity::RunFields,
+            )
+            .await?
         {
             tx.commit().await?;
             let existing = self
@@ -2452,6 +2467,7 @@ pub(in crate::runtime) async fn validate_existing_background_agent_admission_in_
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     idempotency_key: &str,
     params: &BackgroundAgentRunCreateParams,
+    identity: ExistingBackgroundAgentAdmissionIdentity<'_>,
 ) -> anyhow::Result<Option<String>> {
     let existing = sqlx::query_as::<
         _,
@@ -2463,6 +2479,7 @@ pub(in crate::runtime) async fn validate_existing_background_agent_admission_in_
             Option<String>,
             Option<String>,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -2489,7 +2506,8 @@ SELECT
     spawn_linkage_json,
     auth_profile_ref,
     config_fingerprint,
-    version_fingerprint
+    version_fingerprint,
+    admission_identity_sha256
 FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
@@ -2513,10 +2531,24 @@ WHERE idempotency_key = ?
         auth_profile_ref,
         config_fingerprint,
         version_fingerprint,
+        admission_identity_sha256,
     )) = existing
     else {
         return Ok(None);
     };
+    if let (
+        ExistingBackgroundAgentAdmissionIdentity::AdmissionDigest(requested_identity),
+        Some(stored_identity),
+    ) = (identity, admission_identity_sha256.as_deref())
+    {
+        if stored_identity != requested_identity {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \
+                 idempotency key is already bound to different prompt or execution context"
+            );
+        }
+        return Ok(Some(existing_id));
+    }
     let requested_spawn_linkage_json = params
         .spawn_linkage_json
         .as_ref()
