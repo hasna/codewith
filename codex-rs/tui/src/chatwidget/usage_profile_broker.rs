@@ -60,15 +60,31 @@ pub(super) fn earliest_exhausted_reset_at(
     )
 }
 
-pub(super) fn auto_switch_trigger_key(
-    limit_id: &str,
-    window: &UsageProfileAutoSwitchWindow,
-) -> String {
-    let resets_at = window
+/// The exhaustion event an auto-switch is reacting to.
+pub(super) struct AutoSwitchTrigger<'a> {
+    pub(super) limit_id: &'a str,
+    pub(super) window: &'a UsageProfileAutoSwitchWindow,
+    /// Disambiguates triggers whose `limit_id`, label, and reset instant are identical but
+    /// which describe *different* exhaustions. Required whenever the reset instant may be
+    /// unknown — it renders as the literal `unknown`, so without a scope every such trigger
+    /// collapses onto one key and only the first one ever switches. Callers pass the
+    /// exhausted profile plus a monotonic counter here.
+    pub(super) scope: Option<&'a str>,
+}
+
+/// Identity of a single exhaustion event, used to avoid re-firing the same auto-switch.
+pub(super) fn auto_switch_trigger_key(trigger: &AutoSwitchTrigger<'_>) -> String {
+    let resets_at = trigger
+        .window
         .resets_at
         .map(|reset| reset.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    format!("{limit_id}:{}:{resets_at}", window.label)
+    let limit_id = trigger.limit_id;
+    let label = &trigger.window.label;
+    match trigger.scope {
+        Some(scope) => format!("{limit_id}:{label}:{resets_at}:{scope}"),
+        None => format!("{limit_id}:{label}:{resets_at}"),
+    }
 }
 
 pub(super) fn auth_profile_auto_switch_target(
@@ -80,8 +96,7 @@ pub(super) fn auth_profile_auto_switch_target(
         BTreeMap<String, RateLimitSnapshotDisplay>,
     >,
     recently_failed_profiles: &HashSet<String>,
-    limit_id: &str,
-    window: &UsageProfileAutoSwitchWindow,
+    trigger: &AutoSwitchTrigger<'_>,
 ) -> Option<UsageProfileSwitchTarget> {
     let ordered = ordered_auth_profiles_for_auto_switch(&config.profiles, saved_profiles);
     let candidates = auth_profile_auto_switch_candidates(selected_auth_profile, &ordered);
@@ -92,12 +107,12 @@ pub(super) fn auth_profile_auto_switch_target(
             cached_snapshots_by_profile,
             recently_failed_profiles,
             &candidates,
-            window,
+            trigger.window,
         ),
     }?;
     Some(UsageProfileSwitchTarget {
         profile,
-        trigger_key: auto_switch_trigger_key(limit_id, window),
+        trigger_key: auto_switch_trigger_key(trigger),
     })
 }
 

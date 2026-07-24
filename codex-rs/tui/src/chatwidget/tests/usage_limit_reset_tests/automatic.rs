@@ -527,3 +527,66 @@ async fn verified_reset_resumes_failed_turn_exactly_once() {
         "failed turn must resume only once"
     );
 }
+
+#[tokio::test]
+async fn reset_unavailable_fallback_replays_the_turn_error_to_identify_the_exhausted_window() {
+    // Regression: the reset-unavailable fallback passed `error_message: None`, so the
+    // synthetic auto-switch it drives could never see the reset instant the server
+    // advertised — every switch from this call site was mislabelled and its trigger key
+    // always carried an `unknown` reset. The fallback runs asynchronously, off the
+    // reset-check response, so the error text that failed the turn has to be replayed.
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    super::super::status_and_layout::save_test_auth_profile(&chat, "work");
+    super::super::status_and_layout::save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.on_5h_limit = true;
+    chat.config.auth_profile_auto_switch.on_weekly_limit = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    super::status_and_layout::configure_test_session(&mut chat);
+    set_canonical_reset_provider(&mut chat);
+    chat.config.usage_limit.auto_reset_enabled = true;
+    chat.config.usage_self_heal.enabled = true;
+    chat.config.usage_self_heal.max_retries = 2;
+
+    chat.submit_user_message(UserMessage::from("recover this failed turn"));
+    assert!(matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. }));
+    chat.on_task_started();
+    // No cached exhausted snapshot: the blocking window is only knowable from the error.
+    let reset_at = chrono::Local::now() + chrono::Duration::hours(3);
+    chat.on_rate_limit_error(
+        RateLimitErrorKind::UsageLimit,
+        format!(
+            "You've hit your usage limit. Try again at {}.",
+            reset_at.format("%b %d, %Y %I:%M %p")
+        ),
+    );
+    // The auto-reset check owns the failed turn first, so nothing has switched yet.
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::SwitchAuthProfile { .. }))
+    );
+
+    // Reset recovery turns out to be unavailable, handing the failed turn to the fallback.
+    chat.finish_usage_limit_auto_reset_check(1, Err("refresh failed".to_string()));
+
+    let switches = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SwitchAuthProfile {
+                profile, reason, ..
+            } => Some((profile, reason)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        switches,
+        vec![(
+            Some("personal".to_string()),
+            crate::app_event::AuthProfileSwitchReason::AutoRateLimit {
+                window: "5h".to_string(),
+            },
+        )],
+        "the fallback must switch using the window the replayed error identifies"
+    );
+}

@@ -204,9 +204,14 @@ impl ChatWidget {
     pub(super) fn fallback_auth_profile_switch_after_reset_unavailable(&mut self) {
         // Reached only after a genuine usage-limit failure whose reset recovery is
         // unavailable, so the current profile is authoritatively exhausted: switch even
-        // when the authoritative read has not yet cached the exhausted window.
+        // when the authoritative read has not yet cached the exhausted window. This runs
+        // asynchronously, long after the turn error itself, so replay the error text that
+        // failed the turn — without it the reset instant is unknown and the exhausted
+        // window cannot be identified.
+        let error_message = self.last_usage_limit_error_message.clone();
         if self.try_auth_profile_switch_for_usage_limit(
-            /*is_usage_limit*/ true, /*error_message*/ None,
+            /*is_usage_limit*/ true,
+            error_message.as_deref(),
         ) {
             return;
         }

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::chatwidget::auth_profile_popups::AUTH_PROFILE_USAGE_HEARTBEAT_FAILURE_BACKOFF;
+use crate::chatwidget::usage_profile_broker::AutoSwitchTrigger;
 use crate::chatwidget::usage_profile_broker::UsageProfileAutoSwitchWindow;
 use crate::chatwidget::usage_profile_broker::auth_profile_auto_switch_target as broker_auth_profile_auto_switch_target;
 use crate::chatwidget::usage_profile_broker::auto_switch_trigger_key;
@@ -16,6 +17,7 @@ use crate::chatwidget::user_messages::QueueInsertionPosition;
 use crate::legacy_core::usage_profile_health::FIVE_HOUR_LIMIT_LABEL;
 use crate::legacy_core::usage_profile_health::UsageProfileCooldownKey;
 use crate::legacy_core::usage_profile_health::WEEKLY_LIMIT_LABEL;
+use crate::legacy_core::usage_profile_health::auth_profile_auto_switch_label_enabled;
 use crate::legacy_core::usage_profile_health::cooldown_duration_for_reset;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_login::list_auth_profiles;
@@ -25,6 +27,21 @@ pub(super) const NUDGE_MODEL_SLUG: &str = "gpt-5.4-mini";
 pub(super) const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
+
+/// Longest reset horizon still attributable to the rolling 5-hour window. The server
+/// advertises the reset of the window that actually blocked the request, and a weekly cap
+/// always resets days out, so anything inside this horizon is the 5h window. The slack
+/// absorbs server-side rounding and clock skew.
+const FIVE_HOUR_RESET_HORIZON_SECS: i64 = 5 * 60 * 60 + 30 * 60;
+
+/// Classify the window that blocked a turn from the reset instant the server advertised.
+fn usage_limit_window_label_for_reset(resets_at: i64, now_unix_secs: i64) -> &'static str {
+    if resets_at.saturating_sub(now_unix_secs) <= FIVE_HOUR_RESET_HORIZON_SECS {
+        FIVE_HOUR_LIMIT_LABEL
+    } else {
+        WEEKLY_LIMIT_LABEL
+    }
+}
 
 #[derive(Default)]
 pub(super) struct RateLimitWarningState {
@@ -440,7 +457,11 @@ impl ChatWidget {
             return;
         }
         let Some((next_profile, trigger_key)) =
-            self.auth_profile_auto_switch_target(limit_id, &window)
+            self.auth_profile_auto_switch_target(&AutoSwitchTrigger {
+                limit_id,
+                window: &window,
+                scope: None,
+            })
         else {
             return;
         };
@@ -482,24 +503,66 @@ impl ChatWidget {
         let Some(window) = self.synthetic_usage_limit_auto_switch_window(error_message) else {
             return false;
         };
+        let trigger_scope = self.synthetic_auto_switch_trigger_scope();
         let Some((next_profile, trigger_key)) =
-            self.auth_profile_auto_switch_target("codex", &window)
+            self.auth_profile_auto_switch_target(&AutoSwitchTrigger {
+                limit_id: "codex",
+                window: &window,
+                scope: Some(trigger_scope.as_str()),
+            })
         else {
             return false;
         };
+        // Every synthetic switch opens a new exhaustion epoch, so the *next* genuine
+        // exhaustion can never collapse onto this trigger key even when its reset instant
+        // is unknown (see `synthetic_auto_switch_trigger_scope`).
+        self.synthetic_auth_profile_auto_switch_epoch = self
+            .synthetic_auth_profile_auto_switch_epoch
+            .saturating_add(1);
         self.send_auth_profile_auto_switch(next_profile, trigger_key, window);
         true
     }
 
-    /// Trigger window used to auto-switch on a genuine usage-limit turn error when no
-    /// authoritative exhausted snapshot has been cached yet.
+    /// Disambiguator appended to a synthetic trigger key so that repeated genuine
+    /// exhaustions stay distinct.
     ///
-    /// Honors the operator's enabled windows: a hard usage-limit block ("try again
-    /// <date>") is the weekly cap in practice, so weekly is preferred when enabled and the
-    /// 5h window is used otherwise. Returns `None` when auto-switch is disabled or both
-    /// windows are opted out, so a disabled window is never switched on. The reset instant
-    /// is parsed from the error text when present, keeping the trigger key distinct per
-    /// exhaustion so repeated genuine failures can cycle across profiles.
+    /// A synthetic trigger has no authoritative snapshot behind it, so its reset instant is
+    /// frequently unknown and renders as the literal `unknown` in the trigger key. Without a
+    /// scope, a second genuine exhaustion produces a byte-identical key, the
+    /// `last_auth_profile_auto_switch_trigger` guard rejects it, and the session is stranded
+    /// on an exhausted profile while untried profiles remain. The exhausted profile plus a
+    /// monotonic per-switch epoch makes each exhaustion its own trigger, while repeats of
+    /// the *same* exhaustion (same profile, no switch emitted in between) still collapse
+    /// onto one key and are deduped.
+    fn synthetic_auto_switch_trigger_scope(&self) -> String {
+        let profile = self
+            .config
+            .selected_auth_profile
+            .as_deref()
+            .unwrap_or("<default>");
+        format!(
+            "synthetic#{}:{profile}",
+            self.synthetic_auth_profile_auto_switch_epoch
+        )
+    }
+
+    /// Trigger window used to auto-switch on a genuine usage-limit turn error when no
+    /// authoritative exhausted snapshot has driven the switch.
+    ///
+    /// The label is derived from the window that actually blocked the turn, never from
+    /// which auto-switch flags happen to be enabled (both default to `true`, so preferring
+    /// weekly would mislabel every 5-hour exhaustion — the common case — and would also
+    /// make `HighestAvailable` rank candidates by weekly headroom instead of 5h headroom).
+    /// In order:
+    /// 1. an authoritative, account-verified exhausted window cached for this profile,
+    /// 2. the reset instant advertised in the error text — a reset inside the rolling
+    ///    5-hour horizon can only be the 5h window, since a weekly cap resets days out,
+    /// 3. otherwise 5h, the overwhelmingly more common exhaustion, falling back to weekly
+    ///    when the operator opted out of 5h switching.
+    ///
+    /// Returns `None` when auto-switch is disabled, when both windows are opted out, or
+    /// when the window that actually blocked the turn is one the operator opted out of, so
+    /// a disabled window is never switched on.
     fn synthetic_usage_limit_auto_switch_window(
         &self,
         error_message: Option<&str>,
@@ -508,20 +571,54 @@ impl ChatWidget {
         if !config.enabled {
             return None;
         }
-        let label = if config.on_weekly_limit {
-            WEEKLY_LIMIT_LABEL
-        } else if config.on_5h_limit {
-            FIVE_HOUR_LIMIT_LABEL
-        } else {
-            return None;
-        };
-        let resets_at = error_message
+        let parsed_resets_at = error_message
             .and_then(parse_usage_limit_reset_timestamp)
             .map(|reset_at| reset_at.timestamp());
+
+        if let Some(observed) = self.authoritative_exhausted_codex_window() {
+            let resets_at = parsed_resets_at.or(observed.resets_at);
+            return auth_profile_auto_switch_label_enabled(&observed.label, config).then_some(
+                UsageProfileAutoSwitchWindow {
+                    label: observed.label,
+                    resets_at,
+                },
+            );
+        }
+
+        let label = match parsed_resets_at {
+            Some(resets_at) => {
+                let label =
+                    usage_limit_window_label_for_reset(resets_at, chrono::Utc::now().timestamp());
+                if !auth_profile_auto_switch_label_enabled(label, config) {
+                    return None;
+                }
+                label
+            }
+            // The blocking window is genuinely unknown: prefer 5h (by far the more common
+            // exhaustion) and only fall back to weekly when 5h switching is opted out.
+            None if config.on_5h_limit => FIVE_HOUR_LIMIT_LABEL,
+            None if config.on_weekly_limit => WEEKLY_LIMIT_LABEL,
+            None => return None,
+        };
         Some(UsageProfileAutoSwitchWindow {
             label: label.to_string(),
-            resets_at,
+            resets_at: parsed_resets_at,
         })
+    }
+
+    /// Exhausted codex window observed by an account-verified `AccountUsage` read for the
+    /// current profile, if one has been cached. Rolling notifications never populate this
+    /// map (see `on_rate_limit_snapshot_from`), so it cannot be poisoned by a sibling
+    /// agent's identity-less snapshot.
+    fn authoritative_exhausted_codex_window(&self) -> Option<UsageProfileAutoSwitchWindow> {
+        self.auth_profile_auto_switch_snapshots_by_limit_id
+            .iter()
+            .find_map(|(limit_id, snapshot)| {
+                exhausted_auto_switch_window_for_snapshot(
+                    snapshot,
+                    limit_id.eq_ignore_ascii_case("codex"),
+                )
+            })
     }
 
     pub(super) fn maybe_auto_switch_auth_profile_before_user_turn(
@@ -551,7 +648,12 @@ impl ChatWidget {
         {
             return false;
         }
-        let trigger_key = auto_switch_trigger_key(&limit_id, &window);
+        let trigger = AutoSwitchTrigger {
+            limit_id: &limit_id,
+            window: &window,
+            scope: None,
+        };
+        let trigger_key = auto_switch_trigger_key(&trigger);
         if self.pending_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
             self.queue_user_message_at_position(
                 user_message,
@@ -561,8 +663,7 @@ impl ChatWidget {
             );
             return true;
         }
-        let Some((next_profile, trigger_key)) =
-            self.auth_profile_auto_switch_target(&limit_id, &window)
+        let Some((next_profile, trigger_key)) = self.auth_profile_auto_switch_target(&trigger)
         else {
             return false;
         };
@@ -626,10 +727,12 @@ impl ChatWidget {
 
     fn auth_profile_auto_switch_target(
         &mut self,
-        limit_id: &str,
-        window: &UsageProfileAutoSwitchWindow,
+        trigger: &AutoSwitchTrigger<'_>,
     ) -> Option<(String, String)> {
-        let trigger_key = auto_switch_trigger_key(limit_id, window);
+        let AutoSwitchTrigger {
+            limit_id, window, ..
+        } = *trigger;
+        let trigger_key = auto_switch_trigger_key(trigger);
         if self.last_auth_profile_auto_switch_trigger.as_deref() == Some(trigger_key.as_str()) {
             return None;
         }
@@ -655,8 +758,7 @@ impl ChatWidget {
             &profiles,
             &self.auth_profile_rate_limit_snapshots_by_profile,
             &recently_failed,
-            limit_id,
-            window,
+            trigger,
         ) {
             self.mark_auth_profile_auto_switch_cooldown(cooldown_key);
             return Some((target.profile, target.trigger_key));

@@ -662,6 +662,13 @@ pub(crate) struct ChatWidget {
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
+    /// Monotonic counter of auto-switches synthesized from a usage-limit *turn error*.
+    /// Included in the synthetic trigger key so a later genuine exhaustion is never
+    /// mistaken for a repeat of the previous one when its reset instant is unknown.
+    synthetic_auth_profile_auto_switch_epoch: u64,
+    /// Text of the most recent usage-limit turn error, so deferred recovery paths (the
+    /// reset-unavailable fallback) can still read the reset instant the server advertised.
+    last_usage_limit_error_message: Option<String>,
     auth_profile_auto_switch_cooldowns:
         BTreeMap<crate::legacy_core::usage_profile_health::UsageProfileCooldownKey, Instant>,
     usage_self_heal: UsageSelfHealState,
