@@ -73,6 +73,9 @@ impl ConfiguredHandler {
             codex_protocol::protocol::HookEventName::SubagentStart => "subagent-start",
             codex_protocol::protocol::HookEventName::SubagentStop => "subagent-stop",
             codex_protocol::protocol::HookEventName::Stop => "stop",
+            codex_protocol::protocol::HookEventName::OnError => "on-error",
+            codex_protocol::protocol::HookEventName::OnSafetyFlag => "on-safety-flag",
+            codex_protocol::protocol::HookEventName::OnNewAgentThread => "on-new-agent-thread",
         }
     }
 }
