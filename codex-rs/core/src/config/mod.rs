@@ -68,6 +68,7 @@ use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UriBasedFileOpener;
 use codex_config::types::UsageLimitToml;
+pub use codex_config::types::UsageSelfHealErrorClass;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginsConfigInput;
@@ -283,6 +284,8 @@ pub struct UsageSelfHealConfig {
     pub max_backoff_secs: u64,
     pub reset_retry_buffer_secs: u64,
     pub max_reset_retry_delay_secs: u64,
+    pub retry_errors: Vec<UsageSelfHealErrorClass>,
+    pub switch_model_errors: Vec<UsageSelfHealErrorClass>,
 }
 
 impl Default for UsageSelfHealConfig {
@@ -294,6 +297,11 @@ impl Default for UsageSelfHealConfig {
             max_backoff_secs: DEFAULT_USAGE_SELF_HEAL_MAX_BACKOFF_SECS,
             reset_retry_buffer_secs: DEFAULT_USAGE_SELF_HEAL_RESET_RETRY_BUFFER_SECS,
             max_reset_retry_delay_secs: DEFAULT_USAGE_SELF_HEAL_MAX_RESET_RETRY_DELAY_SECS,
+            retry_errors: vec![
+                UsageSelfHealErrorClass::UsageLimit,
+                UsageSelfHealErrorClass::ModelCapacity,
+            ],
+            switch_model_errors: Vec::new(),
         }
     }
 }
@@ -706,6 +714,10 @@ fn resolve_usage_self_heal_config(config: Option<UsageSelfHealToml>) -> UsageSel
         max_reset_retry_delay_secs: config
             .max_reset_retry_delay_secs
             .unwrap_or(defaults.max_reset_retry_delay_secs),
+        retry_errors: config.retry_errors.unwrap_or(defaults.retry_errors),
+        switch_model_errors: config
+            .switch_model_errors
+            .unwrap_or(defaults.switch_model_errors),
     }
 }
 

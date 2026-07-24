@@ -1,12 +1,15 @@
 //! Automatic retry scheduling for recoverable usage-limit and availability failures.
 
 use super::*;
+use crate::legacy_core::config::UsageSelfHealErrorClass;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::NaiveDateTime;
 use chrono::NaiveTime;
 use chrono::TimeZone;
 use chrono::Utc;
+use codex_protocol::openai_models::InputModality;
+use codex_protocol::openai_models::ModelPreset;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct UsageSelfHealState {
@@ -14,6 +17,8 @@ pub(super) struct UsageSelfHealState {
     pending_retry: Option<UsageSelfHealPendingRetry>,
     next_retry_id: u64,
     consecutive_retries: u64,
+    attempted_models: HashSet<String>,
+    replaying_retry: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,12 +32,23 @@ struct UsageSelfHealSubmittedTurn {
 struct UsageSelfHealPendingRetry {
     retry_id: u64,
     submitted: UsageSelfHealSubmittedTurn,
+    kind: UsageSelfHealErrorKind,
+    failed_model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum UsageSelfHealErrorKind {
     UsageLimit,
-    TransientAvailability,
+    ModelCapacity,
+}
+
+impl UsageSelfHealErrorKind {
+    fn config_class(self) -> UsageSelfHealErrorClass {
+        match self {
+            Self::UsageLimit => UsageSelfHealErrorClass::UsageLimit,
+            Self::ModelCapacity => UsageSelfHealErrorClass::ModelCapacity,
+        }
+    }
 }
 
 impl ChatWidget {
@@ -42,6 +58,13 @@ impl ChatWidget {
         history_record: &UserMessageHistoryRecord,
         shell_escape_policy: ShellEscapePolicy,
     ) {
+        if self.usage_self_heal.replaying_retry {
+            self.usage_self_heal.replaying_retry = false;
+        } else {
+            self.usage_self_heal.pending_retry = None;
+            self.usage_self_heal.consecutive_retries = 0;
+            self.usage_self_heal.attempted_models.clear();
+        }
         if self.pending_usage_limit_auto_reset_check.is_none()
             && self.pending_rate_limit_reset_consumption.is_none()
             && self.rate_limit_reset_in_flight.is_none()
@@ -61,6 +84,8 @@ impl ChatWidget {
         self.usage_self_heal.last_submitted_turn = None;
         self.usage_self_heal.pending_retry = None;
         self.usage_self_heal.consecutive_retries = 0;
+        self.usage_self_heal.attempted_models.clear();
+        self.usage_self_heal.replaying_retry = false;
     }
 
     pub(super) fn prepare_for_usage_limit_reset(&mut self) {
@@ -96,6 +121,12 @@ impl ChatWidget {
         if !config.enabled || config.max_retries == 0 {
             return None;
         }
+        let error_class = kind.config_class();
+        if !config.retry_errors.contains(&error_class)
+            && !config.switch_model_errors.contains(&error_class)
+        {
+            return None;
+        }
         if kind == UsageSelfHealErrorKind::UsageLimit
             && self.pending_auth_profile_auto_switch_trigger.is_some()
         {
@@ -110,10 +141,14 @@ impl ChatWidget {
             UsageSelfHealErrorKind::UsageLimit => self
                 .usage_self_heal_reset_retry_delay(error_message)
                 .unwrap_or_else(|| self.usage_self_heal_backoff_delay(retry_number)),
-            UsageSelfHealErrorKind::TransientAvailability => {
+            UsageSelfHealErrorKind::ModelCapacity => {
                 self.usage_self_heal_backoff_delay(retry_number)
             }
         };
+        let failed_model = self.current_model().to_string();
+        self.usage_self_heal
+            .attempted_models
+            .insert(failed_model.clone());
 
         self.usage_self_heal.next_retry_id = self.usage_self_heal.next_retry_id.saturating_add(1);
         let retry_id = self.usage_self_heal.next_retry_id;
@@ -121,6 +156,8 @@ impl ChatWidget {
         self.usage_self_heal.pending_retry = Some(UsageSelfHealPendingRetry {
             retry_id,
             submitted,
+            kind,
+            failed_model,
         });
 
         let tx = self.app_event_tx.clone();
@@ -144,6 +181,61 @@ impl ChatWidget {
             return false;
         }
 
+        let error_class = pending.kind.config_class();
+        let should_switch = self
+            .config
+            .usage_self_heal
+            .switch_model_errors
+            .contains(&error_class);
+        let should_retry_current = self
+            .config
+            .usage_self_heal
+            .retry_errors
+            .contains(&error_class);
+        if !should_switch && !should_retry_current {
+            return false;
+        }
+
+        if should_switch && self.current_model() == pending.failed_model {
+            let needs_images = !pending.submitted.user_message.local_images.is_empty()
+                || !pending.submitted.user_message.remote_image_urls.is_empty();
+            let fallback = self
+                .model_catalog
+                .provider_id()
+                .is_none_or(|provider_id| provider_id == self.config.model_provider_id)
+                .then(|| self.model_catalog.try_list_models().ok())
+                .flatten()
+                .and_then(|models| {
+                    select_model_fallback(
+                        models,
+                        self.current_model(),
+                        &self.usage_self_heal.attempted_models,
+                        needs_images,
+                    )
+                });
+            if let Some(fallback) = fallback {
+                let previous_model = self.current_model().to_string();
+                self.usage_self_heal
+                    .attempted_models
+                    .insert(fallback.model.clone());
+                self.set_model(&fallback.model);
+                self.set_reasoning_effort(Some(fallback.default_reasoning_effort));
+                self.add_info_message(
+                    format!(
+                        "Codewith switched from {previous_model} to {} for this session.",
+                        fallback.model
+                    ),
+                    /*hint*/ None,
+                );
+            } else if !should_retry_current {
+                self.add_info_message(
+                    "No compatible fallback model is currently available.".to_string(),
+                    /*hint*/ None,
+                );
+                return false;
+            }
+        }
+
         self.usage_self_heal.last_submitted_turn = Some(pending.submitted.clone());
         self.input_queue.queued_user_messages.push_front(
             QueuedUserMessage::new_with_shell_escape_policy(
@@ -156,7 +248,12 @@ impl ChatWidget {
             .queued_user_message_history_records
             .push_front(pending.submitted.history_record);
         self.refresh_pending_input_preview();
-        self.maybe_send_next_queued_input()
+        self.usage_self_heal.replaying_retry = true;
+        let started = self.maybe_send_next_queued_input();
+        if self.usage_self_heal.replaying_retry {
+            self.usage_self_heal.replaying_retry = false;
+        }
+        started
     }
 
     #[cfg(test)]
@@ -220,6 +317,20 @@ impl ChatWidget {
         let delay_secs = u64::try_from(delay_secs).ok()?;
         (delay_secs <= config.max_reset_retry_delay_secs).then(|| Duration::from_secs(delay_secs))
     }
+}
+
+fn select_model_fallback(
+    models: Vec<ModelPreset>,
+    current_model: &str,
+    attempted_models: &HashSet<String>,
+    needs_images: bool,
+) -> Option<ModelPreset> {
+    models.into_iter().find(|preset| {
+        preset.show_in_picker
+            && preset.model != current_model
+            && !attempted_models.contains(&preset.model)
+            && (!needs_images || preset.input_modalities.contains(&InputModality::Image))
+    })
 }
 
 fn parse_usage_limit_reset_timestamp(message: &str) -> Option<DateTime<Utc>> {

@@ -38,6 +38,8 @@ initial_backoff_secs = 30
 max_backoff_secs = 300
 reset_retry_buffer_secs = 60
 max_reset_retry_delay_secs = 86400
+retry_errors = ["usage_limit", "model_capacity"]
+switch_model_errors = []
 
 # Opt-in keep-going / auto-resume: after a clean turn-end, inject a neutral
 # continuation prompt and start the next turn (bounded, never bypasses approvals).

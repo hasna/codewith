@@ -3500,6 +3500,7 @@ async fn config_popup_snapshot_and_toggle() {
     let popup = render_bottom_popup(&chat, /*width*/ 90);
     assert_chatwidget_snapshot!("config_popup", popup);
     assert!(popup.contains("Account & automation"));
+    assert!(popup.contains("Self-healing"));
     assert!(popup.contains("AI context"));
     assert!(popup.contains("Interface & privacy"));
 
@@ -3542,6 +3543,14 @@ async fn config_popup_snapshot_and_toggle() {
             && value == serde_json::json!(true)
             && label == "Usage limit auto-reset"
     );
+
+    chat.open_config_section_popup(crate::common_config_options::CommonConfigSection::SelfHealing);
+    let self_healing_popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_self_healing_popup", self_healing_popup);
+    assert!(self_healing_popup.contains("Automatic recovery"));
+    assert!(self_healing_popup.contains("Retry usage limits"));
+    assert!(self_healing_popup.contains("Retry model capacity"));
+    assert!(self_healing_popup.contains("Switch model on capacity"));
 
     chat.open_config_section_popup(crate::common_config_options::CommonConfigSection::AiContext);
     let ai_context_popup = render_bottom_popup(&chat, /*width*/ 90);
@@ -4096,7 +4105,73 @@ async fn current_provider_reasoning_selection_sends_provider_and_model() {
 }
 
 #[tokio::test]
-async fn server_overloaded_error_does_not_switch_models() {
+async fn server_overloaded_error_switches_to_a_compatible_model_when_retry_fires() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_model("gpt-5.3-codex");
+    chat.config.usage_self_heal.enabled = true;
+    chat.config.usage_self_heal.initial_backoff_secs = 1;
+    chat.config.usage_self_heal.max_backoff_secs = 1;
+    chat.config.usage_self_heal.switch_model_errors =
+        vec![crate::legacy_core::config::UsageSelfHealErrorClass::ModelCapacity];
+    chat.set_model_catalog(Arc::new(ModelCatalog::new(vec![
+        provider_picker_preset("gpt-5.3-codex", ReasoningEffortConfig::High),
+        provider_picker_preset("gpt-5.4", ReasoningEffortConfig::Medium),
+    ])));
+    chat.record_usage_self_heal_submitted_turn(
+        &UserMessage {
+            text: "retry this".to_string(),
+            local_images: Vec::new(),
+            remote_image_urls: Vec::new(),
+            text_elements: Vec::new(),
+            mention_bindings: Vec::new(),
+        },
+        &UserMessageHistoryRecord::UserMessageText,
+        ShellEscapePolicy::Allow,
+    );
+    while rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+
+    handle_error(
+        &mut chat,
+        "server overloaded",
+        Some(CodexErrorInfo::ServerOverloaded),
+    );
+
+    assert_eq!(chat.current_model(), "gpt-5.3-codex");
+    let retry_id = chat
+        .pending_usage_self_heal_retry_id()
+        .expect("capacity recovery should schedule");
+    assert!(chat.on_usage_self_heal_retry(retry_id));
+    assert_eq!(chat.current_model(), "gpt-5.4");
+    assert_eq!(
+        chat.effective_reasoning_effort(),
+        Some(ReasoningEffortConfig::Medium)
+    );
+    assert!(
+        std::iter::from_fn(|| op_rx.try_recv().ok()).any(|event| matches!(
+            event,
+            Op::UserTurn {
+                model,
+                effort: Some(ReasoningEffortConfig::Medium),
+                ..
+            } if model == "gpt-5.4"
+        ))
+    );
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).all(|event| !matches!(
+            event,
+            AppEvent::PersistModelSelection { .. } | AppEvent::SelectModelProviderModel { .. }
+        )),
+        "automatic recovery must not persist the fallback model"
+    );
+}
+
+/// Model switching on capacity errors is opt-in: with the shipped defaults
+/// (`switch_model_errors = []`) an overloaded server must never move the session
+/// off the selected model.
+#[tokio::test]
+async fn server_overloaded_error_does_not_switch_models_by_default() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.set_model("gpt-5.3-codex");
     while rx.try_recv().is_ok() {}
@@ -4107,6 +4182,8 @@ async fn server_overloaded_error_does_not_switch_models() {
         "server overloaded",
         Some(CodexErrorInfo::ServerOverloaded),
     );
+
+    assert_eq!(chat.current_model(), "gpt-5.3-codex");
 
     while let Ok(event) = rx.try_recv() {
         if let AppEvent::UpdateModel(model) = event {

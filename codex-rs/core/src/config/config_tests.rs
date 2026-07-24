@@ -63,6 +63,7 @@ use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
 use codex_config::types::UsageLimitToml;
+use codex_config::types::UsageSelfHealErrorClass;
 use codex_config::types::UsageSelfHealToml;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
@@ -5554,6 +5555,8 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
                 max_backoff_secs: Some(0),
                 reset_retry_buffer_secs: Some(45),
                 max_reset_retry_delay_secs: Some(600),
+                retry_errors: Some(vec![UsageSelfHealErrorClass::ModelCapacity]),
+                switch_model_errors: Some(vec![UsageSelfHealErrorClass::ModelCapacity]),
             }),
             ..ConfigToml::default()
         },
@@ -5568,6 +5571,14 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
     assert_eq!(config.usage_self_heal.max_backoff_secs, 1);
     assert_eq!(config.usage_self_heal.reset_retry_buffer_secs, 45);
     assert_eq!(config.usage_self_heal.max_reset_retry_delay_secs, 600);
+    assert_eq!(
+        config.usage_self_heal.retry_errors,
+        vec![UsageSelfHealErrorClass::ModelCapacity]
+    );
+    assert_eq!(
+        config.usage_self_heal.switch_model_errors,
+        vec![UsageSelfHealErrorClass::ModelCapacity]
+    );
 
     let enabled_config = Config::load_from_base_config_with_overrides(
         ConfigToml {
@@ -5578,6 +5589,8 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
                 max_backoff_secs: None,
                 reset_retry_buffer_secs: None,
                 max_reset_retry_delay_secs: None,
+                retry_errors: None,
+                switch_model_errors: None,
             }),
             ..ConfigToml::default()
         },
@@ -5587,6 +5600,19 @@ async fn config_resolves_usage_self_heal() -> std::io::Result<()> {
     .await?;
 
     assert!(enabled_config.usage_self_heal.enabled);
+    assert_eq!(
+        enabled_config.usage_self_heal.retry_errors,
+        vec![
+            UsageSelfHealErrorClass::UsageLimit,
+            UsageSelfHealErrorClass::ModelCapacity,
+        ]
+    );
+    assert!(
+        enabled_config
+            .usage_self_heal
+            .switch_model_errors
+            .is_empty()
+    );
 
     Ok(())
 }
