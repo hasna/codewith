@@ -23,6 +23,81 @@ Those legacy records can be linked from a background-agent run for history and
 compatibility, but they are read-only linkage inputs from the background-agent
 system's perspective.
 
+## Admission Contract
+
+Admission is one `BEGIN IMMEDIATE` state transaction. The transaction first
+looks up an idempotency key, validates that it is bound to the same request,
+source, thread linkage, exact auth-profile alias, config fingerprint, and
+admission schema, then either adopts that run or counts live/recoverable rows
+and inserts exactly one new run. Stopped or terminal rows do not consume
+capacity; queued, owned, waiting, stopping, and recoverable orphaned rows do.
+
+The CLI, TUI, app server, persisted run, execution snapshot, and daemon pid
+record use `codewith.background-agent.admission.v1` as the fail-closed schema
+contract. A running daemon is reused only when package version, daemon protocol,
+admission schema, and required capability set all match. That check stays
+fail-closed but recoverable: `agent start` stops and replaces a mismatched
+daemon instead of dead-ending, while read-only daemon status reports the
+mismatch together with the exact remediation command. For the same reason,
+reconciliation fails closed any queued or orphaned run whose persisted admission
+schema or execution-snapshot package fingerprint no longer matches the installed
+binary. Such a run can never be claimed again, so releasing its admission slot
+(with an explicit lifecycle receipt) is what keeps a routine upgrade from
+permanently consuming capacity. An explicitly admitted auth-profile alias must
+match the app-server profile and remains exact during recovery; it is never
+silently replaced by profile auto-switching.
+
+Cross-system execution references remain a projection, not a second task or PR
+lifecycle store. Callers place the authoritative Todos root, PR group, leaf,
+worker-run, writer-generation, and attempt references in `spawn_linkage_json`;
+the Repos-owned lease remains `worktree_lease_id`. Both are reached from every
+lifecycle receipt through its foreign-keyed `runId`. The supervisor
+`generation` is only a local process-fencing counter and must never be
+interpreted as the projected writer generation.
+
+### Persisted-secret Invariant
+
+**No persisted background-agent column may hold a recoverable plaintext
+secret.** The invariant is enforced structurally rather than column by column:
+every caller-supplied string that admission writes to `background_agent_runs`
+is produced by `RedactedBackgroundAgentRunColumns::from_params`, and every
+execution-snapshot column by
+`RedactedBackgroundAgentExecutionSnapshotColumns::from_params`. Both the write
+path and the idempotent-replay comparison read those same projections, so a
+column cannot be protected on write while being compared raw on replay. Each
+column is therefore exactly one of:
+
+- **Digested** — `idempotency_key` is caller-controlled and opaque, so it is
+  stored only as a one-way SHA-256 digest; dedupe, replay, and
+  immutable-identity comparisons all run against that digest, and the plaintext
+  key is never written to or read back from local state. Lifecycle receipt keys
+  and `admission_identity_sha256` are likewise digests. Execution snapshots
+  persist only the auth-profile alias digest, never the alias.
+- **Redacted** — `request_id`, `source`, `prompt_snapshot_ref`,
+  `input_snapshot_ref`, `thread_id`, `thread_store_kind`, `thread_store_id`,
+  `rollout_path`, `parent_thread_id`, `parent_agent_run_id`,
+  `spawn_linkage_json`, `auth_profile_ref`, `status_reason`,
+  `config_fingerprint`, `version_fingerprint`, and the execution-snapshot
+  `snapshot_kind` / `payload_json` / `recovery_policy` / `config_fingerprint`.
+  These all have to survive readable — the worker loads the same auth profile,
+  and the CLI/TUI/app-server surface the refs — so they go through state
+  redaction, which leaves non-secret values byte-identical and replaces only
+  credential-shaped material. Event, receipt, and status-snapshot payloads are
+  redacted as JSON. The thread-binding update redacts the same thread columns.
+- **Provably non-secret** — `id` (runtime-generated identifier and the
+  primary/foreign key joining every background-agent table), the closed enums
+  (`desired_state`, `status`, `retention_state`), supervisor-side process
+  bookkeeping (`supervisor_id`, `generation`, `pid`, `pgid`, `job_id`,
+  `start_token`, `stderr_log_path`, lease ids), and integer timestamps and
+  counters. None of these can carry caller input.
+
+Credential or account payloads do not belong in any reference projection.
+`background_agent_admission_persists_no_plaintext_secret_in_any_column` guards
+the invariant generically: it admits a run whose every caller-supplied string
+carries the same secret-shaped token, then scans every cell of every
+`background_agent*` table for that token, so a newly added raw binding fails
+the suite without anyone having to remember to extend a per-column assertion.
+
 ## Run And Thread Relationship
 
 A background-agent run owns background execution. A thread owns transcript and
@@ -71,15 +146,44 @@ delete requested, or deleted.
 ## Ownership And Liveness
 
 Supervisors claim runs by writing `supervisor_id`, incrementing `generation`, and
-creating a process lease. Worker handles are recorded as `pid`, `pgid`, or
-`job_id` when the execution backend owns an OS process. Heartbeats update the
-claimed generation. Reconciliation may orphan stale non-terminal runs after the
-configured heartbeat timeout, then re-claim only runs whose `desired_state` is
-`running`.
+creating a process lease. A process supervisor must claim before spawning and
+pass that exact supervisor generation to the child; competing hosts therefore
+lose the durable compare-and-swap before creating an OS process. Worker handles
+are recorded as `pid`, `pgid`, or `job_id` when the execution backend owns an OS
+process. Heartbeats update the claimed generation. Reconciliation may orphan
+stale non-terminal runs after the configured heartbeat timeout, then re-claim
+only runs whose `desired_state` is `running`.
 
 The app-server may host a live worker bridge, but app-server client connection
 lifetime is not liveness. Dropping a TUI or CLI connection detaches subscribers
 only; it must not delete the run or imply worker death.
+
+## Lifecycle Receipts And Fencing
+
+Lifecycle receipts live in `background_agent_events`, alongside progress
+events. Each receipt has a unique `(run_id, receipt_key)` identity and records
+the run, generation, attempt, timestamp, and bounded redacted diagnostics.
+Retries return the existing receipt instead of advancing the event cursor.
+Admission, claim/recovery, first heartbeat for a generation, status transitions,
+orphaning, stop, and cancellation all use deterministic receipt keys.
+Terminal receipts therefore replay with the same run projection and attempt
+binding, while receipt insertion and cursor advancement commit in one state
+transaction.
+The receipt `attempt` is optional operation metadata and is never synthesized
+from the supervisor fencing generation. The authoritative cross-system attempt
+remains in immutable admitted `spawn_linkage_json` reached through `runId`.
+
+Initial prompt delivery uses a deterministic client message id derived from the
+run. Recovery scans the append-only rollout for that id (and the exact legacy
+prompt shape), records `agent.initialPromptRecorded` only after durable rollout
+evidence exists, and submits only when that evidence is absent. A crash after
+thread binding or submission can therefore neither drop nor duplicate the
+initial prompt.
+
+Supervisor-owned heartbeat, status, stop, and process-finalization mutations
+compare both `supervisor_id` and `generation`. A stale owner cannot stop or
+complete a reclaimed generation. User-requested stop reloads and retries the
+current generation once if ownership changes while the request is in flight.
 
 ## Attach, Detach, Stop, Delete
 

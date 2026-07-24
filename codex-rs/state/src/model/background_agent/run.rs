@@ -273,6 +273,9 @@ impl TryFrom<BackgroundAgentRunRow> for BackgroundAgentRun {
     fn try_from(value: BackgroundAgentRunRow) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
+            // `idempotency_key` is persisted as a one-way digest and
+            // `auth_profile_ref` is persisted through state redaction; neither
+            // is ever reconstructed back into its original plaintext here.
             idempotency_key: value.idempotency_key,
             request_id: value.request_id,
             source: value.source,

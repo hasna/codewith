@@ -265,6 +265,9 @@ const JSONRPC_INVALID_REQUEST: i64 = -32600;
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
 const MISSION_CONTROL_OVERVIEW_LIMIT: u32 = 50;
 const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
+// The TUI intentionally depends on the wire protocol rather than the server
+// implementation crate; the server validates this explicit contract value.
+const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str = "codewith.background-agent.admission.v1";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
     color_eyre::eyre::eyre!("{context}: {err}")
@@ -1651,7 +1654,9 @@ impl AppServerSession {
                     spawn_linkage: None,
                     auth_profile_ref,
                     config_fingerprint: None,
-                    version_fingerprint: None,
+                    version_fingerprint: Some(
+                        BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+                    ),
                     execution_context: workspace_roots.map(|workspace_roots| {
                         Box::new(AgentExecutionContextParams {
                             workspace_roots: Some(workspace_roots),

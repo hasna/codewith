@@ -86,7 +86,7 @@ WHERE run_id = ?
         params: &BackgroundAgentExecutionSnapshotParams,
     ) -> anyhow::Result<BackgroundAgentExecutionSnapshot> {
         let now = Utc::now().timestamp();
-        let payload_json = redact_state_json_string(&params.payload_json)?;
+        let columns = RedactedBackgroundAgentExecutionSnapshotColumns::from_params(params)?;
         let mut tx = self.pool.begin().await?;
         let seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_execution_snapshots WHERE run_id = ?",
@@ -109,10 +109,10 @@ INSERT INTO background_agent_execution_snapshots (
         )
         .bind(params.run_id.as_str())
         .bind(seq)
-        .bind(params.snapshot_kind.as_str())
-        .bind(payload_json)
-        .bind(params.recovery_policy.as_str())
-        .bind(params.config_fingerprint.as_deref())
+        .bind(columns.snapshot_kind.as_str())
+        .bind(columns.payload_json.as_str())
+        .bind(columns.recovery_policy.as_str())
+        .bind(columns.config_fingerprint.as_deref())
         .bind(now)
         .execute(&mut *tx)
         .await?
@@ -170,7 +170,7 @@ LIMIT 1
             .transpose()
     }
 
-    async fn get_background_agent_execution_snapshot(
+    pub(super) async fn get_background_agent_execution_snapshot(
         &self,
         snapshot_id: i64,
     ) -> anyhow::Result<Option<BackgroundAgentExecutionSnapshot>> {
