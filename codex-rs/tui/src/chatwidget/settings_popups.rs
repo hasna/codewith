@@ -262,7 +262,8 @@ impl ChatWidget {
             actions: vec![Box::new(|tx| {
                 tx.send(AppEvent::OpenGoalPlanNodeObjectiveMenu);
             })],
-            dismiss_on_select: true,
+            dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         }
     }
@@ -314,8 +315,9 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(Line::from("Enter selects; Left or Esc goes back")),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }

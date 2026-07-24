@@ -3625,6 +3625,17 @@ async fn config_popup_arrow_keys_navigate_menu_tree() {
     let root = render_bottom_popup(&chat, /*width*/ 90);
     assert!(root.contains("› 4. Agent subagent threads"), "{root}");
 
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenGoalPlanNodeObjectiveMenu));
+
+    chat.open_goal_plan_node_objective_popup();
+    assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Goal plan node objective limit"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let root = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(root.contains("› 5. Goal objective limit"), "{root}");
+
     chat.handle_key_event(KeyEvent::from(KeyCode::Left));
     assert!(chat.bottom_pane.no_modal_or_popup_active());
 
