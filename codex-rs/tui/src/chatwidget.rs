@@ -661,6 +661,9 @@ pub(crate) struct ChatWidget {
     warning_display_state: WarningDisplayState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     last_auth_profile_auto_switch_trigger: Option<String>,
+    /// Trigger key of the most recent "no eligible profile" notice, so the info
+    /// message is emitted once per exhaustion window instead of on every poll.
+    last_no_eligible_auth_profile_trigger: Option<String>,
     pending_auth_profile_auto_switch_trigger: Option<String>,
     auth_profile_auto_switch_cooldowns:
         BTreeMap<crate::legacy_core::usage_profile_health::UsageProfileCooldownKey, Instant>,

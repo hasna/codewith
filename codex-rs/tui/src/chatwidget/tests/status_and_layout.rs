@@ -1725,9 +1725,9 @@ async fn all_alternate_profiles_exhausted_reports_earliest_reset_without_switchi
     let message = events
         .into_iter()
         .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => Some(lines_to_single_string(
-                &cell.display_lines(/*width*/ 120),
-            )),
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
             _ => None,
         })
         .find(|text| text.contains("every alternate profile is also rate-limited"))
@@ -1735,6 +1735,51 @@ async fn all_alternate_profiles_exhausted_reports_earliest_reset_without_switchi
     assert!(
         message.contains("resets at"),
         "message should include the earliest reset time, got: {message}"
+    );
+}
+
+#[tokio::test]
+async fn no_eligible_profile_message_is_not_repeated_on_every_poll() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    save_test_auth_profile(&chat, "work");
+    save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    configure_test_session(&mut chat);
+    drain_insert_history(&mut rx);
+
+    // Only alternate profile is exhausted, so no switch is possible.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 5_000,
+        )],
+    );
+    drain_insert_history(&mut rx);
+
+    // Poll the same exhausted window three times, mirroring the rate-limit poller.
+    for _ in 0..3 {
+        chat.on_rate_limit_snapshot(Some(rate_limit_snapshot_for_window(
+            /*used_percent*/ 100, /*window_duration_mins*/ 300, /*resets_at*/ 3_000,
+        )));
+    }
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    let notice_count = events
+        .into_iter()
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .filter(|text| text.contains("every alternate profile is also rate-limited"))
+        .count();
+    assert_eq!(
+        notice_count, 1,
+        "no-eligible-profile notice must be emitted once per exhaustion window, not per poll"
     );
 }
 
