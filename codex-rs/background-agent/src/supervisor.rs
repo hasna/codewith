@@ -82,6 +82,10 @@ where
             .store()
             .orphan_stale_runs(self.config.heartbeat_timeout)
             .await?;
+        // A codewith upgrade makes previously admitted-but-unclaimed runs
+        // permanently unclaimable; reap them here so their admission capacity
+        // is released instead of leaking until the user hits the cap.
+        self.store().terminalize_incompatible_runs().await?;
         let runs = self
             .store()
             .list_runs(Some(self.config.reconcile_limit))

@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_background_agent::DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS;
@@ -957,6 +958,48 @@ async fn attach_agent(state_db: &StateRuntime, cmd: AgentLogsCommand) -> anyhow:
     }))
 }
 
+/// Resolves the auth-profile alias that will be admitted with the run.
+///
+/// The admitted alias is always the one config resolution honored
+/// (`Config::selected_auth_profile`), never the raw `--auth-profile` string.
+/// The previous `.or(auth_profile)` fallback could admit a raw flag value that
+/// resolution had *not* selected, so the run carried an alias no layer had
+/// vetted; this fails closed instead whenever the two disagree.
+///
+/// Scope, deliberately: this checks agreement, not existence. Config resolution
+/// validates an alias's *syntax* and trims it, and nothing in codewith — the
+/// app-server admission path included — resolves an alias against the
+/// credential store before admitting. Adding a store lookup only here would
+/// make the CLI stricter than the app-server contract this run is admitted
+/// under, so alias existence stays the worker's failure to report. Comparison
+/// is against the trimmed request so a value resolution accepted verbatim is
+/// not rejected for whitespace alone.
+fn resolve_agent_start_auth_profile(
+    runtime_context: Option<&AgentStartRuntimeContext>,
+    auth_profile: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(context) = runtime_context else {
+        if let Some(requested) = auth_profile {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: cannot resolve auth profile \
+                 `{requested}` without a loaded configuration"
+            );
+        }
+        return Ok(None);
+    };
+    if let Some(requested) = auth_profile
+        && context.auth_profile_ref.as_deref() != Some(requested.trim())
+    {
+        let resolved = context.auth_profile_ref.as_deref().unwrap_or("<none>");
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: requested auth profile `{requested}` \
+             is not the profile configuration resolved (`{resolved}`); refusing to admit an alias \
+             no configuration layer selected"
+        );
+    }
+    Ok(context.auth_profile_ref.clone())
+}
+
 async fn start_agent(
     state_db: &StateRuntime,
     cmd: AgentStartCommand,
@@ -981,10 +1024,7 @@ async fn start_agent(
     let workspace_roots = agent_start_snapshot_workspace_roots(runtime_context, &cwd, explicit_cwd);
     let permission_profile =
         agent_start_snapshot_permission_profile(runtime_context, &cwd, explicit_cwd)?;
-    let auth_profile_ref = runtime_context
-        .and_then(|context| context.auth_profile_ref.as_deref())
-        .or(auth_profile)
-        .map(str::to_string);
+    let auth_profile_ref = resolve_agent_start_auth_profile(runtime_context, auth_profile)?;
     let idempotency_key = cmd.idempotency_key;
     let prompt_snapshot_identity = idempotency_key
         .as_deref()
@@ -1064,6 +1104,17 @@ async fn start_agent(
     })
     .await
     .context("failed to reconcile stale background agents before admission")?;
+    // Runs admitted by an older codewith build can never be claimed by this
+    // binary, so release the admission capacity they still hold instead of
+    // failing every future start with a capacity error.
+    retry_on_busy("release incompatible background agent admissions", || {
+        state_db.terminalize_incompatible_background_agent_runs(
+            BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+            BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+        )
+    })
+    .await
+    .context("failed to release incompatible background agent admissions")?;
     let (run, created, _event, _execution_snapshot, _status_snapshot) =
         retry_on_busy("admit background agent run", || {
             state_db.admit_background_agent_run(
@@ -1274,7 +1325,8 @@ fn background_agent_status_is_terminal(status: BackgroundAgentRunStatus) -> bool
 fn run_json(run: BackgroundAgentRun) -> Value {
     json!({
         "agentId": run.id,
-        "idempotencyKey": run.idempotency_key,
+        // Persisted as a one-way digest; the original key is never stored.
+        "idempotencyKeySha256": run.idempotency_key,
         "source": run.source,
         "promptSnapshotRef": run.prompt_snapshot_ref,
         "threadId": run.thread_id,
@@ -1429,6 +1481,63 @@ mod tests {
             )
             .expect("serialize permission profile"),
             Some(serde_json::to_value(expected_permission_profile).expect("expected profile json"))
+        );
+    }
+
+    #[test]
+    fn agent_start_admits_only_the_auth_profile_configuration_resolved() {
+        let context = |auth_profile_ref: Option<&str>| AgentStartRuntimeContext {
+            cwd: PathBuf::from("/launcher"),
+            workspace_roots: vec![PathBuf::from("/launcher")],
+            auth_profile_ref: auth_profile_ref.map(str::to_string),
+            approval_policy: None,
+            permission_profile: PermissionProfile::read_only(),
+            model: None,
+            provider: None,
+            service_tier: None,
+        };
+
+        // The resolved alias is what gets admitted, with or without the flag.
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), Some("work"))
+                .expect("agreeing profile"),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), None)
+                .expect("env-resolved profile"),
+            Some("work".to_string())
+        );
+        // Config resolution trims the alias, so whitespace alone is not a mismatch.
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(Some("work"))), Some("  work  "))
+                .expect("trimmed profile"),
+            Some("work".to_string())
+        );
+        assert_eq!(
+            resolve_agent_start_auth_profile(Some(&context(None)), None).expect("no profile"),
+            None
+        );
+
+        // A raw flag that resolution did not select must never reach admission,
+        // which is exactly what the previous `.or(auth_profile)` fallback did.
+        for (resolved, requested) in [(Some("work"), "personal"), (None, "personal")] {
+            let error = resolve_agent_start_auth_profile(Some(&context(resolved)), Some(requested))
+                .expect_err("diverging profile must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH),
+                "unexpected error: {error}"
+            );
+        }
+        let error = resolve_agent_start_auth_profile(/*runtime_context*/ None, Some("work"))
+            .expect_err("an unloaded configuration cannot resolve a profile");
+        assert!(
+            error
+                .to_string()
+                .contains(BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH),
+            "unexpected error: {error}"
         );
     }
 

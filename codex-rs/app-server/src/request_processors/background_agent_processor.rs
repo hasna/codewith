@@ -156,6 +156,21 @@ impl BackgroundAgentRequestProcessor {
                 "failed to reconcile stale background agents before admission: {err}"
             ))
         })?;
+        // Runs admitted by an older codewith build can never be claimed by this
+        // binary, so release the admission capacity they still hold instead of
+        // failing every future admission with a capacity error.
+        retry_transient_sqlite_busy("release incompatible background agent admissions", || {
+            state_db.terminalize_incompatible_background_agent_runs(
+                BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+            )
+        })
+        .await
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to release incompatible background agent admissions: {err}"
+            ))
+        })?;
         let agent_id = Uuid::now_v7().to_string();
         let prompt_snapshot_ref = prompt_snapshot_ref.unwrap_or_else(|| {
             let identity = idempotency_key

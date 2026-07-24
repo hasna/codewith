@@ -1,5 +1,4 @@
 use super::*;
-use crate::model::encode_background_agent_opaque_identity;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -7,6 +6,19 @@ const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
     "background_agent_admission_capacity_exceeded";
 const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
     "background_agent_admission_identity_mismatch";
+const BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON: &str =
+    "background agent runtime package is incompatible with the installed build";
+
+/// One-way storage form for a caller-supplied idempotency key.
+///
+/// Idempotency keys are opaque, caller-controlled strings that can carry
+/// credential-shaped material, so they are never persisted in a form that can
+/// be reversed back into the original value. Dedupe and replay lookups compare
+/// digests, which preserves byte-exact identity matching without keeping the
+/// plaintext in the local state database.
+pub(in crate::runtime) fn background_agent_idempotency_key_digest(value: &str) -> String {
+    StateRuntime::background_agent_identity_sha256(value.as_bytes())
+}
 
 #[derive(sqlx::FromRow)]
 struct BackgroundAgentSupervisorClaimState {
@@ -1963,6 +1975,151 @@ WHERE run_id = ? AND supervisor_id = ? AND generation = ?
         Ok(result.rows_affected() > 0)
     }
 
+    /// Fails closed any unclaimed run that the currently installed runtime can
+    /// never claim, so that an upgrade cannot permanently strand admission
+    /// capacity.
+    ///
+    /// A claim requires the persisted admission schema *and* the execution
+    /// snapshot `packageFingerprint` to match the running binary. Queued and
+    /// orphaned rows keep consuming a live-or-recoverable capacity slot, so
+    /// after a version bump those rows would otherwise be both unclaimable and
+    /// undeletable by any reconciliation pass. Terminalizing them releases the
+    /// slot and leaves an explicit lifecycle receipt describing why.
+    pub async fn terminalize_incompatible_background_agent_runs(
+        &self,
+        required_version_fingerprint: &str,
+        required_package_fingerprint: &str,
+    ) -> anyhow::Result<usize> {
+        let now = Utc::now().timestamp();
+        // The `NOT EXISTS` / fingerprint predicate below is the exact negation
+        // of the compatibility clause enforced by
+        // `claim_background_agent_supervisor_compatible`; keep the two in sync.
+        let candidates = sqlx::query_scalar::<_, String>(
+            r#"
+SELECT id
+FROM background_agent_runs
+WHERE
+    desired_state = ?
+    AND retention_state = ?
+    AND status IN ('queued', 'orphaned')
+    AND (
+        COALESCE(version_fingerprint, '') != ?
+        OR NOT EXISTS (
+            SELECT 1
+            FROM background_agent_execution_snapshots s
+            WHERE
+                s.run_id = background_agent_runs.id
+                AND s.snapshot_kind = 'initial_execution_context'
+                AND json_extract(s.payload_json, '$.packageFingerprint') = ?
+        )
+    )
+            "#,
+        )
+        .bind(BackgroundAgentDesiredState::Running.as_str())
+        .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+        .bind(required_version_fingerprint)
+        .bind(required_package_fingerprint)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+
+        let mut finalized = 0;
+        for run_id in candidates {
+            let mut tx = self.pool.begin().await?;
+            let result = sqlx::query(
+                r#"
+UPDATE background_agent_runs
+SET
+    desired_state = ?,
+    status = ?,
+    status_reason = ?,
+    crash_reason = COALESCE(crash_reason, ?),
+    updated_at = ?,
+    completed_at = COALESCE(completed_at, ?)
+WHERE
+    id = ?
+    AND desired_state = ?
+    AND retention_state = ?
+    AND status IN ('queued', 'orphaned')
+    AND (
+        COALESCE(version_fingerprint, '') != ?
+        OR NOT EXISTS (
+            SELECT 1
+            FROM background_agent_execution_snapshots s
+            WHERE
+                s.run_id = background_agent_runs.id
+                AND s.snapshot_kind = 'initial_execution_context'
+                AND json_extract(s.payload_json, '$.packageFingerprint') = ?
+        )
+    )
+                "#,
+            )
+            .bind(BackgroundAgentDesiredState::Stopped.as_str())
+            .bind(BackgroundAgentRunStatus::Failed.as_str())
+            .bind(BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON)
+            .bind(BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON)
+            .bind(now)
+            .bind(now)
+            .bind(run_id.as_str())
+            .bind(BackgroundAgentDesiredState::Running.as_str())
+            .bind(crate::BackgroundAgentRetentionState::Active.as_str())
+            .bind(required_version_fingerprint)
+            .bind(required_package_fingerprint)
+            .execute(&mut *tx)
+            .await?;
+
+            if result.rows_affected() == 0 {
+                tx.commit().await?;
+                continue;
+            }
+
+            sqlx::query(
+                r#"
+UPDATE background_agent_process_leases
+SET
+    status = 'stopped',
+    exit_reason = COALESCE(exit_reason, ?),
+    updated_at = ?,
+    stopped_at = COALESCE(stopped_at, ?)
+WHERE run_id = ? AND status != 'stopped'
+                "#,
+            )
+            .bind(BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON)
+            .bind(now)
+            .bind(now)
+            .bind(run_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+            let payload_json = serde_json::json!({
+                "reason": "runtime_package_incompatible",
+                "requiredVersionFingerprint": required_version_fingerprint,
+                "requiredPackageFingerprint": required_package_fingerprint,
+            });
+            super::interactions::terminalize_active_background_agent_pending_interactions_in_tx(
+                &mut tx,
+                run_id.as_str(),
+                BackgroundAgentPendingInteractionStatus::Cancelled,
+                &payload_json,
+                now,
+            )
+            .await?;
+            append_terminal_stale_background_agent_status_in_tx(
+                &mut tx,
+                run_id.as_str(),
+                BackgroundAgentRunStatus::Failed,
+                BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON,
+                "agent.failed",
+                &payload_json,
+                now,
+            )
+            .await?;
+            tx.commit().await?;
+            finalized += 1;
+        }
+
+        Ok(finalized)
+    }
+
     pub async fn get_background_agent_run_by_idempotency_key(
         &self,
         idempotency_key: &str,
@@ -2014,7 +2171,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
             "#,
         )
-        .bind(encode_background_agent_opaque_identity(idempotency_key))
+        .bind(background_agent_idempotency_key_digest(idempotency_key))
         .fetch_optional(self.pool.as_ref())
         .await?;
         row.map(BackgroundAgentRun::try_from).transpose()
@@ -2116,7 +2273,7 @@ INSERT INTO background_agent_runs (
         params
             .idempotency_key
             .as_deref()
-            .map(encode_background_agent_opaque_identity),
+            .map(background_agent_idempotency_key_digest),
     )
     .bind(params.request_id.as_deref().map(redact_state_string))
     .bind(params.source.as_str())
@@ -2134,12 +2291,7 @@ INSERT INTO background_agent_runs (
     .bind(params.parent_thread_id.as_deref())
     .bind(params.parent_agent_run_id.as_deref())
     .bind(spawn_linkage_json.as_deref())
-    .bind(
-        params
-            .auth_profile_ref
-            .as_deref()
-            .map(encode_background_agent_opaque_identity),
-    )
+    .bind(params.auth_profile_ref.as_deref().map(redact_state_string))
     .bind(BackgroundAgentDesiredState::Running.as_str())
     .bind(BackgroundAgentRunStatus::Queued.as_str())
     .bind(params.status_reason.as_deref().map(redact_state_string))
@@ -2512,7 +2664,7 @@ FROM background_agent_runs
 WHERE idempotency_key = ?
         "#,
     )
-    .bind(encode_background_agent_opaque_identity(idempotency_key))
+    .bind(background_agent_idempotency_key_digest(idempotency_key))
     .fetch_optional(&mut **tx)
     .await?;
     let Some((
@@ -2569,11 +2721,7 @@ WHERE idempotency_key = ?
         && parent_thread_id == params.parent_thread_id
         && parent_agent_run_id == params.parent_agent_run_id
         && spawn_linkage_json == requested_spawn_linkage_json
-        && auth_profile_ref
-            == params
-                .auth_profile_ref
-                .as_deref()
-                .map(encode_background_agent_opaque_identity)
+        && auth_profile_ref == params.auth_profile_ref.as_deref().map(redact_state_string)
         && config_fingerprint == params.config_fingerprint
         && version_fingerprint == params.version_fingerprint;
     if !identity_matches {

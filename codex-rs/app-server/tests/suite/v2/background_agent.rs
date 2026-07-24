@@ -1314,6 +1314,18 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
             SeededAgentExecution::Inert,
         )
         .await?;
+        // Park the filler runs in `stopping`: they still consume an admission
+        // slot, but unlike queued/orphaned rows they are neither claimable nor
+        // reclaimable, so this exercises capacity backpressure rather than the
+        // incompatible-runtime reaper (covered by
+        // `agent_start_reclaims_capacity_stranded_by_a_runtime_upgrade`).
+        state_db
+            .update_background_agent_run_status(
+                &format!("quota-run-{index}"),
+                StateBackgroundAgentRunStatus::Stopping,
+                Some("parked by quota test"),
+            )
+            .await?;
     }
     let first_agent_id = "quota-run-0".to_string();
 
@@ -1324,7 +1336,6 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
 
     let full = initial;
     assert_eq!(full.active_run_count, full.max_active_runs_per_user);
-    assert_eq!(full.queued_run_count, full.max_active_runs_per_user);
     assert_eq!(full.available_active_run_slots, 0);
     assert!(!full.admission_allowed);
     assert_eq!(
@@ -1332,7 +1343,7 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
         vec!["active_run_limit".to_string()]
     );
     assert_eq!(
-        run_status_count(&full, AgentRunStatus::Queued),
+        run_status_count(&full, AgentRunStatus::Stopping),
         full.max_active_runs_per_user
     );
 
@@ -1397,6 +1408,80 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
 
     let retry = start_agent(&mut mcp, retry_params).await?;
     assert_eq!(retry.agent.agent_id, accepted.agent.agent_id);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_start_reclaims_capacity_stranded_by_a_runtime_upgrade() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "accepted after reclaim",
+        )?])
+        .await;
+    write_config(codex_home.path(), server.uri().as_str())?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+    let state_db = init_state_db(codex_home.path()).await?;
+    // Seeded with a foreign `packageFingerprint`, exactly like runs admitted by
+    // a previous codewith build: queued, still counted against the admission
+    // quota, and unclaimable by this binary forever.
+    for index in 0..8 {
+        seed_queued_agent_run(
+            state_db.as_ref(),
+            &format!("stranded-run-{index}"),
+            Some(format!("stranded-idempotency-{index}")),
+            &format!("stranded run {index}"),
+            SeededAgentExecution::Inert,
+        )
+        .await?;
+    }
+
+    let full = agent_daemon_diagnostics(&mut mcp).await?;
+    assert_eq!(full.active_run_count, full.max_active_runs_per_user);
+    assert_eq!(full.available_active_run_slots, 0);
+    assert!(!full.admission_allowed);
+
+    // Admission must self-heal instead of failing closed forever.
+    let accepted = start_agent(
+        &mut mcp,
+        start_params(
+            "new run after a runtime upgrade",
+            Some("reclaimed-idempotency".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+    wait_for_agent_status(
+        &mut mcp,
+        accepted.agent.agent_id.as_str(),
+        AgentRunStatus::Completed,
+    )
+    .await?;
+
+    for index in 0..8 {
+        let stranded = state_db
+            .get_background_agent_run(&format!("stranded-run-{index}"))
+            .await?
+            .expect("stranded run should still be readable");
+        assert_eq!(stranded.status, StateBackgroundAgentRunStatus::Failed);
+        assert!(
+            stranded
+                .status_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("runtime package is incompatible")),
+            "unexpected status reason: {:?}",
+            stranded.status_reason
+        );
+    }
+    let reclaimed = agent_daemon_diagnostics(&mut mcp).await?;
+    assert_eq!(reclaimed.active_run_count, 0);
+    assert_eq!(
+        reclaimed.available_active_run_slots,
+        reclaimed.max_active_runs_per_user
+    );
+    assert!(reclaimed.admission_allowed);
 
     Ok(())
 }

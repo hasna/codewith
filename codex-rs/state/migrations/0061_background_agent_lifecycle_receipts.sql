@@ -7,18 +7,14 @@ ALTER TABLE background_agent_runs
 ALTER TABLE background_agent_events
     ADD COLUMN receipt_key TEXT;
 
--- Opaque routing and idempotency references must survive the generic secrets
--- doctor byte-for-byte. Store them in a reversible non-secret-shaped envelope;
--- the runtime decodes them at the model boundary.
-UPDATE background_agent_runs
-SET idempotency_key =
-    'codewith-opaque-v1:' || lower(hex(CAST(idempotency_key AS BLOB)))
-WHERE idempotency_key IS NOT NULL;
-
-UPDATE background_agent_runs
-SET auth_profile_ref =
-    'codewith-opaque-v1:' || lower(hex(CAST(auth_profile_ref AS BLOB)))
-WHERE auth_profile_ref IS NOT NULL;
+-- Idempotency keys are persisted going forward as one-way SHA-256 digests and
+-- auth-profile aliases keep flowing through state redaction, so neither column
+-- can hold recoverable secret material. Legacy rows are deliberately left
+-- untouched: SQLite cannot compute SHA-256 during migration, the rows below are
+-- failed closed anyway, and rewriting them would only re-encode whatever the
+-- secrets doctor has already redacted. A legacy key therefore no longer matches
+-- a digest lookup, which at worst costs idempotent replay against terminal
+-- pre-upgrade runs.
 
 -- Runs admitted before lifecycle receipts existed cannot prove a complete,
 -- replayable admission. Fail them closed during the upgrade instead of
