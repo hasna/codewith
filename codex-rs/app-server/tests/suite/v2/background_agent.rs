@@ -67,6 +67,7 @@ use codex_background_agent::BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -92,6 +93,11 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
+
+enum SeededAgentExecution {
+    Inert,
+    Claimable { cwd: String },
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result<()> {
@@ -235,7 +241,7 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     let stale_cursor_error = agent_events_error(
         &mut restarted,
         &agent_id,
-        Some("event:1".to_string()),
+        Some("event:0".to_string()),
         Some(1),
     )
     .await?;
@@ -344,6 +350,7 @@ async fn agent_list_pages_beyond_state_default_cap() -> Result<()> {
             agent_id.as_str(),
             /*idempotency_key*/ None,
             "paged run",
+            SeededAgentExecution::Inert,
         )
         .await?;
         state_db
@@ -835,36 +842,11 @@ async fn supervisor_periodically_starts_durable_queued_runs() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "picked up by periodic supervisor",
+        SeededAgentExecution::Claimable {
+            cwd: codex_home.path().display().to_string(),
+        },
     )
     .await?;
-    state_db
-        .create_background_agent_execution_snapshot(&BackgroundAgentExecutionSnapshotParams {
-            run_id: agent_id.clone(),
-            snapshot_kind: "initial_execution_context".to_string(),
-            payload_json: json!({
-                "snapshotSource": "state-seeded-test",
-                "cwd": codex_home.path().display().to_string(),
-                "workspaceRoots": [codex_home.path().display().to_string()],
-                "model": "mock-model",
-                "provider": "mock_provider",
-                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-            }),
-            recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-            config_fingerprint: Some("cfg-test".to_string()),
-        })
-        .await?;
-    state_db
-        .upsert_background_agent_status_snapshot(&BackgroundAgentStatusSnapshotParams {
-            run_id: agent_id.clone(),
-            seq: 1,
-            status: StateBackgroundAgentRunStatus::Queued,
-            desired_state: StateBackgroundAgentDesiredState::Running,
-            summary: Some("Queued".to_string()),
-            pending_interaction_count: 0,
-            last_event_seq: 1,
-            payload_json: json!({"phase": "queued"}),
-        })
-        .await?;
 
     let completed =
         wait_for_agent_status(&mut mcp, agent_id.as_str(), AgentRunStatus::Completed).await?;
@@ -899,6 +881,7 @@ async fn agent_lifecycle_and_pending_interaction_flow() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "wait for approval",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -1145,6 +1128,7 @@ async fn agent_stop_preserves_delete_requested_desired_state() -> Result<()> {
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "delete then stop",
+        SeededAgentExecution::Inert,
     )
     .await?;
     drop(state_db);
@@ -1201,6 +1185,7 @@ async fn agent_pending_interaction_respond_rejects_invalid_responded_payload() -
         agent_id.as_str(),
         /*idempotency_key*/ None,
         "wait for approval",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -1326,6 +1311,7 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
             &format!("quota-run-{index}"),
             Some(format!("quota-idempotency-{index}")),
             &format!("quota run {index}"),
+            SeededAgentExecution::Inert,
         )
         .await?;
     }
@@ -1394,15 +1380,13 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
     assert!(available.admission_allowed);
     assert!(available.backpressure_reasons.is_empty());
 
-    let accepted = start_agent(
-        &mut mcp,
-        start_params(
-            "new run after a slot opens",
-            Some("quota-idempotency-after-slot".to_string()),
-            codex_home.path(),
-        ),
-    )
-    .await?;
+    let accepted_params = start_params(
+        "new run after a slot opens",
+        Some("quota-idempotency-after-slot".to_string()),
+        codex_home.path(),
+    );
+    let retry_params = accepted_params.clone();
+    let accepted = start_agent(&mut mcp, accepted_params).await?;
     assert_ne!(accepted.agent.agent_id, first_agent_id);
     wait_for_agent_status(
         &mut mcp,
@@ -1411,17 +1395,8 @@ async fn agent_diagnostics_reports_quota_and_capacity_exhaustion() -> Result<()>
     )
     .await?;
 
-    let mut retry_params = start_params(
-        "quota run 0",
-        Some("quota-idempotency-0".to_string()),
-        codex_home.path(),
-    );
-    retry_params.source = Some("quota-test".to_string());
-    retry_params.prompt_snapshot_ref = Some("inline:quota-run-0:prompt".to_string());
-    retry_params.cwd = None;
-    retry_params.execution_context = None;
     let retry = start_agent(&mut mcp, retry_params).await?;
-    assert_eq!(retry.agent.agent_id, first_agent_id);
+    assert_eq!(retry.agent.agent_id, accepted.agent.agent_id);
 
     Ok(())
 }
@@ -2024,6 +1999,7 @@ async fn worktree_cleanup_retains_nonterminal_owner_agent_worktree() -> Result<(
         "agent-run-cleanup-guard",
         /*idempotency_key*/ None,
         "guard nonterminal owner cleanup",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -2749,6 +2725,7 @@ async fn worktree_attach_assigns_thread_and_rejects_ambiguous_targets() -> Resul
         "agent-run-attach",
         /*idempotency_key*/ None,
         "attach this agent to a worktree",
+        SeededAgentExecution::Inert,
     )
     .await?;
     state_db
@@ -3106,6 +3083,7 @@ async fn create_background_agent_git_worktree_lease(
         agent_id,
         /*idempotency_key*/ None,
         "release a leased background-agent worktree",
+        SeededAgentExecution::Inert,
     )
     .await?;
     let branch = format!("codewith/{agent_id}");
@@ -3407,6 +3385,7 @@ async fn seed_queued_agent_run(
     agent_id: &str,
     idempotency_key: Option<String>,
     prompt: &str,
+    execution: SeededAgentExecution,
 ) -> Result<()> {
     let start_event_payload = json!({
         "cwd": null,
@@ -3415,37 +3394,51 @@ async fn seed_queued_agent_run(
         "promptSnapshotRef": format!("inline:{agent_id}:prompt"),
         "initialGoalObjective": null,
     });
+    let mut execution_payload = json!({
+        "snapshotSource": "agent/start",
+        "cwd": null,
+        "initialGoalObjective": null,
+        "workspaceRoots": null,
+        "approvalPolicy": null,
+        "permissionProfile": null,
+        "sandboxPolicy": null,
+        "networkPolicy": null,
+        "model": null,
+        "provider": null,
+        "serviceTier": null,
+        "mcpToolAllowlist": null,
+        "envSnapshotPolicy": "inherit-minimal",
+        "shellSnapshot": null,
+        "configSourceHashes": null,
+        "maxRuntimeSeconds": null,
+        "maxTokens": null,
+        "authProfileIdentitySha256": null,
+        "managedWorktreeId": null,
+        "configFingerprint": "cfg-test",
+        "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+        "packageFingerprint": "incompatible-test-runtime",
+        "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+        "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
+    });
+    if let SeededAgentExecution::Claimable { cwd } = execution {
+        let payload = execution_payload
+            .as_object_mut()
+            .expect("seeded execution payload should be an object");
+        payload.insert("workspaceRoots".to_string(), json!([cwd.clone()]));
+        payload.insert("cwd".to_string(), json!(cwd));
+        payload.insert("model".to_string(), json!("mock-model"));
+        payload.insert("provider".to_string(), json!("mock_provider"));
+        payload.insert("serviceTier".to_string(), json!("default"));
+        payload.insert("approvalPolicy".to_string(), json!("never"));
+        payload.insert(
+            "packageFingerprint".to_string(),
+            json!(BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT),
+        );
+    }
     let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: agent_id.to_string(),
         snapshot_kind: "initial_execution_context".to_string(),
-        payload_json: json!({
-            "snapshotSource": "agent/start",
-            "cwd": null,
-            "initialGoalObjective": null,
-            "workspaceRoots": null,
-            "approvalPolicy": null,
-            "permissionProfile": null,
-            "sandboxPolicy": null,
-            "networkPolicy": null,
-            "model": null,
-            "provider": null,
-            "serviceTier": null,
-            "mcpToolAllowlist": null,
-            "envSnapshotPolicy": "inherit-minimal",
-            "shellSnapshot": null,
-            "configSourceHashes": null,
-            "maxRuntimeSeconds": null,
-            "maxTokens": null,
-            "configFingerprint": "cfg-test",
-            "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
-            "packageFingerprint": format!(
-                "{}:{}",
-                env!("CARGO_PKG_NAME"),
-                env!("CARGO_PKG_VERSION")
-            ),
-            "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-            "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
-        }),
+        payload_json: execution_payload,
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
         config_fingerprint: Some("cfg-test".to_string()),
     };
