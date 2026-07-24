@@ -1099,7 +1099,9 @@ fn initial_execution_snapshot_payload(
         "maxTokens": params
             .execution_context
             .and_then(|context| context.max_tokens),
-        "authProfileRef": params.auth_profile_ref,
+        "authProfileIdentitySha256": params
+            .auth_profile_ref
+            .map(|profile| format!("{:x}", Sha256::digest(profile.as_bytes()))),
         "managedWorktreeId": params.required_managed_worktree_id,
         "configFingerprint": params.config_fingerprint,
         "versionFingerprint": params.version_fingerprint,

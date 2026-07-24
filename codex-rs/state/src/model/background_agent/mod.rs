@@ -22,6 +22,7 @@ pub use run::BackgroundAgentRunRow;
 pub use run::BackgroundAgentRunStatus;
 pub use run::BackgroundAgentStatusEventForSupervisorParams;
 pub use run::BackgroundAgentThreadBindingParams;
+pub(crate) use run::encode_background_agent_opaque_identity;
 pub use snapshot::BackgroundAgentExecutionSnapshot;
 pub use snapshot::BackgroundAgentExecutionSnapshotParams;
 pub use snapshot::BackgroundAgentExecutionSnapshotRow;

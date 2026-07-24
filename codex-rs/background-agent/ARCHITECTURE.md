@@ -46,8 +46,11 @@ the Repos-owned lease remains `worktree_lease_id`. Both are reached from every
 lifecycle receipt through its foreign-keyed `runId`. The supervisor
 `generation` is only a local process-fencing counter and must never be
 interpreted as the projected writer generation. Auth-profile references are
-opaque validated aliases: state redaction runs before persistence, and
-credential or account payloads do not belong in either reference projection.
+opaque validated aliases stored in a reversible non-secret-shaped envelope:
+state redaction runs before persistence, the generic secrets doctor cannot
+rewrite their identity, and credential or account payloads do not belong in
+either reference projection. Execution snapshots persist only the alias digest,
+not the alias.
 
 ## Run And Thread Relationship
 
@@ -97,11 +100,13 @@ delete requested, or deleted.
 ## Ownership And Liveness
 
 Supervisors claim runs by writing `supervisor_id`, incrementing `generation`, and
-creating a process lease. Worker handles are recorded as `pid`, `pgid`, or
-`job_id` when the execution backend owns an OS process. Heartbeats update the
-claimed generation. Reconciliation may orphan stale non-terminal runs after the
-configured heartbeat timeout, then re-claim only runs whose `desired_state` is
-`running`.
+creating a process lease. A process supervisor must claim before spawning and
+pass that exact supervisor generation to the child; competing hosts therefore
+lose the durable compare-and-swap before creating an OS process. Worker handles
+are recorded as `pid`, `pgid`, or `job_id` when the execution backend owns an OS
+process. Heartbeats update the claimed generation. Reconciliation may orphan
+stale non-terminal runs after the configured heartbeat timeout, then re-claim
+only runs whose `desired_state` is `running`.
 
 The app-server may host a live worker bridge, but app-server client connection
 lifetime is not liveness. Dropping a TUI or CLI connection detaches subscribers
@@ -118,6 +123,16 @@ orphaning, stop, and cancellation all use deterministic receipt keys.
 Terminal receipts therefore replay with the same run projection and attempt
 binding, while receipt insertion and cursor advancement commit in one state
 transaction.
+The receipt `attempt` is optional operation metadata and is never synthesized
+from the supervisor fencing generation. The authoritative cross-system attempt
+remains in immutable admitted `spawn_linkage_json` reached through `runId`.
+
+Initial prompt delivery uses a deterministic client message id derived from the
+run. Recovery scans the append-only rollout for that id (and the exact legacy
+prompt shape), records `agent.initialPromptRecorded` only after durable rollout
+evidence exists, and submits only when that evidence is absent. A crash after
+thread binding or submission can therefore neither drop nor duplicate the
+initial prompt.
 
 Supervisor-owned heartbeat, status, stop, and process-finalization mutations
 compare both `supervisor_id` and `generation`. A stale owner cannot stop or

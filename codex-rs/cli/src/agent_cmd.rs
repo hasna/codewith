@@ -1025,7 +1025,9 @@ async fn start_agent(
             "provider": runtime_context.and_then(|context| context.provider.as_deref()),
             "serviceTier": runtime_context
                 .and_then(|context| context.service_tier.as_deref()),
-            "authProfileRef": auth_profile_ref.as_deref(),
+            "authProfileIdentitySha256": auth_profile_ref.as_deref().map(|profile| {
+                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+            }),
             "managedWorktreeId": null,
             "configFingerprint": config_fingerprint.as_str(),
             "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,

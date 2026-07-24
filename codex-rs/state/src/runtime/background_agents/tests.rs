@@ -153,7 +153,9 @@ fn admission_snapshot_params(
             "model": "test-model",
             "provider": "test-provider",
             "serviceTier": "default",
-            "authProfileRef": params.auth_profile_ref,
+            "authProfileIdentitySha256": params.auth_profile_ref.as_deref().map(|profile| {
+                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+            }),
             "configFingerprint": params.config_fingerprint,
             "versionFingerprint": params.version_fingerprint,
             "packageFingerprint": "codex-state:test",
@@ -354,22 +356,78 @@ async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> a
 
 #[tokio::test]
 async fn background_agent_admission_preserves_opaque_identity_values() -> anyhow::Result<()> {
-    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
-    let idempotency_key = "sk-opaque-idempotency-key";
-    let auth_profile_ref = "sk-opaque-profile-alias";
+    let sqlite_home = unique_temp_dir();
+    let runtime = StateRuntime::init(sqlite_home.clone(), "test-provider".to_string()).await?;
+    let idempotency_key = format!("{}{}", "sk-proj-", "a".repeat(32));
+    let auth_profile_ref = format!("{}{}", "sk-proj-", "b".repeat(32));
+    assert!(crate::local_state_string_contains_secret(&idempotency_key));
+    assert!(crate::local_state_string_contains_secret(&auth_profile_ref));
     let (run, created) = admit_run(
         runtime.as_ref(),
-        &admission_params("opaque-admission", idempotency_key, auth_profile_ref),
+        &admission_params(
+            "opaque-admission",
+            idempotency_key.as_str(),
+            auth_profile_ref.as_str(),
+        ),
         2,
     )
     .await?;
 
     assert!(created);
-    assert_eq!(run.idempotency_key.as_deref(), Some(idempotency_key));
-    assert_eq!(run.auth_profile_ref.as_deref(), Some(auth_profile_ref));
+    assert_eq!(
+        run.idempotency_key.as_deref(),
+        Some(idempotency_key.as_str())
+    );
+    assert_eq!(
+        run.auth_profile_ref.as_deref(),
+        Some(auth_profile_ref.as_str())
+    );
+    let stored = sqlx::query_as::<_, (String, String)>(
+        "SELECT idempotency_key, auth_profile_ref FROM background_agent_runs WHERE id = ?",
+    )
+    .bind(run.id.as_str())
+    .fetch_one(runtime.pool.as_ref())
+    .await?;
+    assert_ne!(stored.0, idempotency_key);
+    assert_ne!(stored.1, auth_profile_ref);
+    assert_eq!(crate::redact_local_state_string(&stored.0), stored.0);
+    assert_eq!(crate::redact_local_state_string(&stored.1), stored.1);
+    let execution_snapshot = runtime
+        .get_background_agent_initial_execution_snapshot(run.id.as_str())
+        .await?
+        .expect("admission snapshot should exist");
+    assert_eq!(
+        execution_snapshot
+            .payload_json
+            .get("authProfileIdentitySha256"),
+        Some(&json!(StateRuntime::background_agent_identity_sha256(
+            auth_profile_ref.as_bytes()
+        )))
+    );
+    assert!(!serde_json::to_string(&execution_snapshot.payload_json)?.contains(&auth_profile_ref));
+    let doctor_report =
+        crate::run_local_state_secrets_doctor(crate::LocalStateSecretsDoctorOptions {
+            codex_home: sqlite_home.clone(),
+            sqlite_home,
+            repair: true,
+        })
+        .await?;
+    assert_eq!(doctor_report.redacted_sqlite_cells, 0);
+    let after_doctor = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("run should survive secrets repair");
+    assert_eq!(
+        after_doctor.idempotency_key.as_deref(),
+        Some(idempotency_key.as_str())
+    );
+    assert_eq!(
+        after_doctor.auth_profile_ref.as_deref(),
+        Some(auth_profile_ref.as_str())
+    );
     assert_eq!(
         runtime
-            .get_background_agent_run_by_idempotency_key(idempotency_key)
+            .get_background_agent_run_by_idempotency_key(idempotency_key.as_str())
             .await?
             .map(|run| run.id),
         Some(run.id)
@@ -578,11 +636,17 @@ async fn partial_admission_recovery_requires_exact_persisted_execution_identity(
             "serviceTier",
             Some(json!("priority")),
         ),
-        ("auth profile missing", "authProfileRef", None),
         (
-            "auth profile different",
-            "authProfileRef",
-            Some(json!("profile-b")),
+            "auth profile identity missing",
+            "authProfileIdentitySha256",
+            None,
+        ),
+        (
+            "auth profile identity different",
+            "authProfileIdentitySha256",
+            Some(json!(StateRuntime::background_agent_identity_sha256(
+                b"profile-b"
+            ))),
         ),
         ("package missing", "packageFingerprint", None),
         (
