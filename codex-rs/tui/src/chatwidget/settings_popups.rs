@@ -146,8 +146,7 @@ impl ChatWidget {
             footer_hint: Some(tree_navigation_hint_line(
                 &self.bottom_pane.list_keymap(),
                 TreeNavigationHint {
-                    accept_label: "opens",
-                    include_move_right: true,
+                    accept: TreeNavigationAccept::DrillIn("opens"),
                     include_space_toggle: false,
                     cancel_label: "closes",
                 },
@@ -254,8 +253,7 @@ impl ChatWidget {
             footer_hint: Some(tree_navigation_hint_line(
                 &self.bottom_pane.list_keymap(),
                 TreeNavigationHint {
-                    accept_label: "selects",
-                    include_move_right: false,
+                    accept: TreeNavigationAccept::InPlace("selects"),
                     include_space_toggle: false,
                     cancel_label: "goes back",
                 },
@@ -334,8 +332,7 @@ impl ChatWidget {
             footer_hint: Some(tree_navigation_hint_line(
                 &self.bottom_pane.list_keymap(),
                 TreeNavigationHint {
-                    accept_label: "selects",
-                    include_move_right: false,
+                    accept: TreeNavigationAccept::InPlace("selects"),
                     include_space_toggle: false,
                     cancel_label: "goes back",
                 },
@@ -360,6 +357,15 @@ impl ChatWidget {
         }
         items.push(back_to_config_menu_item());
 
+        // Most section rows are toggles and the "Back to sections" row only closes this level, so
+        // the drill-in hint is only truthful when the section actually contains a row that opens a
+        // child view (today: the usage-limit reset entry under Account & automation).
+        let section_accept_hint = if items.iter().any(SelectionItem::opens_child_view) {
+            TreeNavigationAccept::DrillIn("opens")
+        } else {
+            TreeNavigationAccept::None
+        };
+
         let mut header = ColumnRenderable::new();
         header.push(Line::from(format!("Config: {}", section.label()).bold()));
         header.push(Line::from(section.description().dim()));
@@ -369,8 +375,7 @@ impl ChatWidget {
             footer_hint: Some(tree_navigation_hint_line(
                 &self.bottom_pane.list_keymap(),
                 TreeNavigationHint {
-                    accept_label: "opens",
-                    include_move_right: true,
+                    accept: section_accept_hint,
                     include_space_toggle: true,
                     cancel_label: "goes back",
                 },

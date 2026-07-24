@@ -311,6 +311,7 @@ use crate::bottom_pane::SelectionShortcutAction;
 use crate::bottom_pane::SelectionToggle;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
+use crate::bottom_pane::popup_consts::TreeNavigationAccept;
 use crate::bottom_pane::popup_consts::TreeNavigationHint;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::bottom_pane::popup_consts::tree_navigation_hint_line;

@@ -39,16 +39,26 @@ pub(crate) fn standard_popup_hint_line_for_keymap(list_keymap: &ListKeymap) -> L
 /// Key labels are resolved from the live list keymap so rebound keys stay accurate; only the
 /// verbs describing what each key does at this level of the tree are supplied by the caller.
 pub(crate) struct TreeNavigationHint {
-    /// Verb for the drill-in keys, e.g. "opens" for a menu whose rows open a sub-menu or
-    /// "selects" for a leaf picker.
-    pub accept_label: &'static str,
-    /// Whether the drill-in hint should advertise `move_right`. Leaf pickers have no children to
-    /// drill into, so they only advertise `accept`.
-    pub include_move_right: bool,
+    /// What pressing the accept keys does on this menu's rows.
+    pub accept: TreeNavigationAccept,
     /// Whether the menu has toggle rows driven by space.
     pub include_space_toggle: bool,
     /// Verb for the go-back keys, e.g. "closes" at the root or "goes back" one level down.
     pub cancel_label: &'static str,
+}
+
+/// What the accept keys do on the rows of a tree-navigation menu.
+///
+/// Only advertise what the rows actually support: `move_right` drills in exclusively for rows
+/// that open a child view, so a menu whose rows are toggles (or that has no rows with actions)
+/// must not claim otherwise.
+pub(crate) enum TreeNavigationAccept {
+    /// No row opens a child and accepting does nothing meaningful; no clause is rendered.
+    None,
+    /// Rows resolve in place (leaf picker): only `accept` is advertised, with this verb.
+    InPlace(&'static str),
+    /// Rows open a sub-menu: both `move_right` and `accept` are advertised, with this verb.
+    DrillIn(&'static str),
 }
 
 pub(crate) fn tree_navigation_hint_line(
@@ -57,14 +67,20 @@ pub(crate) fn tree_navigation_hint_line(
 ) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    let accept_keys: Vec<KeyBinding> = hint
-        .include_move_right
-        .then(|| primary_binding(&list_keymap.move_right))
-        .flatten()
-        .into_iter()
-        .chain(primary_binding(&list_keymap.accept))
-        .collect();
-    push_key_clause(&mut spans, &accept_keys, hint.accept_label);
+    let (include_move_right, accept_label) = match hint.accept {
+        TreeNavigationAccept::None => (false, None),
+        TreeNavigationAccept::InPlace(label) => (false, Some(label)),
+        TreeNavigationAccept::DrillIn(label) => (true, Some(label)),
+    };
+    if let Some(accept_label) = accept_label {
+        let accept_keys: Vec<KeyBinding> = include_move_right
+            .then(|| primary_binding(&list_keymap.move_right))
+            .flatten()
+            .into_iter()
+            .chain(primary_binding(&list_keymap.accept))
+            .collect();
+        push_key_clause(&mut spans, &accept_keys, accept_label);
+    }
 
     if hint.include_space_toggle {
         push_key_clause(

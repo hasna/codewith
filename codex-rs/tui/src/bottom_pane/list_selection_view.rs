@@ -154,6 +154,20 @@ pub(crate) struct SelectionItem {
     pub disabled_reason: Option<String>,
 }
 
+impl SelectionItem {
+    /// Whether accepting this row drills one level deeper into the menu tree.
+    ///
+    /// This is the single source of truth for tree navigation: `move_right` only fires on rows
+    /// that answer `true`, and footer hints only advertise a drill-in key when a menu contains
+    /// such a row. Toggle rows (no actions) and rows that merely close the view do not qualify.
+    pub(crate) fn opens_child_view(&self) -> bool {
+        !self.is_disabled
+            && self.disabled_reason.is_none()
+            && !self.actions.is_empty()
+            && self.dismiss_parent_on_child_accept
+    }
+}
+
 /// Construction-time configuration for [`ListSelectionView`].
 ///
 /// This config is consumed once by [`ListSelectionView::new`]. After
@@ -1014,12 +1028,7 @@ impl BottomPaneView for ListSelectionView {
                     .selected_idx
                     .and_then(|idx| self.filtered_indices.get(idx).copied())
                     .and_then(|actual_idx| self.active_items().get(actual_idx))
-                    .is_some_and(|item| {
-                        !item.is_disabled
-                            && item.disabled_reason.is_none()
-                            && !item.actions.is_empty()
-                            && item.dismiss_parent_on_child_accept
-                    });
+                    .is_some_and(SelectionItem::opens_child_view);
                 if selected_opens_child {
                     self.accept();
                 }
