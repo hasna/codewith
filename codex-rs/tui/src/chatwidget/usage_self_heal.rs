@@ -112,6 +112,32 @@ impl ChatWidget {
         self.maybe_send_next_queued_input()
     }
 
+    /// Re-queue the interrupted turn at the front of the input queue WITHOUT sending it, so a
+    /// pending auth-profile auto-switch resumes it on the *new* profile once the switch is
+    /// applied. The `SwitchAuthProfile` handler drains the queue via `resume_queued_input`
+    /// after it submits the profile override, guaranteeing the turn re-runs on the healthy
+    /// profile. Sending here would race the switch and re-run the turn on the still-exhausted
+    /// profile. Returns whether a turn was re-queued.
+    pub(super) fn requeue_failed_turn_for_auth_profile_switch(&mut self) -> bool {
+        let Some(submitted) = self.usage_self_heal.last_submitted_turn.take() else {
+            return false;
+        };
+        self.usage_self_heal.pending_retry = None;
+        self.usage_self_heal.consecutive_retries = 0;
+        self.input_queue.queued_user_messages.push_front(
+            QueuedUserMessage::new_with_shell_escape_policy(
+                submitted.user_message,
+                QueuedInputAction::Plain,
+                submitted.shell_escape_policy,
+            ),
+        );
+        self.input_queue
+            .queued_user_message_history_records
+            .push_front(submitted.history_record);
+        self.refresh_pending_input_preview();
+        true
+    }
+
     pub(super) fn maybe_schedule_usage_self_heal_retry(
         &mut self,
         kind: UsageSelfHealErrorKind,
