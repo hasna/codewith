@@ -111,6 +111,19 @@ async fn admit_run(
     params: &BackgroundAgentRunCreateParams,
     max_active_runs: i64,
 ) -> anyhow::Result<(BackgroundAgentRun, bool)> {
+    let snapshot_params = admission_snapshot_params(params);
+    let (run, created, _, _, _) = runtime
+        .admit_background_agent_run(
+            params,
+            &admission_start_payload(params),
+            &snapshot_params,
+            max_active_runs,
+        )
+        .await?;
+    Ok((run, created))
+}
+
+fn admission_start_payload(params: &BackgroundAgentRunCreateParams) -> serde_json::Value {
     let prompt = format!(
         "prompt for {}",
         params
@@ -118,7 +131,18 @@ async fn admit_run(
             .as_deref()
             .unwrap_or(params.id.as_str())
     );
-    let snapshot_params = BackgroundAgentExecutionSnapshotParams {
+    json!({
+        "cwd": "/tmp/admission-test",
+        "prompt": prompt,
+        "promptSnapshotRef": params.prompt_snapshot_ref,
+        "initialGoalObjective": "test admission",
+    })
+}
+
+fn admission_snapshot_params(
+    params: &BackgroundAgentRunCreateParams,
+) -> BackgroundAgentExecutionSnapshotParams {
+    BackgroundAgentExecutionSnapshotParams {
         run_id: params.id.clone(),
         snapshot_kind: "initial_execution_context".to_string(),
         payload_json: json!({
@@ -129,6 +153,7 @@ async fn admit_run(
             "model": "test-model",
             "provider": "test-provider",
             "serviceTier": "default",
+            "authProfileRef": params.auth_profile_ref,
             "configFingerprint": params.config_fingerprint,
             "versionFingerprint": params.version_fingerprint,
             "packageFingerprint": "codex-state:test",
@@ -136,21 +161,7 @@ async fn admit_run(
         }),
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
         config_fingerprint: params.config_fingerprint.clone(),
-    };
-    let (run, created, _, _, _) = runtime
-        .admit_background_agent_run(
-            params,
-            &json!({
-                "cwd": "/tmp/admission-test",
-                "prompt": prompt,
-                "promptSnapshotRef": params.prompt_snapshot_ref,
-                "initialGoalObjective": "test admission",
-            }),
-            &snapshot_params,
-            max_active_runs,
-        )
-        .await?;
-    Ok((run, created))
+    }
 }
 
 #[tokio::test]
@@ -245,6 +256,45 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() ->
         "initial_execution_context"
     );
     sqlx::query(
+        "DELETE FROM background_agent_lifecycle_receipts \
+         WHERE run_id = ? AND event_type = 'agent.admitted'",
+    )
+    .bind(first.id.as_str())
+    .execute(runtime.pool.as_ref())
+    .await?;
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                first.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                first.id.as_str(),
+                "supervisor-without-admission-receipt",
+                "lease-without-admission-receipt",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+            .is_none()
+    );
+    let (_, recovered) = admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
+    assert!(!recovered);
+    assert!(
+        runtime
+            .background_agent_admission_is_ready(
+                first.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    sqlx::query(
         "DELETE FROM background_agent_execution_snapshots \
          WHERE run_id = ? AND snapshot_kind = 'initial_execution_context'",
     )
@@ -256,6 +306,7 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() ->
             .background_agent_admission_is_ready(
                 first.id.as_str(),
                 "codewith.background-agent.admission.v1",
+                "codex-state:test",
             )
             .await?
     );
@@ -266,6 +317,7 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() ->
                 "supervisor-after-corruption",
                 "lease-after-corruption",
                 "codewith.background-agent.admission.v1",
+                "codex-state:test",
             )
             .await?
             .is_none()
@@ -408,6 +460,273 @@ async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> an
 }
 
 #[tokio::test]
+async fn partial_admission_recovery_cannot_bypass_full_capacity() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let partial_params = admission_params("partial-run", "partial-key", "profile-a");
+    runtime.create_background_agent_run(&partial_params).await?;
+    let (active_run, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("active-run", "active-key", "profile-a"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+
+    let error = admit_run(
+        runtime.as_ref(),
+        &partial_params,
+        /*max_active_runs*/ 1,
+    )
+    .await
+    .expect_err("recovering a partial admission must consume capacity atomically");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_admission_capacity_exceeded")
+    );
+    assert!(
+        runtime
+            .list_background_agent_events_after(
+                "partial-run",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
+            .await?
+            .is_empty()
+    );
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                "partial-run",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                active_run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                active_run.generation,
+                "capacity released for partial recovery",
+                &json!({"reason": "capacity_released"}),
+            )
+            .await?
+    );
+    let (recovered, created) = admit_run(
+        runtime.as_ref(),
+        &partial_params,
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(!created);
+    assert_eq!(recovered.id, "partial-run");
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(
+                "partial-run",
+                /*after_seq*/ None,
+                /*limit*/ None,
+            )
+            .await?
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>(),
+        vec!["agent.admitted".to_string(), "agent.started".to_string()]
+    );
+    assert!(
+        runtime
+            .background_agent_admission_is_ready(
+                "partial-run",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_admission_recovery_requires_exact_persisted_execution_identity()
+-> anyhow::Result<()> {
+    let field_cases = [
+        ("permission missing", "permissionProfile", None),
+        (
+            "permission different",
+            "permissionProfile",
+            Some(json!({"type": "danger-full-access"})),
+        ),
+        ("model missing", "model", None),
+        ("model different", "model", Some(json!("other-model"))),
+        ("workspace missing", "workspaceRoots", None),
+        (
+            "workspace different",
+            "workspaceRoots",
+            Some(json!(["/tmp/other-workspace"])),
+        ),
+        ("provider missing", "provider", None),
+        (
+            "provider different",
+            "provider",
+            Some(json!("other-provider")),
+        ),
+        ("service tier missing", "serviceTier", None),
+        (
+            "service tier different",
+            "serviceTier",
+            Some(json!("priority")),
+        ),
+        ("auth profile missing", "authProfileRef", None),
+        (
+            "auth profile different",
+            "authProfileRef",
+            Some(json!("profile-b")),
+        ),
+        ("package missing", "packageFingerprint", None),
+        (
+            "package different",
+            "packageFingerprint",
+            Some(json!("codex-state:other")),
+        ),
+        ("recovery policy missing", "recoveryPolicy", None),
+        (
+            "recovery policy different",
+            "recoveryPolicy",
+            Some(json!("restart_from_beginning")),
+        ),
+    ];
+    for (index, (case, field, stored_value)) in field_cases.into_iter().enumerate() {
+        let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+        let params = admission_params(
+            format!("partial-identity-{index}").as_str(),
+            format!("partial-identity-key-{index}").as_str(),
+            "profile-a",
+        );
+        runtime.create_background_agent_run(&params).await?;
+        let mut stored_snapshot = admission_snapshot_params(&params);
+        let stored_payload = stored_snapshot
+            .payload_json
+            .as_object_mut()
+            .expect("test execution snapshot must be an object");
+        match stored_value {
+            Some(value) => {
+                stored_payload.insert(field.to_string(), value);
+            }
+            None => {
+                stored_payload.remove(field);
+            }
+        }
+        runtime
+            .create_background_agent_execution_snapshot(&stored_snapshot)
+            .await?;
+
+        let error = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1)
+            .await
+            .expect_err(case);
+        assert!(
+            error
+                .to_string()
+                .contains("background_agent_admission_identity_mismatch"),
+            "{case}: {error}"
+        );
+    }
+
+    for (index, (case, recovery_policy, config_fingerprint)) in [
+        (
+            "recovery policy column different",
+            "restart_from_beginning",
+            Some("config-v1"),
+        ),
+        (
+            "config fingerprint column missing",
+            "abort_mid_turn_resume_at_safe_boundary",
+            None,
+        ),
+        (
+            "config fingerprint column different",
+            "abort_mid_turn_resume_at_safe_boundary",
+            Some("config-v2"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+        let params = admission_params(
+            format!("partial-column-{index}").as_str(),
+            format!("partial-column-key-{index}").as_str(),
+            "profile-a",
+        );
+        runtime.create_background_agent_run(&params).await?;
+        let mut stored_snapshot = admission_snapshot_params(&params);
+        stored_snapshot.recovery_policy = recovery_policy.to_string();
+        stored_snapshot.config_fingerprint = config_fingerprint.map(str::to_string);
+        runtime
+            .create_background_agent_execution_snapshot(&stored_snapshot)
+            .await?;
+
+        let error = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 1)
+            .await
+            .expect_err(case);
+        assert!(
+            error
+                .to_string()
+                .contains("background_agent_admission_identity_mismatch"),
+            "{case}: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compatible_claim_rejects_persisted_runtime_package_skew() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let (run, created) = admit_run(
+        runtime.as_ref(),
+        &admission_params("package-run", "package-key", "profile-a"),
+        /*max_active_runs*/ 1,
+    )
+    .await?;
+    assert!(created);
+    assert!(
+        !runtime
+            .background_agent_admission_is_ready(
+                run.id.as_str(),
+                "codewith.background-agent.admission.v1",
+                "codex-state:next",
+            )
+            .await?
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "newer-supervisor",
+                "newer-lease",
+                "codewith.background-agent.admission.v1",
+                "codex-state:next",
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        runtime
+            .claim_background_agent_supervisor_compatible(
+                run.id.as_str(),
+                "compatible-supervisor",
+                "compatible-lease",
+                "codewith.background-agent.admission.v1",
+                "codex-state:test",
+            )
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics()
 -> anyhow::Result<()> {
     let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
@@ -519,6 +838,103 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
         error
             .to_string()
             .contains("background agent lifecycle receipt key exceeds")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> anyhow::Result<()> {
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let run = create_run_with_id(runtime.as_ref(), "stop-retry").await?;
+    let stop_diagnostics = json!({"reason": "operator_requested"});
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                "operator requested stop",
+                &stop_diagnostics,
+            )
+            .await?
+    );
+    let first_stop_events = runtime
+        .list_background_agent_events_after(run.id.as_str(), None, None)
+        .await?;
+    assert!(
+        runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                "operator requested stop",
+                &stop_diagnostics,
+            )
+            .await?
+    );
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(run.id.as_str(), None, None)
+            .await?,
+        first_stop_events
+    );
+    for (status_reason, diagnostics) in [
+        ("different stop reason", stop_diagnostics.clone()),
+        (
+            "operator requested stop",
+            json!({"reason": "different_request"}),
+        ),
+    ] {
+        let error = runtime
+            .request_background_agent_stop_for_generation(
+                run.id.as_str(),
+                /*expected_supervisor_id*/ None,
+                run.generation,
+                status_reason,
+                &diagnostics,
+            )
+            .await
+            .expect_err("conflicting stop receipt retry must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("background agent lifecycle receipt identity mismatch")
+        );
+    }
+
+    let delete_run = create_run_with_id(runtime.as_ref(), "delete-retry").await?;
+    assert!(
+        runtime
+            .request_background_agent_delete(delete_run.id.as_str())
+            .await?
+    );
+    let first_delete_events = runtime
+        .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+        .await?;
+    assert!(
+        runtime
+            .request_background_agent_delete(delete_run.id.as_str())
+            .await?
+    );
+    assert_eq!(
+        runtime
+            .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+            .await?,
+        first_delete_events
+    );
+    sqlx::query("UPDATE background_agent_runs SET status_reason = ? WHERE id = ?")
+        .bind("conflicting delete reason")
+        .bind(delete_run.id.as_str())
+        .execute(runtime.pool.as_ref())
+        .await?;
+    let error = runtime
+        .request_background_agent_delete(delete_run.id.as_str())
+        .await
+        .expect_err("conflicting persisted delete reason must fail receipt replay");
+    assert!(
+        error
+            .to_string()
+            .contains("background agent lifecycle receipt identity mismatch")
     );
     Ok(())
 }

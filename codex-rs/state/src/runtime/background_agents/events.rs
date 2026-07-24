@@ -97,14 +97,32 @@ pub(in crate::runtime) async fn append_background_agent_lifecycle_receipt_in_tx(
         return Ok(event);
     }
 
-    let payload_json = crate::redacted_local_state_json(&serde_json::json!({
-        "receiptKey": receipt_key,
-        "runId": run_id,
-        "generation": generation,
-        "attempt": attempt,
-        "occurredAt": now,
-        "diagnostics": diagnostics_json,
-    }));
+    let mut payload = diagnostics_json
+        .get("eventPayload")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(event_payload) = diagnostics_json.get("eventPayload")
+        && !event_payload.is_object()
+    {
+        payload.insert("eventPayload".to_string(), event_payload.clone());
+    }
+    payload.insert(
+        "receiptKey".to_string(),
+        serde_json::Value::String(receipt_key.to_string()),
+    );
+    payload.insert(
+        "runId".to_string(),
+        serde_json::Value::String(run_id.to_string()),
+    );
+    payload.insert("generation".to_string(), generation.into());
+    payload.insert(
+        "attempt".to_string(),
+        attempt.map_or(serde_json::Value::Null, Into::into),
+    );
+    payload.insert("occurredAt".to_string(), now.into());
+    payload.insert("diagnostics".to_string(), diagnostics_json.clone());
+    let payload_json = crate::redacted_local_state_json(&serde_json::Value::Object(payload));
     let serialized_payload = serde_json::to_string(&payload_json)?;
     let seq: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM background_agent_events WHERE run_id = ?",
@@ -386,7 +404,10 @@ LIMIT ?
         let result = sqlx::query(
             r#"
 DELETE FROM background_agent_events
-WHERE run_id = ? AND seq < ?
+WHERE
+    run_id = ?
+    AND seq < ?
+    AND event_type NOT IN ('agent.started', 'agent.startRecovered')
             "#,
         )
         .bind(run_id)

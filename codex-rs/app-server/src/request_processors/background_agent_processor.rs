@@ -65,6 +65,7 @@ use codex_background_agent::BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH;
 use codex_background_agent::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 use codex_background_agent::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
+use codex_background_agent::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionSnapshot;
@@ -119,6 +120,7 @@ impl BackgroundAgentRequestProcessor {
     pub(super) async fn agent_start_inner(
         &self,
         mut params: AgentStartParams,
+        required_managed_worktree_id: Option<&str>,
     ) -> Result<AgentStartResponse, JSONRPCErrorError> {
         let state_db = self.state_db()?;
         normalize_agent_start_schema(&mut params)?;
@@ -197,6 +199,8 @@ impl BackgroundAgentRequestProcessor {
                 initial_goal_objective: initial_goal_objective.as_deref(),
                 execution_context: execution_context.as_ref(),
                 recovery_policy: recovery_policy.as_str(),
+                auth_profile_ref: auth_profile_ref.as_deref(),
+                required_managed_worktree_id,
                 config_fingerprint: config_fingerprint.as_deref(),
                 version_fingerprint: version_fingerprint.as_deref(),
             });
@@ -1039,6 +1043,8 @@ struct InitialExecutionSnapshotPayloadParams<'a> {
     initial_goal_objective: Option<&'a str>,
     execution_context: Option<&'a AgentExecutionContextParams>,
     recovery_policy: &'a str,
+    auth_profile_ref: Option<&'a str>,
+    required_managed_worktree_id: Option<&'a str>,
     config_fingerprint: Option<&'a str>,
     version_fingerprint: Option<&'a str>,
 }
@@ -1093,13 +1099,11 @@ fn initial_execution_snapshot_payload(
         "maxTokens": params
             .execution_context
             .and_then(|context| context.max_tokens),
+        "authProfileRef": params.auth_profile_ref,
+        "managedWorktreeId": params.required_managed_worktree_id,
         "configFingerprint": params.config_fingerprint,
         "versionFingerprint": params.version_fingerprint,
-        "packageFingerprint": format!(
-            "{}:{}",
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        ),
+        "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
         "recoveryPolicy": params.recovery_policy,
         "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
     })
@@ -1219,18 +1223,6 @@ fn map_background_agent_event_replay_error(err: anyhow::Error) -> JSONRPCErrorEr
     } else {
         internal_error(format!("failed to list background agent events: {message}"))
     }
-}
-
-async fn append_background_agent_event_with_retry(
-    state_db: &codex_state::StateRuntime,
-    run_id: &str,
-    event_type: &str,
-    payload_json: &Value,
-) -> anyhow::Result<BackgroundAgentEvent> {
-    retry_transient_sqlite_busy("append background agent event", || {
-        state_db.append_event(run_id, event_type, payload_json)
-    })
-    .await
 }
 
 fn decode_offset_cursor(cursor: Option<&str>) -> Result<usize, JSONRPCErrorError> {
