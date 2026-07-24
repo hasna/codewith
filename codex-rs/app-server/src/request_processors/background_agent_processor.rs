@@ -93,7 +93,6 @@ use codex_rollout::StateDbHandle;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
 use codex_state::ManagedWorktreeDetachParams;
-use serde_json::Value;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
