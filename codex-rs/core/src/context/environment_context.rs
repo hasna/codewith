@@ -139,11 +139,7 @@ impl SessionContext {
         tmux_session: Option<String>,
         tmux_window: Option<String>,
     ) -> Option<Self> {
-        if id.is_none()
-            && profile_id.is_none()
-            && tmux_session.is_none()
-            && tmux_window.is_none()
-        {
+        if id.is_none() && profile_id.is_none() && tmux_session.is_none() && tmux_window.is_none() {
             return None;
         }
         Some(Self {

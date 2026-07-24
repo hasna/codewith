@@ -408,11 +408,7 @@ fn equals_except_shell_detects_tmux_window_rename() {
         Some("before".to_string()),
     );
     let mut after = before.clone();
-    after
-        .session
-        .as_mut()
-        .expect("session context")
-        .tmux_window = Some("after".to_string());
+    after.session.as_mut().expect("session context").tmux_window = Some("after".to_string());
 
     assert!(!before.equals_except_shell(&after));
 }

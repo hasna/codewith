@@ -265,6 +265,10 @@ impl TurnContext {
 
         Self {
             thread_id: self.thread_id,
+            session_id: self.session_id,
+            profile_id: self.profile_id.clone(),
+            tmux_session: self.tmux_session.clone(),
+            tmux_window: self.tmux_window.clone(),
             sub_id: self.sub_id.clone(),
             trace_id: self.trace_id.clone(),
             realtime_active: self.realtime_active,
