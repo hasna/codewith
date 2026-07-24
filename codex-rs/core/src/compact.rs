@@ -571,8 +571,13 @@ async fn drain_to_completed(
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
 ) -> CodexResult<()> {
-    let cancellation_token = CancellationToken::new();
-    built_tools(sess, turn_context, &cancellation_token).await?;
+    // AuthCapsule sessions must fail closed before a local compaction attempt reaches the
+    // model. Other profiles skip the router rebuild: `ensure_policy_ready` is a no-op for
+    // them and this runs once per compaction attempt.
+    if turn_context.config.is_infinity_agent() {
+        let cancellation_token = CancellationToken::new();
+        built_tools(sess, turn_context, &cancellation_token).await?;
+    }
     let mut stream = client_session
         .stream(
             prompt,
