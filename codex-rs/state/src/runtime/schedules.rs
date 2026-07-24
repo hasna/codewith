@@ -322,7 +322,18 @@ ORDER BY status, next_run_at_ms IS NULL, next_run_at_ms, created_at_ms
         let now = Utc::now();
         let now_ms = datetime_to_epoch_millis(now);
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let sql = schedule_returning(
+        // Only non-active transitions release the lease. `lease_id` must stay
+        // out of the SET list otherwise: `UPDATE OF lease_id` triggers such as
+        // `thread_schedules_ignore_legacy_live_owner_claim` fire on the mere
+        // mention of the column and would silently drop the whole update.
+        let release_lease_clause = if matches!(status, crate::ThreadScheduleStatus::Active) {
+            ""
+        } else {
+            r#"
+    lease_id = NULL,
+    lease_expires_at_ms = NULL,"#
+        };
+        let sql = schedule_returning(&format!(
             r#"
 UPDATE thread_schedules
 SET
@@ -336,14 +347,12 @@ SET
     status = ?,
     next_run_at_ms = CASE WHEN ? = 'expired' THEN NULL ELSE ? END,
     expires_at_ms = ?,
-    failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,
-    lease_id = CASE WHEN ? = 'active' THEN lease_id ELSE NULL END,
-    lease_expires_at_ms = CASE WHEN ? = 'active' THEN lease_expires_at_ms ELSE NULL END,
+    failure_count = CASE WHEN ? THEN 0 ELSE failure_count END,{release_lease_clause}
     updated_at_ms = ?
 WHERE schedule_id = ?
 RETURNING
-"#,
-        );
+"#
+        ));
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(prompt)
             .bind(prompt_source.as_str())
@@ -357,8 +366,6 @@ RETURNING
             .bind(next_run_at.map(datetime_to_epoch_millis))
             .bind(expires_at.map(datetime_to_epoch_millis))
             .bind(reset_failure_count)
-            .bind(status.as_str())
-            .bind(status.as_str())
             .bind(now_ms)
             .bind(schedule_id)
             .fetch_optional(&mut *tx)
@@ -1036,8 +1043,20 @@ RETURNING
             .bind(reaped_expired_run)
             .bind(now_ms)
             .bind(selected_schedule.schedule_id.as_str())
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
+        let Some(schedule_row) = schedule_row else {
+            // `thread_schedules_ignore_legacy_live_owner_claim` silently drops
+            // the lease update (RAISE(IGNORE)) when a legacy, non-owner-scoped
+            // lease is claimed while a local session is live. Treat that as an
+            // unclaimed schedule and discard the speculative reap above so the
+            // live owner keeps ownership of its runs.
+            tx.rollback().await?;
+            if let Some(goal_tx) = goal_tx {
+                let _ = goal_tx.rollback().await;
+            }
+            return Ok(None);
+        };
         let schedule = thread_schedule_from_row(&schedule_row)?;
         let scheduled_for_ms = match target {
             ThreadScheduleClaimTarget::Due => schedule.next_run_at.map(datetime_to_epoch_millis),
@@ -4307,6 +4326,58 @@ mod tests {
             },
             resumed
         );
+    }
+
+    #[tokio::test]
+    async fn update_active_thread_schedule_applies_while_legacy_lease_and_live_owner_exist() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id(/*id*/ 15);
+        upsert_test_thread(&runtime, thread_id).await;
+        let now = at(Utc::now().timestamp());
+        let schedule =
+            create_interval_schedule(&runtime, thread_id, "editable task", Some(now)).await;
+        runtime
+            .thread_schedules()
+            .claim_due_thread_schedule(now, "legacy-lease", Duration::from_secs(300))
+            .await
+            .expect("legacy claim should succeed before a session is live")
+            .expect("schedule should claim");
+        runtime
+            .local_active_sessions()
+            .heartbeat_session(LocalActiveSessionHeartbeatParams {
+                thread_id,
+                owner_id: "owner-a".to_string(),
+                session_id: "session-a".to_string(),
+                pid: Some(100),
+                now,
+            })
+            .await
+            .expect("active session should heartbeat");
+
+        // `thread_schedules_ignore_legacy_live_owner_claim` fires for any
+        // update that mentions `lease_id`, so an active-status edit must leave
+        // the lease columns untouched or the whole update is silently dropped.
+        let updated = runtime
+            .thread_schedules()
+            .update_thread_schedule(
+                &schedule.schedule_id,
+                ThreadScheduleUpdate {
+                    prompt: Some("edited task".to_string()),
+                    prompt_source: None,
+                    schedule: None,
+                    timezone: None,
+                    status: Some(crate::ThreadScheduleStatus::Active),
+                    next_run_at: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("active update should not fail")
+            .expect("active update should apply while a legacy lease is held");
+
+        assert_eq!("edited task", updated.prompt);
+        assert_eq!(crate::ThreadScheduleStatus::Active, updated.status);
+        assert_eq!(Some("legacy-lease".to_string()), updated.lease_id);
     }
 
     #[tokio::test]
