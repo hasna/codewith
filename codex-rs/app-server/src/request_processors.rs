@@ -213,6 +213,8 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
+use codex_app_server_protocol::ThreadContinueParams;
+use codex_app_server_protocol::ThreadContinueResponse;
 use codex_app_server_protocol::ThreadDecrementElicitationParams;
 use codex_app_server_protocol::ThreadDecrementElicitationResponse;
 use codex_app_server_protocol::ThreadExternalAgentCancelParams;

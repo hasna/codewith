@@ -46,6 +46,7 @@ pub enum SlashCommand {
     New,
     Archive,
     Resume,
+    Continue,
     Tmux,
     Fork,
     App,
@@ -138,6 +139,7 @@ impl SlashCommand {
             SlashCommand::Pr => "inspect GitHub pull requests",
             SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
+            SlashCommand::Continue => "continue another session in this chat",
             SlashCommand::Tmux => "move this session into tmux",
             SlashCommand::Archive => "archive this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
@@ -254,6 +256,7 @@ impl SlashCommand {
                 | SlashCommand::Side
                 | SlashCommand::Btw
                 | SlashCommand::Resume
+                | SlashCommand::Continue
                 | SlashCommand::Tmux
                 | SlashCommand::SandboxReadRoot
         )
@@ -281,6 +284,7 @@ impl SlashCommand {
             SlashCommand::New
             | SlashCommand::Archive
             | SlashCommand::Resume
+            | SlashCommand::Continue
             | SlashCommand::Tmux
             | SlashCommand::Fork
             | SlashCommand::Init
@@ -712,6 +716,7 @@ mod tests {
             SlashCommand::Provider,
             SlashCommand::Config,
             SlashCommand::Resume,
+            SlashCommand::Continue,
             SlashCommand::Tmux,
             SlashCommand::Variant,
         ];
@@ -761,6 +766,17 @@ mod tests {
                 .iter()
                 .any(|(name, command)| *name == "pair" && *command == SlashCommand::Pair)
         );
+    }
+
+    #[test]
+    fn continue_command_requires_inline_args_and_waits_for_idle_session() {
+        assert_eq!(SlashCommand::Continue.command(), "continue");
+        assert_eq!(
+            SlashCommand::Continue.description(),
+            "continue another session in this chat"
+        );
+        assert!(SlashCommand::Continue.supports_inline_args());
+        assert!(!SlashCommand::Continue.available_during_task());
     }
 
     #[test]

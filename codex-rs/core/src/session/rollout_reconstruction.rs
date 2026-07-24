@@ -84,6 +84,19 @@ fn finalize_active_segment<'a>(
 }
 
 impl Session {
+    /// Crate-visible view over [`Self::reconstruct_history_from_rollout`] that returns only the
+    /// rebuilt model history, so callers outside this module do not need the module-private
+    /// reconstruction bundle.
+    pub(crate) async fn reconstruct_history_items_from_rollout(
+        &self,
+        turn_context: &TurnContext,
+        rollout_items: &[RolloutItem],
+    ) -> Vec<ResponseItem> {
+        self.reconstruct_history_from_rollout(turn_context, rollout_items)
+            .await
+            .history
+    }
+
     pub(super) async fn reconstruct_history_from_rollout(
         &self,
         turn_context: &TurnContext,

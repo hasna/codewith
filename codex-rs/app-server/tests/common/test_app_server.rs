@@ -100,6 +100,7 @@ use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadContinueParams;
 use codex_app_server_protocol::ThreadExternalAgentCancelParams;
 use codex_app_server_protocol::ThreadExternalAgentPermissionRespondParams;
 use codex_app_server_protocol::ThreadExternalAgentStartParams;
@@ -1240,6 +1241,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/inject_items", params).await
+    }
+
+    /// Send a `thread/continue` JSON-RPC request (v2).
+    pub async fn send_thread_continue_request(
+        &mut self,
+        params: ThreadContinueParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/continue", params).await
     }
 
     /// Send a `command/exec` JSON-RPC request (v2).

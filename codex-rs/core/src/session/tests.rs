@@ -10523,6 +10523,37 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
 }
 
 #[tokio::test]
+async fn session_continuation_rejects_active_destination_without_injecting() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+    let history_before = sess.clone_history().await.raw_items().to_vec();
+
+    let err = sess
+        .record_session_continuation_if_idle("source recap".to_string())
+        .await
+        .expect_err("active destination should reject continuation");
+
+    assert!(matches!(
+        err,
+        CodexErr::InvalidRequest(message)
+            if message == "destination thread became active before continuation was recorded"
+    ));
+    assert_eq!(
+        sess.clone_history().await.raw_items(),
+        history_before.as_slice()
+    );
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn try_start_user_input_turn_if_idle_rejects_active_turn_without_switching_auth()
 -> anyhow::Result<()> {
     let codex_home = tempfile::tempdir().expect("create temp dir");

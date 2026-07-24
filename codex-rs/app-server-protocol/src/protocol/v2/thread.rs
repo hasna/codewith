@@ -1900,6 +1900,23 @@ pub struct ThreadRecapResponse {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadContinueParams {
+    /// Loaded destination thread that will receive the generated continuation recap.
+    pub destination_thread_id: String,
+    /// Persisted source thread whose effective history should be summarized.
+    pub source_thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadContinueResponse {
+    pub summary: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadShellCommandParams {
     pub thread_id: String,
     /// Shell command string evaluated by the thread's configured shell.

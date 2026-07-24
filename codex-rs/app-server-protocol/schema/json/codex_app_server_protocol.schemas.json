@@ -1328,6 +1328,28 @@
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
+              "const": "thread/continue",
+              "title": "Thread/continueRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadContinueParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Thread/continueRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
               "const": "thread/shellCommand",
               "title": "Thread/shellCommandRequestMethod",
               "type": "string"
@@ -18584,6 +18606,38 @@
       "ThreadCompactStartResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ThreadCompactStartResponse",
+        "type": "object"
+      },
+      "ThreadContinueParams": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "destinationThreadId": {
+            "description": "Loaded destination thread that will receive the generated continuation recap.",
+            "type": "string"
+          },
+          "sourceThreadId": {
+            "description": "Persisted source thread whose effective history should be summarized.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "destinationThreadId",
+          "sourceThreadId"
+        ],
+        "title": "ThreadContinueParams",
+        "type": "object"
+      },
+      "ThreadContinueResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "title": "ThreadContinueResponse",
         "type": "object"
       },
       "ThreadExternalAgentEvent": {

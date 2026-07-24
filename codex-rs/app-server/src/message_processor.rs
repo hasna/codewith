@@ -1623,6 +1623,9 @@ impl MessageProcessor {
             ClientRequest::ThreadRecap { params, .. } => {
                 self.thread_processor.thread_recap(params).await
             }
+            ClientRequest::ThreadContinue { params, .. } => {
+                self.thread_processor.thread_continue(params).await
+            }
             ClientRequest::ThreadBackgroundTerminalsClean { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_clean(&request_id, params)
