@@ -514,6 +514,7 @@ async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() ->
         compatible.agent.version_fingerprint.as_deref(),
         Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION)
     );
+    let compatible_agent_id = compatible.agent.agent_id;
 
     let mut schema_mismatch = start_params(
         "reject mismatched schema",
@@ -530,7 +531,15 @@ async fn agent_start_rejects_profile_and_schema_mismatches_before_admission() ->
             .and_then(|data| data.get("errorCode")),
         Some(&json!(BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH))
     );
-    assert!(agent_list(&mut mcp).await?.data.is_empty());
+    assert_eq!(
+        agent_list(&mut mcp)
+            .await?
+            .data
+            .into_iter()
+            .map(|agent| agent.agent_id)
+            .collect::<Vec<_>>(),
+        vec![compatible_agent_id]
+    );
     Ok(())
 }
 

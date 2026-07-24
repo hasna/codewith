@@ -999,7 +999,7 @@ WHERE
             "statusReason": status_reason.as_str(),
         });
         let receipt_key = format!("delete:{generation}");
-        let event = super::events::append_background_agent_lifecycle_receipt_in_tx(
+        super::events::append_background_agent_lifecycle_receipt_in_tx(
             &mut tx,
             run_id,
             "agent.deleteRequested",
@@ -1020,6 +1020,11 @@ WHERE
             )
             .await?;
         }
+        let last_event_seq: i64 =
+            sqlx::query_scalar("SELECT last_event_seq FROM background_agent_runs WHERE id = ?")
+                .bind(run_id)
+                .fetch_one(&mut *tx)
+                .await?;
         let pending_interaction_count: i64 = sqlx::query_scalar(
             r#"
 SELECT COUNT(*)
@@ -1036,12 +1041,12 @@ WHERE run_id = ? AND status IN (?, ?)
             &mut tx,
             &BackgroundAgentStatusSnapshotParams {
                 run_id: run_id.to_string(),
-                seq: event.seq,
+                seq: last_event_seq,
                 status: next_status,
                 desired_state: BackgroundAgentDesiredState::Deleted,
                 summary: Some(status_reason.clone()),
                 pending_interaction_count,
-                last_event_seq: event.seq,
+                last_event_seq,
                 payload_json: serde_json::json!({
                     "phase": next_status.as_str(),
                     "reason": "delete_requested",
