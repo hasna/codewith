@@ -208,7 +208,7 @@ impl ChatWidget {
             // being silently dropped (which forced the user to re-type `go`). The pending
             // `SwitchAuthProfile { resume_queued_input: true }` drains the queue after the
             // profile override op is submitted, so the turn re-runs on the healthy profile.
-            self.requeue_failed_turn_for_auth_profile_switch();
+            self.requeue_failed_turn_at_front();
             return;
         }
         let retry_delay = self.maybe_schedule_usage_self_heal_retry(
