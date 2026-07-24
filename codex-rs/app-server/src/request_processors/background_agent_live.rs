@@ -2327,19 +2327,26 @@ async fn retry_pending_background_agent_worker_process_cleanup(
                     .lock()
                     .await
                     .remove(run_id.as_str());
-                if let Some(run) = context.state_db.get_run(run_id.as_str()).await?
-                    && run.desired_state == BackgroundAgentDesiredState::Running
-                    && run.supervisor_id.as_deref() == Some(context.supervisor_id.as_str())
-                    && run.status == BackgroundAgentRunStatus::Starting
-                {
-                    fail_claimed_background_agent_worker_process(
-                        context,
-                        run_id.as_str(),
-                        run.generation,
-                        "background-agent worker process bookkeeping failed",
-                        &json!({"reason": "worker_process_bookkeeping_failed"}),
+                if let Some(run) = context.state_db.get_run(run_id.as_str()).await? {
+                    finalize_stopped_background_agent_process_for_run(
+                        &context.state_db,
+                        &run,
+                        json!({"reason": "worker_process_cleanup_retry_succeeded"}),
                     )
                     .await?;
+                    if run.desired_state == BackgroundAgentDesiredState::Running
+                        && run.supervisor_id.as_deref() == Some(context.supervisor_id.as_str())
+                        && run.status == BackgroundAgentRunStatus::Starting
+                    {
+                        fail_claimed_background_agent_worker_process(
+                            context,
+                            run_id.as_str(),
+                            run.generation,
+                            "background-agent worker process bookkeeping failed",
+                            &json!({"reason": "worker_process_bookkeeping_failed"}),
+                        )
+                        .await?;
+                    }
                 }
                 retried.insert(run_id);
             }
@@ -5862,8 +5869,7 @@ done
     }
 
     #[tokio::test]
-    async fn post_spawn_event_failure_retries_tracked_worker_cleanup_after_stop_failure()
-    -> anyhow::Result<()> {
+    async fn post_spawn_event_failure_retry_finalizes_concurrent_stop() -> anyhow::Result<()> {
         let temp = TempDir::new()?;
         let state_db =
             codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
@@ -5877,7 +5883,7 @@ done
         let fail_stop = Arc::new(AtomicBool::new(true));
         let fail_stop_for_hook = Arc::clone(&fail_stop);
         let context = BackgroundAgentProcessSupervisorContext {
-            state_db,
+            state_db: Arc::clone(&state_db),
             supervisor_id: "process-supervisor-test".to_string(),
             active_worker_processes: Arc::clone(&active_worker_processes),
             worker_process_cleanup_pending: Arc::new(Mutex::new(HashSet::new())),
@@ -5924,6 +5930,19 @@ done
         );
         assert!(worker_process_exists(descendant_pid)?);
 
+        state_db
+            .set_background_agent_desired_state(
+                "forced-stop-run",
+                BackgroundAgentDesiredState::Stopped,
+            )
+            .await?;
+        state_db
+            .update_background_agent_run_status(
+                "forced-stop-run",
+                BackgroundAgentRunStatus::Stopping,
+                Some("stop requested"),
+            )
+            .await?;
         fail_stop.store(false, Ordering::SeqCst);
         reconcile_background_agent_worker_processes(context, Some("forced-stop-run".to_string()))
             .await?;
@@ -5938,6 +5957,15 @@ done
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(active_worker_processes.lock().await.is_empty());
+        let run = state_db
+            .get_background_agent_run("forced-stop-run")
+            .await?
+            .expect("run should exist");
+        assert_eq!(run.status, BackgroundAgentRunStatus::Cancelled);
+        assert_eq!(
+            run.status_reason.as_deref(),
+            Some("worker process stopped after stop request")
+        );
         drop(fixture);
         assert!(!temp_path.exists());
         Ok(())
