@@ -1,5 +1,10 @@
 use super::*;
 
+enum AuthProfileUsageInvalidation<'a> {
+    AllProfiles,
+    Profile(&'a str),
+}
+
 impl ChatWidget {
     pub(crate) fn advance_rate_limit_reset_generation(&mut self) -> u64 {
         let Some(next_generation) = self.rate_limit_reset_generation.checked_add(1) else {
@@ -63,8 +68,8 @@ impl ChatWidget {
             self.auth_profile_credential_mutations_in_flight
                 .remove(profile);
         }
-        if credentials_changed && self.config.selected_auth_profile.as_deref() == Some(profile) {
-            self.invalidate_rate_limit_reset_state_after_account_update();
+        if credentials_changed {
+            self.invalidate_rate_limit_reset_state(AuthProfileUsageInvalidation::Profile(profile));
         }
     }
 
@@ -205,6 +210,45 @@ impl ChatWidget {
     }
 
     pub(crate) fn invalidate_rate_limit_reset_state_after_account_update(&mut self) {
+        self.invalidate_rate_limit_reset_state(AuthProfileUsageInvalidation::AllProfiles);
+    }
+
+    fn invalidate_rate_limit_reset_state(&mut self, scope: AuthProfileUsageInvalidation<'_>) {
+        // Per-profile usage caches always go, for every profile in scope: their
+        // credentials just changed, so any cached usage snapshot, heartbeat
+        // bookkeeping, or exhausted-reset suppression for them is stale.
+        let scope_covers_selected_profile = match scope {
+            AuthProfileUsageInvalidation::AllProfiles => {
+                self.auth_profile_rate_limit_snapshots_by_profile.clear();
+                self.auth_profile_usage_heartbeat_requested_at_by_profile
+                    .clear();
+                self.auth_profile_usage_heartbeat_failed_at_by_profile
+                    .clear();
+                self.auth_profile_usage_exhausted_reset_at_by_profile
+                    .clear();
+                true
+            }
+            AuthProfileUsageInvalidation::Profile(profile) => {
+                let covers_selected_profile =
+                    self.config.selected_auth_profile.as_deref() == Some(profile);
+                let profile = Some(profile.to_string());
+                self.auth_profile_rate_limit_snapshots_by_profile
+                    .remove(&profile);
+                self.auth_profile_usage_heartbeat_requested_at_by_profile
+                    .remove(&profile);
+                self.auth_profile_usage_heartbeat_failed_at_by_profile
+                    .remove(&profile);
+                self.auth_profile_usage_exhausted_reset_at_by_profile
+                    .remove(&profile);
+                covers_selected_profile
+            }
+        };
+        if !scope_covers_selected_profile {
+            // A credential mutation for a profile that is not selected must not
+            // disturb the selected profile's live snapshot or cancel its
+            // in-flight usage-limit reset state.
+            return;
+        }
         let automatic_reset_owned_failed_turn = self.automatic_usage_limit_reset_owns_failed_turn();
         self.advance_rate_limit_reset_generation();
         self.rate_limit_reset_credits = None;
@@ -219,6 +263,7 @@ impl ChatWidget {
         self.pending_post_reset_refresh = None;
         self.automatic_reset_opted_out_generation = None;
         self.usage_limit_auto_reset_key = None;
+        self.rate_limit_snapshots_by_limit_id.clear();
         self.auth_profile_auto_switch_snapshots_by_limit_id.clear();
         self.prepare_for_usage_limit_reset();
         if automatic_reset_owned_failed_turn {

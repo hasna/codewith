@@ -254,10 +254,9 @@ pub fn recommend_auth_profile(
                         };
                     }
                     Some(AuthProfileUsageHealth::Unknown) => {
-                        return AuthProfileUsageRecommendation {
-                            profile: (*candidate).clone(),
-                            reason: AuthProfileUsageRecommendationReason::SelectedUnknownFallback,
-                        };
+                        if first_unknown.is_none() {
+                            first_unknown = Some((*candidate).clone());
+                        }
                     }
                     Some(AuthProfileUsageHealth::Exhausted { .. }) | None => {}
                 }
@@ -671,6 +670,41 @@ mod tests {
                 Some("work"),
                 AuthProfileAutoSwitchStrategy::HighestAvailable,
                 &[Some("work".to_string()), Some("second".to_string())],
+                &health,
+            )
+        );
+    }
+
+    #[test]
+    fn ordered_recommendation_prefers_healthy_over_earlier_unknown() {
+        let health = vec![
+            (
+                Some("work".to_string()),
+                AuthProfileUsageHealth::Exhausted { retry_at: Some(1) },
+            ),
+            (Some("second".to_string()), AuthProfileUsageHealth::Unknown),
+            (
+                Some("third".to_string()),
+                AuthProfileUsageHealth::Healthy {
+                    remaining_percent: 20.0,
+                    resets_at: None,
+                },
+            ),
+        ];
+
+        assert_eq!(
+            AuthProfileUsageRecommendation {
+                profile: Some("third".to_string()),
+                reason: AuthProfileUsageRecommendationReason::SelectedOrderedHealthy,
+            },
+            recommend_auth_profile(
+                Some("work"),
+                AuthProfileAutoSwitchStrategy::Ordered,
+                &[
+                    Some("work".to_string()),
+                    Some("second".to_string()),
+                    Some("third".to_string()),
+                ],
                 &health,
             )
         );
