@@ -215,16 +215,35 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
         "agent.workerStarting"
     );
     assert_eq!(second_events_page.next_cursor, Some("event:2".to_string()));
-    let all_events =
-        agent_events_page(&mut restarted, &agent_id, /*cursor*/ None, Some(20)).await?;
-    let event_types = all_events
-        .data
+    // `agent.progress` was appended last, so the page has to cover every event the run itself
+    // journalled. That count depends on which extensions the app-server registry installs, so
+    // page through the journal instead of assuming it fits in one fixed-size page.
+    let mut all_event_types: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..32 {
+        let page = agent_events_page(&mut restarted, &agent_id, cursor, Some(20)).await?;
+        all_event_types.extend(page.data.iter().map(|event| event.event_type.clone()));
+        match page.next_cursor {
+            Some(next) if !page.data.is_empty() => cursor = Some(next),
+            _ => break,
+        }
+    }
+    let event_types = all_event_types
         .iter()
-        .map(|event| event.event_type.as_str())
-        .collect::<Vec<_>>();
-    assert!(event_types.contains(&"agent.workerRunning"));
-    assert!(event_types.contains(&"agent.completed"));
-    assert!(event_types.contains(&"agent.progress"));
+        .map(String::as_str)
+        .collect::<Vec<&str>>();
+    assert!(
+        event_types.contains(&"agent.workerRunning"),
+        "missing agent.workerRunning in {event_types:?}"
+    );
+    assert!(
+        event_types.contains(&"agent.completed"),
+        "missing agent.completed in {event_types:?}"
+    );
+    assert!(
+        event_types.contains(&"agent.progress"),
+        "missing agent.progress in {event_types:?}"
+    );
 
     state_db
         .compact_background_agent_events_before_seq(agent_id.as_str(), /*before_seq*/ 3)

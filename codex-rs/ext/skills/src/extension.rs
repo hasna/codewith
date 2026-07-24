@@ -32,6 +32,8 @@ use crate::catalog::SkillSourceKind;
 use crate::provider::HostSkillProvider;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
+use crate::ranking::DEFAULT_SKILL_MATCH_LIMIT;
+use crate::ranking::user_text_query;
 use crate::render::available_skills_fragment;
 use crate::render::truncate_main_prompt_contents;
 use crate::selection::collect_explicit_skill_mentions;
@@ -149,8 +151,10 @@ impl TurnInputContributor for SkillsExtension {
 
         let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
         let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
+        let user_query = user_text_query(&input.user_input);
         if config.include_instructions
-            && let Some(fragment) = available_skills_fragment(&catalog)
+            && let Some(fragment) =
+                available_skills_fragment(&catalog, &user_query, DEFAULT_SKILL_MATCH_LIMIT)
         {
             fragments.push(Box::new(fragment));
         }

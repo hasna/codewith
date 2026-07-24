@@ -608,8 +608,13 @@ describe("Codewith", () => {
 
       const payload = requests[0];
       expect(payload).toBeDefined();
-      const lastUser = payload!.json.input.at(-1);
-      expect(lastUser?.content?.[0]?.text).toBe("Describe file changes\n\nFocus on impacted tests");
+      // Contextual fragments (e.g. `<skills_instructions>`) are appended as additional user
+      // items, so assert the combined user text is present anywhere in the input instead of
+      // pinning it to a specific item/segment index.
+      const userTexts = payload!.json.input.flatMap((item) =>
+        (item.content ?? []).map((segment) => segment.text),
+      );
+      expect(userTexts).toContain("Describe file changes\n\nFocus on impacted tests");
     } finally {
       cleanup();
       await close();
