@@ -3753,6 +3753,7 @@ dependencies = [
  "codex-extension-api",
  "codex-protocol",
  "codex-tools",
+ "codex-utils-absolute-path",
  "codex-utils-output-truncation",
  "pretty_assertions",
  "schemars 1.2.1",

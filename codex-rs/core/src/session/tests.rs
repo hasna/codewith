@@ -10,6 +10,7 @@ use crate::context::TurnAborted;
 use crate::function_tool::FunctionCallError;
 use crate::session::handlers::inter_agent_communication;
 use crate::shell::default_user_shell;
+use crate::skills::SkillCatalogSearch;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills::render::SkillMetadataBudget;
 use crate::test_support::models_manager_with_provider;
@@ -9126,6 +9127,7 @@ fn emit_thread_start_skill_metrics_records_enabled_kept_and_truncated_values() {
     let rendered = build_available_skills(
         &outcome,
         SkillMetadataBudget::Characters(1),
+        SkillCatalogSearch::Available,
         SkillRenderSideEffects::ThreadStart {
             session_telemetry: &session_telemetry,
         },
@@ -9192,6 +9194,7 @@ fn emit_thread_start_skill_metrics_records_description_truncated_chars_without_o
     let rendered = build_available_skills(
         &outcome,
         SkillMetadataBudget::Characters(minimum_budget + 6),
+        SkillCatalogSearch::Available,
         SkillRenderSideEffects::ThreadStart {
             session_telemetry: &session_telemetry,
         },

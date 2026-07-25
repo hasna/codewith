@@ -42,8 +42,36 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Added
+
+- Skills now scale to large catalogs. When the full skill catalog does not fit
+  the 2% skills context budget, the developer message renders a small starter
+  list instead of every skill, and the model reaches the rest through a new
+  `skills.list` catalog-search tool (available in the app-server and MCP-server
+  extension registries). The starter list is dealt round-robin across skill
+  scopes, so bundled system skills cannot starve a workspace's own skills.
+- `skills.list` supports paging: `limit` (default 5, max 50) and `offset`
+  (max 1000), with a `next_offset` cursor in the response, so lower-ranked
+  matches are reachable without rewording the query. Ranking is lexical token
+  overlap with light plural/verb-form stemming, so `charts` finds a `chart`
+  skill; it has no synonym or embedding layer.
+- New `codex.thread.skills.deferred_total` metric reports how many skills were
+  held back from the starter list. `codex.thread.skills.truncated` now also
+  flags deferral, so a large catalog can no longer report a big drop in kept
+  skills alongside `truncated = 0`.
+
 ### Fixed
 
+- The starter-list cap only applies when it is actually needed: a catalog that
+  fits the skills context budget still renders in full, and an embedder that
+  installs no `skills.list` tool always gets the complete list rather than a
+  truncated one it cannot search past.
+- The per-turn ranked skills fragment no longer repeats the `How to use skills`
+  preamble already present in the developer-message skills block, saving roughly
+  2.5k characters on every turn that matches a skill.
+- Building the host skill catalog is no longer quadratic. It ran on every turn
+  and de-duplicated with a linear scan per insert over long common-prefix
+  filesystem paths.
 - Auth-profile auto-switch now resumes the interrupted turn on the new profile.
   When a turn fails on a rate-limited profile and no usage reset is available,
   the agent switches to a healthier profile and automatically re-runs the failed

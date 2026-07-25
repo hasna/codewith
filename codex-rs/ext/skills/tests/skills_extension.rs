@@ -344,24 +344,180 @@ async fn installed_extension_injects_available_catalog_and_selected_entrypoint()
             .is_empty()
     );
 
-    let next_turn_store = ExtensionData::new("turn-2");
-    let next_fragments = registry.turn_input_contributors()[0]
+    // A follow-up turn that still matches the catalog re-injects the ranked
+    // list (without re-injecting the skill body, which the turn-1 entrypoint
+    // already covered).
+    let matching_turn_store = ExtensionData::new("turn-2");
+    let matching_fragments = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-2".to_string(),
                 user_input: vec![UserInput::Text {
-                    text: "no skill this time".to_string(),
+                    text: "keep fixing the lint errors".to_string(),
                     text_elements: Vec::new(),
                 }],
                 environments: Vec::new(),
             },
             &session_store,
             &thread_store,
-            &next_turn_store,
+            &matching_turn_store,
         )
         .await;
 
-    assert!(next_fragments.is_empty());
+    assert_eq!(1, matching_fragments.len());
+    assert_eq!("developer", matching_fragments[0].role());
+    let matching_body = matching_fragments[0].render();
+    assert!(matching_body.starts_with(SKILLS_INSTRUCTIONS_OPEN_TAG));
+    assert!(matching_body.contains("lint-fix"));
+    // The `### How to use skills` preamble belongs to the developer-message
+    // `## Skills` block; repeating it here would duplicate ~2.5k characters on
+    // every matching turn.
+    assert!(matching_body.contains(codex_core_skills::TASK_RELEVANT_SKILLS_HEADING));
+    assert!(!matching_body.contains("### How to use skills"));
+    assert!(!matching_body.contains(codex_core_skills::SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS));
+
+    // Turns whose text shares no token with any skill contribute nothing. Note
+    // that this also swallows short continuations ("continue", "yes") because
+    // the ranker is purely lexical -- see the recall tests in `ranking.rs`.
+    let unrelated_turn_store = ExtensionData::new("turn-3");
+    let unrelated_fragments = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-3".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "no relevant request".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &unrelated_turn_store,
+        )
+        .await;
+
+    assert!(unrelated_fragments.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_list_pages_past_the_default_limit() -> TestResult {
+    // The starter list only ever shows a handful of skills, so the model must
+    // be able to walk the whole ranked catalog through `skills.list`. A `limit`
+    // that can only shrink the page, or a page with no continuation, would
+    // leave matches 6..N unreachable.
+    const TOTAL: usize = 24;
+    let entries = (0..TOTAL)
+        .map(|index| {
+            test_entry(
+                SkillSourceKind::Host,
+                "host",
+                &format!("host/lint-{index:02}"),
+                &format!("lint-{index:02}/SKILL.md"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries,
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+    });
+    let providers = SkillProviders::new().with_host_provider(provider);
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(&mut builder, providers);
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let session_source = SessionSource::Cli;
+    let config = default_config().await?;
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let turn_store = ExtensionData::new("turn-page");
+    registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-page".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "fix lint errors".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &turn_store,
+        )
+        .await;
+
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+
+    // Default page: five matches, explicitly continuable.
+    let first = call_tool(Arc::clone(&list_tool), "turn-page", json!({ "query": "lint" })).await?;
+    let first_names = match_names(&first);
+    assert_eq!(first_names.len(), 5);
+    assert_eq!(first["truncated"], json!(true));
+    assert_eq!(first["next_offset"], json!(5));
+
+    // Walk the remainder with the returned cursor; every skill is reachable.
+    let mut seen = first_names;
+    let mut offset = first["next_offset"].as_u64().expect("cursor");
+    loop {
+        let page = call_tool(
+            Arc::clone(&list_tool),
+            "turn-page",
+            json!({ "query": "lint", "offset": offset }),
+        )
+        .await?;
+        seen.extend(match_names(&page));
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset, "cursor must advance: {page}");
+                offset = next;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), TOTAL);
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        TOTAL
+    );
+
+    // `limit` can widen the page, not just narrow it.
+    let wide = call_tool(
+        Arc::clone(&list_tool),
+        "turn-page",
+        json!({ "query": "lint", "limit": 50 }),
+    )
+    .await?;
+    assert_eq!(match_names(&wide).len(), TOTAL);
+    assert_eq!(wide["next_offset"], Value::Null);
+    assert_eq!(wide["truncated"], json!(false));
+
+    // Paging past the end is well-formed and terminates.
+    let past_end = call_tool(
+        Arc::clone(&list_tool),
+        "turn-page",
+        json!({ "query": "lint", "offset": 100 }),
+    )
+    .await?;
+    assert_eq!(past_end["matches"], json!([]));
+    assert_eq!(past_end["next_offset"], Value::Null);
 
     Ok(())
 }
@@ -672,13 +828,25 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     let oversized_list_limit = call_tool(
         Arc::clone(&list_tool),
         "turn-tools",
-        json!({ "query": "package", "limit": 6 }),
+        json!({ "query": "package", "limit": 51 }),
     )
     .await;
     assert_eq!(
         oversized_list_limit,
         Err(FunctionCallError::RespondToModel(
-            "limit must be between 1 and 5".to_string()
+            "limit must be between 1 and 50".to_string()
+        ))
+    );
+    let oversized_list_offset = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package", "offset": 1_001 }),
+    )
+    .await;
+    assert_eq!(
+        oversized_list_offset,
+        Err(FunctionCallError::RespondToModel(
+            "offset must be at most 1000".to_string()
         ))
     );
 
@@ -1096,6 +1264,20 @@ fn test_codex_home() -> PathBuf {
         "codex-skills-extension-test-{}-{id}",
         std::process::id(),
     ))
+}
+
+fn match_names(response: &Value) -> Vec<String> {
+    response["matches"]
+        .as_array()
+        .unwrap_or_else(|| panic!("matches array in {response}"))
+        .iter()
+        .map(|entry| {
+            entry["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("match name in {response}"))
+                .to_string()
+        })
+        .collect()
 }
 
 fn read_request_keys(

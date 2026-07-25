@@ -57,6 +57,10 @@ pub const STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC: &str =
 pub const THREAD_STARTED_METRIC: &str = "codex.thread.started";
 pub const THREAD_SKILLS_ENABLED_TOTAL_METRIC: &str = "codex.thread.skills.enabled_total";
 pub const THREAD_SKILLS_KEPT_TOTAL_METRIC: &str = "codex.thread.skills.kept_total";
+/// Skills withheld from the model-visible starter list because the catalog did
+/// not fit the skills context budget. They remain reachable through the
+/// `skills.list` catalog-search tool.
+pub const THREAD_SKILLS_DEFERRED_TOTAL_METRIC: &str = "codex.thread.skills.deferred_total";
 pub const THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC: &str =
     "codex.thread.skills.description_truncated_chars";
 pub const THREAD_SKILLS_TRUNCATED_METRIC: &str = "codex.thread.skills.truncated";

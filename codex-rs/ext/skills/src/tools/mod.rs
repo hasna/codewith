@@ -29,7 +29,10 @@ mod read;
 mod schema;
 mod search;
 
-const SKILLS_NAMESPACE: &str = "skills";
+/// Shared with `codex-core-skills` so that core can check whether this
+/// catalog-search escape hatch exists before it defers any skill from the
+/// model-visible starter list.
+const SKILLS_NAMESPACE: &str = codex_core_skills::SKILLS_TOOL_NAMESPACE;
 const MAX_ARGUMENT_BYTES: usize = 16 * 1024;
 const MAX_HANDLE_BYTES: usize = 2_048;
 const MAX_OUTPUT_BYTES: usize = 32 * 1024;

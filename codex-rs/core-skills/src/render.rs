@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::model::SkillLoadOutcome;
 use crate::model::SkillMetadata;
 use codex_otel::SessionTelemetry;
+use codex_otel::THREAD_SKILLS_DEFERRED_TOTAL_METRIC;
 use codex_otel::THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC;
 use codex_otel::THREAD_SKILLS_ENABLED_TOTAL_METRIC;
 use codex_otel::THREAD_SKILLS_KEPT_TOTAL_METRIC;
@@ -17,7 +18,13 @@ use codex_utils_output_truncation::approx_token_count;
 
 const DEFAULT_SKILL_METADATA_CHAR_BUDGET: usize = 8_000;
 const SKILL_METADATA_CONTEXT_WINDOW_PERCENT: usize = 2;
-const MAX_STARTER_SKILLS: usize = 5;
+/// Upper bound on the starter list *once deferral is actually warranted*.
+///
+/// This is a ceiling, not a quota: [`build_available_skills`] only falls back to
+/// it when the whole prompt-visible catalog cannot be rendered inside the skills
+/// context budget *and* the embedder exposes a catalog-search tool the model can
+/// use to reach the rest. Small catalogs keep rendering in full.
+pub const MAX_STARTER_SKILLS: usize = 5;
 const SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS: usize = 100;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 pub const SKILL_DESCRIPTION_TRUNCATED_WARNING: &str = "Starter skill descriptions were shortened to fit the skills context budget. The full catalog remains searchable, but some starter descriptions are shorter.";
@@ -60,6 +67,35 @@ pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: Always consid
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
+
+/// Namespace of the extension-provided skill tools (`skills.list`,
+/// `skills.read`, ...). Shared so that core can tell whether the catalog-search
+/// escape hatch referenced by the prompt text above actually exists for a
+/// thread before it defers any skill.
+pub const SKILLS_TOOL_NAMESPACE: &str = "skills";
+/// Name of the catalog-search tool inside [`SKILLS_TOOL_NAMESPACE`].
+pub const SKILLS_LIST_TOOL_NAME: &str = "list";
+
+pub const TASK_RELEVANT_SKILLS_HEADING: &str = "## Task-relevant skills";
+pub const TASK_RELEVANT_SKILLS_INTRO: &str = "Additional catalog matches for this turn's request. The discovery, trigger, progressive-disclosure, and context-hygiene rules from the `## Skills` section above apply unchanged and are deliberately not repeated here.";
+
+/// Render the per-turn, ranked skill matches contributed by the skills
+/// extension.
+///
+/// This intentionally omits the `### How to use skills` preamble that
+/// [`render_available_skills_body`] emits: on any turn whose text matches a
+/// skill, both blocks land in the same request, and repeating ~2.5k characters
+/// of identical how-to-use guidance defeats the point of deferring the catalog
+/// in the first place.
+pub fn render_task_relevant_skills_body(skill_lines: &[String]) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(skill_lines.len().saturating_add(3));
+    lines.push(TASK_RELEVANT_SKILLS_HEADING.to_string());
+    lines.push(TASK_RELEVANT_SKILLS_INTRO.to_string());
+    lines.push("### Available skills".to_string());
+    lines.extend(skill_lines.iter().cloned());
+
+    format!("\n{}\n", lines.join("\n"))
+}
 
 pub fn render_available_skills_body(skill_root_lines: &[String], skill_lines: &[String]) -> String {
     let mut lines: Vec<String> = Vec::new();
@@ -143,6 +179,37 @@ pub struct AvailableSkills {
     pub warning_message: Option<String>,
 }
 
+/// Whether the embedder exposes a catalog-search tool (`skills.list`) that the
+/// model can call to reach skills held back from the rendered starter list.
+///
+/// The starter cap and the search tool are two halves of one contract: hiding
+/// part of the catalog is only acceptable when the model has a way to find the
+/// remainder. Embedders that build a thread with `empty_extension_registry()`
+/// (or otherwise skip `codex_skills_extension::install`) pass
+/// [`SkillCatalogSearch::Unavailable`] and always get the complete list, capped
+/// only by the context budget itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillCatalogSearch {
+    /// A catalog-search tool is installed for this thread.
+    Available,
+    /// No catalog-search tool is installed; nothing may be deferred.
+    Unavailable,
+}
+
+impl SkillCatalogSearch {
+    pub fn from_tool_available(tool_available: bool) -> Self {
+        if tool_available {
+            Self::Available
+        } else {
+            Self::Unavailable
+        }
+    }
+
+    fn allows_deferral(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 pub fn default_skill_metadata_budget(context_window: Option<i64>) -> SkillMetadataBudget {
     context_window
         .and_then(|window| usize::try_from(window).ok())
@@ -163,11 +230,32 @@ pub fn default_skill_metadata_budget(context_window: Option<i64>) -> SkillMetada
 pub fn build_available_skills(
     outcome: &SkillLoadOutcome,
     budget: SkillMetadataBudget,
+    catalog_search: SkillCatalogSearch,
+    side_effects: SkillRenderSideEffects<'_>,
+) -> Option<AvailableSkills> {
+    build_available_skills_with_starter_cap(
+        outcome,
+        budget,
+        catalog_search,
+        MAX_STARTER_SKILLS,
+        side_effects,
+    )
+}
+
+/// [`build_available_skills`] with an explicit starter ceiling, for embedders
+/// and tests that need to tune how aggressively the catalog is deferred.
+pub fn build_available_skills_with_starter_cap(
+    outcome: &SkillLoadOutcome,
+    budget: SkillMetadataBudget,
+    catalog_search: SkillCatalogSearch,
+    max_starter_skills: usize,
     side_effects: SkillRenderSideEffects<'_>,
 ) -> Option<AvailableSkills> {
     let all_skills = outcome.allowed_skills_for_implicit_invocation();
     let total_count = all_skills.len();
-    let skills = starter_skills(&all_skills, MAX_STARTER_SKILLS)
+    let starter_limit =
+        starter_limit_for(outcome, &all_skills, budget, catalog_search, max_starter_skills);
+    let skills = starter_skills(&all_skills, starter_limit)
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
@@ -176,6 +264,7 @@ pub fn build_available_skills(
             side_effects,
             /*total_count*/ 0,
             /*included_count*/ 0,
+            /*deferred_count*/ 0,
             /*omitted_count*/ 0,
             /*truncated_description_chars*/ 0,
         );
@@ -269,19 +358,24 @@ fn record_available_skills_side_effects(
         side_effects,
         available.report.total_count,
         available.report.included_count,
+        available.report.deferred_count,
         available.report.omitted_count,
         available.report.truncated_description_chars,
     );
-    if available.report.omitted_count > 0 || available.report.truncated_description_chars > 0 {
+    if available.report.deferred_count > 0
+        || available.report.omitted_count > 0
+        || available.report.truncated_description_chars > 0
+    {
         tracing::info!(
             budget_limit = budget.limit(),
             total_skills = available.report.total_count,
             included_skills = available.report.included_count,
+            deferred_skills = available.report.deferred_count,
             omitted_skills = available.report.omitted_count,
             truncated_description_chars_per_skill =
                 available.report.average_truncated_description_chars(),
             truncated_skill_descriptions = available.report.truncated_description_count,
-            "truncated skill metadata to fit skills context budget"
+            "withheld skill metadata to fit skills context budget"
         );
     }
 }
@@ -301,6 +395,7 @@ fn record_skill_render_side_effects(
     side_effects: SkillRenderSideEffects<'_>,
     total_count: usize,
     included_count: usize,
+    deferred_count: usize,
     omitted_count: usize,
     truncated_description_chars: usize,
 ) {
@@ -317,9 +412,18 @@ fn record_skill_render_side_effects(
                 i64::try_from(included_count).unwrap_or(i64::MAX),
                 &[],
             );
+            // Skills held back for `skills.list` discovery are reported
+            // separately from budget-driven omissions, and both count as
+            // "the model did not see the whole catalog" so that a 2105 -> 5
+            // drop cannot show up alongside `truncated = 0`.
+            session_telemetry.histogram(
+                THREAD_SKILLS_DEFERRED_TOTAL_METRIC,
+                i64::try_from(deferred_count).unwrap_or(i64::MAX),
+                &[],
+            );
             session_telemetry.histogram(
                 THREAD_SKILLS_TRUNCATED_METRIC,
-                if omitted_count > 0 { 1 } else { 0 },
+                i64::from(omitted_count > 0 || deferred_count > 0),
                 &[],
             );
             session_telemetry.histogram(
@@ -904,6 +1008,65 @@ fn ordered_skills_for_budget(skills: &[SkillMetadata]) -> Vec<&SkillMetadata> {
     ordered
 }
 
+/// Decide how many skills the model-visible list may hold.
+///
+/// Deferring part of the catalog costs recall, so it only happens when it buys
+/// something. Two conditions must both hold:
+///
+/// 1. the model can reach the rest through a catalog-search tool, and
+/// 2. the complete catalog genuinely does not fit the skills context budget.
+///
+/// Otherwise every prompt-visible skill stays in the list and the existing
+/// budget machinery (aliasing, description truncation, omission warnings) does
+/// the trimming, exactly as it did before deferral existed.
+fn starter_limit_for(
+    outcome: &SkillLoadOutcome,
+    skills: &[SkillMetadata],
+    budget: SkillMetadataBudget,
+    catalog_search: SkillCatalogSearch,
+    max_starter_skills: usize,
+) -> usize {
+    if !catalog_search.allows_deferral()
+        || skills.len() <= max_starter_skills
+        || full_catalog_fits_budget(outcome, skills, budget)
+    {
+        return skills.len();
+    }
+
+    max_starter_skills
+}
+
+/// Whether every skill can be rendered with its full description inside the
+/// budget, under either the absolute-path or the aliased-path layout.
+fn full_catalog_fits_budget(
+    outcome: &SkillLoadOutcome,
+    skills: &[SkillMetadata],
+    budget: SkillMetadataBudget,
+) -> bool {
+    let limit = budget.limit();
+    let absolute_cost = skills.iter().fold(0usize, |used, skill| {
+        used.saturating_add(SkillLine::new(skill).full_cost(budget))
+    });
+    if absolute_cost <= limit {
+        return true;
+    }
+
+    let Some(plan) = build_alias_plan(outcome, skills, budget) else {
+        return false;
+    };
+    if plan.table_cost >= limit {
+        return false;
+    }
+
+    let aliased_cost = skills.iter().fold(plan.table_cost, |used, skill| {
+        used.saturating_add(
+            SkillLine::with_path(skill, render_skill_path_with_aliases(skill, &plan))
+                .full_cost(budget),
+        )
+    });
+    aliased_cost <= limit
+}
+
 /// Pick the starter subset of skills rendered into the model-visible list.
 ///
 /// Every session also loads the bundled `System` skills, so taking the first
@@ -1257,6 +1420,7 @@ mod tests {
         let rendered = build_available_skills(
             &outcome,
             SkillMetadataBudget::Characters(usize::MAX),
+            SkillCatalogSearch::Available,
             SkillRenderSideEffects::None,
         )
         .expect("skills should render");
@@ -1265,9 +1429,8 @@ mod tests {
         assert_eq!(rendered.report.included_count, 2);
     }
 
-    #[test]
-    fn outcome_rendering_keeps_a_stable_five_skill_starter_at_large_catalog_scale() {
-        let skills = (0..2_105)
+    fn scale_outcome(count: usize) -> SkillLoadOutcome {
+        let skills = (0..count)
             .rev()
             .map(|index| {
                 let name = format!("scale-skill-{index:04}");
@@ -1277,11 +1440,19 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let outcome = outcome_with_roots(skills, Vec::new());
+        outcome_with_roots(skills, Vec::new())
+    }
+
+    #[test]
+    fn outcome_rendering_keeps_a_stable_five_skill_starter_at_large_catalog_scale() {
+        let outcome = scale_outcome(2_105);
 
         let rendered = build_available_skills(
             &outcome,
-            SkillMetadataBudget::Characters(usize::MAX),
+            // 2% of a 200k context window: the 2105-entry catalog cannot fit,
+            // so deferral is warranted.
+            default_skill_metadata_budget(Some(200_000)),
+            SkillCatalogSearch::Available,
             SkillRenderSideEffects::None,
         )
         .expect("starter skills should render");
@@ -1302,6 +1473,171 @@ mod tests {
         assert!(body.contains("Always consider whether a skill is relevant before acting"));
         assert!(body.contains("`skills.list`"));
         assert!(body.contains("`skills.read`"));
+    }
+
+    #[test]
+    fn starter_cap_does_not_fire_when_the_whole_catalog_fits_the_budget() {
+        // A dozen skills on a 200k context window fit inside the 2% budget with
+        // room to spare, so nothing may be hidden behind `skills.list`.
+        let outcome = scale_outcome(12);
+
+        let rendered = build_available_skills(
+            &outcome,
+            default_skill_metadata_budget(Some(200_000)),
+            SkillCatalogSearch::Available,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.total_count, 12);
+        assert_eq!(rendered.report.included_count, 12);
+        assert_eq!(rendered.report.deferred_count, 0);
+        assert_eq!(rendered.report.omitted_count, 0);
+        assert_eq!(rendered.report.truncated_description_chars, 0);
+    }
+
+    #[test]
+    fn starter_cap_does_not_fire_without_a_catalog_search_tool() {
+        // Same oversized catalog as the scale test, but this embedder installed
+        // no `skills.list`. Hiding entries would make them unreachable, so the
+        // budget machinery has to do the trimming instead.
+        let outcome = scale_outcome(2_105);
+
+        let rendered = build_available_skills(
+            &outcome,
+            default_skill_metadata_budget(Some(200_000)),
+            SkillCatalogSearch::Unavailable,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.total_count, 2_105);
+        assert_eq!(rendered.report.deferred_count, 0);
+        assert!(
+            rendered.report.included_count > MAX_STARTER_SKILLS,
+            "expected the budget path, not the starter cap: {:?}",
+            rendered.report
+        );
+        assert!(
+            rendered.report.omitted_count > 0,
+            "expected budget omissions to be reported: {:?}",
+            rendered.report
+        );
+        assert!(
+            rendered
+                .warning_message
+                .as_deref()
+                .is_some_and(|message| message.contains("not included in the model-visible")),
+            "expected an omission warning: {:?}",
+            rendered.warning_message
+        );
+    }
+
+    #[test]
+    fn budget_negotiation_still_runs_on_the_starter_subset() {
+        // Deferral trims the catalog down to the starter cap; aliasing and
+        // description truncation must still apply to what is left, otherwise
+        // the whole budget path would be dead code.
+        let root = test_path_buf(
+            "/Users/xl/.codewith/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix",
+        )
+        .abs();
+        let skills = (0..40)
+            .map(|index| {
+                let mut skill = skill_with_path(
+                    &format!("shared-root-skill-{index:02}"),
+                    &root.join(format!("skill-{index:02}/SKILL.md")),
+                );
+                skill.description = "d".repeat(400);
+                skill
+            })
+            .collect::<Vec<_>>();
+        let outcome = outcome_with_roots(skills, vec![root]);
+
+        let rendered = build_available_skills(
+            &outcome,
+            default_skill_metadata_budget(Some(12_000)),
+            SkillCatalogSearch::Available,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.total_count, 40);
+        assert_eq!(rendered.report.included_count, MAX_STARTER_SKILLS);
+        assert_eq!(rendered.report.deferred_count, 40 - MAX_STARTER_SKILLS);
+        assert!(
+            !rendered.skill_root_lines.is_empty(),
+            "expected the alias plan to win under budget pressure"
+        );
+        assert!(
+            rendered.report.truncated_description_chars > 0,
+            "expected description truncation on the starter subset: {:?}",
+            rendered.report
+        );
+    }
+
+    #[test]
+    fn uncapped_catalog_still_aliases_every_skill_under_budget_pressure() {
+        // Deterministic mirror of the `codex-core`
+        // `skills_use_aliases_in_developer_message_under_budget_pressure`
+        // integration test: 12 skills under one long shared root, a 12k context
+        // window (240-token budget), and no catalog-search tool. Absolute paths
+        // do not fit, so aliasing must kick in and carry all 12 entries.
+        let root = test_path_buf(
+            "/tmp/.tmp0a1b2c/codex-home-with-long-shared-prefix-for-skill-alias-budget-test/.tmp3d4e5f/skills",
+        )
+        .abs();
+        let skills = (0..12)
+            .map(|index| {
+                skill_with_path(
+                    &format!("s{index:02}"),
+                    &root.join(format!("s{index:02}/SKILL.md")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let outcome = outcome_with_roots(skills, vec![root]);
+        let budget = default_skill_metadata_budget(Some(12_000));
+
+        let rendered = build_available_skills(
+            &outcome,
+            budget,
+            SkillCatalogSearch::Unavailable,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.total_count, 12);
+        assert_eq!(rendered.report.included_count, 12);
+        assert_eq!(rendered.report.deferred_count, 0);
+        assert_eq!(rendered.report.omitted_count, 0);
+        assert_eq!(rendered.skill_root_lines.len(), 1);
+        let rendered_text = rendered.skill_lines.join("\n");
+        for index in 0..12 {
+            assert!(
+                rendered_text.contains(&format!("(file: r0/s{index:02}/SKILL.md)")),
+                "expected aliased entry for s{index:02} in {rendered_text}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_relevant_body_drops_the_duplicated_how_to_use_preamble() {
+        let lines = vec!["- alpha-skill: desc (file: /tmp/alpha/SKILL.md)".to_string()];
+
+        let body = render_task_relevant_skills_body(&lines);
+
+        assert!(body.contains(TASK_RELEVANT_SKILLS_HEADING));
+        assert!(body.contains("- alpha-skill: desc (file: /tmp/alpha/SKILL.md)"));
+        assert!(!body.contains("### How to use skills"));
+        assert!(!body.contains(SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS));
+        assert!(!body.contains(SKILLS_HOW_TO_USE_WITH_ALIASES));
+        assert!(
+            body.len()
+                < render_available_skills_body(&[], &lines)
+                    .len()
+                    .saturating_sub(2_000),
+            "expected the compact body to save the ~2.5k-char preamble"
+        );
     }
 
     #[test]
@@ -1372,6 +1708,7 @@ mod tests {
         let rendered = build_available_skills(
             &outcome,
             SkillMetadataBudget::Characters(alias_minimum),
+            SkillCatalogSearch::Available,
             SkillRenderSideEffects::None,
         )
         .expect("skills should render");

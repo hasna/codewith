@@ -102,9 +102,18 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
             .collect(),
     };
 
-    for (skill, enabled) in outcome.skills_with_enabled() {
-        catalog.push_entry(catalog_entry_from_skill(skill, enabled));
-    }
+    // This runs on every turn, for the entire host catalog. De-duplicating with
+    // `push_entry` would be a linear scan per insert, and because every host
+    // entry shares `SkillAuthority(Host, "host")` the authority guard always
+    // short-circuits true, so each comparison degrades into a full string
+    // compare of long common-prefix filesystem paths. `extend` hashes instead.
+    catalog.extend(SkillCatalog {
+        entries: outcome
+            .skills_with_enabled()
+            .map(|(skill, enabled)| catalog_entry_from_skill(skill, enabled))
+            .collect(),
+        warnings: Vec::new(),
+    });
 
     catalog
 }
@@ -130,4 +139,74 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
     }
 
     entry
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use codex_core_skills::SkillLoadOutcome;
+    use codex_protocol::protocol::SkillScope;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    /// Deep enough that a linear-scan de-duplication (`n^2 / 2` full string
+    /// compares of long common-prefix paths) cannot finish inside the budget
+    /// below, while the hashed path stays in the tens of milliseconds even in a
+    /// debug build.
+    const SCALE: usize = 20_000;
+    const BUDGET: Duration = Duration::from_secs(20);
+
+    fn scale_skill(index: usize) -> SkillMetadata {
+        SkillMetadata {
+            name: format!("scale-skill-{index:05}"),
+            description: "desc".to_string(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            policy: None,
+            path_to_skills_md: test_path_buf(&format!(
+                "/Users/xl/.codewith/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix/scale-skill-{index:05}/SKILL.md"
+            ))
+            .abs(),
+            scope: SkillScope::User,
+            plugin_id: None,
+        }
+    }
+
+    #[test]
+    fn catalog_from_outcome_deduplicates_by_identity() {
+        let skill = scale_skill(0);
+        let mut outcome = SkillLoadOutcome::default();
+        outcome.skills = vec![skill.clone(), skill];
+
+        let catalog = catalog_from_outcome(&outcome);
+
+        assert_eq!(catalog.entries.len(), 1);
+    }
+
+    #[test]
+    fn catalog_from_outcome_stays_linear_at_catalog_scale() {
+        // `catalog_from_outcome` runs on the production per-turn path
+        // (`TurnInputContributor::contribute` ->
+        // `providers.list_for_turn_with_routes`), so a quadratic de-duplication
+        // here costs every turn, not just startup.
+        let mut outcome = SkillLoadOutcome::default();
+        outcome.skills = (0..SCALE).map(scale_skill).collect();
+
+        let started = Instant::now();
+        let catalog = catalog_from_outcome(&outcome);
+        let elapsed = started.elapsed();
+
+        assert_eq!(catalog.entries.len(), SCALE);
+        assert!(
+            elapsed < BUDGET,
+            "building a {SCALE}-entry host catalog took {elapsed:?}; expected the hashed \
+             de-duplication path (under {BUDGET:?}), not a per-insert linear scan"
+        );
+    }
 }

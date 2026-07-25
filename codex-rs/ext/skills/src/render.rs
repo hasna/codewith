@@ -1,4 +1,4 @@
-use codex_core_skills::render_available_skills_body;
+use codex_core_skills::render_task_relevant_skills_body;
 use codex_extension_api::ContextualUserFragment;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
@@ -54,8 +54,13 @@ pub(crate) fn available_skills_fragment(
         return None;
     }
 
+    // The `## Skills` developer message already carries the shared
+    // `### How to use skills` preamble for this turn (both blocks are gated on
+    // `include_skill_instructions`), so this per-turn fragment renders only the
+    // ranked matches. Repeating the preamble would burn ~2.5k characters on
+    // every turn that lexically matches a skill.
     Some(AvailableSkillsFragment {
-        body: render_available_skills_body(&[], &skill_lines),
+        body: render_task_relevant_skills_body(&skill_lines),
     })
 }
 

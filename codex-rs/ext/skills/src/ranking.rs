@@ -5,8 +5,21 @@ use codex_protocol::user_input::UserInput;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
 
+/// Page size used when the model does not ask for one, and the size of the
+/// ranked fragment injected into the turn.
 pub(crate) const DEFAULT_SKILL_MATCH_LIMIT: usize = 5;
-pub(crate) const MAX_SKILL_MATCH_LIMIT: usize = 5;
+/// Largest page the model may request. Deliberately larger than
+/// [`DEFAULT_SKILL_MATCH_LIMIT`]: a `limit` that can only ever shrink the
+/// result set is not an escape hatch.
+pub(crate) const MAX_SKILL_MATCH_LIMIT: usize = 50;
+/// Largest `offset` the model may page to. Together with
+/// [`MAX_SKILL_MATCH_LIMIT`] this bounds how deep a single query can walk the
+/// ranked catalog.
+pub(crate) const MAX_SKILL_MATCH_OFFSET: usize = 1_000;
+
+/// A `limit` that can only shrink the page is not an escape hatch: it must be
+/// able to widen the default page too.
+const _: () = assert!(MAX_SKILL_MATCH_LIMIT > DEFAULT_SKILL_MATCH_LIMIT);
 
 const MAX_QUERY_CHARS: usize = 4_096;
 const MAX_QUERY_TERMS: usize = 128;
@@ -119,10 +132,58 @@ fn lexical_terms(value: &str, max_chars: usize, max_terms: usize) -> HashSet<Str
         .flat_map(char::to_lowercase)
         .collect::<String>()
         .split(|character: char| !character.is_alphanumeric())
+        // Stop words are dropped on both sides of stemming: before, so that
+        // `this` is never reduced to a bare `thi`; after, so that inflections
+        // such as `uses` collapse onto the listed `use`.
         .filter(|term| term.len() >= 3 && !is_stop_word(term))
+        .map(stem)
+        .filter(|term| !is_stop_word(term))
         .take(max_terms)
-        .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Fold the most common English inflections onto a shared key so that
+/// `charts`/`chart`, `plotting`/`plot`, and `rendered`/`render` match each
+/// other.
+///
+/// This is a deliberately tiny suffix stripper, not a real stemmer: it keeps
+/// matching O(1) per term (both sides are normalized into the same `HashSet`)
+/// and cannot introduce the quadratic prefix/fuzzy scans that a wider recall
+/// fix would. It does nothing for synonyms — see the recall tests below for the
+/// behaviour that is deliberately documented rather than fixed here.
+fn stem(term: &str) -> String {
+    const MIN_STEM_LEN: usize = 3;
+
+    // Plural forms, following Porter step 1a.
+    let singular = if let Some(stem) = term.strip_suffix("sses") {
+        format!("{stem}ss")
+    } else if let Some(stem) = term.strip_suffix("ies") {
+        format!("{stem}y")
+    } else if term.ends_with("ss") {
+        term.to_string()
+    } else if let Some(stem) = term.strip_suffix('s') {
+        stem.to_string()
+    } else {
+        term.to_string()
+    };
+    let singular = if singular.len() >= MIN_STEM_LEN {
+        singular
+    } else {
+        term.to_string()
+    };
+
+    // Verb forms, following a trimmed-down Porter step 1b. No consonant
+    // un-doubling: `plotting` simply fails to fold onto `plot` rather than
+    // risking `passing` -> `pas`.
+    for suffix in ["ing", "ed"] {
+        if let Some(stem) = singular.strip_suffix(suffix)
+            && stem.len() >= MIN_STEM_LEN.max(4)
+        {
+            return stem.to_string();
+        }
+    }
+
+    singular
 }
 
 fn non_name_char(character: char) -> bool {
@@ -221,5 +282,85 @@ mod tests {
             vec!["target-skill"]
         );
         assert!(rank_catalog(&catalog, "completely unmatched", 5).is_empty());
+    }
+
+    #[test]
+    fn inflected_query_terms_still_reach_their_skill() {
+        let catalog = SkillCatalog {
+            entries: vec![
+                entry("chart-builder", "Render a chart from a table"),
+                entry("query-runner", "Run a query against the warehouse"),
+            ],
+            warnings: Vec::new(),
+        };
+
+        assert_eq!(
+            rank_catalog(&catalog, "build some charts", 5)
+                .into_iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chart-builder"]
+        );
+        assert_eq!(
+            rank_catalog(&catalog, "run my queries", 5)
+                .into_iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["query-runner"]
+        );
+    }
+
+    #[test]
+    fn paraphrased_queries_do_not_reach_lexically_disjoint_skills() {
+        // Documents the real, deliberately-scoped behaviour of this ranker: it
+        // is lexical token overlap with light stemming. It has no synonym or
+        // embedding layer, so a skill whose metadata shares no token with the
+        // request is invisible to `skills.list` and the model has to reword.
+        //
+        // This is the reason `MAX_SKILL_MATCH_LIMIT` and paging exist: when the
+        // top matches are wrong, widening the page is the only recourse the
+        // model has. Any future recall work (substring, embeddings) should flip
+        // these assertions rather than delete them.
+        let catalog = SkillCatalog {
+            entries: vec![entry("dataviz", "charts, graphs, plots")],
+            warnings: Vec::new(),
+        };
+
+        assert!(
+            rank_catalog(&catalog, "help me visualize these results", 5).is_empty(),
+            "synonym recall is not implemented; update this test when it is"
+        );
+        assert_eq!(
+            rank_catalog(&catalog, "draw me a graph", 5)
+                .into_iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dataviz"],
+            "a shared surface token is required for a match"
+        );
+    }
+
+    #[test]
+    fn ranking_can_be_walked_past_the_default_page() {
+        let entries = (0..40)
+            .map(|index| entry(&format!("blacksmith-{index:02}"), "Operate sandboxes"))
+            .collect::<Vec<_>>();
+        let catalog = SkillCatalog {
+            entries,
+            warnings: Vec::new(),
+        };
+
+        let first_page = rank_catalog(&catalog, "blacksmith", DEFAULT_SKILL_MATCH_LIMIT)
+            .into_iter()
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>();
+        let wide_page = rank_catalog(&catalog, "blacksmith", MAX_SKILL_MATCH_LIMIT)
+            .into_iter()
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_page.len(), DEFAULT_SKILL_MATCH_LIMIT);
+        assert_eq!(wide_page.len(), 40);
+        assert_eq!(wide_page[..first_page.len()], first_page[..]);
     }
 }

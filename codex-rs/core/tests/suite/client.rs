@@ -1581,10 +1581,7 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
                 &user_config_path,
                 toml! { skills = { bundled = { enabled = false } } }.into(),
             );
-            // Only `MAX_STARTER_SKILLS` of the 12 skills reach the developer message,
-            // so the window has to be tighter than before for those starter entries to
-            // still exceed the 2% skills budget and force the alias rendering.
-            config.model_context_window = Some(5_000);
+            config.model_context_window = Some(12_000);
         });
     let codex = builder
         .build(&server)
@@ -1632,6 +1629,15 @@ async fn skills_use_aliases_in_developer_message_under_budget_pressure() {
         ),
         "expected alias-specific skill instructions: {developer_messages:?}"
     );
+    // The starter cap must not fire here: this thread has no `skills.list`
+    // escape hatch, so every skill stays visible and the budget machinery
+    // (aliasing) is what absorbs the pressure.
+    for index in 0..12 {
+        assert!(
+            developer_text.contains(&format!("(file: r0/s{index:02}/SKILL.md)")),
+            "expected skill s{index:02} in the developer message: {developer_messages:?}"
+        );
+    }
     let _codex_home_guard = codex_home;
     let _codex_home_parent_guard = codex_home_parent;
 }

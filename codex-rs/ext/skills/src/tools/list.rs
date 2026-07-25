@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::ranking::DEFAULT_SKILL_MATCH_LIMIT;
 use crate::ranking::MAX_SKILL_MATCH_LIMIT;
+use crate::ranking::MAX_SKILL_MATCH_OFFSET;
 use crate::ranking::rank_catalog;
 
 use super::MAX_HANDLE_BYTES;
@@ -25,17 +26,24 @@ use super::serialized_len;
 use super::skill_function_tool;
 use super::skill_tool_name;
 
-const TOOL_NAME: &str = "list";
+const TOOL_NAME: &str = codex_core_skills::SKILLS_LIST_TOOL_NAME;
 const MAX_QUERY_BYTES: usize = 4_096;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_DESCRIPTION_BYTES: usize = 1_024;
-const MAX_INSPECTED_MATCHES: usize = 100;
+/// Deepest rank the tool will materialize for one call: the last reachable page
+/// plus one sentinel entry used to detect that more matches exist.
+const MAX_INSPECTED_MATCHES: usize = MAX_SKILL_MATCH_OFFSET + MAX_SKILL_MATCH_LIMIT + 1;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListArgs {
     query: String,
+    /// Page size. Defaults to `DEFAULT_SKILL_MATCH_LIMIT`, maximum
+    /// `MAX_SKILL_MATCH_LIMIT`.
     limit: Option<usize>,
+    /// Rank of the first match to return, for paging past the first page.
+    /// Defaults to 0, maximum `MAX_SKILL_MATCH_OFFSET`.
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -53,6 +61,9 @@ struct ListMatch {
 struct ListResponse {
     matches: Vec<ListMatch>,
     truncated: bool,
+    /// Value to pass back as `offset` to continue past this page. `None` once
+    /// the ranked matches are exhausted.
+    next_offset: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -69,7 +80,9 @@ impl ToolExecutor<ToolCall> for ListTool {
     fn spec(&self) -> ToolSpec {
         skill_function_tool::<ListArgs, ListResponse>(
             TOOL_NAME,
-            "Search the full current skill catalog by task or capability. Returns at most five deterministic metadata matches and opaque authority, package, and main_resource handles for skills.read. Explicit-only and disabled skills are never returned.",
+            &format!(
+                "Search the full current skill catalog by task or capability. Returns deterministic metadata matches plus opaque authority, package, and main_resource handles for skills.read. Ranking is lexical, so if the top matches look wrong, widen `limit` (default {DEFAULT_SKILL_MATCH_LIMIT}, max {MAX_SKILL_MATCH_LIMIT}) or page deeper by passing the returned `next_offset` back as `offset` (max {MAX_SKILL_MATCH_OFFSET}) before rewording the query. Explicit-only and disabled skills are never returned."
+            ),
         )
     }
 
@@ -90,18 +103,36 @@ impl ToolExecutor<ToolCall> for ListTool {
                 "limit must be between 1 and {MAX_SKILL_MATCH_LIMIT}"
             )));
         }
+        let offset = args.offset.unwrap_or(0);
+        if offset > MAX_SKILL_MATCH_OFFSET {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "offset must be at most {MAX_SKILL_MATCH_OFFSET}"
+            )));
+        }
 
         let snapshot = self.context.snapshot(&call.turn_id)?;
-        let ranked = rank_catalog(&snapshot.catalog, &args.query, MAX_INSPECTED_MATCHES);
+        // One past the requested page, so `next_offset` can distinguish "the
+        // page is full" from "there is genuinely nothing after it".
+        let inspected = offset
+            .saturating_add(limit)
+            .saturating_add(1)
+            .min(MAX_INSPECTED_MATCHES);
+        let ranked = rank_catalog(&snapshot.catalog, &args.query, inspected);
+        let ranked_len = ranked.len();
         let mut response = ListResponse {
             matches: Vec::new(),
-            truncated: ranked.len() > limit,
+            truncated: false,
+            next_offset: None,
         };
-        for entry in ranked {
+        // Ranks consumed from `offset` onwards, including entries skipped for
+        // unusable handles, so the caller can resume exactly where this page
+        // stopped.
+        let mut consumed = 0usize;
+        for entry in ranked.into_iter().skip(offset) {
             if response.matches.len() == limit {
-                response.truncated = true;
                 break;
             }
+            consumed = consumed.saturating_add(1);
             if catalog_tool_handles(entry).is_none()
                 || entry.name.is_empty()
                 || entry.name.len() > MAX_NAME_BYTES
@@ -132,10 +163,18 @@ impl ToolExecutor<ToolCall> for ListTool {
             response.truncated |= description_truncated;
             if serialized_len(&response)? > MAX_OUTPUT_BYTES {
                 response.matches.pop();
-                response.truncated = true;
+                consumed = consumed.saturating_sub(1);
                 break;
             }
         }
+
+        let scanned = offset.saturating_add(consumed);
+        // Either ranked matches remain past this page, or the ranking itself
+        // was clipped at `inspected` and there may be more beyond it. Both mean
+        // the model still has somewhere to go.
+        let has_more = scanned < ranked_len || ranked_len >= inspected;
+        response.truncated |= has_more;
+        response.next_offset = has_more.then_some(scanned);
 
         json_output(&response)
     }

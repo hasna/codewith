@@ -3270,6 +3270,7 @@ impl Session {
             let available_skills = build_available_skills(
                 &turn_context.turn_skills.outcome,
                 default_skill_metadata_budget(turn_context.model_info.context_window),
+                crate::skills::skill_catalog_search_availability(self),
                 SkillRenderSideEffects::ThreadStart {
                     session_telemetry: &self.services.session_telemetry,
                 },
