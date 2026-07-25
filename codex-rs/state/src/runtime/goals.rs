@@ -720,9 +720,9 @@ WHERE thread_id = ?
             .await?;
             previous_audit = None;
         }
-        let observed_turns: Vec<(String, i64)> = sqlx::query_as(
+        let observed_turns: Vec<String> = sqlx::query_scalar(
             r#"
-SELECT turn_id, created_at_ms
+SELECT turn_id
 FROM thread_goal_blocker_audit_turns
 WHERE thread_id = ?
   AND goal_id = ?
@@ -741,7 +741,7 @@ WHERE thread_id = ?
         let turn_already_observed = preserves_current_streak
             && observed_turns
                 .iter()
-                .any(|(observed_turn_id, _)| observed_turn_id == turn_id);
+                .any(|observed_turn_id| observed_turn_id == turn_id);
         if !preserves_current_streak {
             sqlx::query(
                 r#"
@@ -874,27 +874,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
             .bind(now_ms)
             .execute(&mut *tx)
             .await?;
-            if preserves_current_streak {
-                for (observed_turn_id, observed_at_ms) in &observed_turns {
-                    sqlx::query(
-                        r#"
-INSERT INTO thread_goal_blocker_audit_turns (
-    thread_id,
-    goal_id,
-    turn_id,
-    created_at_ms
-) VALUES (?, ?, ?, ?)
-ON CONFLICT(thread_id, goal_id, turn_id) DO NOTHING
-                        "#,
-                    )
-                    .bind(thread_id_string.as_str())
-                    .bind(expected_goal_id)
-                    .bind(observed_turn_id)
-                    .bind(observed_at_ms)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
+            // The surviving `thread_goal_blocker_audit_turns` rows need no
+            // maintenance here: they are deleted above exactly when the streak is
+            // broken (`!preserves_current_streak`), and left untouched otherwise.
             if !turn_already_observed {
                 sqlx::query(
                     r#"

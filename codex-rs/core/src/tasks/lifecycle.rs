@@ -182,6 +182,14 @@ fn stable_turn_error_fingerprint(error: &CodexErr) -> String {
     fingerprint.to_string()
 }
 
+/// Known tradeoff: the HTTP status is part of the fingerprint, so a consumer that
+/// only blocks after N *consecutive identical* fingerprints (see
+/// `observe_active_thread_goal_blocker` and the model-facing contract in
+/// `ext/goal/src/spec.rs`) will have its streak reset by an upstream that flaps
+/// between, say, 502 and 503. That is deliberate: the status is what makes two
+/// otherwise identical transport errors distinguishable, and treating a flapping
+/// upstream as "not the same recurring blocker" is the conservative choice — we
+/// would rather retry a flapping provider than block a goal on it.
 fn fingerprint_with_http_status(kind: &str, status: Option<u16>) -> String {
     match status {
         Some(status) => format!("{kind}:http_{status}"),

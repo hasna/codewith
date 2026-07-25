@@ -1,5 +1,3 @@
-#![cfg(not(debug_assertions))]
-
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -74,9 +72,43 @@ fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) ->
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn invalid_image_run_turn_preserves_bad_request_and_stable_fingerprint() -> anyhow::Result<()>
-{
+/// Runs on an explicitly sized runtime rather than `#[tokio::test]`.
+///
+/// A full turn future does not fit in the 2 MiB default `#[tokio::test]` worker
+/// stack in debug builds — it aborts the worker with a stack overflow. That is
+/// what previously forced this file behind `#![cfg(not(debug_assertions))]`,
+/// which silently reduced it to an empty test binary in every CI lane. The
+/// shipped binary already runs turns on 16 MiB worker stacks
+/// (`TOKIO_WORKER_STACK_SIZE_BYTES` in `codex-arg0`), so mirror production here
+/// and keep the test executing in ordinary debug CI.
+#[test]
+fn invalid_image_run_turn_preserves_bad_request_and_stable_fingerprint() -> anyhow::Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .name("invalid_image_run_turn_lifecycle".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| -> anyhow::Result<()> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(TEST_STACK_SIZE_BYTES)
+                .enable_all()
+                .build()?;
+            runtime.block_on(
+                invalid_image_run_turn_preserves_bad_request_and_stable_fingerprint_impl(),
+            )
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "invalid_image_run_turn_preserves_bad_request_and_stable_fingerprint thread panicked"
+        )),
+    }
+}
+
+async fn invalid_image_run_turn_preserves_bad_request_and_stable_fingerprint_impl()
+-> anyhow::Result<()> {
     let server = start_mock_server().await;
     const INVALID_IMAGE_ERROR: &str =
         "The image data you provided does not represent a valid image";

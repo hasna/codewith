@@ -466,9 +466,14 @@ pub(crate) async fn run_turn(
             Err(codex_error @ CodexErr::InvalidImageRequest()) => {
                 {
                     let mut state = sess.state.lock().await;
-                    error_or_panic(
-                        "Invalid image detected; sanitizing tool output to prevent poisoning",
-                    );
+                    // This is an externally triggered condition (the upstream API
+                    // rejected an image we sent), not a broken local invariant, and
+                    // the recovery below is the designed handling for it. It used to
+                    // call `error_or_panic`, which aborts the turn task in every
+                    // debug build and therefore made this whole branch — and any test
+                    // covering it — unreachable outside release builds. Log loudly
+                    // instead so the recovery path is exercised uniformly.
+                    error!("Invalid image detected; sanitizing tool output to prevent poisoning");
                     if state.history.replace_last_turn_images("Invalid image") {
                         continue;
                     }

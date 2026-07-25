@@ -951,8 +951,13 @@ ORDER BY started_at_ms DESC
         goal_ids.dedup();
         let goal_hold_can_pause =
             !goal_ids.is_empty() && selected_schedule.schedule != crate::ThreadScheduleSpec::Once;
+        // Read-only probe: this transaction only runs `SELECT EXISTS` against
+        // goals.db and is always rolled back, so a deferred `BEGIN` is enough. A
+        // `BEGIN IMMEDIATE` would take a goals.db write lock and hold it across the
+        // state.db commit for no benefit. Lock order is consistently state -> goals
+        // at every site that touches both, so there is no inversion to guard against.
         let mut goal_tx = if goal_hold_can_pause {
-            Some(self.goals_pool.begin_with("BEGIN IMMEDIATE").await?)
+            Some(self.goals_pool.begin().await?)
         } else {
             None
         };
@@ -1260,9 +1265,7 @@ WHERE schedule_id = ?
             completed_at,
             next_run_at,
             expected_goal_id: None,
-            finish: FinishScheduleRun::Completed {
-                pause_schedule: false,
-            },
+            finish: FinishScheduleRun::Completed,
         })
         .await
     }
@@ -1286,30 +1289,7 @@ WHERE schedule_id = ?
             completed_at,
             next_run_at,
             expected_goal_id: Some(expected_goal_id),
-            finish: FinishScheduleRun::Completed {
-                pause_schedule: false,
-            },
-        })
-        .await
-    }
-
-    pub async fn complete_thread_schedule_run_and_pause(
-        &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-    ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
-            schedule_id,
-            run_id,
-            lease_id,
-            completed_at,
-            next_run_at: None,
-            expected_goal_id: None,
-            finish: FinishScheduleRun::Completed {
-                pause_schedule: true,
-            },
+            finish: FinishScheduleRun::Completed,
         })
         .await
     }
@@ -1330,10 +1310,7 @@ WHERE schedule_id = ?
             completed_at,
             next_run_at,
             expected_goal_id: None,
-            finish: FinishScheduleRun::Failed {
-                error,
-                pause_schedule: false,
-            },
+            finish: FinishScheduleRun::Failed { error },
         })
         .await
     }
@@ -1358,33 +1335,7 @@ WHERE schedule_id = ?
             completed_at,
             next_run_at,
             expected_goal_id: Some(expected_goal_id),
-            finish: FinishScheduleRun::Failed {
-                error,
-                pause_schedule: false,
-            },
-        })
-        .await
-    }
-
-    pub async fn fail_thread_schedule_run_and_pause(
-        &self,
-        schedule_id: &str,
-        run_id: &str,
-        lease_id: &str,
-        completed_at: DateTime<Utc>,
-        error: String,
-    ) -> anyhow::Result<bool> {
-        self.finish_thread_schedule_run(FinishThreadScheduleRunParams {
-            schedule_id,
-            run_id,
-            lease_id,
-            completed_at,
-            next_run_at: None,
-            expected_goal_id: None,
-            finish: FinishScheduleRun::Failed {
-                error,
-                pause_schedule: true,
-            },
+            finish: FinishScheduleRun::Failed { error },
         })
         .await
     }
@@ -1568,8 +1519,13 @@ WHERE schedule_id = ? AND lease_id = ?
             return Ok(false);
         };
         let goal_hold_can_pause = expected_goal_id.is_some() && schedule_kind != ONCE_SCHEDULE_KIND;
+        // Read-only probe: this transaction only runs `SELECT EXISTS` against
+        // goals.db and is always rolled back, so a deferred `BEGIN` is enough. A
+        // `BEGIN IMMEDIATE` would take a goals.db write lock and hold it across the
+        // state.db commit for no benefit. Lock order is consistently state -> goals
+        // at every site that touches both, so there is no inversion to guard against.
         let mut goal_tx = if goal_hold_can_pause {
-            Some(self.goals_pool.begin_with("BEGIN IMMEDIATE").await?)
+            Some(self.goals_pool.begin().await?)
         } else {
             None
         };
@@ -1592,15 +1548,21 @@ SELECT EXISTS(
                 .await?
             }
             (Some(_), false, None) | (None, false, None) => false,
-            _ => unreachable!("goal transaction presence follows recurring goal schedule"),
-        };
-        let failed = matches!(finish, FinishScheduleRun::Failed { .. });
-        let pause_schedule = match &finish {
-            FinishScheduleRun::Completed { pause_schedule }
-            | FinishScheduleRun::Failed { pause_schedule, .. } => {
-                *pause_schedule || pause_for_goal_hold
+            // `goal_hold_can_pause` is what decides whether `goal_tx` was opened, so
+            // the arms above are exhaustive in practice. Fail the write instead of
+            // panicking out of a state-store transaction if that ever drifts.
+            (expected_goal_id, goal_hold_can_pause, goal_tx) => {
+                anyhow::bail!(
+                    "goal transaction presence does not match the recurring goal schedule invariant (expected_goal_id={}, goal_hold_can_pause={goal_hold_can_pause}, goal_tx={})",
+                    expected_goal_id.is_some(),
+                    goal_tx.is_some(),
+                );
             }
         };
+        let failed = matches!(finish, FinishScheduleRun::Failed { .. });
+        // The only thing that pauses a schedule at finish time is a goal hold; there
+        // is deliberately no caller-supplied pause flag.
+        let pause_schedule = pause_for_goal_hold;
         let schedule_result = sqlx::query(
             r#"
 UPDATE thread_schedules
@@ -1650,9 +1612,7 @@ WHERE schedule_id = ? AND lease_id = ?
             return Ok(false);
         }
         let (status, error) = match &finish {
-            FinishScheduleRun::Completed { .. } => {
-                (crate::ThreadScheduleRunStatus::Completed, None)
-            }
+            FinishScheduleRun::Completed => (crate::ThreadScheduleRunStatus::Completed, None),
             FinishScheduleRun::Failed { error, .. } => {
                 (crate::ThreadScheduleRunStatus::Failed, Some(error.as_str()))
             }
@@ -1701,8 +1661,8 @@ struct FinishThreadScheduleRunParams<'a> {
 
 #[derive(Clone)]
 enum FinishScheduleRun {
-    Completed { pause_schedule: bool },
-    Failed { error: String, pause_schedule: bool },
+    Completed,
+    Failed { error: String },
 }
 
 struct ScheduleBindings<'a> {
@@ -3330,11 +3290,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_schedule_run_can_atomically_pause_without_rearming() {
+    async fn completed_schedule_run_for_held_goal_pauses_without_rearming() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id(/*id*/ 31);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "held task",
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should persist");
         let schedule = create_interval_schedule(&runtime, thread_id, "held task", Some(now)).await;
         let claim = runtime
             .thread_schedules()
@@ -3343,15 +3313,18 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
 
+        // The caller still asks for a rearm; the goal hold must win.
         assert!(
             runtime
                 .thread_schedules()
-                .complete_thread_schedule_run_and_pause(
-                    &schedule.schedule_id,
-                    &claim.run.run_id,
-                    "lease-held",
-                    now + chrono::Duration::seconds(5),
-                )
+                .complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-held",
+                    completed_at: now + chrono::Duration::seconds(5),
+                    next_run_at: Some(now + chrono::Duration::minutes(5)),
+                    expected_goal_id: &goal.goal_id,
+                })
                 .await
                 .expect("run should complete while pausing the schedule")
         );
@@ -3817,6 +3790,16 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 32);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
+        let goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "expired while leased",
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should persist");
         let schedule =
             create_interval_schedule(&runtime, thread_id, "expired while leased", Some(now)).await;
         let claim = runtime
@@ -3838,12 +3821,14 @@ mod tests {
         assert!(
             !runtime
                 .thread_schedules()
-                .complete_thread_schedule_run_and_pause(
-                    &schedule.schedule_id,
-                    &claim.run.run_id,
-                    "lease-expired",
-                    now + chrono::Duration::seconds(5),
-                )
+                .complete_thread_schedule_run_for_goal(ThreadScheduleRunForGoalFinishParams {
+                    schedule_id: &schedule.schedule_id,
+                    run_id: &claim.run.run_id,
+                    lease_id: "lease-expired",
+                    completed_at: now + chrono::Duration::seconds(5),
+                    next_run_at: None,
+                    expected_goal_id: &goal.goal_id,
+                })
                 .await
                 .expect("late completion should fail closed")
         );
@@ -3997,6 +3982,16 @@ mod tests {
             assert_eq!(crate::ThreadScheduleRunStatus::Failed, deferred_run.status);
         }
 
+        let held_goal = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "late failed hold",
+                crate::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("blocked goal should persist");
         let failed_schedule =
             create_interval_schedule(&runtime, thread_id, "late failed hold", Some(now)).await;
         let failed_claim = runtime
@@ -4017,11 +4012,15 @@ mod tests {
         assert!(
             !runtime
                 .thread_schedules()
-                .fail_thread_schedule_run_and_pause(
-                    &failed_schedule.schedule_id,
-                    &failed_claim.run.run_id,
-                    "lease-failed",
-                    now + chrono::Duration::seconds(5),
+                .fail_thread_schedule_run_for_goal(
+                    ThreadScheduleRunForGoalFinishParams {
+                        schedule_id: &failed_schedule.schedule_id,
+                        run_id: &failed_claim.run.run_id,
+                        lease_id: "lease-failed",
+                        completed_at: now + chrono::Duration::seconds(5),
+                        next_run_at: None,
+                        expected_goal_id: &held_goal.goal_id,
+                    },
                     "goal held".to_string(),
                 )
                 .await
