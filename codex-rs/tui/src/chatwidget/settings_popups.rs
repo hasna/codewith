@@ -143,8 +143,16 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(Line::from("Press enter to open; esc to close")),
+            footer_hint: Some(tree_navigation_hint_line(
+                &self.bottom_pane.list_keymap(),
+                TreeNavigationHint {
+                    accept: TreeNavigationAccept::DrillIn("opens"),
+                    include_space_toggle: false,
+                    cancel_label: "closes",
+                },
+            )),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }
@@ -181,7 +189,8 @@ impl ChatWidget {
             is_disabled: multi_agent_v2,
             disabled_reason: multi_agent_v2.then(|| "Managed by multi_agent_v2.".to_string()),
             actions,
-            dismiss_on_select: true,
+            dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         }
     }
@@ -241,8 +250,16 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(tree_navigation_hint_line(
+                &self.bottom_pane.list_keymap(),
+                TreeNavigationHint {
+                    accept: TreeNavigationAccept::InPlace("selects"),
+                    include_space_toggle: false,
+                    cancel_label: "goes back",
+                },
+            )),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }
@@ -259,7 +276,8 @@ impl ChatWidget {
             actions: vec![Box::new(|tx| {
                 tx.send(AppEvent::OpenGoalPlanNodeObjectiveMenu);
             })],
-            dismiss_on_select: true,
+            dismiss_on_select: false,
+            dismiss_parent_on_child_accept: true,
             ..Default::default()
         }
     }
@@ -311,8 +329,16 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(standard_popup_hint_line()),
+            footer_hint: Some(tree_navigation_hint_line(
+                &self.bottom_pane.list_keymap(),
+                TreeNavigationHint {
+                    accept: TreeNavigationAccept::InPlace("selects"),
+                    include_space_toggle: false,
+                    cancel_label: "goes back",
+                },
+            )),
             items,
+            tree_navigation_enabled: true,
             ..Default::default()
         });
     }
@@ -331,15 +357,32 @@ impl ChatWidget {
         }
         items.push(back_to_config_menu_item());
 
+        // Most section rows are toggles and the "Back to sections" row only closes this level, so
+        // the drill-in hint is only truthful when the section actually contains a row that opens a
+        // child view (today: the usage-limit reset entry under Account & automation).
+        let section_accept_hint = if items.iter().any(SelectionItem::opens_child_view) {
+            TreeNavigationAccept::DrillIn("opens")
+        } else {
+            TreeNavigationAccept::None
+        };
+
         let mut header = ColumnRenderable::new();
         header.push(Line::from(format!("Config: {}", section.label()).bold()));
         header.push(Line::from(section.description().dim()));
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             header: Box::new(header),
-            footer_hint: Some(Line::from("Press space to toggle; esc to close")),
+            footer_hint: Some(tree_navigation_hint_line(
+                &self.bottom_pane.list_keymap(),
+                TreeNavigationHint {
+                    accept: section_accept_hint,
+                    include_space_toggle: true,
+                    cancel_label: "goes back",
+                },
+            )),
             items,
             is_searchable: true,
+            tree_navigation_enabled: true,
             search_placeholder: Some(format!("Search {} settings", section.label())),
             ..Default::default()
         });
@@ -649,7 +692,8 @@ fn config_section_item(
             section.description()
         )),
         actions,
-        dismiss_on_select: true,
+        dismiss_on_select: false,
+        dismiss_parent_on_child_accept: true,
         search_value: Some(format!(
             "{} {} {}",
             section.id(),
@@ -681,7 +725,8 @@ fn rate_limit_reset_config_item() -> SelectionItem {
         name: "Use a usage limit reset".to_string(),
         description: Some("Refresh and choose an exact banked reset.".to_string()),
         actions,
-        dismiss_on_select: true,
+        dismiss_on_select: false,
+        dismiss_parent_on_child_accept: true,
         search_value: Some("usage limit reset banked credit manual".to_string()),
         ..Default::default()
     }

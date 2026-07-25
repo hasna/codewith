@@ -3588,6 +3588,111 @@ async fn config_popup_snapshot_and_toggle() {
 }
 
 #[tokio::test]
+async fn config_popup_arrow_keys_navigate_menu_tree() {
+    use crate::common_config_options::CommonConfigSection;
+    use crate::common_config_options::common_config_sections;
+
+    // Row positions are derived from the live section list (and the two trailing picker rows the
+    // root menu appends) so inserting a new section cannot silently retarget this test.
+    let sections = common_config_sections();
+    let ai_context_row = sections
+        .iter()
+        .position(|section| *section == CommonConfigSection::AiContext)
+        .expect("AI context section is present in the config menu");
+    let agent_max_threads_row = sections.len();
+    let goal_objective_row = sections.len() + 1;
+
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    while rx.try_recv().is_ok() {}
+
+    fn press(chat: &mut ChatWidget, code: KeyCode, times: usize) {
+        for _ in 0..times {
+            chat.handle_key_event(KeyEvent::from(code));
+        }
+    }
+
+    // The root menu opens with row 0 highlighted.
+    chat.open_config_popup();
+    press(&mut chat, KeyCode::Down, ai_context_row);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    let section = match rx.try_recv() {
+        Ok(AppEvent::OpenConfigSection { section }) => {
+            assert_eq!(section, CommonConfigSection::AiContext);
+            section
+        }
+        event => panic!("expected Right to open the selected config section, got {event:?}"),
+    };
+
+    // Simulate the app dispatching the event while the root remains on the view stack.
+    chat.open_config_section_popup(section);
+    assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Config: AI context"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let root = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(root.contains("Choose a focused config.toml settings section."));
+    assert!(
+        root.contains(&format!("› {}. AI context", ai_context_row + 1)),
+        "{root}"
+    );
+
+    press(
+        &mut chat,
+        KeyCode::Down,
+        agent_max_threads_row - ai_context_row,
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAgentMaxThreadsMenu));
+
+    chat.open_agent_max_threads_popup();
+    assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Cap concurrent subagent threads"));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(
+        rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    );
+    assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Cap concurrent subagent threads"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let root = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        root.contains(&format!(
+            "› {}. Agent subagent threads",
+            agent_max_threads_row + 1
+        )),
+        "{root}"
+    );
+
+    press(
+        &mut chat,
+        KeyCode::Down,
+        goal_objective_row - agent_max_threads_row,
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenGoalPlanNodeObjectiveMenu));
+
+    chat.open_goal_plan_node_objective_popup();
+    assert!(render_bottom_popup(&chat, /*width*/ 90).contains("Goal plan node objective limit"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    let root = render_bottom_popup(&chat, /*width*/ 90);
+    assert!(
+        root.contains(&format!(
+            "› {}. Goal objective limit",
+            goal_objective_row + 1
+        )),
+        "{root}"
+    );
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Left));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+
+    chat.open_config_popup();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
 async fn config_agent_max_threads_popup_selects_value() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -3597,6 +3702,7 @@ async fn config_agent_max_threads_popup_selects_value() {
 
     chat.open_agent_max_threads_popup();
     let popup = render_bottom_popup(&chat, /*width*/ 90);
+    assert_chatwidget_snapshot!("config_agent_max_threads_popup", popup);
     assert!(popup.contains("Agent subagent threads"), "{popup}");
     assert!(popup.contains("(default)"), "{popup}");
 
