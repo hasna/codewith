@@ -87,6 +87,19 @@ pub trait TurnLifecycleContributor: Send + Sync {
 
     /// Called when the host observes an error for a running turn.
     async fn on_turn_error(&self, _input: TurnErrorInput<'_>) {}
+
+    /// Called with a stable, non-sensitive host classification of the error.
+    ///
+    /// The default preserves compatibility for contributors that only need the
+    /// client-facing error. Hosts must exclude messages, request identifiers,
+    /// and other volatile or secret-bearing payloads from `error_fingerprint`.
+    async fn on_turn_error_with_fingerprint(
+        &self,
+        input: TurnErrorInput<'_>,
+        _error_fingerprint: &str,
+    ) {
+        self.on_turn_error(input).await;
+    }
 }
 
 /// Extension contribution that can add turn-local model input.

@@ -1485,6 +1485,15 @@ WHERE node_id = ?
         /*tokens_used*/ 0,
         effective_token_budget,
     );
+    sqlx::query(
+        r#"
+DELETE FROM thread_goal_blocker_audits
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .execute(&mut **tx)
+    .await?;
     let goal_row = sqlx::query(
         r#"
 INSERT INTO thread_goals (

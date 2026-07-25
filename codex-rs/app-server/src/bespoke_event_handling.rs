@@ -2844,6 +2844,7 @@ mod tests {
                 schedule_id: "schedule-1".to_string(),
                 run_id: "run-1".to_string(),
                 lease_id: "lease-1".to_string(),
+                goal_id: None,
                 state_db,
             },
         );

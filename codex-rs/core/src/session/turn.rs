@@ -172,15 +172,13 @@ pub(crate) async fn run_turn(
                     continue;
                 }
                 let err = CodexErr::UsageLimitReached(err);
-                let error = err.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                     .await;
                 error!("Failed to run pre-sampling compact");
                 return None;
             }
             Err(err) => {
-                let error = err.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                     .await;
                 error!("Failed to run pre-sampling compact");
                 return None;
@@ -333,13 +331,11 @@ pub(crate) async fn run_turn(
                                 continue;
                             }
                             let err = CodexErr::UsageLimitReached(usage_err);
-                            let error = err.to_codex_protocol_error();
-                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                                 .await;
                             return None;
                         } else {
-                            let error = err.to_codex_protocol_error();
-                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                                 .await;
                             return None;
                         }
@@ -432,13 +428,11 @@ pub(crate) async fn run_turn(
                             continue;
                         }
                         let err = CodexErr::UsageLimitReached(usage_err);
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                             .await;
                         return None;
                     } else {
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), &err)
                             .await;
                         return None;
                     }
@@ -462,8 +456,7 @@ pub(crate) async fn run_turn(
                 }
                 let e = CodexErr::UsageLimitReached(err);
                 info!("Turn error: {e:#}");
-                let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), &e)
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
@@ -473,9 +466,14 @@ pub(crate) async fn run_turn(
             Err(codex_error @ CodexErr::InvalidImageRequest()) => {
                 {
                     let mut state = sess.state.lock().await;
-                    error_or_panic(
-                        "Invalid image detected; sanitizing tool output to prevent poisoning",
-                    );
+                    // This is an externally triggered condition (the upstream API
+                    // rejected an image we sent), not a broken local invariant, and
+                    // the recovery below is the designed handling for it. It used to
+                    // call `error_or_panic`, which aborts the turn task in every
+                    // debug build and therefore made this whole branch — and any test
+                    // covering it — unreachable outside release builds. Log loudly
+                    // instead so the recovery path is exercised uniformly.
+                    error!("Invalid image detected; sanitizing tool output to prevent poisoning");
                     if state.history.replace_last_turn_images("Invalid image") {
                         continue;
                     }
@@ -483,8 +481,12 @@ pub(crate) async fn run_turn(
 
                 sess.track_turn_codex_error(turn_context.as_ref(), &codex_error);
                 let error = CodexErrorInfo::BadRequest;
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                    .await;
+                sess.emit_turn_error_lifecycle_with_protocol_error(
+                    turn_context.as_ref(),
+                    &codex_error,
+                    error.clone(),
+                )
+                .await;
                 let event = EventMsg::Error(ErrorEvent {
                     message: "Invalid image in your last message. Please remove it and try again."
                         .to_string(),
@@ -495,8 +497,7 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), &e)
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));

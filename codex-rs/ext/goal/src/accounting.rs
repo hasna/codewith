@@ -29,6 +29,7 @@ struct GoalTurnAccounting {
     last_accounted_token_usage: TokenUsage,
     active_goal_id: Option<String>,
     account_tokens: bool,
+    error_observed: bool,
 }
 
 #[derive(Debug)]
@@ -115,6 +116,19 @@ impl GoalAccountingState {
         }
         let turn = inner.turns.get(turn_id)?;
         turn.account_tokens.then(|| turn.active_goal_id()).flatten()
+    }
+
+    pub(crate) fn mark_turn_error_observed(&self, turn_id: &str) {
+        if let Some(turn) = self.inner().turns.get_mut(turn_id) {
+            turn.error_observed = true;
+        }
+    }
+
+    pub(crate) fn turn_error_observed(&self, turn_id: &str) -> bool {
+        self.inner()
+            .turns
+            .get(turn_id)
+            .is_some_and(|turn| turn.error_observed)
     }
 
     pub(crate) fn record_token_usage(
@@ -373,6 +387,7 @@ impl GoalTurnAccounting {
             current_token_usage,
             active_goal_id: None,
             account_tokens,
+            error_observed: false,
         }
     }
 

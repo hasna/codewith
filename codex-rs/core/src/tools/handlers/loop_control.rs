@@ -1298,12 +1298,15 @@ mod tests {
             .expect("first run should be due");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &first_claim.run.run_id,
-                "lease-complete",
-                "turn-complete",
-            )
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &first_claim.run.run_id,
+                lease_id: "lease-complete",
+                turn_id: "turn-complete",
+                goal_id: None,
+                now: first_run_at,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("first run should start")
             .expect("first run should exist");
@@ -1329,12 +1332,15 @@ mod tests {
             .expect("second run should be due");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &schedule.schedule_id,
-                &second_claim.run.run_id,
-                "lease-fail",
-                "turn-fail",
-            )
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: &schedule.schedule_id,
+                run_id: &second_claim.run.run_id,
+                lease_id: "lease-fail",
+                turn_id: "turn-fail",
+                goal_id: None,
+                now: second_run_at,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("second run should start")
             .expect("second run should exist");
@@ -1565,12 +1571,15 @@ mod tests {
             .expect("run should be due");
         runtime
             .thread_schedules()
-            .mark_thread_schedule_run_started(
-                &first.schedule_id,
-                &claim.run.run_id,
-                "lease-complete",
-                "turn-complete",
-            )
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: &first.schedule_id,
+                run_id: &claim.run.run_id,
+                lease_id: "lease-complete",
+                turn_id: "turn-complete",
+                goal_id: None,
+                now: first_run_at,
+                lease_duration: Duration::from_secs(300),
+            })
             .await
             .expect("run should start")
             .expect("run should exist");
