@@ -203,6 +203,12 @@ impl ChatWidget {
 
     pub(super) fn fallback_auth_profile_switch_after_reset_unavailable(&mut self) {
         if self.try_auth_profile_switch_after_reset_unavailable() {
+            // A switch to a healthier profile is underway. Re-queue the interrupted turn so it
+            // resumes automatically on the new profile once the switch is applied, instead of
+            // being silently dropped (which forced the user to re-type `go`). The pending
+            // `SwitchAuthProfile { resume_queued_input: true }` drains the queue after the
+            // profile override op is submitted, so the turn re-runs on the healthy profile.
+            self.requeue_failed_turn_at_front();
             return;
         }
         let retry_delay = self.maybe_schedule_usage_self_heal_retry(

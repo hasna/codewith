@@ -1065,6 +1065,7 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: None,
+            resets_at_unix: None,
             window_minutes: Some(window_minutes),
         }
     }

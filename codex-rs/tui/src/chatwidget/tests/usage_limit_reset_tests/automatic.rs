@@ -527,3 +527,100 @@ async fn verified_reset_resumes_failed_turn_exactly_once() {
         "failed turn must resume only once"
     );
 }
+
+#[tokio::test]
+async fn automatic_weekly_switch_requeues_failed_turn_for_resume_on_new_profile() {
+    // Regression: on the automatic weekly-exhaustion path, when no reset is available and the
+    // agent auto-switches to a healthier profile, the interrupted turn must be re-queued so it
+    // resumes automatically on the new profile (the `SwitchAuthProfile { resume_queued_input }`
+    // handler drains the queue after applying the profile override). Previously the switch fired
+    // but the failed turn was silently dropped, forcing the user to re-type `go`.
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    super::status_and_layout::save_test_auth_profile(&chat, "work");
+    super::status_and_layout::save_test_auth_profile(&chat, "personal");
+    chat.config.selected_auth_profile = Some("work".to_string());
+    chat.config.auth_profile_auto_switch.enabled = true;
+    chat.config.auth_profile_auto_switch.profiles =
+        vec!["work".to_string(), "personal".to_string()];
+    chat.config.usage_self_heal.enabled = true;
+    super::status_and_layout::configure_test_session(&mut chat);
+    set_canonical_reset_provider(&mut chat);
+    chat.config.usage_limit.auto_reset_enabled = true;
+
+    // `personal` has fresh, healthy weekly usage, so it is a valid smart-selection target.
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("personal".to_string()),
+        vec![non_exhausted_weekly_snapshot()],
+    );
+    // Banked credits present so the exhausted snapshot does not proactively auto-switch: the
+    // automatic reset path takes precedence until it turns out no usable reset applies.
+    chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
+    while rx.try_recv().is_ok() {}
+
+    chat.submit_user_message(UserMessage::from("resume me on personal"));
+    assert_user_turn_text(next_submit_op(&mut op_rx), "resume me on personal");
+    chat.on_task_started();
+    chat.on_rate_limit_snapshot(Some(exhausted_weekly_snapshot()));
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::SwitchAuthProfile { .. })),
+        "auto-reset must retain precedence before the turn actually fails"
+    );
+    chat.on_rate_limit_error(
+        RateLimitErrorKind::UsageLimit,
+        "Weekly usage limit reached.".to_string(),
+    );
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::RefreshRateLimits {
+                origin: RateLimitRefreshOrigin::AutoResetCheck { generation: 1 },
+                target: RateLimitRefreshTarget::Selected,
+            }
+        )),
+        "the failed weekly turn must hand off to the automatic reset check first"
+    );
+
+    // Force the same-window fallback so the reset check yields no usable reset and the agent
+    // falls back to an auth-profile switch.
+    chat.usage_limit_auto_reset_key = Some(format!(
+        "{:?}:codex:weekly:{:?}",
+        chat.config.selected_auth_profile,
+        Some(123)
+    ));
+    chat.finish_usage_limit_auto_reset_check(1, Ok(()));
+
+    let switches = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SwitchAuthProfile {
+                profile,
+                resume_queued_input,
+                ..
+            } => Some((profile, resume_queued_input)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(switches, vec![(Some("personal".to_string()), true)]);
+
+    // The interrupted turn is re-queued (not sent yet); the pending switch drains it on the new
+    // profile once applied. No self-heal retry competes for the same turn.
+    assert_eq!(
+        chat.queued_user_message_texts(),
+        vec!["resume me on personal".to_string()]
+    );
+    assert_eq!(chat.pending_usage_self_heal_retry_id(), None);
+    assert!(
+        op_rx.try_recv().is_err(),
+        "failed turn must not resubmit before the profile switch is applied"
+    );
+
+    // Simulate the switch handler draining the queue once the profile override is applied: the
+    // interrupted turn re-runs exactly once, on the new profile.
+    chat.pending_auth_profile_auto_switch_trigger = None;
+    assert!(chat.maybe_send_next_queued_input());
+    assert_user_turn_text(next_submit_op(&mut op_rx), "resume me on personal");
+    assert!(
+        op_rx.try_recv().is_err(),
+        "interrupted turn resumes exactly once"
+    );
+}

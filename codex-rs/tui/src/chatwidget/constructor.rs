@@ -162,6 +162,7 @@ impl ChatWidget {
             warning_display_state: WarningDisplayState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             last_auth_profile_auto_switch_trigger: None,
+            last_no_eligible_auth_profile_trigger: None,
             pending_auth_profile_auto_switch_trigger: None,
             auth_profile_auto_switch_cooldowns: BTreeMap::new(),
             usage_self_heal: UsageSelfHealState::default(),
