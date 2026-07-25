@@ -55,7 +55,19 @@ async fn config_usage_limit_reset_left_and_escape_return_one_level() {
     chat.on_rate_limit_reset_credits(Some(exact_reset_summary()));
     while rx.try_recv().is_ok() {}
 
+    // Derive the row rather than assuming Account & automation stays first, so inserting a new
+    // section ahead of it cannot silently retarget this test.
+    let account_automation_row = crate::common_config_options::common_config_sections()
+        .iter()
+        .position(|section| {
+            *section == crate::common_config_options::CommonConfigSection::AccountAutomation
+        })
+        .expect("account & automation section is present in the config menu");
+
     chat.open_config_popup();
+    for _ in 0..account_automation_row {
+        chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    }
     chat.handle_key_event(KeyEvent::from(KeyCode::Right));
     assert_matches!(
         rx.try_recv(),
