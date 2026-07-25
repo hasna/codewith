@@ -516,14 +516,24 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
         }]
     );
 
-    assert!(matches!(
-        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
-        Err(AuthProfileError::NonChatGptProfile {
-            name,
-            provider: AuthProfileSubscriptionProvider::ClaudeAi,
-        }) if name == "claude"
-    ));
-    assert_eq!(active_auth_profile(codex_home.path())?, None);
+    let switched =
+        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?;
+    assert_eq!(
+        switched,
+        AuthProfile {
+            name: "claude".to_string(),
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            auth_mode: None,
+            email: None,
+            account_id: None,
+            plan: None,
+            active: true,
+        }
+    );
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude")
+    );
     assert_eq!(active_storage.load()?, Some(root_auth));
 
     let renamed = rename_auth_profile(
@@ -538,7 +548,10 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
         AuthProfileSubscriptionProvider::ClaudeAi
     );
     assert_eq!(renamed.auth_mode, None);
-    assert_eq!(active_auth_profile(codex_home.path())?, None);
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude-work")
+    );
     assert_eq!(
         load_auth_profile_metadata(codex_home.path(), "claude-work")?,
         metadata
@@ -550,6 +563,12 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
 #[test]
 fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
+    let root_auth = auth_with_key("sk-root");
+    let active_storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+    );
+    active_storage.save(&root_auth)?;
     let metadata = AuthProfileMetadata {
         subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
         last_permissions: None,
@@ -561,6 +580,13 @@ fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<(
         "claude",
         &auth_with_key("sk-stray"),
     )?;
+    assert!(matches!(
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
+    ));
 
     let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
 
@@ -576,6 +602,15 @@ fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<(
             active: false,
         }]
     );
+
+    let switched =
+        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?;
+    assert_eq!(switched.auth_mode, None);
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude")
+    );
+    assert_eq!(active_storage.load()?, Some(root_auth));
 
     Ok(())
 }

@@ -87,9 +87,11 @@ use codex_features::NetworkProxyConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
+use codex_login::AuthProfileError;
 use codex_login::AuthProfilePermissionSettings;
 use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::active_auth_profile;
 use codex_login::load_auth_profile_metadata;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
@@ -595,6 +597,7 @@ fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_selected_auth_profile(
+    codex_home: &Path,
     explicit_profile: Option<String>,
 ) -> std::io::Result<Option<String>> {
     if let Some(profile) = explicit_profile {
@@ -605,9 +608,22 @@ fn resolve_selected_auth_profile(
         return validate_selected_auth_profile(profile, CODEWITH_AUTH_PROFILE_ENV_VAR).map(Some);
     }
 
-    non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR)
-        .map(|profile| validate_selected_auth_profile(profile, CODEX_AUTH_PROFILE_ENV_VAR))
-        .transpose()
+    if let Some(profile) = non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR) {
+        return validate_selected_auth_profile(profile, CODEX_AUTH_PROFILE_ENV_VAR).map(Some);
+    }
+
+    match active_auth_profile(codex_home).map_err(|err| {
+        std::io::Error::other(format!("failed to resolve active auth profile: {err}"))
+    })? {
+        Some(profile) => match load_auth_profile_metadata(codex_home, &profile) {
+            Ok(_) => Ok(Some(profile)),
+            Err(AuthProfileError::ProfileNotFound { .. }) => Ok(None),
+            Err(err) => Err(std::io::Error::other(format!(
+                "failed to load active auth profile metadata: {err}"
+            ))),
+        },
+        None => Ok(None),
+    }
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -3693,7 +3709,7 @@ impl Config {
             Some(profile) => profile
                 .map(|profile| validate_selected_auth_profile(profile, "--auth-profile"))
                 .transpose()?,
-            None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
+            None => resolve_selected_auth_profile(&codex_home, /*explicit_profile*/ None)?,
         };
         reject_infinity_agent_auth_profile_inheritance(
             tool_policy,

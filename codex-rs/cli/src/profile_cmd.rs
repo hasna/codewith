@@ -170,9 +170,9 @@ fn profiles_json_value(profiles: &[AuthProfile], selected_auth_profile: Option<&
 }
 
 fn profile_unusable_reason(profile: &AuthProfile) -> Option<&'static str> {
-    if profile.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
-        Some("unsupported_subscription_provider")
-    } else if profile.auth_mode.is_none() {
+    if profile.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt
+        && profile.auth_mode.is_none()
+    {
         Some("missing_auth")
     } else {
         None
@@ -267,8 +267,8 @@ mod tests {
                         "email": null,
                         "accountId": null,
                         "plan": null,
-                        "usable": false,
-                        "unusableReason": "unsupported_subscription_provider",
+                        "usable": true,
+                        "unusableReason": null,
                     }
                 ]
             })

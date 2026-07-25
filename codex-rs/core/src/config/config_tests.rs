@@ -5477,6 +5477,38 @@ async fn config_ignores_empty_codewith_auth_profile_env() -> std::io::Result<()>
 
 #[tokio::test]
 #[serial(selected_auth_profile_env)]
+async fn config_resolves_selected_auth_profile_from_active_marker() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    codex_login::save_auth_profile_metadata(
+        codex_home.path(),
+        "cursor",
+        codex_login::AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+            last_permissions: None,
+        },
+    )?;
+    codex_login::switch_auth_profile(
+        codex_home.path(),
+        codex_config::types::AuthCredentialsStoreMode::File,
+        "cursor",
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.selected_auth_profile.as_deref(), Some("cursor"));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
 async fn config_rejects_invalid_selected_auth_profile() -> std::io::Result<()> {
     let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
     let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);

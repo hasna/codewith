@@ -350,6 +350,13 @@ pub fn load_auth_profile(
 ) -> Result<AuthDotJson, AuthProfileError> {
     validate_auth_profile_name(name)?;
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+    let metadata = load_auth_profile_metadata(codex_home, name)?;
+    if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+        return Err(AuthProfileError::NonChatGptProfile {
+            name: name.to_string(),
+            provider: metadata.subscription_provider,
+        });
+    }
     load_profile_auth(codex_home, auth_credentials_store_mode, name)
 }
 
@@ -383,10 +390,12 @@ pub fn switch_auth_profile(
 
     let metadata = load_profile_metadata(&auth_profile_dir(codex_home, name))?;
     if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
-        return Err(AuthProfileError::NonChatGptProfile {
-            name: name.to_string(),
-            provider: metadata.subscription_provider,
-        });
+        write_active_profile(codex_home, name)?;
+        return Ok(profile_from_metadata(
+            name.to_string(),
+            metadata,
+            /*active*/ true,
+        ));
     }
 
     let auth = load_profile_auth(codex_home, auth_credentials_store_mode, name)?;
