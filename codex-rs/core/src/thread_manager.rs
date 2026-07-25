@@ -156,6 +156,35 @@ impl From<usize> for ForkSnapshot {
     }
 }
 
+pub fn backtrack_initial_history_by_message_or_tool_calls(
+    initial_history: InitialHistory,
+    history_backtrack: u32,
+) -> CodexResult<InitialHistory> {
+    if history_backtrack == 0 {
+        return Err(CodexErr::InvalidRequest(
+            "historyBacktrack must be >= 1".to_string(),
+        ));
+    }
+
+    let n_from_end = usize::try_from(history_backtrack).unwrap_or(usize::MAX);
+    Ok(match initial_history {
+        InitialHistory::Resumed(mut resumed) => {
+            resumed.history =
+                crate::thread_rollout_truncation::truncate_rollout_before_last_n_message_or_tool_calls(
+                    &resumed.history,
+                    n_from_end,
+                );
+            InitialHistory::Resumed(resumed)
+        }
+        InitialHistory::Forked(items) => InitialHistory::Forked(
+            crate::thread_rollout_truncation::truncate_rollout_before_last_n_message_or_tool_calls(
+                &items, n_from_end,
+            ),
+        ),
+        InitialHistory::New | InitialHistory::Cleared => initial_history,
+    })
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ThreadShutdownReport {
     pub completed: Vec<ThreadId>,

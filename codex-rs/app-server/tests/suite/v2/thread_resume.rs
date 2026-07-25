@@ -86,6 +86,7 @@ use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_rollout::append_rollout_item_to_path;
@@ -123,6 +124,49 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const CODEWITH_SELECTED_MODEL_HEADER: &str =
     "You are Codewith, a coding agent running on the selected model.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
+
+fn message_response_item(role: &str, text: &str) -> ResponseItem {
+    let content = if role == "user" {
+        ContentItem::InputText {
+            text: text.to_string(),
+        }
+    } else {
+        ContentItem::OutputText {
+            text: text.to_string(),
+        }
+    };
+    ResponseItem::Message {
+        id: None,
+        role: role.to_string(),
+        content: vec![content],
+        phase: None,
+    }
+}
+
+/// Append a message to a rollout the way a real session records one: the model
+/// history `response_item` followed by the replay `event_msg` that the turn
+/// view is reconstructed from.
+async fn append_message_turn_items(path: &Path, role: &str, text: &str) -> Result<()> {
+    append_rollout_item_to_path(
+        path,
+        &RolloutItem::ResponseItem(message_response_item(role, text)),
+    )
+    .await?;
+    let event = if role == "user" {
+        EventMsg::UserMessage(UserMessageEvent {
+            message: text.to_string(),
+            ..Default::default()
+        })
+    } else {
+        EventMsg::AgentMessage(AgentMessageEvent {
+            message: text.to_string(),
+            phase: None,
+            memory_citation: None,
+        })
+    };
+    append_rollout_item_to_path(path, &RolloutItem::EventMsg(event)).await?;
+    Ok(())
+}
 
 fn normalized_existing_path(path: impl AsRef<Path>) -> Result<PathBuf> {
     Ok(AbsolutePathBuf::from_absolute_path(path.as_ref().canonicalize()?)?.into_path_buf())
@@ -624,6 +668,108 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
         }
         other => panic!("expected user message item, got {other:?}"),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_history_backtrack_replays_prefix_without_mutating_source() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id);
+    append_message_turn_items(&source_path, "assistant", "Saved answer").await?;
+    append_message_turn_items(&source_path, "user", "Second request").await?;
+    append_message_turn_items(&source_path, "assistant", "Second answer").await?;
+    let original_contents = std::fs::read_to_string(&source_path)?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            history_backtrack: Some(2),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    assert_eq!(thread.id, conversation_id);
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.turns.len(), 1);
+    let turn = &thread.turns[0];
+    assert_eq!(turn.items.len(), 2);
+    assert!(matches!(
+        turn.items.first(),
+        Some(ThreadItem::UserMessage { .. })
+    ));
+    assert!(
+        matches!(
+            &turn.items[1],
+            ThreadItem::AgentMessage { text, .. } if text.as_str() == "Saved answer"
+        ),
+        "expected the first assistant reply to remain after backtrack"
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, original_contents);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_history_backtrack_updates_preview_from_selected_prefix() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id);
+    let original_contents = std::fs::read_to_string(&source_path)?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            history_backtrack: Some(99),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    assert_eq!(thread.id, conversation_id);
+    assert_eq!(thread.preview, "");
+    assert!(thread.turns.is_empty());
+    assert_eq!(std::fs::read_to_string(&source_path)?, original_contents);
 
     Ok(())
 }

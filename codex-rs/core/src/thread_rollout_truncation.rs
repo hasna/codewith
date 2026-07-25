@@ -100,6 +100,49 @@ pub(crate) fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<usize
     fork_turn_positions
 }
 
+/// Return the indices of user/assistant/agent message and model tool-call
+/// boundaries in a rollout.
+///
+/// Tool outputs are deliberately excluded: a restart point should be the model
+/// action boundary, not the later output item attached to that action. Like the
+/// other rollout boundary helpers, this applies `ThreadRolledBack` markers so
+/// indexing reflects the effective post-rollback history.
+pub(crate) fn message_or_tool_call_positions_in_rollout(items: &[RolloutItem]) -> Vec<usize> {
+    let mut rollback_turn_positions = Vec::new();
+    let mut boundary_positions = Vec::new();
+    for (idx, item) in items.iter().enumerate() {
+        match item {
+            RolloutItem::ResponseItem(item) => {
+                if is_user_turn_boundary(item) {
+                    rollback_turn_positions.push(idx);
+                }
+                if is_message_or_tool_call_boundary(item) {
+                    boundary_positions.push(idx);
+                }
+            }
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
+                let num_turns = usize::try_from(rollback.num_turns).unwrap_or(usize::MAX);
+                if num_turns == 0 {
+                    continue;
+                }
+                let Some(rollback_start_idx) = rollback_turn_positions
+                    .len()
+                    .checked_sub(num_turns)
+                    .map(|rollback_start| rollback_turn_positions[rollback_start])
+                    .or_else(|| rollback_turn_positions.first().copied())
+                else {
+                    continue;
+                };
+                let new_rollback_len = rollback_turn_positions.len().saturating_sub(num_turns);
+                rollback_turn_positions.truncate(new_rollback_len);
+                boundary_positions.retain(|position| *position < rollback_start_idx);
+            }
+            _ => {}
+        }
+    }
+    boundary_positions
+}
+
 /// Return a prefix of `items` obtained by cutting strictly before the nth user message.
 ///
 /// The boundary index is 0-based from the start of `items` (so `n_from_start = 0` returns
@@ -152,6 +195,33 @@ pub(crate) fn truncate_rollout_to_last_n_fork_turns(
     items[keep_idx..].to_vec()
 }
 
+/// Return a prefix of `items` obtained by cutting strictly before the Nth
+/// message/tool-call boundary counted from the end of the effective rollout.
+///
+/// If `n_from_end` is zero, this returns the full rollout. If the rollout has no
+/// message/tool-call boundaries, this also returns the full rollout. If
+/// `n_from_end` exceeds the number of boundaries, this cuts before the first
+/// boundary and preserves any pre-boundary startup metadata.
+pub(crate) fn truncate_rollout_before_last_n_message_or_tool_calls(
+    items: &[RolloutItem],
+    n_from_end: usize,
+) -> Vec<RolloutItem> {
+    if n_from_end == 0 {
+        return items.to_vec();
+    }
+
+    let boundary_positions = message_or_tool_call_positions_in_rollout(items);
+    let Some(cut_idx) = boundary_positions
+        .len()
+        .checked_sub(n_from_end)
+        .map(|position| boundary_positions[position])
+        .or_else(|| boundary_positions.first().copied())
+    else {
+        return items.to_vec();
+    };
+    items[..cut_idx].to_vec()
+}
+
 fn is_real_user_message_boundary(item: &ResponseItem) -> bool {
     matches!(
         event_mapping::parse_turn_item(item),
@@ -167,6 +237,26 @@ fn is_trigger_turn_boundary(item: &ResponseItem) -> bool {
     role == "assistant"
         && InterAgentCommunication::from_message_content(content)
             .is_some_and(|communication| communication.trigger_turn)
+}
+
+fn is_message_or_tool_call_boundary(item: &ResponseItem) -> bool {
+    if matches!(
+        event_mapping::parse_turn_item(item),
+        Some(TurnItem::UserMessage(_) | TurnItem::AgentMessage(_))
+    ) {
+        return true;
+    }
+
+    matches!(
+        item,
+        ResponseItem::AgentMessage { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. }
+    )
 }
 
 #[cfg(test)]

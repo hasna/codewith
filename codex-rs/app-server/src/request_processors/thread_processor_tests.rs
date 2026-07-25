@@ -803,6 +803,7 @@ mod thread_processor_behavior_tests {
         let request = ThreadResumeParams {
             thread_id: "thread-1".to_string(),
             history: None,
+            history_backtrack: None,
             path: None,
             model: None,
             model_provider: None,
@@ -865,6 +866,7 @@ mod thread_processor_behavior_tests {
         let mut request = ThreadResumeParams {
             thread_id: "thread-1".to_string(),
             history: None,
+            history_backtrack: None,
             path: None,
             model: None,
             model_provider: None,
@@ -927,6 +929,17 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             collect_resume_override_mismatches(&request, &config_snapshot),
             vec!["auth_profile requested=None active=Some(\"work\")".to_string()]
+        );
+
+        request.auth_profile = None;
+        request.history_backtrack = Some(2);
+
+        assert_eq!(
+            collect_resume_override_mismatches(&request, &config_snapshot),
+            vec![
+                "historyBacktrack requested=2 cannot be applied to an already loaded thread"
+                    .to_string()
+            ]
         );
     }
 

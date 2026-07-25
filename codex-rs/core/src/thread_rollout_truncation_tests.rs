@@ -2,8 +2,11 @@ use super::*;
 use crate::session::tests::make_session_and_context;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::SessionMeta;
+use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use pretty_assertions::assert_eq;
 
@@ -11,7 +14,7 @@ fn user_msg(text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::OutputText {
+        content: vec![ContentItem::InputText {
             text: text.to_string(),
         }],
         phase: None,
@@ -37,6 +40,23 @@ fn developer_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
+    }
+}
+
+fn function_call(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: "tool".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: call_id.to_string(),
+    }
+}
+
+fn function_call_output(call_id: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: FunctionCallOutputPayload::from_text("ok".to_string()),
     }
 }
 
@@ -340,5 +360,102 @@ fn truncates_rollout_to_last_n_fork_turns_keeps_full_rollout_when_n_is_large() {
     assert_eq!(
         serde_json::to_value(&truncated).unwrap(),
         serde_json::to_value(&rollout).unwrap()
+    );
+}
+
+#[test]
+fn truncates_rollout_before_last_n_message_or_tool_calls_counts_calls_not_outputs() {
+    let rollout = vec![
+        RolloutItem::ResponseItem(developer_msg("startup")),
+        RolloutItem::ResponseItem(user_msg("u1")),
+        RolloutItem::ResponseItem(function_call("call-1")),
+        RolloutItem::ResponseItem(function_call_output("call-1")),
+        RolloutItem::ResponseItem(assistant_msg("a1")),
+        RolloutItem::ResponseItem(user_msg("u2")),
+        RolloutItem::ResponseItem(assistant_msg("a2")),
+    ];
+
+    assert_eq!(
+        message_or_tool_call_positions_in_rollout(&rollout),
+        vec![1, 2, 4, 5, 6]
+    );
+
+    let truncated =
+        truncate_rollout_before_last_n_message_or_tool_calls(&rollout, /*n_from_end*/ 2);
+    let expected = rollout[..5].to_vec();
+
+    assert_eq!(
+        serde_json::to_value(&truncated).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+}
+
+#[test]
+fn truncates_rollout_before_last_n_message_or_tool_calls_preserves_startup_prefix() {
+    let rollout = vec![
+        RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id: codex_protocol::ThreadId::new(),
+                forked_from_id: None,
+                parent_thread_id: None,
+                timestamp: "2025-01-05T12:00:00Z".to_string(),
+                cwd: std::path::PathBuf::from("/"),
+                originator: "codex".to_string(),
+                cli_version: "0.0.0".to_string(),
+                source: codex_protocol::protocol::SessionSource::Cli,
+                thread_source: None,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+                model_provider: None,
+                base_instructions: None,
+                dynamic_tools: None,
+                memory_mode: None,
+                multi_agent_version: None,
+                auth_profile: None,
+            },
+            git: None,
+        }),
+        RolloutItem::ResponseItem(developer_msg("startup developer context")),
+        RolloutItem::ResponseItem(user_msg("u1")),
+        RolloutItem::ResponseItem(assistant_msg("a1")),
+    ];
+
+    let truncated =
+        truncate_rollout_before_last_n_message_or_tool_calls(&rollout, /*n_from_end*/ 99);
+    let expected = rollout[..2].to_vec();
+
+    assert_eq!(
+        serde_json::to_value(&truncated).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+}
+
+#[test]
+fn truncates_rollout_before_last_n_message_or_tool_calls_applies_rollback_markers() {
+    let rollout = vec![
+        RolloutItem::ResponseItem(user_msg("u1")),
+        RolloutItem::ResponseItem(assistant_msg("a1")),
+        RolloutItem::ResponseItem(user_msg("u2")),
+        RolloutItem::ResponseItem(function_call("rolled-back-call")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+        })),
+        RolloutItem::ResponseItem(user_msg("u3")),
+        RolloutItem::ResponseItem(assistant_msg("a3")),
+    ];
+
+    assert_eq!(
+        message_or_tool_call_positions_in_rollout(&rollout),
+        vec![0, 1, 5, 6]
+    );
+
+    let truncated =
+        truncate_rollout_before_last_n_message_or_tool_calls(&rollout, /*n_from_end*/ 2);
+    let expected = rollout[..5].to_vec();
+
+    assert_eq!(
+        serde_json::to_value(&truncated).unwrap(),
+        serde_json::to_value(&expected).unwrap()
     );
 }

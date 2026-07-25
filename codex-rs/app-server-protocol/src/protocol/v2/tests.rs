@@ -863,6 +863,18 @@ fn thread_path_params_deserialize_empty_path_as_none() {
     }))
     .expect("thread/fork params deserialize");
     assert_eq!(fork.path, None);
+    let resume_with_backtrack: ThreadResumeParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "historyBacktrack": 2,
+    }))
+    .expect("thread/resume params deserialize");
+    assert_eq!(resume_with_backtrack.history_backtrack, Some(2));
+    let fork_with_backtrack: ThreadForkParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "historyBacktrack": 3,
+    }))
+    .expect("thread/fork params deserialize");
+    assert_eq!(fork_with_backtrack.history_backtrack, Some(3));
 
     let resume_with_path: ThreadResumeParams = serde_json::from_value(json!({
         "threadId": "thread-1",
@@ -2000,10 +2012,42 @@ fn client_request_thread_fork_granular_approval_policy_is_marked_experimental() 
 }
 
 #[test]
+fn client_request_thread_resume_history_backtrack_is_marked_experimental() {
+    let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+        &crate::ClientRequest::ThreadResume {
+            request_id: crate::RequestId::Integer(4),
+            params: ThreadResumeParams {
+                thread_id: "thr_123".to_string(),
+                history_backtrack: Some(1),
+                ..Default::default()
+            },
+        },
+    );
+
+    assert_eq!(reason, Some("thread/resume.historyBacktrack"));
+}
+
+#[test]
+fn client_request_thread_fork_history_backtrack_is_marked_experimental() {
+    let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+        &crate::ClientRequest::ThreadFork {
+            request_id: crate::RequestId::Integer(5),
+            params: ThreadForkParams {
+                thread_id: "thr_456".to_string(),
+                history_backtrack: Some(1),
+                ..Default::default()
+            },
+        },
+    );
+
+    assert_eq!(reason, Some("thread/fork.historyBacktrack"));
+}
+
+#[test]
 fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
     let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
         &crate::ClientRequest::TurnStart {
-            request_id: crate::RequestId::Integer(4),
+            request_id: crate::RequestId::Integer(6),
             params: TurnStartParams {
                 thread_id: "thr_123".to_string(),
                 client_user_message_id: None,
