@@ -291,6 +291,26 @@ fn next_session_recap_request_event(
     }
 }
 
+fn next_session_continuation_request_event(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> (ThreadId, String) {
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::RequestSessionContinuation {
+                destination_thread_id,
+                source_thread_id,
+            }) => return (destination_thread_id, source_thread_id),
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => {
+                panic!("expected RequestSessionContinuation event but queue was empty")
+            }
+            Err(TryRecvError::Disconnected) => {
+                panic!("expected RequestSessionContinuation event but channel closed")
+            }
+        }
+    }
+}
+
 fn drain_history_text(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
     drain_insert_history(rx)
         .iter()
@@ -1209,6 +1229,32 @@ async fn recap_slash_command_with_prompt_emits_recap_event() {
     assert_eq!(prompt, Some("list unresolved blockers".to_string()));
     assert!(!automatic);
     assert_no_submit_op(&mut op_rx);
+    assert_eq!(recall_latest_after_clearing(&mut chat), command);
+}
+
+#[tokio::test]
+async fn continue_slash_command_targets_current_thread_without_switching() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let destination_thread_id = ThreadId::new();
+    let source_thread_id = ThreadId::new().to_string();
+    chat.thread_id = Some(destination_thread_id);
+    let command = format!("/continue {source_thread_id}");
+
+    submit_composer_text(&mut chat, &command);
+
+    let preparing = match rx.try_recv().expect("expected continuation progress cell") {
+        AppEvent::InsertHistoryCell(cell) => {
+            lines_to_single_string(&cell.display_lines(/*width*/ 80))
+        }
+        other => panic!("expected InsertHistoryCell, got {other:?}"),
+    };
+    let (actual_destination_thread_id, actual_source_thread_id) =
+        next_session_continuation_request_event(&mut rx);
+    assert_eq!(actual_destination_thread_id, destination_thread_id);
+    assert_eq!(actual_source_thread_id, source_thread_id);
+    assert_eq!(chat.thread_id, Some(destination_thread_id));
+    assert_no_submit_op(&mut op_rx);
+    assert_chatwidget_snapshot!("slash_continue_preparing_info_cell", preparing);
     assert_eq!(recall_latest_after_clearing(&mut chat), command);
 }
 

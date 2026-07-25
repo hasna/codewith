@@ -1047,6 +1047,9 @@ impl ChatWidget {
             SlashCommand::Resume => {
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
             }
+            SlashCommand::Continue => {
+                self.add_error_message("Usage: /continue <session-id>".to_string());
+            }
             SlashCommand::Tmux => {
                 self.app_event_tx.send(AppEvent::OpenInTmux {
                     destination: TmuxHandoffDestination::default(),
@@ -2228,6 +2231,23 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::ResumeSessionByIdOrName(args));
             }
+            SlashCommand::Continue if !trimmed.is_empty() => {
+                let Some(destination_thread_id) = self.thread_id else {
+                    self.add_error_message(
+                        "'/continue' is unavailable before the session starts.".to_string(),
+                    );
+                    return;
+                };
+                self.add_info_message(
+                    "Preparing continuation recap...".to_string(),
+                    /*hint*/ None,
+                );
+                self.app_event_tx
+                    .send(AppEvent::RequestSessionContinuation {
+                        destination_thread_id,
+                        source_thread_id: args,
+                    });
+            }
             SlashCommand::Tmux if !trimmed.is_empty() => match parse_tmux_slash_args(trimmed) {
                 Ok(command) => {
                     self.app_event_tx.send(AppEvent::OpenInTmux {
@@ -2781,6 +2801,7 @@ impl ChatWidget {
             | SlashCommand::Archive
             | SlashCommand::Clear
             | SlashCommand::Resume
+            | SlashCommand::Continue
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact

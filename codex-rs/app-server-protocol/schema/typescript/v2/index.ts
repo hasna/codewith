@@ -436,6 +436,8 @@ export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
+export type { ThreadContinueParams } from "./ThreadContinueParams";
+export type { ThreadContinueResponse } from "./ThreadContinueResponse";
 export type { ThreadExternalAgentEvent } from "./ThreadExternalAgentEvent";
 export type { ThreadExternalAgentEventNotification } from "./ThreadExternalAgentEventNotification";
 export type { ThreadExternalAgentMode } from "./ThreadExternalAgentMode";
