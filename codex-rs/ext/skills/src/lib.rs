@@ -1,6 +1,7 @@
 pub mod catalog;
 mod extension;
 pub mod provider;
+mod ranking;
 mod render;
 mod selection;
 mod sources;

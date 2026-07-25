@@ -8,6 +8,7 @@ use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::PluginSkillRoot;
 
+pub use codex_core_skills::SkillCatalogSearch;
 pub use codex_core_skills::SkillError;
 pub use codex_core_skills::SkillLoadOutcome;
 pub use codex_core_skills::SkillMetadata;
@@ -32,6 +33,24 @@ pub use codex_core_skills::remote;
 pub use codex_core_skills::render;
 pub use codex_core_skills::render::SkillRenderSideEffects;
 pub use codex_core_skills::system;
+
+/// Whether this thread exposes the extension-provided skills catalog-search
+/// tool.
+///
+/// The starter cap in `codex-core-skills` may only hide skills when the model
+/// has that escape hatch. Embedders that build a thread without the skills
+/// extension (`empty_extension_registry()`) therefore keep the complete
+/// model-visible list.
+pub(crate) fn skill_catalog_search_availability(session: &Session) -> SkillCatalogSearch {
+    let available = crate::tools::router::extension_tool_executors(session)
+        .iter()
+        .any(|executor| {
+            let name = executor.tool_name();
+            name.namespace.as_deref() == Some(codex_core_skills::SKILLS_TOOL_NAMESPACE)
+                && name.name == codex_core_skills::SKILLS_LIST_TOOL_NAME
+        });
+    SkillCatalogSearch::from_tool_available(available)
+}
 
 pub(crate) fn skills_load_input_from_config(
     config: &Config,

@@ -7,6 +7,8 @@ use std::sync::atomic::Ordering;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core_skills::HostLoadedSkills;
+use codex_core_skills::SkillLoadOutcome;
+use codex_core_skills::SkillMetadata;
 use codex_core_skills::SkillsLoadInput;
 use codex_core_skills::SkillsManager;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
@@ -298,6 +300,10 @@ async fn installed_extension_injects_available_catalog_and_selected_entrypoint()
         .await;
 
     let turn_store = ExtensionData::new("turn-1");
+    // Core renders the `## Skills` developer block from the host outcome; the
+    // preamble may only be dropped from the task-relevant fragment when that
+    // block actually exists.
+    turn_store.insert(host_loaded_skills("lint-fix"));
     let fragments = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
@@ -344,26 +350,417 @@ async fn installed_extension_injects_available_catalog_and_selected_entrypoint()
             .is_empty()
     );
 
-    let next_turn_store = ExtensionData::new("turn-2");
-    let next_fragments = registry.turn_input_contributors()[0]
+    // A follow-up turn that still matches the catalog re-injects the ranked
+    // list (without re-injecting the skill body, which the turn-1 entrypoint
+    // already covered).
+    let matching_turn_store = ExtensionData::new("turn-2");
+    matching_turn_store.insert(host_loaded_skills("lint-fix"));
+    let matching_fragments = registry.turn_input_contributors()[0]
         .contribute(
             TurnInputContext {
                 turn_id: "turn-2".to_string(),
                 user_input: vec![UserInput::Text {
-                    text: "no skill this time".to_string(),
+                    text: "keep fixing the lint errors".to_string(),
                     text_elements: Vec::new(),
                 }],
                 environments: Vec::new(),
             },
             &session_store,
             &thread_store,
-            &next_turn_store,
+            &matching_turn_store,
         )
         .await;
 
-    assert_eq!(1, next_fragments.len());
-    assert_eq!("developer", next_fragments[0].role());
-    assert!(next_fragments[0].render().contains("lint-fix"));
+    assert_eq!(1, matching_fragments.len());
+    assert_eq!("developer", matching_fragments[0].role());
+    let matching_body = matching_fragments[0].render();
+    assert!(matching_body.starts_with(SKILLS_INSTRUCTIONS_OPEN_TAG));
+    assert!(matching_body.contains("lint-fix"));
+    // The `### How to use skills` preamble belongs to the developer-message
+    // `## Skills` block; repeating it here would duplicate ~2.5k characters on
+    // every matching turn.
+    assert!(matching_body.contains(codex_core_skills::TASK_RELEVANT_SKILLS_HEADING));
+    assert!(!matching_body.contains("### How to use skills"));
+    assert!(matching_body.contains(codex_core_skills::TASK_RELEVANT_SKILLS_INTRO));
+    assert!(!matching_body.contains(codex_core_skills::SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS));
+
+    // Turns whose text shares no token with any skill contribute nothing. Note
+    // that this also swallows short continuations ("continue", "yes") because
+    // the ranker is purely lexical -- see the recall tests in `ranking.rs`.
+    let unrelated_turn_store = ExtensionData::new("turn-3");
+    let unrelated_fragments = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-3".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "no relevant request".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &unrelated_turn_store,
+        )
+        .await;
+
+    assert!(unrelated_fragments.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_list_pages_past_the_default_limit() -> TestResult {
+    // The starter list only ever shows a handful of skills, so the model must
+    // be able to walk the whole ranked catalog through `skills.list`. A `limit`
+    // that can only shrink the page, or a page with no continuation, would
+    // leave matches 6..N unreachable.
+    const TOTAL: usize = 24;
+    let entries = (0..TOTAL)
+        .map(|index| {
+            test_entry(
+                SkillSourceKind::Host,
+                "host",
+                &format!("host/lint-{index:02}"),
+                &format!("lint-{index:02}/SKILL.md"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries,
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+    });
+    let providers = SkillProviders::new().with_host_provider(provider);
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(&mut builder, providers);
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let session_source = SessionSource::Cli;
+    let config = default_config().await?;
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let turn_store = ExtensionData::new("turn-page");
+    registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-page".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "fix lint errors".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &turn_store,
+        )
+        .await;
+
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+
+    // Default page: five matches, explicitly continuable.
+    let first = call_tool(
+        Arc::clone(&list_tool),
+        "turn-page",
+        json!({ "query": "lint" }),
+    )
+    .await?;
+    let first_names = match_names(&first);
+    assert_eq!(first_names.len(), 5);
+    // `truncated` is about this page's content, `has_more` about the walk.
+    assert_eq!(first["truncated"], json!(false));
+    assert_eq!(first["has_more"], json!(true));
+    assert_eq!(first["total_matches"], json!(TOTAL));
+    assert_eq!(first["next_offset"], json!(5));
+
+    // Walk the remainder with the returned cursor; every skill is reachable.
+    let mut seen = first_names;
+    let mut offset = first["next_offset"].as_u64().expect("cursor");
+    loop {
+        let page = call_tool(
+            Arc::clone(&list_tool),
+            "turn-page",
+            json!({ "query": "lint", "offset": offset }),
+        )
+        .await?;
+        seen.extend(match_names(&page));
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset, "cursor must advance: {page}");
+                offset = next;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), TOTAL);
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        TOTAL
+    );
+
+    // `limit` can widen the page, not just narrow it.
+    let wide = call_tool(
+        Arc::clone(&list_tool),
+        "turn-page",
+        json!({ "query": "lint", "limit": 50 }),
+    )
+    .await?;
+    assert_eq!(match_names(&wide).len(), TOTAL);
+    assert_eq!(wide["next_offset"], Value::Null);
+    assert_eq!(wide["has_more"], json!(false));
+    assert_eq!(wide["truncated"], json!(false));
+
+    // Paging past the end is well-formed and terminates.
+    let past_end = call_tool(
+        Arc::clone(&list_tool),
+        "turn-page",
+        json!({ "query": "lint", "offset": 100 }),
+    )
+    .await?;
+    assert_eq!(past_end["matches"], json!([]));
+    assert_eq!(past_end["next_offset"], Value::Null);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn skills_list_reaches_every_entry_of_a_large_catalog_and_enumerates_unguessable_ones()
+-> TestResult {
+    // The three properties this tool has to hold at "thousands of skills"
+    // scale:
+    //   1. every rank is reachable by walking the cursor,
+    //   2. a cursor the tool emits is never a cursor the tool rejects,
+    //   3. a skill nobody can guess a query term for is still reachable.
+    const TOTAL: usize = 2_000;
+    let mut entries = (0..TOTAL)
+        .map(|index| {
+            SkillCatalogEntry::new(
+                SkillPackageId(format!("host/skill-{index:04}")),
+                SkillAuthority::new(SkillSourceKind::Host, "host"),
+                format!("skill-{index:04}"),
+                "Ship a deploy to production.",
+                SkillResourceId(format!("skill-{index:04}/SKILL.md")),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.push(SkillCatalogEntry::new(
+        SkillPackageId("host/kanban-groomer".to_string()),
+        SkillAuthority::new(SkillSourceKind::Host, "host"),
+        "kanban-groomer",
+        "Reprioritise the backlog board",
+        SkillResourceId("kanban-groomer/SKILL.md".to_string()),
+    ));
+    let provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries,
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+    });
+    let providers = SkillProviders::new().with_host_provider(provider);
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(&mut builder, providers);
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let session_source = SessionSource::Cli;
+    let config = default_config().await?;
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let turn_store = ExtensionData::new("turn-scale");
+    registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-scale".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "hello".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &turn_store,
+        )
+        .await;
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+
+    // (1)+(2): walk the whole ranked result set with the cursor the tool hands
+    // back, never adjusting it.
+    let mut seen = std::collections::HashSet::new();
+    let mut offset = 0u64;
+    let mut calls = 0usize;
+    loop {
+        let page = call_tool(
+            Arc::clone(&list_tool),
+            "turn-scale",
+            json!({ "query": "deploy", "limit": 50, "offset": offset }),
+        )
+        .await?;
+        calls += 1;
+        assert!(calls < 200, "cursor walk should terminate");
+        assert_eq!(page["total_matches"], json!(TOTAL));
+        seen.extend(match_names(&page));
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next > offset, "cursor must strictly advance: {page}");
+                assert_eq!(page["has_more"], json!(true));
+                offset = next;
+            }
+            None => {
+                assert_eq!(page["has_more"], json!(false));
+                break;
+            }
+        }
+    }
+    assert_eq!(seen.len(), TOTAL);
+    assert!(seen.contains("skill-1999"), "the tail must be reachable");
+
+    // (3): no query term reaches the odd-one-out, but enumeration does.
+    for query in ["tidy up my tickets", "tickets", "skill", "the", "*"] {
+        let page = call_tool(
+            Arc::clone(&list_tool),
+            "turn-scale",
+            json!({ "query": query, "limit": 50 }),
+        )
+        .await?;
+        assert!(
+            !match_names(&page).contains(&"kanban-groomer".to_string()),
+            "{query} unexpectedly matched"
+        );
+    }
+    let mut enumerated = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        // Both spellings of "no query" must work: omitted and blank.
+        let arguments = if offset == 0 {
+            json!({ "limit": 50 })
+        } else {
+            json!({ "query": "", "limit": 50, "offset": offset })
+        };
+        let page = call_tool(Arc::clone(&list_tool), "turn-scale", arguments).await?;
+        assert_eq!(page["total_matches"], json!(TOTAL + 1));
+        enumerated.extend(match_names(&page));
+        match page["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(enumerated.len(), TOTAL + 1);
+    assert!(enumerated.contains(&"kanban-groomer".to_string()));
+    assert!(
+        enumerated.windows(2).all(|pair| pair[0] <= pair[1]),
+        "enumeration must be alphabetical"
+    );
+
+    // A deep offset is answered, not rejected.
+    let deep = call_tool(
+        Arc::clone(&list_tool),
+        "turn-scale",
+        json!({ "query": "deploy", "limit": 50, "offset": 1_000 }),
+    )
+    .await?;
+    let deep_cursor = deep["next_offset"].as_u64().expect("cursor past rank 1000");
+    let after_deep = call_tool(
+        Arc::clone(&list_tool),
+        "turn-scale",
+        json!({ "query": "deploy", "limit": 50, "offset": deep_cursor }),
+    )
+    .await?;
+    assert_eq!(match_names(&after_deep).len(), 50);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn task_relevant_fragment_carries_the_rules_when_no_host_skills_block_exists() -> TestResult {
+    // Core builds `## Skills` from the host outcome. With an empty host outcome
+    // and a remote-only catalog there is no such section, so the per-turn
+    // fragment must not point at one - it has to carry the rules itself.
+    let remote_provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries: vec![test_entry(
+                SkillSourceKind::Remote,
+                "remote",
+                "remote/lint-fix",
+                "lint-fix/SKILL.md",
+            )],
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+    });
+    let providers = SkillProviders::new().with_remote_provider(remote_provider);
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(&mut builder, providers);
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let session_source = SessionSource::Cli;
+    let config = default_config().await?;
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &session_source,
+            persistent_thread_state_available: true,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+
+    let turn_store = ExtensionData::new("turn-remote-only");
+    let fragments = registry.turn_input_contributors()[0]
+        .contribute(
+            TurnInputContext {
+                turn_id: "turn-remote-only".to_string(),
+                user_input: vec![UserInput::Text {
+                    text: "fix the lint errors".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                environments: Vec::new(),
+            },
+            &session_store,
+            &thread_store,
+            &turn_store,
+        )
+        .await;
+
+    assert_eq!(1, fragments.len());
+    let body = fragments[0].render();
+    assert!(body.contains("lint-fix"));
+    assert!(!body.contains(codex_core_skills::TASK_RELEVANT_SKILLS_INTRO));
+    assert!(body.contains(codex_core_skills::TASK_RELEVANT_SKILLS_STANDALONE_INTRO));
+    assert!(body.contains("### How to use skills"));
+    assert!(body.contains(codex_core_skills::SKILLS_DISCOVERY_CATALOG_SEARCH));
+    assert!(body.contains(codex_core_skills::SKILLS_TRIGGER_RULES));
+    assert!(body.contains(codex_core_skills::SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS));
 
     Ok(())
 }
@@ -442,17 +839,13 @@ async fn deferred_skill_is_searchable_and_loadable_but_disabled_skill_is_not() -
         )
         .await;
 
-    assert_eq!(2, fragments.len());
-    let catalog_fragment = fragments[0].render();
-    assert!(catalog_fragment.contains("visible-skill"));
-    assert!(!catalog_fragment.contains("deferred-skill"));
-    assert!(!catalog_fragment.contains("disabled-skill"));
+    assert_eq!(1, fragments.len());
     assert!(
-        fragments[1]
+        fragments[0]
             .render()
             .contains("<name>deferred-skill</name>")
     );
-    assert!(!fragments[1].render().contains("disabled-skill"));
+    assert!(!fragments[0].render().contains("disabled-skill"));
     assert_eq!(
         vec![(
             SkillAuthority::new(SkillSourceKind::Host, "host"),
@@ -460,6 +853,25 @@ async fn deferred_skill_is_searchable_and_loadable_but_disabled_skill_is_not() -
             SkillResourceId("deferred-skill/SKILL.md".to_string()),
         )],
         read_request_keys(&read_requests)
+    );
+
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+    let list_output = call_tool(
+        list_tool,
+        "turn-1",
+        json!({ "query": "lint errors", "limit": 5 }),
+    )
+    .await?;
+    assert_eq!(list_output["matches"][0]["name"], "visible-skill");
+    assert!(
+        list_output["matches"]
+            .as_array()
+            .is_some_and(|matches| matches.len() == 1)
     );
 
     Ok(())
@@ -559,7 +971,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
             TurnInputContext {
                 turn_id: "turn-tools".to_string(),
                 user_input: vec![UserInput::Text {
-                    text: "inspect the package".to_string(),
+                    text: "inspect the custom package".to_string(),
                     text_elements: Vec::new(),
                 }],
                 environments: Vec::new(),
@@ -580,6 +992,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
             .map(|tool| tool.tool_name())
             .collect::<Vec<_>>(),
         vec![
+            ToolName::namespaced("skills", "list"),
             ToolName::namespaced("skills", "search"),
             ToolName::namespaced("skills", "read"),
         ]
@@ -594,8 +1007,93 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
         assert_eq!(spec.tools.len(), 1);
     }
 
+    let list_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "list"),
+    );
+    let search_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "search"),
+    );
+    let read_tool = find_tool(
+        &registry,
+        &session_store,
+        &thread_store,
+        ToolName::namespaced("skills", "read"),
+    );
+    let catalog_output = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "custom package", "limit": 5 }),
+    )
+    .await?;
+    assert_eq!(catalog_output["matches"][0]["name"], "custom-package");
+    assert_eq!(
+        catalog_output["matches"][0]["authority"],
+        json!({
+            "kind": { "type": "custom", "value": "host" },
+            "id": "custom-catalog"
+        })
+    );
+    assert_eq!(catalog_output["matches"][0]["package"], "custom-package");
+    assert_eq!(
+        catalog_output["matches"][0]["main_resource"],
+        "custom/SKILL.md"
+    );
+    let default_list_output = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package" }),
+    )
+    .await?;
+    assert!(
+        default_list_output["matches"]
+            .as_array()
+            .is_some_and(|matches| matches.len() <= 5)
+    );
+    let oversized_list_query = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "x".repeat(4_097) }),
+    )
+    .await;
+    assert_eq!(
+        oversized_list_query,
+        Err(FunctionCallError::RespondToModel(
+            "query must contain no control characters and be at most 4096 bytes; omit it entirely to enumerate the whole catalog"
+                .to_string()
+        ))
+    );
+    let oversized_list_limit = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package", "limit": 51 }),
+    )
+    .await;
+    assert_eq!(
+        oversized_list_limit,
+        Err(FunctionCallError::RespondToModel(
+            "limit must be between 1 and 50".to_string()
+        ))
+    );
+    // A deep offset is answered with an empty final page, never rejected: the
+    // tool must accept any cursor it could itself have produced.
+    let deep_list_offset = call_tool(
+        Arc::clone(&list_tool),
+        "turn-tools",
+        json!({ "query": "package", "offset": 1_001 }),
+    )
+    .await?;
+    assert_eq!(deep_list_offset["matches"], json!([]));
+    assert_eq!(deep_list_offset["has_more"], json!(false));
+    assert_eq!(deep_list_offset["next_offset"], Value::Null);
+
     let custom_output = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": {
@@ -621,7 +1119,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let provider_search_error = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -638,7 +1136,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let provider_read_error = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -655,7 +1153,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let invalid_flood = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "invalid-catalog" },
@@ -668,7 +1166,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     assert_eq!(invalid_flood["truncated"], true);
 
     let oversized_arguments = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -685,7 +1183,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let wrong_resource = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -702,7 +1200,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let search_output = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -741,7 +1239,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let read_output = call_tool(
-        Arc::clone(&tools[1]),
+        Arc::clone(&read_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -776,7 +1274,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
     );
 
     let unavailable = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-a" },
@@ -800,7 +1298,7 @@ async fn model_tools_route_exact_packages_and_bound_results() -> TestResult {
         })
         .await;
     let stale_turn = call_tool(
-        Arc::clone(&tools[0]),
+        Arc::clone(&search_tool),
         "turn-tools",
         json!({
             "authority": { "kind": { "type": "remote" }, "id": "catalog-b" },
@@ -993,6 +1491,28 @@ fn test_entry(
     .with_display_path(format!("skill://{package_id}/SKILL.md"))
 }
 
+/// A host outcome carrying one implicitly-invocable skill, i.e. the state in
+/// which core does render a `## Skills` developer block.
+fn host_loaded_skills(name: &str) -> HostLoadedSkills {
+    let path = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+        std::env::temp_dir().join(name).join("SKILL.md"),
+    )
+    .unwrap_or_else(|err| panic!("temp dir should be absolute: {err}"));
+    let mut outcome = SkillLoadOutcome::default();
+    outcome.skills.push(SkillMetadata {
+        name: name.to_string(),
+        description: "Fix lint errors.".to_string(),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        policy: None,
+        path_to_skills_md: path,
+        scope: codex_protocol::protocol::SkillScope::Repo,
+        plugin_id: None,
+    });
+    HostLoadedSkills::new(Arc::new(outcome))
+}
+
 async fn default_config() -> std::io::Result<Config> {
     let codex_home = test_codex_home();
     std::fs::create_dir_all(&codex_home)?;
@@ -1008,6 +1528,20 @@ fn test_codex_home() -> PathBuf {
         "codex-skills-extension-test-{}-{id}",
         std::process::id(),
     ))
+}
+
+fn match_names(response: &Value) -> Vec<String> {
+    response["matches"]
+        .as_array()
+        .unwrap_or_else(|| panic!("matches array in {response}"))
+        .iter()
+        .map(|entry| {
+            entry["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("match name in {response}"))
+                .to_string()
+        })
+        .collect()
 }
 
 fn read_request_keys(

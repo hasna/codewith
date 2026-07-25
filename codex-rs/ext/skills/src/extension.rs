@@ -3,6 +3,7 @@ use std::sync::Arc;
 use codex_core::config::Config;
 use codex_core_skills::HostLoadedSkills;
 use codex_core_skills::SkillInstructions;
+use codex_core_skills::SkillsPreamble;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_core_skills::injection::SkillInjection;
 use codex_extension_api::ConfigContributor;
@@ -32,6 +33,8 @@ use crate::catalog::SkillSourceKind;
 use crate::provider::HostSkillProvider;
 use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
+use crate::ranking::DEFAULT_SKILL_MATCH_LIMIT;
+use crate::ranking::user_text_query;
 use crate::render::available_skills_fragment;
 use crate::render::truncate_main_prompt_contents;
 use crate::selection::collect_explicit_skill_mentions;
@@ -149,8 +152,14 @@ impl TurnInputContributor for SkillsExtension {
 
         let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
         let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
+        let user_query = user_text_query(&input.user_input);
         if config.include_instructions
-            && let Some(fragment) = available_skills_fragment(&catalog)
+            && let Some(fragment) = available_skills_fragment(
+                &catalog,
+                &user_query,
+                DEFAULT_SKILL_MATCH_LIMIT,
+                skills_preamble_for(host_loaded_skills.as_deref()),
+            )
         {
             fragments.push(Box::new(fragment));
         }
@@ -230,6 +239,30 @@ impl SkillsExtension {
             id: turn_id.to_string(),
             msg: EventMsg::Warning(WarningEvent { message }),
         });
+    }
+}
+
+/// Whether core will have emitted a `## Skills` developer block for this turn.
+///
+/// Core renders that block from the *host* skill outcome, while this extension
+/// ranks over the merged catalog. A thread whose skills all come from remote or
+/// executor providers therefore has an empty host outcome and no `## Skills`
+/// section, and the task-relevant fragment must carry the usage rules itself
+/// instead of deferring to a section that was never written.
+fn skills_preamble_for(host_loaded_skills: Option<&HostLoadedSkills>) -> SkillsPreamble {
+    // Deliberately not `allowed_skills_for_implicit_invocation()`: that clones
+    // the whole catalog, and this runs on every turn.
+    let host_block_rendered = host_loaded_skills.is_some_and(|host| {
+        let outcome = host.outcome();
+        outcome
+            .skills
+            .iter()
+            .any(|skill| outcome.is_skill_allowed_for_implicit_invocation(skill))
+    });
+    if host_block_rendered {
+        SkillsPreamble::RenderedElsewhere
+    } else {
+        SkillsPreamble::Missing
     }
 }
 

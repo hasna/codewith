@@ -42,8 +42,60 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+### Added
+
+- Skills now scale to large catalogs. When the full skill catalog does not fit
+  the 2% skills context budget, the developer message renders a small starter
+  list instead of every skill, and the model reaches the rest through a new
+  `skills.list` catalog-search tool (available in the app-server and MCP-server
+  extension registries). The starter list is dealt round-robin across skill
+  scopes, so bundled system skills cannot starve a workspace's own skills.
+- `skills.list` supports paging: `limit` (default 5, max 50) and an unbounded
+  `offset`, with a `next_offset` cursor in the response, so every ranked match
+  is reachable without rewording the query. The walk is bounded by the catalog
+  and nothing else - there is no offset ceiling, `next_offset` always strictly
+  advances, and any cursor the tool emits is a cursor it accepts. Responses
+  carry `total_matches` and `has_more` so exhaustion is distinguishable from a
+  partial page. Ranking is lexical token overlap with light plural/verb-form
+  stemming, so `charts` finds a `chart` skill; it has no synonym or embedding
+  layer.
+- `skills.list` can enumerate. `query` is optional: omit it (or pass an empty
+  string) to page through the whole catalog alphabetically. Lexical ranking can
+  only surface skills whose metadata shares a token with the request, so without
+  enumeration a skill whose wording the model cannot guess was unreachable in
+  principle, not merely hard to find.
+- New `codex.thread.skills.deferred_total` metric reports how many skills were
+  held back from the starter list. `codex.thread.skills.truncated` now also
+  flags deferral, so a large catalog can no longer report a big drop in kept
+  skills alongside `truncated = 0`.
+
 ### Fixed
 
+- The starter-list cap only applies when it is actually needed: a catalog that
+  can be listed at all inside the skills context budget still renders in full
+  (with descriptions shortened as required) rather than hiding skills, and an
+  embedder that installs no `skills.list` tool always gets the complete list
+  rather than a truncated one it cannot search past.
+- Deferring skills is never silent. Whenever the starter cap holds skills back,
+  the session emits a warning naming how many skills are shown, how many exist,
+  and that the rest stay searchable.
+- The `## Skills` intro no longer claims the list is incomplete when it is
+  complete, and no longer points at `skills.list` on threads where that tool is
+  not installed.
+- The per-turn ranked skills fragment carries the usage rules itself when no
+  `## Skills` developer block was emitted. Core builds that block from the host
+  skill outcome, so a catalog served entirely by remote or executor providers
+  used to leave the model with bare skill lines, no usage rules, and a reference
+  to a section that did not exist.
+- The average description-truncation telemetry is no longer diluted by the full
+  catalog size, which rounded real per-skill truncation down to zero on large
+  catalogs and disarmed the truncation warning.
+- The per-turn ranked skills fragment no longer repeats the `How to use skills`
+  preamble already present in the developer-message skills block, saving roughly
+  2.5k characters on every turn that matches a skill.
+- Building the host skill catalog is no longer quadratic. It ran on every turn
+  and de-duplicated with a linear scan per insert over long common-prefix
+  filesystem paths.
 - Auth-profile auto-switch now resumes the interrupted turn on the new profile.
   When a turn fails on a rate-limited profile and no usage reset is available,
   the agent switches to a healthier profile and automatically re-runs the failed

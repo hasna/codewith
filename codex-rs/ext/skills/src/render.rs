@@ -1,12 +1,16 @@
-use codex_core_skills::render_available_skills_body;
+use codex_core_skills::SkillsPreamble;
+use codex_core_skills::render_task_relevant_skills_body;
 use codex_extension_api::ContextualUserFragment;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 
 use crate::catalog::SkillCatalog;
+use crate::ranking::rank_catalog;
 
-const MAX_AVAILABLE_SKILLS_CHARS: usize = 8_000;
 const MAX_MAIN_PROMPT_CHARS: usize = 40_000;
+const MAX_SKILL_NAME_CHARS: usize = 256;
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 1_024;
+const MAX_SKILL_PATH_CHARS: usize = 2_048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AvailableSkillsFragment {
@@ -31,55 +35,59 @@ impl ContextualUserFragment for AvailableSkillsFragment {
     }
 }
 
-pub(crate) fn available_skills_fragment(catalog: &SkillCatalog) -> Option<AvailableSkillsFragment> {
-    let mut total_chars = 0usize;
-    let mut omitted = 0usize;
-    let mut skill_lines = Vec::new();
-
-    for entry in catalog
-        .entries
-        .iter()
-        .filter(|entry| entry.is_prompt_visible())
-    {
-        let description = entry
-            .short_description
-            .as_deref()
-            .unwrap_or(entry.description.as_str());
-        let line = render_skill_line(entry, description);
-        let next_chars = total_chars.saturating_add(line.chars().count());
-        if next_chars > MAX_AVAILABLE_SKILLS_CHARS {
-            omitted = omitted.saturating_add(1);
-            continue;
-        }
-        total_chars = next_chars;
-        skill_lines.push(line);
-    }
+pub(crate) fn available_skills_fragment(
+    catalog: &SkillCatalog,
+    query: &str,
+    limit: usize,
+    preamble: SkillsPreamble,
+) -> Option<AvailableSkillsFragment> {
+    let skill_lines = rank_catalog(catalog, query, limit)
+        .into_iter()
+        .map(|entry| {
+            let description = entry
+                .short_description
+                .as_deref()
+                .unwrap_or(entry.description.as_str());
+            render_skill_line(entry, description)
+        })
+        .collect::<Vec<_>>();
 
     if skill_lines.is_empty() {
         return None;
     }
-    if omitted > 0 {
-        let skill_word = if omitted == 1 { "skill" } else { "skills" };
-        skill_lines.push(format!(
-            "- {omitted} additional {skill_word} omitted from this bounded skills list."
-        ));
-    }
 
+    // When the `## Skills` developer message is present it already carries the
+    // shared `### How to use skills` preamble for this turn, so this per-turn
+    // fragment renders only the ranked matches; repeating the preamble would
+    // burn ~2.5k characters on every turn that lexically matches a skill.
+    // `include_skill_instructions` gates both blocks, but it is not the only
+    // gate: core builds `## Skills` from the *host* outcome while this ranks
+    // over the *merged* catalog, so a purely remote/executor catalog produces
+    // no `## Skills` block at all and the caller passes `Missing`.
     Some(AvailableSkillsFragment {
-        body: render_available_skills_body(&[], &skill_lines),
+        body: render_task_relevant_skills_body(&skill_lines, preamble),
     })
 }
 
 fn render_skill_line(entry: &crate::catalog::SkillCatalogEntry, description: &str) -> String {
-    let file = format!("file: {}", entry.rendered_path());
+    let name = bounded_chars(&entry.name, MAX_SKILL_NAME_CHARS);
+    let description = bounded_chars(description, MAX_SKILL_DESCRIPTION_CHARS);
+    let file = format!(
+        "file: {}",
+        bounded_chars(entry.rendered_path(), MAX_SKILL_PATH_CHARS)
+    );
     let handles = crate::tools::catalog_tool_handles(entry).map_or(file.clone(), |tool_handles| {
         format!("{file}; {tool_handles}")
     });
     if description.is_empty() {
-        format!("- {}: ({handles})", entry.name)
+        format!("- {name}: ({handles})")
     } else {
-        format!("- {}: {description} ({handles})", entry.name)
+        format!("- {name}: {description} ({handles})")
     }
+}
+
+fn bounded_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 pub(crate) fn truncate_main_prompt_contents(contents: &str) -> (String, bool) {
