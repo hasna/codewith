@@ -121,10 +121,14 @@ async fn goal_manager_with_plan_snapshot() {
     chat.show_goal_manager(
         thread_id,
         ThreadGoalListResponse {
-            goal: Some(test_goal(
-                thread_id,
-                AppThreadGoalStatus::Active,
-                /*token_budget*/ Some(80_000),
+            goal: Some(with_goal_line_changes(
+                test_goal(
+                    thread_id,
+                    AppThreadGoalStatus::Active,
+                    /*token_budget*/ Some(80_000),
+                ),
+                /*lines_added*/ 18,
+                /*lines_deleted*/ 4,
             )),
             next_cursor: None,
             goal_plans: vec![test_plan(
@@ -132,12 +136,16 @@ async fn goal_manager_with_plan_snapshot() {
                 ThreadGoalPlanStatus::Active,
                 ThreadGoalPlanAutoExecute::AiDirected,
                 vec![
-                    test_plan_node(
-                        "discover",
-                        "Map existing goal persistence and UI surfaces",
-                        ThreadGoalPlanNodeStatus::Active,
-                        /*depends_on*/ Vec::new(),
-                        &thread_id_string,
+                    with_node_line_changes(
+                        test_plan_node(
+                            "discover",
+                            "Map existing goal persistence and UI surfaces",
+                            ThreadGoalPlanNodeStatus::Active,
+                            /*depends_on*/ Vec::new(),
+                            &thread_id_string,
+                        ),
+                        /*lines_added*/ 18,
+                        /*lines_deleted*/ 4,
                     ),
                     test_plan_node(
                         "ship",
@@ -204,12 +212,16 @@ async fn goal_plan_detail_snapshot() {
             ThreadGoalPlanStatus::Active,
             ThreadGoalPlanAutoExecute::AiDirected,
             vec![
-                test_plan_node(
-                    "discover",
-                    "Map existing goal persistence and UI surfaces",
-                    ThreadGoalPlanNodeStatus::Active,
-                    /*depends_on*/ Vec::new(),
-                    &thread_id_string,
+                with_node_line_changes(
+                    test_plan_node(
+                        "discover",
+                        "Map existing goal persistence and UI surfaces",
+                        ThreadGoalPlanNodeStatus::Active,
+                        /*depends_on*/ Vec::new(),
+                        &thread_id_string,
+                    ),
+                    /*lines_added*/ 18,
+                    /*lines_deleted*/ 4,
                 ),
                 ThreadGoalPlanNode {
                     parent_node_id: Some("node_discover".to_string()),
@@ -503,6 +515,8 @@ fn test_goal(
         token_budget,
         tokens_used: 12_500,
         time_used_seconds: 90,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1_776_272_400,
         updated_at: 1_776_272_460,
     }
@@ -553,6 +567,8 @@ fn test_plan(
     let ready_node_count = nodes.iter().filter(|node| node.ready).count() as i64;
     let total_tokens_used = nodes.iter().map(|node| node.tokens_used).sum();
     let total_time_used_seconds = nodes.iter().map(|node| node.time_used_seconds).sum();
+    let total_lines_added = nodes.iter().map(|node| node.lines_added).sum();
+    let total_lines_deleted = nodes.iter().map(|node| node.lines_deleted).sum();
     ThreadGoalPlan {
         plan_id: "plan_goal_rollout".to_string(),
         thread_id: thread_id.to_string(),
@@ -561,6 +577,8 @@ fn test_plan(
         max_tokens: None,
         total_tokens_used,
         total_time_used_seconds,
+        total_lines_added,
+        total_lines_deleted,
         remaining_tokens: None,
         node_count: nodes.len() as i64,
         completed_node_count,
@@ -577,6 +595,16 @@ fn test_plan(
         updated_at: 1_776_272_460,
         nodes,
     }
+}
+
+fn with_goal_line_changes(
+    mut goal: AppThreadGoal,
+    lines_added: i64,
+    lines_deleted: i64,
+) -> AppThreadGoal {
+    goal.lines_added = lines_added;
+    goal.lines_deleted = lines_deleted;
+    goal
 }
 
 fn test_plan_node(
@@ -603,11 +631,23 @@ fn test_plan_node(
         token_budget: None,
         tokens_used: 12_500,
         time_used_seconds: 90,
+        lines_added: 0,
+        lines_deleted: 0,
         projected_goal_id: Some(format!("projected_{key}")),
         depends_on,
         created_at: 1_776_272_300,
         updated_at: 1_776_272_460,
     }
+}
+
+fn with_node_line_changes(
+    mut node: ThreadGoalPlanNode,
+    lines_added: i64,
+    lines_deleted: i64,
+) -> ThreadGoalPlanNode {
+    node.lines_added = lines_added;
+    node.lines_deleted = lines_deleted;
+    node
 }
 
 fn rendered_goal_summary(

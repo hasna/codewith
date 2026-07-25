@@ -2,12 +2,15 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::protocol::TokenUsage;
 use codex_state::ThreadGoalStatus;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio::sync::SemaphorePermit;
+
+use crate::line_changes::GoalLineChangeBaseline;
 
 #[derive(Debug)]
 pub(crate) struct GoalAccountingState {
@@ -30,6 +33,9 @@ struct GoalTurnAccounting {
     active_goal_id: Option<String>,
     account_tokens: bool,
     error_observed: bool,
+    local_cwd: Option<PathBuf>,
+    line_change_baseline: Option<GoalLineChangeBaseline>,
+    last_accounted_line_changes: Option<codex_state::ThreadGoalLineChangeStats>,
 }
 
 #[derive(Debug)]
@@ -44,6 +50,14 @@ pub(crate) struct GoalProgressSnapshot {
     pub(crate) expected_goal_id: String,
     pub(crate) time_delta_seconds: i64,
     pub(crate) token_delta: i64,
+    pub(crate) line_changes: Option<GoalLineChangeSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GoalLineChangeSnapshot {
+    pub(crate) cwd: PathBuf,
+    pub(crate) baseline: GoalLineChangeBaseline,
+    pub(crate) last_accounted_stats: codex_state::ThreadGoalLineChangeStats,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +84,7 @@ impl GoalAccountingState {
         turn_id: impl Into<String>,
         collaboration_mode: ModeKind,
         token_usage_at_turn_start: &TokenUsage,
+        local_cwd: Option<PathBuf>,
     ) {
         let turn_id = turn_id.into();
         let mut inner = self.inner();
@@ -79,6 +94,7 @@ impl GoalAccountingState {
             GoalTurnAccounting::new(
                 token_usage_at_turn_start.clone(),
                 !matches!(collaboration_mode, ModeKind::Plan),
+                local_cwd,
             ),
         );
     }
@@ -161,6 +177,10 @@ impl GoalAccountingState {
             inner.budget_limit_reported_goal_id = None;
         }
         if let Some(turn) = inner.turns.get_mut(turn_id) {
+            if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
+                turn.line_change_baseline = None;
+                turn.last_accounted_line_changes = None;
+            }
             turn.active_goal_id = Some(goal_id.clone());
             if inner.current_turn_id.as_deref() == Some(turn_id) {
                 inner.wall_clock.mark_active_goal(goal_id);
@@ -179,10 +199,44 @@ impl GoalAccountingState {
             inner.budget_limit_reported_goal_id = None;
         }
         let turn = inner.turns.get_mut(turn_id.as_str())?;
+        if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
+            turn.line_change_baseline = None;
+            turn.last_accounted_line_changes = None;
+        }
         turn.active_goal_id = Some(goal_id.clone());
         turn.reset_baseline_to_current();
         inner.wall_clock.mark_active_goal(goal_id);
         Some(turn_id)
+    }
+
+    pub(crate) fn current_turn_line_change_context(
+        &self,
+        goal_id: &str,
+    ) -> Option<(String, PathBuf)> {
+        let inner = self.inner();
+        let turn_id = inner.current_turn_id.clone()?;
+        let turn = inner.turns.get(turn_id.as_str())?;
+        if !turn.account_tokens || turn.active_goal_id.as_deref() != Some(goal_id) {
+            return None;
+        }
+        Some((turn_id, turn.local_cwd.clone()?))
+    }
+
+    pub(crate) fn set_turn_line_change_baseline(
+        &self,
+        turn_id: &str,
+        goal_id: &str,
+        baseline: GoalLineChangeBaseline,
+    ) {
+        let mut inner = self.inner();
+        let Some(turn) = inner.turns.get_mut(turn_id) else {
+            return;
+        };
+        if !turn.account_tokens || turn.active_goal_id.as_deref() != Some(goal_id) {
+            return;
+        }
+        turn.last_accounted_line_changes = Some(baseline.persisted_stats());
+        turn.line_change_baseline = Some(baseline);
     }
 
     pub(crate) fn mark_idle_goal_active(&self, goal_id: impl Into<String>) {
@@ -199,6 +253,8 @@ impl GoalAccountingState {
         let turn_id = inner.current_turn_id.clone()?;
         if let Some(turn) = inner.turns.get_mut(turn_id.as_str()) {
             turn.active_goal_id = None;
+            turn.line_change_baseline = None;
+            turn.last_accounted_line_changes = None;
         }
         inner.wall_clock.clear_active_goal();
         inner.budget_limit_reported_goal_id = None;
@@ -211,6 +267,8 @@ impl GoalAccountingState {
             && let Some(turn) = inner.turns.get_mut(turn_id.as_str())
         {
             turn.active_goal_id = None;
+            turn.line_change_baseline = None;
+            turn.last_accounted_line_changes = None;
         }
         inner.wall_clock.clear_active_goal();
         inner.budget_limit_reported_goal_id = None;
@@ -230,7 +288,18 @@ impl GoalAccountingState {
             } else {
                 0
             };
-        if time_delta_seconds == 0 && token_delta <= 0 {
+        let line_changes = turn
+            .line_change_baseline
+            .clone()
+            .zip(turn.local_cwd.clone())
+            .map(|(baseline, cwd)| GoalLineChangeSnapshot {
+                cwd,
+                last_accounted_stats: turn
+                    .last_accounted_line_changes
+                    .unwrap_or_else(|| baseline.persisted_stats()),
+                baseline,
+            });
+        if time_delta_seconds == 0 && token_delta <= 0 && line_changes.is_none() {
             return None;
         }
         Some(GoalProgressSnapshot {
@@ -238,6 +307,7 @@ impl GoalAccountingState {
             expected_goal_id,
             time_delta_seconds,
             token_delta,
+            line_changes,
         })
     }
 
@@ -258,6 +328,7 @@ impl GoalAccountingState {
         &self,
         turn_id: &str,
         snapshot: &GoalProgressSnapshot,
+        line_changes: Option<codex_state::ThreadGoalLineChangeStats>,
         status: ThreadGoalStatus,
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) {
@@ -265,8 +336,13 @@ impl GoalAccountingState {
         let mut inner = self.inner();
         if let Some(turn) = inner.turns.get_mut(turn_id) {
             turn.last_accounted_token_usage = snapshot.current_token_usage.clone();
+            if let Some(line_changes) = line_changes {
+                turn.last_accounted_line_changes = Some(line_changes);
+            }
             if clear_active_goal {
                 turn.active_goal_id = None;
+                turn.line_change_baseline = None;
+                turn.last_accounted_line_changes = None;
             }
         }
         inner.wall_clock.mark_accounted(snapshot.time_delta_seconds);
@@ -381,13 +457,20 @@ impl GoalAccountingInner {
 }
 
 impl GoalTurnAccounting {
-    fn new(current_token_usage: TokenUsage, account_tokens: bool) -> Self {
+    fn new(
+        current_token_usage: TokenUsage,
+        account_tokens: bool,
+        local_cwd: Option<PathBuf>,
+    ) -> Self {
         Self {
             last_accounted_token_usage: current_token_usage.clone(),
             current_token_usage,
             active_goal_id: None,
             account_tokens,
             error_observed: false,
+            local_cwd,
+            line_change_baseline: None,
+            last_accounted_line_changes: None,
         }
     }
 

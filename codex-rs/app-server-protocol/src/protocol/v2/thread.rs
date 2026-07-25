@@ -894,6 +894,12 @@ pub struct ThreadGoal {
     pub tokens_used: i64,
     #[ts(type = "number")]
     pub time_used_seconds: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub lines_added: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub lines_deleted: i64,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number")]
@@ -911,6 +917,8 @@ impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
             token_budget: value.token_budget,
             tokens_used: value.tokens_used,
             time_used_seconds: value.time_used_seconds,
+            lines_added: value.lines_added,
+            lines_deleted: value.lines_deleted,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -1029,6 +1037,12 @@ pub struct ThreadGoalPlanNode {
     pub tokens_used: i64,
     #[ts(type = "number")]
     pub time_used_seconds: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub lines_added: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub lines_deleted: i64,
     #[ts(type = "string | null")]
     pub projected_goal_id: Option<String>,
     pub depends_on: Vec<String>,
@@ -1070,6 +1084,10 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             token_budget: Option<i64>,
             tokens_used: i64,
             time_used_seconds: i64,
+            #[serde(default)]
+            lines_added: i64,
+            #[serde(default)]
+            lines_deleted: i64,
             projected_goal_id: Option<String>,
             depends_on: Vec<String>,
             created_at: i64,
@@ -1096,6 +1114,8 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             token_budget: value.token_budget,
             tokens_used: value.tokens_used,
             time_used_seconds: value.time_used_seconds,
+            lines_added: value.lines_added,
+            lines_deleted: value.lines_deleted,
             projected_goal_id: value.projected_goal_id,
             depends_on: value.depends_on,
             created_at: value.created_at,
@@ -1118,6 +1138,12 @@ pub struct ThreadGoalPlan {
     pub total_tokens_used: i64,
     #[ts(type = "number")]
     pub total_time_used_seconds: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub total_lines_added: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub total_lines_deleted: i64,
     #[ts(type = "number | null")]
     pub remaining_tokens: Option<i64>,
     #[ts(type = "number")]
@@ -1159,6 +1185,8 @@ impl From<codex_protocol::protocol::ThreadGoalPlan> for ThreadGoalPlan {
             max_tokens: value.max_tokens,
             total_tokens_used: value.total_tokens_used,
             total_time_used_seconds: value.total_time_used_seconds,
+            total_lines_added: value.total_lines_added,
+            total_lines_deleted: value.total_lines_deleted,
             remaining_tokens: value.remaining_tokens,
             node_count: value.node_count,
             completed_node_count: value.completed_node_count,
@@ -1204,6 +1232,8 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
             token_budget: value.token_budget,
             tokens_used: value.tokens_used,
             time_used_seconds: value.time_used_seconds,
+            lines_added: value.lines_added,
+            lines_deleted: value.lines_deleted,
             projected_goal_id: value.projected_goal_id,
             depends_on: value.depends_on,
             created_at: value.created_at,

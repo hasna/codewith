@@ -2,6 +2,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
+use std::path::Path;
 
 use crate::ExtensionData;
 
@@ -13,6 +14,10 @@ pub struct TurnStartInput<'a> {
     pub collaboration_mode: &'a CollaborationMode,
     /// Total token usage snapshot captured when the turn started.
     pub token_usage_at_turn_start: &'a TokenUsage,
+    /// Absolute working directory of this turn when it runs against exactly one
+    /// local environment. `None` for remote or multi-environment turns, where
+    /// the host filesystem does not hold the turn's working tree.
+    pub local_cwd: Option<&'a Path>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

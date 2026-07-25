@@ -347,6 +347,8 @@ INSERT INTO thread_goal_plan_nodes (
         token_budget: inserted_node.token_budget,
         tokens_used: 0,
         time_used_seconds: 0,
+        lines_added: 0,
+        lines_deleted: 0,
         projected_goal_id: None,
         depends_on: inserted_node.depends_on,
         created_at: Utc::now(),
@@ -411,6 +413,12 @@ async fn mark_goal_plan_node_complete_in_tx(
     let time_used_seconds = goal
         .as_ref()
         .map_or(node.time_used_seconds, |goal| goal.time_used_seconds);
+    let lines_added = goal
+        .as_ref()
+        .map_or(node.lines_added, |goal| goal.lines_added);
+    let lines_deleted = goal
+        .as_ref()
+        .map_or(node.lines_deleted, |goal| goal.lines_deleted);
     sqlx::query(
         r#"
 UPDATE thread_goal_plan_nodes
@@ -418,6 +426,8 @@ SET
     status = ?,
     tokens_used = ?,
     time_used_seconds = ?,
+    lines_added = ?,
+    lines_deleted = ?,
     updated_at_ms = ?
 WHERE node_id = ?
         "#,
@@ -425,6 +435,8 @@ WHERE node_id = ?
     .bind(crate::ThreadGoalPlanNodeStatus::Complete.as_str())
     .bind(tokens_used)
     .bind(time_used_seconds)
+    .bind(lines_added)
+    .bind(lines_deleted)
     .bind(now_ms)
     .bind(&node.node_id)
     .execute(&mut **tx)
@@ -509,6 +521,8 @@ SET
     projected_goal_id = NULL,
     tokens_used = 0,
     time_used_seconds = 0,
+    lines_added = 0,
+    lines_deleted = 0,
     updated_at_ms = ?
 WHERE node_id = ?
         "#,
@@ -732,6 +746,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
         "#,
@@ -770,6 +786,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
         "#,
@@ -808,7 +826,7 @@ mod tests {
             .thread_goals()
             .create_thread_goal_plan(ThreadGoalPlanCreateParams {
                 thread_id,
-                auto_execute: crate::ThreadGoalPlanAutoExecute::Off,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::ReadyOnly,
                 max_tokens: None,
                 nodes: vec![
                     ThreadGoalPlanNodeCreateParams {
@@ -834,8 +852,27 @@ mod tests {
             .await
             .expect("goal plan should be created");
         let first_node_id = created.snapshot.nodes[0].node_id.clone();
+        let active_goal = created.activated_goal.expect("first node should activate");
+        let accounted = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 7,
+                /*token_delta*/ 11,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 23,
+                    lines_deleted: 4,
+                }),
+                crate::GoalAccountingMode::ActiveOnly,
+                Some(active_goal.goal_id.as_str()),
+            )
+            .await
+            .expect("goal usage should update");
+        let crate::GoalAccountingOutcome::Updated(accounted_goal) = accounted else {
+            panic!("goal usage should be updated");
+        };
 
-        runtime
+        let completed = runtime
             .thread_goals()
             .set_thread_goal_plan_node_status(ThreadGoalPlanNodeStatusUpdateParams {
                 thread_id,
@@ -845,6 +882,25 @@ mod tests {
             })
             .await
             .expect("node should be marked complete");
+        assert_eq!(
+            (11, 7, 23, 4),
+            (
+                completed.snapshot.nodes[0].tokens_used,
+                completed.snapshot.nodes[0].time_used_seconds,
+                completed.snapshot.nodes[0].lines_added,
+                completed.snapshot.nodes[0].lines_deleted,
+            )
+        );
+        assert_eq!(
+            Some((11, 7, 23, 4)),
+            completed.goal.as_ref().map(|goal| (
+                goal.tokens_used,
+                goal.time_used_seconds,
+                goal.lines_added,
+                goal.lines_deleted,
+            ))
+        );
+        assert_eq!(accounted_goal.goal_id, active_goal.goal_id);
 
         let edit_complete = runtime
             .thread_goals()
@@ -866,7 +922,7 @@ mod tests {
                 .contains("mark it undone first")
         );
 
-        runtime
+        let pending = runtime
             .thread_goals()
             .set_thread_goal_plan_node_status(ThreadGoalPlanNodeStatusUpdateParams {
                 thread_id,
@@ -876,6 +932,25 @@ mod tests {
             })
             .await
             .expect("complete node should be marked pending");
+        assert_eq!(
+            (0, 0, 0, 0),
+            (
+                pending.snapshot.nodes[0].tokens_used,
+                pending.snapshot.nodes[0].time_used_seconds,
+                pending.snapshot.nodes[0].lines_added,
+                pending.snapshot.nodes[0].lines_deleted,
+            )
+        );
+        let pending_summary = pending.snapshot.usage_summary();
+        assert_eq!(
+            (0, 0, 0, 0),
+            (
+                pending_summary.total_tokens_used,
+                pending_summary.total_time_used_seconds,
+                pending_summary.total_lines_added,
+                pending_summary.total_lines_deleted,
+            )
+        );
         let edited = runtime
             .thread_goals()
             .update_thread_goal_plan_node(ThreadGoalPlanNodeUpdateParams {

@@ -75,6 +75,8 @@ SELECT
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
 FROM thread_goals
@@ -154,9 +156,11 @@ INSERT INTO thread_goals (
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -165,6 +169,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     token_budget = excluded.token_budget,
     tokens_used = 0,
     time_used_seconds = 0,
+    lines_added = 0,
+    lines_deleted = 0,
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = excluded.updated_at_ms
 RETURNING
@@ -176,6 +182,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
             "#,
@@ -238,9 +246,11 @@ INSERT INTO thread_goals (
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO NOTHING
 RETURNING
     thread_id,
@@ -251,6 +261,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
             "#,
@@ -664,6 +676,8 @@ SELECT
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
 FROM thread_goals
@@ -824,6 +838,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
             "#,
@@ -1045,12 +1061,17 @@ WHERE thread_id = ?
         thread_id: ThreadId,
         time_delta_seconds: i64,
         token_delta: i64,
+        line_changes: Option<crate::ThreadGoalLineChangeStats>,
         mode: GoalAccountingMode,
         expected_goal_id: Option<&str>,
     ) -> anyhow::Result<GoalAccountingOutcome> {
         let time_delta_seconds = time_delta_seconds.max(0);
         let token_delta = token_delta.max(0);
-        if time_delta_seconds == 0 && token_delta == 0 {
+        let line_changes = line_changes.map(|stats| crate::ThreadGoalLineChangeStats {
+            lines_added: stats.lines_added.max(0),
+            lines_deleted: stats.lines_deleted.max(0),
+        });
+        if time_delta_seconds == 0 && token_delta == 0 && line_changes.is_none() {
             return Ok(GoalAccountingOutcome::Unchanged(
                 self.get_thread_goal(thread_id).await?,
             ));
@@ -1086,6 +1107,20 @@ SET
             "#,
         );
         builder.push_bind(token_delta);
+        if let Some(line_changes) = line_changes {
+            builder.push(
+                r#",
+    lines_added =
+            "#,
+            );
+            builder.push_bind(line_changes.lines_added);
+            builder.push(
+                r#",
+    lines_deleted =
+            "#,
+            );
+            builder.push_bind(line_changes.lines_deleted);
+        }
         builder.push(
             r#",
     status = CASE
@@ -1137,6 +1172,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
             "#,
@@ -2216,6 +2253,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 5,
                 /*token_delta*/ 5,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 Some(original.goal_id.as_str()),
             )
@@ -2254,6 +2292,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 12,
                 /*token_delta*/ 30,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2353,6 +2392,24 @@ ORDER BY turn_id
             )
             .await
             .expect("goal replacement should succeed");
+        let accounted = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 3,
+                /*token_delta*/ 5,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 17,
+                    lines_deleted: 2,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                Some(goal.goal_id.as_str()),
+            )
+            .await
+            .expect("goal usage should update");
+        let GoalAccountingOutcome::Updated(accounted) = accounted else {
+            panic!("goal usage should be updated");
+        };
 
         let paused = runtime
             .thread_goals()
@@ -2363,7 +2420,7 @@ ORDER BY turn_id
         let expected = crate::ThreadGoal {
             status: crate::ThreadGoalStatus::Paused,
             updated_at: paused.updated_at,
-            ..goal
+            ..accounted
         };
         assert_eq!(expected, paused);
 
@@ -2480,6 +2537,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 7,
                 /*token_delta*/ 5,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2498,6 +2556,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 3,
                 /*token_delta*/ 15,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2516,6 +2575,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 5,
                 /*token_delta*/ 5,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2527,6 +2587,61 @@ ORDER BY turn_id
         assert_eq!(crate::ThreadGoalStatus::BudgetLimited, goal.status);
         assert_eq!(25, goal.tokens_used);
         assert_eq!(15, goal.time_used_seconds);
+    }
+
+    #[tokio::test]
+    async fn usage_accounting_persists_line_changes_without_token_delta() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "track implementation size",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal replacement should succeed");
+
+        let outcome = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 0,
+                /*token_delta*/ 0,
+                /*line_changes*/
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 14,
+                    lines_deleted: 3,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                /*expected_goal_id*/ None,
+            )
+            .await
+            .expect("usage accounting should succeed");
+        let GoalAccountingOutcome::Updated(goal) = outcome else {
+            panic!("line changes should update goal usage");
+        };
+        assert_eq!(0, goal.tokens_used);
+        assert_eq!(0, goal.time_used_seconds);
+        assert_eq!(14, goal.lines_added);
+        assert_eq!(3, goal.lines_deleted);
+
+        let replaced = runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "start a fresh goal",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal replacement should succeed");
+        assert_eq!(0, replaced.lines_added);
+        assert_eq!(0, replaced.lines_deleted);
     }
 
     #[tokio::test]
@@ -2551,6 +2666,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 5,
                 /*token_delta*/ 5,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveStatusOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2600,6 +2716,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 3,
                 /*token_delta*/ 25,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOrStopped,
                 /*expected_goal_id*/ None,
             )
@@ -2634,6 +2751,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 1,
                 /*token_delta*/ 50,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2682,6 +2800,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 1,
                 /*token_delta*/ 50,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2734,6 +2853,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 1,
                 /*token_delta*/ 50,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2782,6 +2902,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 1,
                 /*token_delta*/ 50,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2836,6 +2957,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 30,
                 /*token_delta*/ 200,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2854,6 +2976,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 30,
                 /*token_delta*/ 200,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOrComplete,
                 /*expected_goal_id*/ None,
             )
@@ -2904,6 +3027,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 30,
                 /*token_delta*/ 200,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 /*expected_goal_id*/ None,
             )
@@ -2922,6 +3046,7 @@ ORDER BY turn_id
                 thread_id,
                 /*time_delta_seconds*/ 30,
                 /*token_delta*/ 200,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOrStopped,
                 /*expected_goal_id*/ None,
             )
@@ -2955,6 +3080,7 @@ ORDER BY turn_id
             thread_id,
             /*time_delta_seconds*/ 4,
             /*token_delta*/ 40,
+            /*line_changes*/ None,
             GoalAccountingMode::ActiveOnly,
             /*expected_goal_id*/ None,
         );
@@ -2962,6 +3088,7 @@ ORDER BY turn_id
             thread_id,
             /*time_delta_seconds*/ 6,
             /*token_delta*/ 60,
+            /*line_changes*/ None,
             GoalAccountingMode::ActiveOnly,
             /*expected_goal_id*/ None,
         );

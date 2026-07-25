@@ -17285,6 +17285,16 @@
         "goalId": {
           "type": "string"
         },
+        "linesAdded": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
+        "linesDeleted": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "objective": {
           "type": "string"
         },
@@ -17538,6 +17548,16 @@
         "threadId": {
           "type": "string"
         },
+        "totalLinesAdded": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalLinesDeleted": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "totalTimeUsedSeconds": {
           "format": "int64",
           "type": "integer"
@@ -17767,6 +17787,16 @@
         },
         "key": {
           "type": "string"
+        },
+        "linesAdded": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
+        "linesDeleted": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
         },
         "nestingDepth": {
           "format": "int64",

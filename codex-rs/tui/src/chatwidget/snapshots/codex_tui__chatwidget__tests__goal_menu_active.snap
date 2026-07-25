@@ -7,6 +7,7 @@ Status: active
 Objective: Keep improving the bare goal command until it feels calm and useful.
 Time used: 1m
 Tokens used: 12.5K
+LOC changed: 0 LOC
 Token budget: 80K
 
 Commands: /goal edit, /goal pause, /goal cancel, /goal clear

@@ -278,6 +278,7 @@ where
             input.turn_id,
             input.collaboration_mode.mode,
             input.token_usage_at_turn_start,
+            input.local_cwd.map(std::path::Path::to_path_buf),
         );
         if matches!(
             input.collaboration_mode.mode,
@@ -301,7 +302,8 @@ where
                     | codex_state::ThreadGoalStatus::BudgetLimited
             )
         {
-            accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+            accounting.mark_turn_goal_active(input.turn_id, goal.goal_id.clone());
+            crate::line_changes::establish_current_turn_baseline(accounting.as_ref(), &goal).await;
         }
     }
 

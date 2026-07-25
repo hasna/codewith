@@ -2066,6 +2066,105 @@ INSERT INTO background_agent_worktree_leases (
     }
 
     #[tokio::test]
+    async fn line_change_migration_defaults_existing_goal_usage_to_zero() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let goals_path = goals_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&goals_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open goals db");
+        migrator_through(&GOALS_MIGRATOR, /*version*/ 10)
+            .run(&pool)
+            .await
+            .expect("apply pre-line-change goals schema");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goals (
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('thread-1', 'goal-1', 'Track this goal.', 'active', 12, 3, 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy goal should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plans (
+    plan_id,
+    thread_id,
+    status,
+    auto_execute,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('plan-1', 'thread-1', 'active', 'off', 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_plan_nodes (
+    node_id,
+    plan_id,
+    thread_id,
+    key,
+    sequence,
+    priority,
+    objective,
+    status,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+) VALUES ('node-1', 'plan-1', 'thread-1', 'track', 0, 0, 'Track this node.', 'active', 12, 3, 1, 1)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy plan node should insert");
+        pool.close().await;
+
+        let current_pool = super::open_goals_sqlite(
+            goals_path.as_path(),
+            &runtime_goals_migrator(),
+            /*telemetry_override*/ None,
+        )
+        .await
+        .expect("current goals migration should apply");
+        let goal_usage: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT tokens_used, time_used_seconds, lines_added, lines_deleted FROM thread_goals",
+        )
+        .fetch_one(&current_pool)
+        .await
+        .expect("migrated goal usage should query");
+        let node_usage: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT tokens_used, time_used_seconds, lines_added, lines_deleted FROM thread_goal_plan_nodes",
+        )
+        .fetch_one(&current_pool)
+        .await
+        .expect("migrated node usage should query");
+        assert_eq!((12, 3, 0, 0), goal_usage);
+        assert_eq!((12, 3, 0, 0), node_usage);
+        current_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn thread_goal_cancellation_migration_upgrades_pre_0004_goals_db() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
@@ -2342,7 +2441,10 @@ INSERT INTO thread_goal_plan_nodes (
                 .await
                 .expect("repaired stamps should query");
         assert_eq!(
-            (1..=10).collect::<Vec<i64>>(),
+            GOALS_MIGRATOR
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<i64>>(),
             stamped
                 .iter()
                 .map(|(version, _)| *version)

@@ -4,6 +4,7 @@ mod accounting;
 mod api;
 mod events;
 mod extension;
+mod line_changes;
 mod metrics;
 mod pending_interaction;
 mod runtime;

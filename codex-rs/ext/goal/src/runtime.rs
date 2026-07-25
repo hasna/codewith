@@ -340,6 +340,11 @@ impl GoalRuntimeHandle {
                         .inner
                         .accounting_state
                         .mark_current_turn_goal_active(goal.goal_id.clone());
+                    crate::line_changes::establish_current_turn_baseline(
+                        self.inner.accounting_state.as_ref(),
+                        &goal,
+                    )
+                    .await;
                 } else {
                     self.inner
                         .accounting_state
@@ -873,6 +878,17 @@ impl GoalRuntimeHandle {
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
             .await?;
+        let line_changes = match snapshot.line_changes.as_ref() {
+            Some(line_changes) => {
+                crate::line_changes::stats_since_baseline(
+                    line_changes.cwd.as_path(),
+                    &line_changes.baseline,
+                    line_changes.last_accounted_stats,
+                )
+                .await
+            }
+            None => None,
+        };
         let outcome = self
             .inner
             .state_dbs
@@ -881,6 +897,7 @@ impl GoalRuntimeHandle {
                 self.thread_id(),
                 snapshot.time_delta_seconds,
                 snapshot.token_delta,
+                line_changes,
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
             )
@@ -909,6 +926,7 @@ impl GoalRuntimeHandle {
                 accounting.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
+                    line_changes,
                     goal.status,
                     budget_limited_goal_disposition,
                 );
@@ -949,6 +967,7 @@ impl GoalRuntimeHandle {
                 self.thread_id(),
                 snapshot.time_delta_seconds,
                 /*token_delta*/ 0,
+                /*line_changes*/ None,
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
             )

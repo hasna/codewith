@@ -3946,6 +3946,10 @@ pub struct ThreadGoal {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    #[serde(default)]
+    pub lines_added: i64,
+    #[serde(default)]
+    pub lines_deleted: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -3969,6 +3973,10 @@ impl<'de> Deserialize<'de> for ThreadGoal {
             token_budget: Option<i64>,
             tokens_used: i64,
             time_used_seconds: i64,
+            #[serde(default)]
+            lines_added: i64,
+            #[serde(default)]
+            lines_deleted: i64,
             created_at: i64,
             updated_at: i64,
         }
@@ -3986,6 +3994,8 @@ impl<'de> Deserialize<'de> for ThreadGoal {
             token_budget: wire.token_budget,
             tokens_used: wire.tokens_used,
             time_used_seconds: wire.time_used_seconds,
+            lines_added: wire.lines_added,
+            lines_deleted: wire.lines_deleted,
             created_at: wire.created_at,
             updated_at: wire.updated_at,
         })
@@ -4072,6 +4082,10 @@ pub struct ThreadGoalPlanNode {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    #[serde(default)]
+    pub lines_added: i64,
+    #[serde(default)]
+    pub lines_deleted: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub projected_goal_id: Option<String>,
@@ -4097,6 +4111,10 @@ pub struct ThreadGoalPlan {
     pub max_tokens: Option<i64>,
     pub total_tokens_used: i64,
     pub total_time_used_seconds: i64,
+    #[serde(default)]
+    pub total_lines_added: i64,
+    #[serde(default)]
+    pub total_lines_deleted: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub remaining_tokens: Option<i64>,

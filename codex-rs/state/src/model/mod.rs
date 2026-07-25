@@ -87,6 +87,7 @@ pub use pending_interaction::PendingInteractionSourceKind;
 pub use pending_interaction::PendingInteractionStatus;
 pub use thread_goal::PostGoalContextAction;
 pub use thread_goal::ThreadGoal;
+pub use thread_goal::ThreadGoalLineChangeStats;
 pub use thread_goal::ThreadGoalPlan;
 pub use thread_goal::ThreadGoalPlanAutoExecute;
 pub use thread_goal::ThreadGoalPlanNode;

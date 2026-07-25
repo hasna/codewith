@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::goal_display::format_goal_elapsed_seconds;
+use crate::goal_display::format_goal_line_changes;
 use crate::status::format_tokens_compact;
 use codex_app_server_protocol::ThreadGoalListResponse;
 use codex_app_server_protocol::ThreadGoalPlan;
@@ -195,6 +196,10 @@ fn goal_summary_lines(goal: &AppThreadGoal) -> Vec<Line<'static>> {
             "Tokens used: ".dim(),
             format_tokens_compact(goal.tokens_used).into(),
         ]),
+        Line::from(vec![
+            "LOC changed: ".dim(),
+            format_goal_line_changes(goal.lines_added, goal.lines_deleted).into(),
+        ]),
     ];
     if let Some(token_budget) = goal.token_budget {
         lines.push(Line::from(vec![
@@ -346,6 +351,8 @@ fn current_goal_detail(goal: &AppThreadGoal) -> String {
         goal.tokens_used,
         goal.token_budget,
         goal.time_used_seconds,
+        goal.lines_added,
+        goal.lines_deleted,
     ));
     middle_dot(parts)
 }
@@ -437,6 +444,8 @@ fn goal_plan_node_selected_detail(node: &ThreadGoalPlanNode) -> String {
         node.tokens_used,
         node.token_budget,
         node.time_used_seconds,
+        node.lines_added,
+        node.lines_deleted,
     ));
     middle_dot(parts)
 }
@@ -582,6 +591,8 @@ fn plan_usage_summary(plan: &ThreadGoalPlan) -> String {
         plan.total_tokens_used,
         plan.max_tokens,
         plan.total_time_used_seconds,
+        plan.total_lines_added,
+        plan.total_lines_deleted,
     )
     .join(" · ")
 }
@@ -591,6 +602,8 @@ fn goal_usage_parts(
     tokens_used: i64,
     token_budget: Option<i64>,
     time_used_seconds: i64,
+    lines_added: i64,
+    lines_deleted: i64,
 ) -> Vec<String> {
     let mut parts = vec![match token_budget {
         Some(token_budget) => format!(
@@ -603,10 +616,15 @@ fn goal_usage_parts(
     if time_used_seconds > 0 {
         parts.push(goal_time_part(time_used_seconds));
     }
+    parts.push(goal_line_change_part(lines_added, lines_deleted));
     if status == AppThreadGoalStatus::Cancelled {
         parts.push("cancelled".to_string());
     }
     parts
+}
+
+fn goal_line_change_part(lines_added: i64, lines_deleted: i64) -> String {
+    format_goal_line_changes(lines_added, lines_deleted)
 }
 
 fn goal_time_part(time_used_seconds: i64) -> String {

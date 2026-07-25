@@ -435,17 +435,6 @@ impl GoalToolExecutor {
             .unwrap_or_else(|| derive_thread_goal_title_from_objective(&request.objective));
         validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
 
-        let existing_goal = if request.clear_existing_goal {
-            self.state_db
-                .thread_goals()
-                .get_thread_goal(self.thread_id)
-                .await
-                .map_err(|err| {
-                    FunctionCallError::RespondToModel(format!("failed to read goal: {err}"))
-                })?
-        } else {
-            None
-        };
         if request.clear_existing_goal {
             self.account_active_goal_progress(
                 codex_state::GoalAccountingMode::ActiveOnly,
@@ -453,6 +442,16 @@ impl GoalToolExecutor {
                 BudgetLimitedGoalDisposition::ClearActive,
             )
             .await?;
+            let existing_goal = self
+                .state_db
+                .thread_goals()
+                .get_thread_goal(self.thread_id)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to read accounted goal before replacement: {err}"
+                    ))
+                })?;
             self.mark_existing_plan_goal_replaced(existing_goal).await?;
         }
         let goal = if request.clear_existing_goal {
@@ -505,6 +504,8 @@ impl GoalToolExecutor {
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
+        crate::line_changes::establish_current_turn_baseline(self.accounting_state.as_ref(), &goal)
+            .await;
         self.metrics.record_created();
         let goal = protocol_goal_from_state(goal);
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
@@ -969,6 +970,8 @@ impl GoalToolExecutor {
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
+        crate::line_changes::establish_current_turn_baseline(self.accounting_state.as_ref(), &goal)
+            .await;
         if turn_id.is_none() {
             self.accounting_state
                 .mark_idle_goal_active(goal.goal_id.clone());
@@ -1028,6 +1031,17 @@ impl GoalToolExecutor {
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
             .await?;
+        let line_changes = match snapshot.line_changes.as_ref() {
+            Some(line_changes) => {
+                crate::line_changes::stats_since_baseline(
+                    line_changes.cwd.as_path(),
+                    &line_changes.baseline,
+                    line_changes.last_accounted_stats,
+                )
+                .await
+            }
+            None => None,
+        };
         let outcome = self
             .state_db
             .thread_goals()
@@ -1035,6 +1049,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 snapshot.time_delta_seconds,
                 snapshot.token_delta,
+                line_changes,
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
             )
@@ -1066,6 +1081,7 @@ impl GoalToolExecutor {
                 self.accounting_state.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
+                    line_changes,
                     goal.status,
                     budget_limited_goal_disposition,
                 );
@@ -1273,6 +1289,8 @@ pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadG
         token_budget: goal.token_budget,
         tokens_used: goal.tokens_used,
         time_used_seconds: goal.time_used_seconds,
+        lines_added: goal.lines_added,
+        lines_deleted: goal.lines_deleted,
         created_at: goal.created_at.timestamp(),
         updated_at: goal.updated_at.timestamp(),
     }

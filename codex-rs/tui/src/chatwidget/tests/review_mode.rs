@@ -1696,6 +1696,8 @@ async fn interrupted_turn_after_goal_budget_limited_uses_budget_message_snapshot
                     token_budget: Some(10_000),
                     tokens_used: 10_500,
                     time_used_seconds: 0,
+                    lines_added: 0,
+                    lines_deleted: 0,
                     created_at: 0,
                     updated_at: 1,
                 },

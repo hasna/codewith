@@ -120,6 +120,7 @@ pub use model::Stage1JobClaimOutcome;
 pub use model::Stage1Output;
 pub use model::Stage1StartupClaimParams;
 pub use model::ThreadGoal;
+pub use model::ThreadGoalLineChangeStats;
 pub use model::ThreadGoalPlan;
 pub use model::ThreadGoalPlanAutoExecute;
 pub use model::ThreadGoalPlanNode;

@@ -427,6 +427,8 @@ OFFSET ?
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     projected_goal_id,
     created_at_ms,
 	    updated_at_ms
@@ -598,6 +600,8 @@ SET
     status = ?,
     tokens_used = ?,
     time_used_seconds = ?,
+    lines_added = ?,
+    lines_deleted = ?,
     updated_at_ms = ?
 WHERE assigned_thread_id = ?
   AND projected_goal_id = ?
@@ -620,6 +624,8 @@ RETURNING plan_id
         .bind(node_status.as_str())
         .bind(goal.tokens_used)
         .bind(goal.time_used_seconds)
+        .bind(goal.lines_added)
+        .bind(goal.lines_deleted)
         .bind(now_ms)
         .bind(thread_id.to_string())
         .bind(&goal.goal_id)
@@ -652,6 +658,8 @@ SET
     status = ?,
     tokens_used = ?,
     time_used_seconds = ?,
+    lines_added = ?,
+    lines_deleted = ?,
     updated_at_ms = ?
 WHERE assigned_thread_id = ?
   AND projected_goal_id = ?
@@ -675,6 +683,8 @@ RETURNING plan_id
         .bind(crate::ThreadGoalPlanNodeStatus::Complete.as_str())
         .bind(goal.tokens_used)
         .bind(goal.time_used_seconds)
+        .bind(goal.lines_added)
+        .bind(goal.lines_deleted)
         .bind(now_ms)
         .bind(thread_id.to_string())
         .bind(&goal.goal_id)
@@ -761,6 +771,8 @@ SET
     status = ?,
     tokens_used = ?,
     time_used_seconds = ?,
+    lines_added = ?,
+    lines_deleted = ?,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND projected_goal_id = ?
@@ -784,6 +796,8 @@ RETURNING plan_id
         .bind(crate::ThreadGoalPlanNodeStatus::Deferred.as_str())
         .bind(goal.tokens_used)
         .bind(goal.time_used_seconds)
+        .bind(goal.lines_added)
+        .bind(goal.lines_deleted)
         .bind(now_ms)
         .bind(thread_id.to_string())
         .bind(&goal.goal_id)
@@ -1252,10 +1266,12 @@ INSERT INTO thread_goal_plan_nodes (
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     projected_goal_id,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(Uuid::new_v4().to_string())
@@ -1269,6 +1285,8 @@ INSERT INTO thread_goal_plan_nodes (
     .bind(goal.token_budget)
     .bind(goal.tokens_used)
     .bind(goal.time_used_seconds)
+    .bind(goal.lines_added)
+    .bind(goal.lines_deleted)
     .bind(&goal.goal_id)
     .bind(datetime_to_epoch_millis(goal.created_at))
     .bind(datetime_to_epoch_millis(goal.updated_at))
@@ -1572,6 +1590,8 @@ SELECT
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     projected_goal_id,
     created_at_ms,
     updated_at_ms
@@ -1628,9 +1648,11 @@ INSERT INTO thread_goals (
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -1639,6 +1661,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
     token_budget = excluded.token_budget,
     tokens_used = 0,
     time_used_seconds = 0,
+    lines_added = 0,
+    lines_deleted = 0,
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = excluded.updated_at_ms
 RETURNING
@@ -1650,6 +1674,8 @@ RETURNING
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
         "#,
@@ -1673,6 +1699,8 @@ SET
     projected_goal_id = ?,
     tokens_used = 0,
     time_used_seconds = 0,
+    lines_added = 0,
+    lines_deleted = 0,
     updated_at_ms = ?
 WHERE node_id = ?
   AND status IN ('pending', 'deferred')
@@ -2098,6 +2126,8 @@ SELECT
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     created_at_ms,
     updated_at_ms
 FROM thread_goals
@@ -2134,6 +2164,8 @@ pub(super) async fn snapshot_thread_goal_plan_in_tx(
     token_budget,
     tokens_used,
     time_used_seconds,
+    lines_added,
+    lines_deleted,
     projected_goal_id,
     created_at_ms,
     updated_at_ms
@@ -3258,6 +3290,7 @@ mod tests {
                 thread_id,
                 /*time_delta_seconds*/ 11,
                 /*token_delta*/ 7,
+                /*line_changes*/ None,
                 crate::GoalAccountingMode::ActiveOnly,
                 Some(active_goal.goal_id.as_str()),
             )
@@ -4130,6 +4163,7 @@ mod tests {
                 thread_id,
                 /*time_delta_seconds*/ 0,
                 /*token_delta*/ 1,
+                /*line_changes*/ None,
                 GoalAccountingMode::ActiveOnly,
                 Some(first_goal.goal_id.as_str()),
             )
@@ -4217,6 +4251,11 @@ mod tests {
                 thread_id,
                 /*time_delta_seconds*/ 7,
                 /*token_delta*/ 12,
+                /*line_changes*/
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 21,
+                    lines_deleted: 5,
+                }),
                 GoalAccountingMode::ActiveOnly,
                 Some(active_goal.goal_id.as_str()),
             )
@@ -4244,6 +4283,10 @@ mod tests {
         let summary = snapshot.usage_summary();
         assert_eq!(12, summary.total_tokens_used);
         assert_eq!(7, summary.total_time_used_seconds);
+        assert_eq!(21, snapshot.nodes[0].lines_added);
+        assert_eq!(5, snapshot.nodes[0].lines_deleted);
+        assert_eq!(21, summary.total_lines_added);
+        assert_eq!(5, summary.total_lines_deleted);
         assert_eq!(Some(0), summary.remaining_tokens);
     }
 
@@ -4953,6 +4996,22 @@ mod tests {
             .activated_goal
             .expect("first ready node should activate");
         assert_eq!("Preserve prior work.", preservation.objective);
+        let accounted = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 4,
+                /*token_delta*/ 9,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 13,
+                    lines_deleted: 2,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                Some(preservation.goal_id.as_str()),
+            )
+            .await
+            .expect("deferred goal usage should update");
+        assert!(matches!(accounted, GoalAccountingOutcome::Updated(_)));
 
         // Defer preservation; only the independent consolidate node is ready.
         let advanced = defer_current_goal_and_advance(
@@ -4961,13 +5020,26 @@ mod tests {
             crate::ThreadGoalPlanAutoExecute::AiDirected,
         )
         .await;
-        assert_eq!(
-            "Consolidate independent results.",
-            advanced
-                .activated_goal
-                .expect("independent node should activate")
-                .objective
-        );
+        let consolidate = advanced
+            .activated_goal
+            .expect("independent node should activate");
+        assert_eq!("Consolidate independent results.", consolidate.objective);
+        let accounted = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 2,
+                /*token_delta*/ 3,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 5,
+                    lines_deleted: 1,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                Some(consolidate.goal_id.as_str()),
+            )
+            .await
+            .expect("independent goal usage should update");
+        assert!(matches!(accounted, GoalAccountingOutcome::Updated(_)));
 
         // Complete consolidate; downstream still depends on the deferred node so
         // nothing new activates and the plan stalls.
@@ -4985,6 +5057,27 @@ mod tests {
                 crate::ThreadGoalPlanNodeStatus::Pending,
             ],
             node_statuses(&stalled)
+        );
+        assert_eq!(
+            (9, 4, 13, 2),
+            (
+                stalled.snapshot.nodes[0].tokens_used,
+                stalled.snapshot.nodes[0].time_used_seconds,
+                stalled.snapshot.nodes[0].lines_added,
+                stalled.snapshot.nodes[0].lines_deleted,
+            ),
+            "deferred node usage remains visible until it is reactivated"
+        );
+        let stalled_summary = stalled.snapshot.usage_summary();
+        assert_eq!(
+            (12, 6, 18, 3),
+            (
+                stalled_summary.total_tokens_used,
+                stalled_summary.total_time_used_seconds,
+                stalled_summary.total_lines_added,
+                stalled_summary.total_lines_deleted,
+            ),
+            "plan usage aggregates independent node totals"
         );
 
         // Resume the deferred node with no explicit id; it is auto-selected.
@@ -5009,6 +5102,26 @@ mod tests {
                 crate::ThreadGoalPlanNodeStatus::Pending,
             ],
             node_statuses(&resumed)
+        );
+        assert_eq!(
+            (0, 0, 0, 0),
+            (
+                resumed.snapshot.nodes[0].tokens_used,
+                resumed.snapshot.nodes[0].time_used_seconds,
+                resumed.snapshot.nodes[0].lines_added,
+                resumed.snapshot.nodes[0].lines_deleted,
+            ),
+            "reactivation starts the node's new projected goal with fresh usage"
+        );
+        let resumed_summary = resumed.snapshot.usage_summary();
+        assert_eq!(
+            (3, 2, 5, 1),
+            (
+                resumed_summary.total_tokens_used,
+                resumed_summary.total_time_used_seconds,
+                resumed_summary.total_lines_added,
+                resumed_summary.total_lines_deleted,
+            )
         );
         let current = runtime
             .thread_goals()

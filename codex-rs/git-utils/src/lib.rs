@@ -6,6 +6,7 @@ mod info;
 mod operations;
 mod platform;
 mod worktree;
+mod worktree_snapshot;
 
 pub use apply::ApplyGitRequest;
 pub use apply::ApplyGitResult;
@@ -53,3 +54,7 @@ pub use worktree::remove_linked_git_worktree;
 pub use worktree::resolve_git_ref;
 pub use worktree::validate_git_branch_name;
 pub use worktree::worktree_has_commits_after;
+pub use worktree_snapshot::GitWorktreeLineChangeStats;
+pub use worktree_snapshot::GitWorktreeSnapshot;
+pub use worktree_snapshot::capture_git_worktree_snapshot;
+pub use worktree_snapshot::diff_git_worktree_snapshots;

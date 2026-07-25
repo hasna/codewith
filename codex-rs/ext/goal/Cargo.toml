@@ -17,6 +17,7 @@ workspace = true
 async-trait = { workspace = true }
 codex-core = { workspace = true }
 codex-extension-api = { workspace = true }
+codex-git-utils = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-state = { workspace = true }
@@ -33,4 +34,4 @@ chrono = { workspace = true }
 pretty_assertions = { workspace = true }
 sqlx = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread"] }

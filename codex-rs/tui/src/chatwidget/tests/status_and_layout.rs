@@ -4847,6 +4847,8 @@ fn test_thread_goal(
         token_budget,
         tokens_used,
         time_used_seconds: 30 * 60,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 0,
         updated_at: 0,
     }
