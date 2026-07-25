@@ -18,6 +18,12 @@ use codex_protocol::user_input::UserInput;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+fn destination_became_active_error() -> CodexErr {
+    CodexErr::InvalidRequest(
+        "destination thread became active before continuation was recorded".to_string(),
+    )
+}
+
 impl Session {
     pub(crate) async fn record_session_continuation_if_idle(
         self: &Arc<Self>,
@@ -32,9 +38,7 @@ impl Session {
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
-                return Err(CodexErr::InvalidRequest(
-                    "destination thread became active before continuation was recorded".to_string(),
-                ));
+                return Err(destination_became_active_error());
             }
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
@@ -48,7 +52,19 @@ impl Session {
                 ));
             }
             let turn_context = self.new_default_turn().await;
-            if self.reference_context_item().await.is_none() {
+            let needs_context_baseline = self.reference_context_item().await.is_none();
+            // The reservation above is a bare `ActiveTurn` with no task attached, and
+            // `abort_all_tasks` takes the active turn unconditionally, so a concurrent
+            // user submit can steal the reservation at any await point in this future.
+            // Re-check ownership here, mirroring `try_start_turn_if_idle` /
+            // `try_start_user_input_turn_if_idle`, so the continuation never records into
+            // a thread that already has a live turn. Everything above this point is
+            // read-only, and the writes below follow with no awaits in between other than
+            // the writes themselves, so this check dominates every history mutation.
+            if !self.still_holds_reserved_idle_turn(&turn_state).await {
+                return Err(destination_became_active_error());
+            }
+            if needs_context_baseline {
                 self.record_context_updates_and_set_reference_context_item(turn_context.as_ref())
                     .await;
             }
@@ -178,13 +194,7 @@ impl Session {
                 input,
             ));
         }
-        let still_reserved = {
-            let active_turn = self.active_turn.lock().await;
-            active_turn.as_ref().is_some_and(|active_turn| {
-                active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
-            })
-        };
-        if !still_reserved {
+        if !self.still_holds_reserved_idle_turn(&turn_state).await {
             self.clear_reserved_idle_turn(&turn_state).await;
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::Busy,
@@ -264,13 +274,7 @@ impl Session {
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
             ));
         }
-        let still_reserved = {
-            let active_turn = self.active_turn.lock().await;
-            active_turn.as_ref().is_some_and(|active_turn| {
-                active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
-            })
-        };
-        if !still_reserved {
+        if !self.still_holds_reserved_idle_turn(&turn_state).await {
             self.clear_reserved_idle_turn(&turn_state).await;
             return Err(TryStartUserInputTurnIfIdleError::Rejected(
                 TryStartTurnIfIdleRejectionReason::Busy,
@@ -333,6 +337,23 @@ impl Session {
             return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(error));
         }
         Ok(sub_id)
+    }
+
+    /// Returns true when `turn_state` is still the bare (task-less) idle-turn reservation
+    /// installed by this caller.
+    ///
+    /// Reservations are plain `ActiveTurn`s with no task attached, and `abort_all_tasks`
+    /// clears the active turn unconditionally, so a concurrent submit can replace a
+    /// reservation at any await point. Every caller that reserved an idle turn must
+    /// re-check ownership before it commits side effects.
+    async fn still_holds_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) -> bool {
+        let active_turn = self.active_turn.lock().await;
+        active_turn.as_ref().is_some_and(|active_turn| {
+            active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, turn_state)
+        })
     }
 
     async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {

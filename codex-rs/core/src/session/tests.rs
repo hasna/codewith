@@ -10625,6 +10625,75 @@ async fn session_continuation_rejects_active_destination_without_injecting() {
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
+/// The idle reservation taken by `record_session_continuation_if_idle` is a bare
+/// `ActiveTurn`, and `spawn_task` -> `abort_all_tasks` -> `take_active_turn` clears the
+/// active turn unconditionally. A user submit that lands while the continuation is still
+/// awaiting must therefore be detected before anything is written to history.
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the state lock is deliberately held across awaits to park the continuation mid-flight"
+)]
+#[tokio::test]
+async fn session_continuation_rejects_destination_that_becomes_active_while_recording() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let history_before = sess.clone_history().await.raw_items().to_vec();
+    // The steal below takes whatever active turn it first observes, so the session must
+    // start idle for that to be the continuation's own reservation.
+    assert!(sess.active_turn.lock().await.is_none());
+
+    // Park the continuation inside `new_default_turn`, which takes the session state
+    // lock: that point is after the bare reservation is installed and before any
+    // history is recorded.
+    let state_guard = sess.state.lock().await;
+
+    let continuation = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        async move {
+            sess.record_session_continuation_if_idle("source recap".to_string())
+                .await
+        }
+    });
+
+    // Steal the reservation exactly the way a concurrent user submit does: an
+    // unconditional take followed by the new turn installing its own `ActiveTurn`.
+    timeout(StdDuration::from_secs(10), async {
+        loop {
+            {
+                let mut active_turn = sess.active_turn.lock().await;
+                if active_turn.take().is_some() {
+                    *active_turn = Some(ActiveTurn::default());
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("continuation should reserve a bare active turn");
+
+    drop(state_guard);
+
+    let err = timeout(StdDuration::from_secs(10), continuation)
+        .await
+        .expect("continuation should finish")
+        .expect("continuation task should not panic")
+        .expect_err("a stolen reservation should reject the continuation");
+
+    assert!(matches!(
+        err,
+        CodexErr::InvalidRequest(message)
+            if message == "destination thread became active before continuation was recorded"
+    ));
+    assert_eq!(
+        sess.clone_history().await.raw_items(),
+        history_before.as_slice()
+    );
+    // The continuation must not clear the turn that replaced its reservation.
+    assert!(sess.active_turn.lock().await.is_some());
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[tokio::test]
 async fn try_start_user_input_turn_if_idle_rejects_active_turn_without_switching_auth()
 -> anyhow::Result<()> {

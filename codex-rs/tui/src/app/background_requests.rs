@@ -775,7 +775,22 @@ impl App {
         source_thread_id: String,
         result: Result<String, String>,
     ) {
+        // The continuation is recorded into the destination thread even when the user has
+        // navigated away, so the outcome must never be dropped without a trace.
         if Some(destination_thread_id) != self.current_displayed_thread_id() {
+            match &result {
+                Ok(_) => tracing::info!(
+                    %destination_thread_id,
+                    %source_thread_id,
+                    "session continuation finished for a thread that is no longer displayed"
+                ),
+                Err(err) => tracing::warn!(
+                    %destination_thread_id,
+                    %source_thread_id,
+                    error = %err,
+                    "session continuation failed for a thread that is no longer displayed"
+                ),
+            }
             return;
         }
 
@@ -784,9 +799,16 @@ impl App {
                 format!("Continued context from session {source_thread_id}."),
                 /*hint*/ None,
             ),
-            Err(err) => self
-                .chat_widget
-                .add_error_message(format!("Failed to continue session: {err}")),
+            Err(err) => {
+                tracing::warn!(
+                    %destination_thread_id,
+                    %source_thread_id,
+                    error = %err,
+                    "session continuation failed"
+                );
+                self.chat_widget
+                    .add_error_message(format!("Failed to continue session: {err}"));
+            }
         }
     }
 
