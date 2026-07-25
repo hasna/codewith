@@ -1,3 +1,4 @@
+use codex_core_skills::SkillsPreamble;
 use codex_core_skills::render_task_relevant_skills_body;
 use codex_extension_api::ContextualUserFragment;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
@@ -38,6 +39,7 @@ pub(crate) fn available_skills_fragment(
     catalog: &SkillCatalog,
     query: &str,
     limit: usize,
+    preamble: SkillsPreamble,
 ) -> Option<AvailableSkillsFragment> {
     let skill_lines = rank_catalog(catalog, query, limit)
         .into_iter()
@@ -54,13 +56,16 @@ pub(crate) fn available_skills_fragment(
         return None;
     }
 
-    // The `## Skills` developer message already carries the shared
-    // `### How to use skills` preamble for this turn (both blocks are gated on
-    // `include_skill_instructions`), so this per-turn fragment renders only the
-    // ranked matches. Repeating the preamble would burn ~2.5k characters on
-    // every turn that lexically matches a skill.
+    // When the `## Skills` developer message is present it already carries the
+    // shared `### How to use skills` preamble for this turn, so this per-turn
+    // fragment renders only the ranked matches; repeating the preamble would
+    // burn ~2.5k characters on every turn that lexically matches a skill.
+    // `include_skill_instructions` gates both blocks, but it is not the only
+    // gate: core builds `## Skills` from the *host* outcome while this ranks
+    // over the *merged* catalog, so a purely remote/executor catalog produces
+    // no `## Skills` block at all and the caller passes `Missing`.
     Some(AvailableSkillsFragment {
-        body: render_task_relevant_skills_body(&skill_lines),
+        body: render_task_relevant_skills_body(&skill_lines, preamble),
     })
 }
 

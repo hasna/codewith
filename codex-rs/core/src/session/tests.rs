@@ -12,6 +12,7 @@ use crate::session::handlers::inter_agent_communication;
 use crate::shell::default_user_shell;
 use crate::skills::SkillCatalogSearch;
 use crate::skills::SkillRenderSideEffects;
+use crate::skills::render::MAX_STARTER_SKILLS;
 use crate::skills::render::SkillMetadataBudget;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::format_exec_output_str;
@@ -97,6 +98,7 @@ use codex_execpolicy::Policy;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
+use codex_otel::THREAD_SKILLS_DEFERRED_TOTAL_METRIC;
 use codex_otel::THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC;
 use codex_otel::THREAD_SKILLS_ENABLED_TOTAL_METRIC;
 use codex_otel::THREAD_SKILLS_KEPT_TOTAL_METRIC;
@@ -9208,8 +9210,110 @@ fn emit_thread_start_skill_metrics_records_description_truncated_chars_without_o
         .expect("runtime metrics snapshot");
     assert_eq!(histogram_sum(&snapshot, THREAD_SKILLS_TRUNCATED_METRIC), 0);
     assert_eq!(
+        histogram_sum(&snapshot, THREAD_SKILLS_DEFERRED_TOTAL_METRIC),
+        0
+    );
+    assert_eq!(
         histogram_sum(&snapshot, THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC),
         8
+    );
+}
+
+#[test]
+fn emit_thread_start_skill_metrics_records_skills_deferred_to_catalog_search() {
+    // A catalog too large to list even without descriptions is held back to the
+    // starter cap. That drop has to show up in the metrics: `kept_total` alone
+    // would report the shrink with no explanation, and `deferred_total` is the
+    // only signal that separates "budget cut them" from "search will find them".
+    let session_telemetry = test_session_telemetry_without_metadata();
+    let mut outcome = SkillLoadOutcome::default();
+    outcome.skills = (0..400)
+        .map(|index| SkillMetadata {
+            name: format!("repo-skill-{index:03}"),
+            description: "desc".to_string(),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            policy: None,
+            path_to_skills_md: test_path_buf(&format!("/tmp/repo-skill-{index:03}/SKILL.md")).abs(),
+            scope: SkillScope::Repo,
+            plugin_id: None,
+        })
+        .collect();
+
+    let rendered = build_available_skills(
+        &outcome,
+        SkillMetadataBudget::Characters(1_000),
+        SkillCatalogSearch::Available,
+        SkillRenderSideEffects::ThreadStart {
+            session_telemetry: &session_telemetry,
+        },
+    )
+    .expect("skills should render");
+
+    assert_eq!(rendered.report.total_count, 400);
+    assert_eq!(rendered.report.included_count, MAX_STARTER_SKILLS);
+    assert_eq!(rendered.report.deferred_count, 400 - MAX_STARTER_SKILLS);
+    assert!(rendered.warning_message.is_some());
+    let snapshot = session_telemetry
+        .snapshot_metrics()
+        .expect("runtime metrics snapshot");
+    assert_eq!(
+        histogram_sum(&snapshot, THREAD_SKILLS_ENABLED_TOTAL_METRIC),
+        400
+    );
+    assert_eq!(
+        histogram_sum(&snapshot, THREAD_SKILLS_KEPT_TOTAL_METRIC),
+        u64::try_from(MAX_STARTER_SKILLS).expect("starter cap fits u64")
+    );
+    assert_eq!(
+        histogram_sum(&snapshot, THREAD_SKILLS_DEFERRED_TOTAL_METRIC),
+        u64::try_from(400 - MAX_STARTER_SKILLS).expect("deferred count fits u64")
+    );
+    assert_eq!(histogram_sum(&snapshot, THREAD_SKILLS_TRUNCATED_METRIC), 1);
+}
+
+#[test]
+fn description_truncation_metric_is_not_diluted_by_the_full_catalog_size() {
+    // `report.total_count` is rewritten to the whole catalog once the starter
+    // cap is known. Averaging the truncated characters over that number instead
+    // of over the skills actually rendered used to round 100-chars-per-starter
+    // down to zero and silently disarm the truncation warning.
+    let session_telemetry = test_session_telemetry_without_metadata();
+    let mut outcome = SkillLoadOutcome::default();
+    outcome.skills = (0..400)
+        .map(|index| SkillMetadata {
+            name: format!("repo-skill-{index:03}"),
+            description: "d".repeat(200),
+            short_description: None,
+            interface: None,
+            dependencies: None,
+            policy: None,
+            path_to_skills_md: test_path_buf(&format!("/tmp/repo-skill-{index:03}/SKILL.md")).abs(),
+            scope: SkillScope::Repo,
+            plugin_id: None,
+        })
+        .collect();
+
+    let rendered = build_available_skills(
+        &outcome,
+        SkillMetadataBudget::Characters(1_000),
+        SkillCatalogSearch::Available,
+        SkillRenderSideEffects::ThreadStart {
+            session_telemetry: &session_telemetry,
+        },
+    )
+    .expect("skills should render");
+
+    assert_eq!(rendered.report.total_count, 400);
+    assert!(rendered.report.truncated_description_chars > 0);
+    let snapshot = session_telemetry
+        .snapshot_metrics()
+        .expect("runtime metrics snapshot");
+    assert_eq!(
+        histogram_sum(&snapshot, THREAD_SKILLS_DESCRIPTION_TRUNCATED_CHARS_METRIC),
+        u64::try_from(rendered.report.truncated_description_chars)
+            .expect("truncated chars fit u64")
     );
 }
 

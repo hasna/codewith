@@ -173,18 +173,6 @@ impl SkillCatalog {
         }
         self.warnings.extend(other.warnings);
     }
-
-    pub fn push_entry(&mut self, entry: SkillCatalogEntry) {
-        if self
-            .entries
-            .iter()
-            .any(|existing| existing.authority == entry.authority && existing.id == entry.id)
-        {
-            return;
-        }
-
-        self.entries.push(entry);
-    }
 }
 
 /// Contents returned after resolving a skill resource through its owner.

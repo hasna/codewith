@@ -1017,14 +1017,25 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         "Exceeded skills context budget of 2%. All skill descriptions were removed and ";
     let warning_suffix = " additional skills were not included in the model-visible skills list.";
     assert!(
-        warning.message.starts_with(warning_prefix) && warning.message.ends_with(warning_suffix),
+        warning.message.starts_with(warning_prefix),
         "unexpected warning message: {:?}",
         warning.message
     );
-    let omitted_skill_count = warning
+    // A budget this small also trips the starter cap, so the omission sentence
+    // is followed by the deferral notice. Both have to be there: the user needs
+    // to know skills are missing *and* that `skills.list` can still find them.
+    let (omission, deferral) = warning
         .message
+        .split_once(&format!("{warning_suffix} "))
+        .unwrap_or_else(|| panic!("unexpected warning message: {:?}", warning.message));
+    assert!(
+        deferral.starts_with("Showing ")
+            && deferral.ends_with("stay searchable through `skills.list`."),
+        "expected a deferral notice: {:?}",
+        warning.message
+    );
+    let omitted_skill_count = omission
         .trim_start_matches(warning_prefix)
-        .trim_end_matches(warning_suffix)
         .parse::<usize>()
         .expect("warning omitted skill count should be numeric");
     assert!(

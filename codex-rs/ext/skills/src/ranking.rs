@@ -12,10 +12,6 @@ pub(crate) const DEFAULT_SKILL_MATCH_LIMIT: usize = 5;
 /// [`DEFAULT_SKILL_MATCH_LIMIT`]: a `limit` that can only ever shrink the
 /// result set is not an escape hatch.
 pub(crate) const MAX_SKILL_MATCH_LIMIT: usize = 50;
-/// Largest `offset` the model may page to. Together with
-/// [`MAX_SKILL_MATCH_LIMIT`] this bounds how deep a single query can walk the
-/// ranked catalog.
-pub(crate) const MAX_SKILL_MATCH_OFFSET: usize = 1_000;
 
 /// A `limit` that can only shrink the page is not an escape hatch: it must be
 /// able to widen the default page too.
@@ -43,14 +39,34 @@ pub(crate) fn user_text_query(inputs: &[UserInput]) -> String {
     query
 }
 
+/// The best `limit` matches for `query`, in ranked order.
 pub(crate) fn rank_catalog<'a>(
     catalog: &'a SkillCatalog,
     query: &str,
     limit: usize,
 ) -> Vec<&'a SkillCatalogEntry> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut ranked = rank_catalog_all(catalog, query);
+    ranked.truncate(limit);
+    ranked
+}
+
+/// Every prompt-visible entry that matches `query`, best first.
+///
+/// The result set is bounded by the catalog and nothing else. A fixed page
+/// ceiling here would make the tail of a large catalog unreachable no matter
+/// how the model pages, which is exactly the failure mode paging exists to
+/// avoid.
+pub(crate) fn rank_catalog_all<'a>(
+    catalog: &'a SkillCatalog,
+    query: &str,
+) -> Vec<&'a SkillCatalogEntry> {
     let query_lower = query.to_lowercase();
     let query_terms = lexical_terms(query, MAX_QUERY_CHARS, MAX_QUERY_TERMS);
-    if query_terms.is_empty() || limit == 0 {
+    if query_terms.is_empty() {
         return Vec::new();
     }
 
@@ -72,11 +88,33 @@ pub(crate) fn rank_catalog<'a>(
             .then_with(|| left.id.0.cmp(&right.id.0))
             .then_with(|| left.name.cmp(&right.name))
     });
-    ranked
-        .into_iter()
-        .take(limit)
-        .map(|(_, entry)| entry)
-        .collect()
+    ranked.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Every prompt-visible entry, in a stable order that does not depend on any
+/// query.
+///
+/// This is the enumeration escape hatch behind a `skills.list` call with no
+/// `query`. Ranking is lexical, so a skill only surfaces when the request
+/// happens to share a surface token with its metadata: without a way to list
+/// the catalog outright, a skill whose wording the model cannot guess is
+/// unreachable in principle, not merely hard to find.
+pub(crate) fn enumerate_catalog(catalog: &SkillCatalog) -> Vec<&SkillCatalogEntry> {
+    let mut entries = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.is_prompt_visible())
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| {
+                source_kind_key(&left.authority.kind).cmp(&source_kind_key(&right.authority.kind))
+            })
+            .then_with(|| left.authority.id.cmp(&right.authority.id))
+            .then_with(|| left.id.0.cmp(&right.id.0))
+    });
+    entries
 }
 
 fn relevance_score(
@@ -132,9 +170,9 @@ fn lexical_terms(value: &str, max_chars: usize, max_terms: usize) -> HashSet<Str
         .flat_map(char::to_lowercase)
         .collect::<String>()
         .split(|character: char| !character.is_alphanumeric())
-        // Stop words are dropped on both sides of stemming: before, so that
-        // `this` is never reduced to a bare `thi`; after, so that inflections
-        // such as `uses` collapse onto the listed `use`.
+        // Stop words are dropped on both sides of stemming: before, so that a
+        // stop word is never reduced to a meaningless three-letter stem; after,
+        // so that inflections such as `uses` collapse onto the listed `use`.
         .filter(|term| term.len() >= 3 && !is_stop_word(term))
         .map(stem)
         .filter(|term| !is_stop_word(term))
@@ -362,5 +400,44 @@ mod tests {
         assert_eq!(first_page.len(), DEFAULT_SKILL_MATCH_LIMIT);
         assert_eq!(wide_page.len(), 40);
         assert_eq!(wide_page[..first_page.len()], first_page[..]);
+    }
+
+    #[test]
+    fn ranking_is_bounded_by_the_catalog_not_by_a_page_ceiling() {
+        // Every entry matches the query, so the ranked set is the whole
+        // catalog. A fixed offset/limit ceiling used to make everything past
+        // rank 1049 unreachable.
+        const TOTAL: usize = 2_000;
+        let entries = (0..TOTAL)
+            .map(|index| entry(&format!("skill-{index:04}"), "Operate deploy pipelines"))
+            .collect::<Vec<_>>();
+        let catalog = SkillCatalog {
+            entries,
+            warnings: Vec::new(),
+        };
+
+        assert_eq!(rank_catalog_all(&catalog, "deploy").len(), TOTAL);
+    }
+
+    #[test]
+    fn enumeration_reaches_skills_no_query_term_matches() {
+        let catalog = SkillCatalog {
+            entries: vec![
+                entry("kanban-groomer", "Reprioritise the backlog board"),
+                entry("alpha-skill", "Something else"),
+                entry("hidden-skill", "Something else").disabled(),
+            ],
+            warnings: Vec::new(),
+        };
+
+        assert!(rank_catalog_all(&catalog, "tidy up my tickets").is_empty());
+        assert_eq!(
+            enumerate_catalog(&catalog)
+                .into_iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha-skill", "kanban-groomer"],
+            "enumeration must be complete, ordered, and still respect availability"
+        );
     }
 }

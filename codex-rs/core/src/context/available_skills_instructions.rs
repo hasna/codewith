@@ -1,4 +1,5 @@
 use codex_core_skills::AvailableSkills;
+use codex_core_skills::SkillsListCoverage;
 use codex_core_skills::render_available_skills_body;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
@@ -9,6 +10,7 @@ use super::ContextualUserFragment;
 pub(crate) struct AvailableSkillsInstructions {
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
+    coverage: SkillsListCoverage,
 }
 
 impl From<AvailableSkills> for AvailableSkillsInstructions {
@@ -16,6 +18,7 @@ impl From<AvailableSkills> for AvailableSkillsInstructions {
         Self {
             skill_root_lines: available_skills.skill_root_lines,
             skill_lines: available_skills.skill_lines,
+            coverage: available_skills.coverage,
         }
     }
 }
@@ -34,6 +37,6 @@ impl ContextualUserFragment for AvailableSkillsInstructions {
     }
 
     fn body(&self) -> String {
-        render_available_skills_body(&self.skill_root_lines, &self.skill_lines)
+        render_available_skills_body(&self.skill_root_lines, &self.skill_lines, self.coverage)
     }
 }

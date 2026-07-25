@@ -103,8 +103,8 @@ fn catalog_from_outcome(outcome: &SkillLoadOutcome) -> SkillCatalog {
     };
 
     // This runs on every turn, for the entire host catalog. De-duplicating with
-    // `push_entry` would be a linear scan per insert, and because every host
-    // entry shares `SkillAuthority(Host, "host")` the authority guard always
+    // a per-insert linear scan would be quadratic, and because every host entry
+    // shares `SkillAuthority(Host, "host")` the authority guard always
     // short-circuits true, so each comparison degrades into a full string
     // compare of long common-prefix filesystem paths. `extend` hashes instead.
     catalog.extend(SkillCatalog {

@@ -31,12 +31,46 @@ pub const SKILL_DESCRIPTION_TRUNCATED_WARNING: &str = "Starter skill description
 pub const SKILL_DESCRIPTION_TRUNCATED_WARNING_WITH_PERCENT: &str = "Starter skill descriptions were shortened to fit the 2% skills context budget. The full catalog remains searchable, but some starter descriptions are shorter.";
 pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
     "Exceeded skills context budget. All skill descriptions were removed and";
-pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. The list below is a small starter or task-relevant subset, not the complete skills catalog. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
-pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. The list below is a small starter or task-relevant subset, not the complete skills catalog. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
-pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: Always consider whether a skill is relevant before acting. The list above is only a starter or task-relevant subset (name + description + file path); skill bodies live on disk at the listed paths. When the available tools include `skills.list`, use it to search the full catalog by task, then use `skills.read` with the returned opaque handles when needed.
-- Trigger rules: Explicit skill mentions win. If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a listed or discovered skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't listed, search with `skills.list` when available. If it cannot be found or read, say so briefly and continue with the best fallback.
-- How to use a skill (progressive disclosure):
+/// Opening sentence of the `## Skills` intro, shared by every variant.
+pub const SKILLS_INTRO_LEAD: &str =
+    "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file.";
+/// Completeness claim used when some of the catalog was held back.
+pub const SKILLS_INTRO_PARTIAL_LIST: &str =
+    "The list below is a small starter or task-relevant subset, not the complete skills catalog.";
+/// Completeness claim used when every available skill is rendered below.
+/// Asserting incompleteness here when the list is in fact complete pushes the
+/// model to hunt for skills that do not exist, and to reach for a
+/// catalog-search tool that may not even be installed.
+pub const SKILLS_INTRO_COMPLETE_LIST: &str =
+    "The list below is the complete set of skills available to you.";
+pub const SKILLS_INTRO_TRAILER_WITH_ABSOLUTE_PATHS: &str = "Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
+pub const SKILLS_INTRO_TRAILER_WITH_ALIASES: &str = "Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
+
+/// Opening of the `- Discovery:` bullet, shared by every variant.
+///
+/// Completeness and catalog-search availability are two independent axes -
+/// a list can be partial with no way to search past it - so the bullet is
+/// composed from parts rather than picked from a matrix of whole sentences.
+pub const SKILLS_DISCOVERY_LEAD: &str =
+    "- Discovery: Always consider whether a skill is relevant before acting.";
+pub const SKILLS_DISCOVERY_PARTIAL_LIST: &str =
+    "The list above is only a starter or task-relevant subset, not the complete catalog.";
+pub const SKILLS_DISCOVERY_COMPLETE_LIST: &str = "The list above is every available skill.";
+pub const SKILLS_DISCOVERY_PATHS_WITH_ABSOLUTE_PATHS: &str = "Each entry is a name, description, and file path, and skill bodies live on disk at those paths.";
+pub const SKILLS_DISCOVERY_PATHS_WITH_ALIASES: &str = "Each entry is a name, description, and short path; skill bodies live on disk at those paths after expanding the matching alias from `### Skill roots`.";
+/// Appended only when a catalog-search tool is installed *and* there is
+/// something outside the rendered list for it to find.
+pub const SKILLS_DISCOVERY_CATALOG_SEARCH: &str = "Use `skills.list` to search the full catalog by task, or call it with no `query` to enumerate every skill, then use `skills.read` with the returned opaque handles when needed.";
+/// `- Missing/blocked:` bullet, split out because it also names `skills.list`.
+pub const SKILLS_MISSING_WITH_CATALOG_SEARCH: &str = "- Missing/blocked: If a named skill isn't listed, search for it with `skills.list`. If it cannot be found or read, say so briefly and continue with the best fallback.";
+pub const SKILLS_MISSING_WITHOUT_CATALOG_SEARCH: &str = "- Missing/blocked: If a named skill isn't listed, it is not available. Say so briefly and continue with the best fallback.";
+
+/// `- Trigger rules:` bullet, shared by every variant.
+pub const SKILLS_TRIGGER_RULES: &str = "- Trigger rules: Explicit skill mentions win. If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a listed or discovered skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.";
+
+/// Everything in `### How to use skills` after the completeness-dependent
+/// bullets, for a list rendered with absolute paths.
+pub const SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS: &str = r###"- How to use a skill (progressive disclosure):
   1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the skill directory listed above first, and only consider other paths if needed.
   3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
@@ -50,10 +84,9 @@ pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: Always
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
-pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: Always consider whether a skill is relevant before acting. The list above is only a starter or task-relevant subset (name + description + short path); skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`. When the available tools include `skills.list`, use it to search the full catalog by task, then use `skills.read` with the returned opaque handles when needed.
-- Trigger rules: Explicit skill mentions win. If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a listed or discovered skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: If a named skill isn't listed, search with `skills.list` when available. If it cannot be found or read, say so briefly and continue with the best fallback.
-- How to use a skill (progressive disclosure):
+/// Everything in `### How to use skills` after the completeness-dependent
+/// bullets, for a list rendered with `### Skill roots` aliases.
+pub const SKILLS_HOW_TO_USE_TAIL_WITH_ALIASES: &str = r###"- How to use a skill (progressive disclosure):
   1) After deciding to use a skill, expand the listed short `path` with the matching alias from `### Skill roots`, then open its `SKILL.md`. Read only enough to follow the workflow.
   2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the directory containing that expanded `SKILL.md` first, and only consider other paths if needed.
   3) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.
@@ -78,32 +111,137 @@ pub const SKILLS_LIST_TOOL_NAME: &str = "list";
 
 pub const TASK_RELEVANT_SKILLS_HEADING: &str = "## Task-relevant skills";
 pub const TASK_RELEVANT_SKILLS_INTRO: &str = "Additional catalog matches for this turn's request. The discovery, trigger, progressive-disclosure, and context-hygiene rules from the `## Skills` section above apply unchanged and are deliberately not repeated here.";
+/// Intro used when there is no `## Skills` section to defer to, so this
+/// fragment has to carry the rules itself.
+pub const TASK_RELEVANT_SKILLS_STANDALONE_INTRO: &str = "Skills matching this turn's request. A skill is a set of instructions to follow, stored in a `SKILL.md` file. No separate `## Skills` section was emitted for this request, so the rules for using these skills are below.";
+
+/// Whether the `## Skills` developer block — and with it the shared
+/// `### How to use skills` preamble — is present in the same request as the
+/// per-turn task-relevant fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillsPreamble {
+    /// The `## Skills` block is present and already carries the rules.
+    RenderedElsewhere,
+    /// No `## Skills` block was emitted. This happens whenever the *host* skill
+    /// outcome is empty but the merged catalog is not, i.e. every skill comes
+    /// from a remote or executor provider. Pointing at a section that does not
+    /// exist would leave the model with bare skill lines and no usage rules.
+    Missing,
+}
 
 /// Render the per-turn, ranked skill matches contributed by the skills
 /// extension.
 ///
-/// This intentionally omits the `### How to use skills` preamble that
-/// [`render_available_skills_body`] emits: on any turn whose text matches a
-/// skill, both blocks land in the same request, and repeating ~2.5k characters
-/// of identical how-to-use guidance defeats the point of deferring the catalog
-/// in the first place.
-pub fn render_task_relevant_skills_body(skill_lines: &[String]) -> String {
-    let mut lines: Vec<String> = Vec::with_capacity(skill_lines.len().saturating_add(3));
+/// With [`SkillsPreamble::RenderedElsewhere`] this intentionally omits the
+/// `### How to use skills` preamble that [`render_available_skills_body`]
+/// emits: on any turn whose text matches a skill, both blocks land in the same
+/// request, and repeating ~2.5k characters of identical how-to-use guidance
+/// defeats the point of deferring the catalog in the first place.
+pub fn render_task_relevant_skills_body(
+    skill_lines: &[String],
+    preamble: SkillsPreamble,
+) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(skill_lines.len().saturating_add(6));
     lines.push(TASK_RELEVANT_SKILLS_HEADING.to_string());
-    lines.push(TASK_RELEVANT_SKILLS_INTRO.to_string());
+    match preamble {
+        SkillsPreamble::RenderedElsewhere => lines.push(TASK_RELEVANT_SKILLS_INTRO.to_string()),
+        SkillsPreamble::Missing => lines.push(TASK_RELEVANT_SKILLS_STANDALONE_INTRO.to_string()),
+    }
     lines.push("### Available skills".to_string());
     lines.extend(skill_lines.iter().cloned());
+    if preamble == SkillsPreamble::Missing {
+        lines.push("### How to use skills".to_string());
+        // These lines come from the merged catalog, so `skills.list` is
+        // installed by construction and the list is a ranked subset.
+        lines.push(render_discovery_bullet(
+            SkillsListCoverage {
+                complete: false,
+                catalog_search: SkillCatalogSearch::Available,
+            },
+            /*aliased*/ false,
+        ));
+        lines.push(SKILLS_TRIGGER_RULES.to_string());
+        lines.push(SKILLS_MISSING_WITH_CATALOG_SEARCH.to_string());
+        lines.push(SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS.to_string());
+    }
 
     format!("\n{}\n", lines.join("\n"))
 }
 
-pub fn render_available_skills_body(skill_root_lines: &[String], skill_lines: &[String]) -> String {
+/// How much of the catalog the rendered `## Skills` list actually covers, and
+/// whether the model has a tool to reach whatever is missing.
+///
+/// The prompt used to assert incompleteness unconditionally, which is a lie
+/// whenever the whole catalog fits — and it pointed at `skills.list` even on
+/// threads built without the skills extension, where that tool does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillsListCoverage {
+    /// Every prompt-visible skill is rendered in the list.
+    pub complete: bool,
+    /// Whether the catalog-search tool is installed for this thread.
+    pub catalog_search: SkillCatalogSearch,
+}
+
+impl SkillsListCoverage {
+    /// The list is complete *and* nothing can search beyond it: the safest
+    /// default for embedders that render a body without a render report.
+    pub const COMPLETE_WITHOUT_SEARCH: Self = Self {
+        complete: true,
+        catalog_search: SkillCatalogSearch::Unavailable,
+    };
+
+    fn from_report(report: &SkillRenderReport, catalog_search: SkillCatalogSearch) -> Self {
+        Self {
+            complete: report.deferred_count == 0 && report.omitted_count == 0,
+            catalog_search,
+        }
+    }
+
+    /// Only claim the list is partial when the model can do something about it.
+    fn advertise_catalog_search(self) -> bool {
+        !self.complete && self.catalog_search == SkillCatalogSearch::Available
+    }
+}
+
+fn render_discovery_bullet(coverage: SkillsListCoverage, aliased: bool) -> String {
+    let completeness = if coverage.complete {
+        SKILLS_DISCOVERY_COMPLETE_LIST
+    } else {
+        SKILLS_DISCOVERY_PARTIAL_LIST
+    };
+    let paths = if aliased {
+        SKILLS_DISCOVERY_PATHS_WITH_ALIASES
+    } else {
+        SKILLS_DISCOVERY_PATHS_WITH_ABSOLUTE_PATHS
+    };
+    let mut bullet = format!("{SKILLS_DISCOVERY_LEAD} {completeness} {paths}");
+    if coverage.advertise_catalog_search() {
+        bullet.push(' ');
+        bullet.push_str(SKILLS_DISCOVERY_CATALOG_SEARCH);
+    }
+    bullet
+}
+
+pub fn render_available_skills_body(
+    skill_root_lines: &[String],
+    skill_lines: &[String],
+    coverage: SkillsListCoverage,
+) -> String {
+    let aliased = !skill_root_lines.is_empty();
     let mut lines: Vec<String> = Vec::new();
     lines.push("## Skills".to_string());
-    if skill_root_lines.is_empty() {
-        lines.push(SKILLS_INTRO_WITH_ABSOLUTE_PATHS.to_string());
+    let completeness = if coverage.complete {
+        SKILLS_INTRO_COMPLETE_LIST
     } else {
-        lines.push(SKILLS_INTRO_WITH_ALIASES.to_string());
+        SKILLS_INTRO_PARTIAL_LIST
+    };
+    let trailer = if aliased {
+        SKILLS_INTRO_TRAILER_WITH_ALIASES
+    } else {
+        SKILLS_INTRO_TRAILER_WITH_ABSOLUTE_PATHS
+    };
+    lines.push(format!("{SKILLS_INTRO_LEAD} {completeness} {trailer}"));
+    if aliased {
         lines.push("### Skill roots".to_string());
         lines.extend(skill_root_lines.iter().cloned());
     }
@@ -111,12 +249,24 @@ pub fn render_available_skills_body(skill_root_lines: &[String], skill_lines: &[
     lines.extend(skill_lines.iter().cloned());
 
     lines.push("### How to use skills".to_string());
-    let how_to_use = if skill_root_lines.is_empty() {
-        SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS
-    } else {
-        SKILLS_HOW_TO_USE_WITH_ALIASES
-    };
-    lines.push(how_to_use.to_string());
+    lines.push(render_discovery_bullet(coverage, aliased));
+    lines.push(SKILLS_TRIGGER_RULES.to_string());
+    lines.push(
+        if coverage.catalog_search == SkillCatalogSearch::Available {
+            SKILLS_MISSING_WITH_CATALOG_SEARCH
+        } else {
+            SKILLS_MISSING_WITHOUT_CATALOG_SEARCH
+        }
+        .to_string(),
+    );
+    lines.push(
+        if aliased {
+            SKILLS_HOW_TO_USE_TAIL_WITH_ALIASES
+        } else {
+            SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS
+        }
+        .to_string(),
+    );
 
     format!("\n{}\n", lines.join("\n"))
 }
@@ -176,6 +326,9 @@ pub struct AvailableSkills {
     pub skill_root_lines: Vec<String>,
     pub skill_lines: Vec<String>,
     pub report: SkillRenderReport,
+    /// What the rendered list actually covers, so the intro can stop asserting
+    /// incompleteness on lists that are complete.
+    pub coverage: SkillsListCoverage,
     pub warning_message: Option<String>,
 }
 
@@ -253,8 +406,13 @@ pub fn build_available_skills_with_starter_cap(
 ) -> Option<AvailableSkills> {
     let all_skills = outcome.allowed_skills_for_implicit_invocation();
     let total_count = all_skills.len();
-    let starter_limit =
-        starter_limit_for(outcome, &all_skills, budget, catalog_search, max_starter_skills);
+    let starter_limit = starter_limit_for(
+        outcome,
+        &all_skills,
+        budget,
+        catalog_search,
+        max_starter_skills,
+    );
     let skills = starter_skills(&all_skills, starter_limit)
         .into_iter()
         .cloned()
@@ -294,8 +452,40 @@ pub fn build_available_skills_with_starter_cap(
 
     selected.report.total_count = total_count;
     selected.report.deferred_count = total_count.saturating_sub(skills.len());
+    // Deferral hides whole skills, which is strictly more surprising than a
+    // shortened description, so it must never be silent. `warning_message` is
+    // built before the starter cap is known, so fold it in here.
+    if selected.report.deferred_count > 0 {
+        selected.warning_message = Some(deferred_skills_warning(
+            &selected.report,
+            selected.warning_message.as_deref(),
+        ));
+    }
+    selected.coverage = SkillsListCoverage::from_report(&selected.report, catalog_search);
     record_available_skills_side_effects(&selected, budget, side_effects);
     Some(selected)
+}
+
+/// Append the deferral notice to whatever the budget renderer already had to
+/// say.
+///
+/// Deliberately appended rather than prepended: the budget warning keeps its
+/// established opening, and a reader who only skims the first sentence still
+/// learns that skills are missing.
+fn deferred_skills_warning(report: &SkillRenderReport, existing: Option<&str>) -> String {
+    let skill_word = if report.deferred_count == 1 {
+        "skill"
+    } else {
+        "skills"
+    };
+    let deferral = format!(
+        "Showing {} of {} skills in the model-visible list; the other {} {} stay searchable through `skills.list`.",
+        report.included_count, report.total_count, report.deferred_count, skill_word
+    );
+    match existing {
+        Some(existing) => format!("{existing} {deferral}"),
+        None => deferral,
+    }
 }
 
 fn build_available_skills_from_lines(
@@ -340,10 +530,15 @@ fn build_available_skills_from_lines(
     } else {
         None
     };
+    let coverage = SkillsListCoverage {
+        complete: report.omitted_count == 0,
+        catalog_search: SkillCatalogSearch::Unavailable,
+    };
     let available = AvailableSkills {
         skill_root_lines: path_aliases.skill_root_lines,
         skill_lines,
         report,
+        coverage,
         warning_message,
     };
     Some(available)
@@ -548,14 +743,22 @@ fn skill_render_report(
 }
 
 impl SkillRenderReport {
+    /// Average characters of description dropped per skill that was actually
+    /// put through the renderer.
+    ///
+    /// Deliberately *not* divided by `total_count`: that field is rewritten to
+    /// the full catalog size once the starter cap is known, which would dilute
+    /// "100 chars trimmed from each of 5 starter skills" into 500/2105 = 0 and
+    /// silently disarm both the truncation warning and the metric.
     fn average_truncated_description_chars(&self) -> usize {
-        if self.total_count == 0 || self.truncated_description_chars == 0 {
+        let rendered_count = self.included_count.saturating_add(self.omitted_count);
+        if rendered_count == 0 || self.truncated_description_chars == 0 {
             return 0;
         }
 
         self.truncated_description_chars
-            .saturating_add(self.total_count.saturating_sub(1))
-            / self.total_count
+            .saturating_add(rendered_count.saturating_sub(1))
+            / rendered_count
     }
 }
 
@@ -901,8 +1104,11 @@ fn aliased_metadata_overhead_cost(
     skill_root_lines: &[String],
 ) -> usize {
     let empty_skill_lines: &[String] = &[];
-    let absolute_body = render_available_skills_body(&[], empty_skill_lines);
-    let aliased_body = render_available_skills_body(skill_root_lines, empty_skill_lines);
+    // Only the layout differs between the two calls, so the coverage wording
+    // cancels out of the delta as long as both sides use the same value.
+    let coverage = SkillsListCoverage::COMPLETE_WITHOUT_SEARCH;
+    let absolute_body = render_available_skills_body(&[], empty_skill_lines, coverage);
+    let aliased_body = render_available_skills_body(skill_root_lines, empty_skill_lines, coverage);
     budget
         .cost(&aliased_body)
         .saturating_sub(budget.cost(&absolute_body))
@@ -1028,7 +1234,7 @@ fn starter_limit_for(
 ) -> usize {
     if !catalog_search.allows_deferral()
         || skills.len() <= max_starter_skills
-        || full_catalog_fits_budget(outcome, skills, budget)
+        || whole_catalog_can_be_listed(outcome, skills, budget)
     {
         return skills.len();
     }
@@ -1036,16 +1242,24 @@ fn starter_limit_for(
     max_starter_skills
 }
 
-/// Whether every skill can be rendered with its full description inside the
-/// budget, under either the absolute-path or the aliased-path layout.
-fn full_catalog_fits_budget(
+/// Whether every skill can be *listed at all* inside the budget, i.e. with its
+/// name and path and its description shortened as far as the empty string,
+/// under either the absolute-path or the aliased-path layout.
+///
+/// Deferral removes whole skills from the model's view; description truncation
+/// only makes them terser. Truncation is therefore always preferred, and
+/// deferral is reserved for catalogs so large they cannot be enumerated even in
+/// that minimal form. Testing the *full* cost here made a realistic twelve-skill
+/// workspace with long descriptions silently drop seven of its skills, where the
+/// truncation path would have rendered all twelve.
+fn whole_catalog_can_be_listed(
     outcome: &SkillLoadOutcome,
     skills: &[SkillMetadata],
     budget: SkillMetadataBudget,
 ) -> bool {
     let limit = budget.limit();
     let absolute_cost = skills.iter().fold(0usize, |used, skill| {
-        used.saturating_add(SkillLine::new(skill).full_cost(budget))
+        used.saturating_add(SkillLine::new(skill).minimum_cost(budget))
     });
     if absolute_cost <= limit {
         return true;
@@ -1061,7 +1275,7 @@ fn full_catalog_fits_budget(
     let aliased_cost = skills.iter().fold(plan.table_cost, |used, skill| {
         used.saturating_add(
             SkillLine::with_path(skill, render_skill_path_with_aliases(skill, &plan))
-                .full_cost(budget),
+                .minimum_cost(budget),
         )
     });
     aliased_cost <= limit
@@ -1461,18 +1675,118 @@ mod tests {
         assert_eq!(rendered.report.included_count, MAX_STARTER_SKILLS);
         assert_eq!(rendered.report.deferred_count, 2_100);
         assert_eq!(rendered.report.omitted_count, 0);
-        assert_eq!(rendered.warning_message, None);
+        // Hiding 2100 skills must never be silent.
+        assert_eq!(
+            rendered.warning_message.as_deref(),
+            Some(
+                "Showing 5 of 2105 skills in the model-visible list; the other 2100 skills stay searchable through `skills.list`."
+            )
+        );
         let rendered_text = rendered.skill_lines.join("\n");
         for index in 0..MAX_STARTER_SKILLS {
             assert!(rendered_text.contains(&format!("scale-skill-{index:04}")));
         }
         assert!(!rendered_text.contains("scale-skill-0005"));
 
-        let body = render_available_skills_body(&rendered.skill_root_lines, &rendered.skill_lines);
+        let body = render_available_skills_body(
+            &rendered.skill_root_lines,
+            &rendered.skill_lines,
+            rendered.coverage,
+        );
         assert!(body.contains("not the complete skills catalog"));
         assert!(body.contains("Always consider whether a skill is relevant before acting"));
         assert!(body.contains("`skills.list`"));
         assert!(body.contains("`skills.read`"));
+    }
+
+    #[test]
+    fn a_small_catalog_truncates_descriptions_instead_of_hiding_skills() {
+        // Twelve skills with realistically long descriptions on a 200k window.
+        // The full descriptions do not fit the 2% budget, but the skills
+        // themselves easily do, so all twelve must still be listed.
+        let outcome = outcome_with_roots(
+            (0..12)
+                .map(|index| {
+                    let mut skill = skill_with_path(
+                        &format!("wide-skill-{index:02}"),
+                        &test_path_buf(&format!("/tmp/skills/wide-skill-{index:02}/SKILL.md"))
+                            .abs(),
+                    );
+                    skill.description = "d".repeat(1_536);
+                    skill
+                })
+                .collect::<Vec<_>>(),
+            Vec::new(),
+        );
+
+        let rendered = build_available_skills(
+            &outcome,
+            default_skill_metadata_budget(Some(200_000)),
+            SkillCatalogSearch::Available,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.total_count, 12);
+        assert_eq!(rendered.report.included_count, 12);
+        assert_eq!(rendered.report.deferred_count, 0);
+        assert_eq!(rendered.report.omitted_count, 0);
+        assert!(rendered.report.truncated_description_chars > 0);
+        assert!(
+            rendered.warning_message.is_some(),
+            "shortening descriptions must warn"
+        );
+    }
+
+    #[test]
+    fn a_complete_list_does_not_claim_to_be_a_subset_or_advertise_a_missing_tool() {
+        let outcome = scale_outcome(12);
+
+        let rendered = build_available_skills(
+            &outcome,
+            default_skill_metadata_budget(Some(200_000)),
+            SkillCatalogSearch::Unavailable,
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(rendered.report.deferred_count, 0);
+        assert_eq!(
+            rendered.coverage,
+            SkillsListCoverage::COMPLETE_WITHOUT_SEARCH
+        );
+
+        let body = render_available_skills_body(
+            &rendered.skill_root_lines,
+            &rendered.skill_lines,
+            rendered.coverage,
+        );
+        assert!(body.contains(SKILLS_INTRO_COMPLETE_LIST));
+        assert!(body.contains(SKILLS_DISCOVERY_COMPLETE_LIST));
+        assert!(!body.contains("not the complete"));
+        assert!(
+            !body.contains("skills.list"),
+            "must not point at a tool this thread does not have: {body}"
+        );
+    }
+
+    #[test]
+    fn a_partial_list_keeps_pointing_at_the_catalog_search_escape_hatch() {
+        let coverage = SkillsListCoverage {
+            complete: false,
+            catalog_search: SkillCatalogSearch::Available,
+        };
+
+        let body = render_available_skills_body(
+            &[],
+            &["- alpha: desc (file: /tmp/alpha/SKILL.md)".to_string()],
+            coverage,
+        );
+
+        assert!(body.contains(SKILLS_INTRO_PARTIAL_LIST));
+        assert!(body.contains(SKILLS_DISCOVERY_PARTIAL_LIST));
+        assert!(body.contains(SKILLS_DISCOVERY_CATALOG_SEARCH));
+        assert!(body.contains(SKILLS_MISSING_WITH_CATALOG_SEARCH));
     }
 
     #[test]
@@ -1624,20 +1938,43 @@ mod tests {
     fn task_relevant_body_drops_the_duplicated_how_to_use_preamble() {
         let lines = vec!["- alpha-skill: desc (file: /tmp/alpha/SKILL.md)".to_string()];
 
-        let body = render_task_relevant_skills_body(&lines);
+        let body = render_task_relevant_skills_body(&lines, SkillsPreamble::RenderedElsewhere);
 
         assert!(body.contains(TASK_RELEVANT_SKILLS_HEADING));
         assert!(body.contains("- alpha-skill: desc (file: /tmp/alpha/SKILL.md)"));
         assert!(!body.contains("### How to use skills"));
-        assert!(!body.contains(SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS));
-        assert!(!body.contains(SKILLS_HOW_TO_USE_WITH_ALIASES));
+        assert!(!body.contains(SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS));
+        assert!(!body.contains(SKILLS_HOW_TO_USE_TAIL_WITH_ALIASES));
         assert!(
             body.len()
-                < render_available_skills_body(&[], &lines)
-                    .len()
-                    .saturating_sub(2_000),
+                < render_available_skills_body(
+                    &[],
+                    &lines,
+                    SkillsListCoverage::COMPLETE_WITHOUT_SEARCH
+                )
+                .len()
+                .saturating_sub(2_000),
             "expected the compact body to save the ~2.5k-char preamble"
         );
+    }
+
+    #[test]
+    fn task_relevant_body_carries_the_rules_when_there_is_no_skills_section() {
+        // A purely remote/executor catalog produces no `## Skills` block, so
+        // this fragment is the only place the model can learn the rules - and
+        // it must not point at a section that was never written.
+        let lines = vec!["- alpha-skill: desc (file: remote/alpha)".to_string()];
+
+        let body = render_task_relevant_skills_body(&lines, SkillsPreamble::Missing);
+
+        assert!(body.contains(TASK_RELEVANT_SKILLS_HEADING));
+        assert!(!body.contains(TASK_RELEVANT_SKILLS_INTRO));
+        assert!(body.contains(TASK_RELEVANT_SKILLS_STANDALONE_INTRO));
+        assert!(body.contains("### How to use skills"));
+        assert!(body.contains(SKILLS_DISCOVERY_PARTIAL_LIST));
+        assert!(body.contains(SKILLS_DISCOVERY_CATALOG_SEARCH));
+        assert!(body.contains(SKILLS_TRIGGER_RULES));
+        assert!(body.contains(SKILLS_HOW_TO_USE_TAIL_WITH_ABSOLUTE_PATHS));
     }
 
     #[test]
