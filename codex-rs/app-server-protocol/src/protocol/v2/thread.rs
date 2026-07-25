@@ -995,6 +995,10 @@ pub struct ThreadGoalPlanNode {
     pub plan_id: String,
     pub thread_id: String,
     pub assigned_thread_id: String,
+    #[ts(type = "string | null")]
+    pub parent_node_id: Option<String>,
+    #[ts(type = "number")]
+    pub nesting_depth: i64,
     pub key: String,
     #[ts(type = "number")]
     pub sequence: i64,
@@ -1020,6 +1024,10 @@ pub struct ThreadGoalPlanNode {
     pub updated_at: i64,
 }
 
+fn default_goal_plan_node_nesting_depth() -> i64 {
+    1
+}
+
 impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1033,6 +1041,10 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             thread_id: String,
             #[serde(default)]
             assigned_thread_id: Option<String>,
+            #[serde(default)]
+            parent_node_id: Option<String>,
+            #[serde(default = "default_goal_plan_node_nesting_depth")]
+            nesting_depth: i64,
             key: String,
             sequence: i64,
             priority: i64,
@@ -1057,6 +1069,8 @@ impl<'de> Deserialize<'de> for ThreadGoalPlanNode {
             assigned_thread_id: value
                 .assigned_thread_id
                 .unwrap_or_else(|| value.thread_id.clone()),
+            parent_node_id: value.parent_node_id,
+            nesting_depth: value.nesting_depth,
             thread_id: value.thread_id,
             key: value.key,
             sequence: value.sequence,
@@ -1164,6 +1178,8 @@ impl From<codex_protocol::protocol::ThreadGoalPlanNode> for ThreadGoalPlanNode {
                 .assigned_thread_id
                 .unwrap_or(value.thread_id)
                 .to_string(),
+            parent_node_id: value.parent_node_id,
+            nesting_depth: value.nesting_depth,
             key: value.key,
             sequence: value.sequence,
             priority: value.priority,

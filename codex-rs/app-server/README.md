@@ -149,7 +149,7 @@ Example with notification opt-out:
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread, including an optional compact `title` for status surfaces; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
-- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`; plan nodes also expose parent linkage and 1-based nesting depth. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
 - `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal, using the node title when present, and refreshed plan snapshot.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
@@ -1002,7 +1002,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `parentNodeId: null` marks a top-level goal, and `nestingDepth` is 1-based. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -1034,6 +1034,8 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
             "planId": "plan_123",
             "threadId": "thr_123",
             "assignedThreadId": "thr_123",
+            "parentNodeId": null,
+            "nestingDepth": 1,
             "key": "implement",
             "sequence": 0,
             "priority": 10,

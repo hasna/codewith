@@ -491,6 +491,8 @@ mod tests {
                     plan_id: "plan-1".to_string(),
                     thread_id: "thread-1".to_string(),
                     assigned_thread_id: "thread-1".to_string(),
+                    parent_node_id: None,
+                    nesting_depth: 1,
                     key: format!("goal-{index}"),
                     sequence: i64::try_from(index).unwrap_or(i64::MAX),
                     priority: 0,

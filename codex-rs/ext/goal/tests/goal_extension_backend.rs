@@ -305,6 +305,286 @@ async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn create_goal_plan_accepts_nested_chain_goals() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-nested-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "setup",
+                    "objective": "Set up nested goal planning",
+                    "chain": true,
+                    "goals": [
+                        {
+                            "key": "audit",
+                            "objective": "Audit nested goal behavior"
+                        },
+                        {
+                            "key": "patch",
+                            "objective": "Patch nested goal behavior",
+                            "goals": [
+                                {
+                                    "key": "smoke",
+                                    "objective": "Smoke test nested goal behavior"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let nodes = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+
+    assert_eq!(4, nodes.len());
+    assert_eq!(result["goal"]["objective"], "Set up nested goal planning");
+    assert_eq!(nodes[0]["key"], "setup");
+    assert_eq!(nodes[0]["parentNodeId"], serde_json::Value::Null);
+    assert_eq!(nodes[0]["nestingDepth"], 1);
+    assert_eq!(nodes[0]["status"], "active");
+    assert_eq!(nodes[1]["key"], "setup__audit");
+    assert_eq!(nodes[1]["parentNodeId"], nodes[0]["nodeId"]);
+    assert_eq!(nodes[1]["nestingDepth"], 2);
+    assert_eq!(nodes[1]["dependsOn"], json!(["setup"]));
+    assert_eq!(nodes[2]["key"], "setup__patch");
+    assert_eq!(nodes[2]["parentNodeId"], nodes[0]["nodeId"]);
+    assert_eq!(nodes[2]["nestingDepth"], 2);
+    assert_eq!(nodes[2]["dependsOn"], json!(["setup", "setup__audit"]));
+    assert_eq!(nodes[3]["key"], "setup__patch__smoke");
+    assert_eq!(nodes[3]["parentNodeId"], nodes[2]["nodeId"]);
+    assert_eq!(nodes[3]["nestingDepth"], 3);
+    assert_eq!(nodes[3]["dependsOn"], json!(["setup__patch"]));
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    let invocation = tool_call(
+        "update_goal",
+        "call-complete-setup-goal",
+        json!({ "status": "complete" }),
+    );
+    let output = update_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+
+    assert_eq!(
+        result["activatedGoal"]["objective"],
+        "Audit nested goal behavior"
+    );
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "complete");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["status"], "active");
+    assert_eq!(result["goalPlans"][0]["nodes"][2]["status"], "pending");
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_chain_links_top_level_siblings() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-chained-goal-plan",
+        json!({
+            "chain": true,
+            "goals": [
+                {
+                    "key": "first",
+                    "objective": "Run the first chained goal"
+                },
+                {
+                    "key": "second",
+                    "objective": "Run the second chained goal"
+                },
+                {
+                    "key": "third",
+                    "objective": "Run the third chained goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let nodes = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+
+    assert_eq!(result["goal"]["objective"], "Run the first chained goal");
+    assert_eq!(nodes[0]["dependsOn"], json!([]));
+    assert_eq!(nodes[1]["dependsOn"], json!(["first"]));
+    assert_eq!(nodes[2]["dependsOn"], json!(["second"]));
+    assert_eq!(nodes[0]["nestingDepth"], 1);
+    assert_eq!(nodes[1]["nestingDepth"], 1);
+    assert_eq!(nodes[2]["nestingDepth"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_append_accepts_nested_followups() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime,
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let create = tool_call(
+        "create_goal_plan",
+        "call-create-base-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "base",
+                    "objective": "Run the base goal"
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(create.clone()).await?;
+    let result = output.code_mode_result(&create.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("goal plan id should be present"))?;
+
+    let append = tool_call(
+        "create_goal_plan",
+        "call-append-nested-goal-plan",
+        json!({
+            "append_to_plan_id": plan_id,
+            "goals": [
+                {
+                    "key": "followup",
+                    "objective": "Run the appended followup goal",
+                    "goals": [
+                        {
+                            "key": "verify",
+                            "objective": "Verify the appended followup goal"
+                        }
+                    ]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(append.clone()).await?;
+    let result = output.code_mode_result(&append.payload);
+    let nodes = result["goalPlans"][0]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?;
+
+    assert_eq!(3, nodes.len());
+    assert_eq!(nodes[0]["key"], "base");
+    assert_eq!(nodes[0]["parentNodeId"], serde_json::Value::Null);
+    assert_eq!(nodes[0]["nestingDepth"], 1);
+    assert_eq!(nodes[1]["key"], "followup");
+    assert_eq!(nodes[1]["parentNodeId"], serde_json::Value::Null);
+    assert_eq!(nodes[1]["nestingDepth"], 1);
+    assert_eq!(nodes[2]["key"], "followup__verify");
+    assert_eq!(nodes[2]["parentNodeId"], nodes[1]["nodeId"]);
+    assert_eq!(nodes[2]["nestingDepth"], 2);
+    assert_eq!(nodes[2]["dependsOn"], json!(["followup"]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_goal_plan_rejects_nesting_beyond_three_levels() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let tools = installed_tools(runtime.clone(), thread_id).await;
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let err = match create_plan_tool
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-too-deep-goal-plan",
+            json!({
+                "goals": [
+                    {
+                        "key": "one",
+                        "objective": "Run level one",
+                        "goals": [
+                            {
+                                "key": "two",
+                                "objective": "Run level two",
+                                "goals": [
+                                    {
+                                        "key": "three",
+                                        "objective": "Run level three",
+                                        "goals": [
+                                            {
+                                                "key": "four",
+                                                "objective": "Run level four"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("too-deep nested goal plan should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("goal plan nesting depth cannot exceed 3".to_string())
+    );
+    assert_eq!(
+        Vec::<codex_state::ThreadGoalPlanSnapshot>::new(),
+        runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_tools_persist_context_lifecycle_actions() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

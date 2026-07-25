@@ -31,6 +31,8 @@ const MAX_GOAL_PLAN_RESPONSE_NODES: usize = 16;
 struct CreateGoalPlanRequest {
     goals: Vec<CreateGoalPlanNodeRequest>,
     #[serde(default)]
+    chain: bool,
+    #[serde(default)]
     clear_existing_goal: bool,
     max_tokens_per_goal_plan: Option<i64>,
     post_goal_context: Option<PostGoalContextActionArg>,
@@ -48,8 +50,23 @@ struct CreateGoalPlanNodeRequest {
     #[serde(default)]
     depends_on: Vec<String>,
     #[serde(default)]
+    goals: Vec<CreateGoalPlanNodeRequest>,
+    #[serde(default)]
+    chain: bool,
+    #[serde(default)]
     priority: Option<i64>,
     token_budget: Option<i64>,
+}
+
+struct FlattenedGoalPlanRequest {
+    nodes: Vec<codex_state::ThreadGoalPlanNodeCreateParams>,
+    hierarchy: Vec<codex_state::ThreadGoalPlanNodeHierarchyParams>,
+}
+
+struct FlattenGoalPlanContext<'a> {
+    max_goals: usize,
+    keys: &'a mut HashSet<String>,
+    flattened: &'a mut FlattenedGoalPlanRequest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +135,8 @@ pub(crate) struct GoalPlanCompletionReport {
 #[serde(rename_all = "camelCase")]
 struct GoalPlanCompletionNodeReport {
     key: String,
+    parent_node_id: Option<String>,
+    nesting_depth: i64,
     objective: String,
     title: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -137,6 +156,8 @@ struct GoalPlanNodeResponse {
     plan_id: String,
     thread_id: String,
     assigned_thread_id: String,
+    parent_node_id: Option<String>,
+    nesting_depth: i64,
     key: String,
     sequence: i64,
     priority: i64,
@@ -191,21 +212,8 @@ impl GoalToolExecutor {
                 FunctionCallError::Fatal("goal plan tool missing runtime config".to_string())
             })?
             .current();
-        validate_goal_plan_request(&mut request, plan_config)?;
+        let flattened = flatten_goal_plan_request(&mut request, plan_config)?;
         if let Some(plan_id) = request.append_to_plan_id.take() {
-            let nodes = request
-                .goals
-                .into_iter()
-                .map(|node| codex_state::ThreadGoalPlanNodeCreateParams {
-                    key: node.key,
-                    objective: node.objective,
-                    assigned_thread_id: None,
-                    title: None,
-                    priority: node.priority.unwrap_or(0),
-                    token_budget: node.token_budget,
-                    depends_on: node.depends_on,
-                })
-                .collect();
             let snapshot = self
                 .state_db
                 .thread_goals()
@@ -215,7 +223,7 @@ impl GoalToolExecutor {
                     max_total_nodes: Some(
                         plan_config.max_auto_goals_per_plan.min(MAX_GOAL_PLAN_NODES),
                     ),
-                    nodes,
+                    nodes: flattened.nodes,
                 })
                 .await
                 .map_err(|err| {
@@ -223,6 +231,9 @@ impl GoalToolExecutor {
                         "failed to append goals to goal plan: {err}"
                     ))
                 })?;
+            let snapshot = self
+                .apply_goal_plan_hierarchy(snapshot, flattened.hierarchy)
+                .await?;
             self.event_emitter.thread_goal_plan_updated(
                 format!("{}-goal-plan", invocation.call_id),
                 Some(invocation.turn_id.clone()),
@@ -248,11 +259,6 @@ impl GoalToolExecutor {
                 CompletionBudgetReport::Omit,
             );
         }
-        let nodes = request
-            .goals
-            .into_iter()
-            .map(goal_plan_node_create_params)
-            .collect::<Result<Vec<_>, FunctionCallError>>()?;
         let existing_goal = self
             .state_db
             .thread_goals()
@@ -301,12 +307,15 @@ impl GoalToolExecutor {
                 thread_id: self.thread_id,
                 auto_execute: plan_config.auto_execute,
                 max_tokens,
-                nodes,
+                nodes: flattened.nodes,
             })
             .await
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("failed to create goal plan: {err}"))
             })?;
+        let snapshot = self
+            .apply_goal_plan_hierarchy(outcome.snapshot, flattened.hierarchy)
+            .await?;
         if request.post_goal_context.is_some() || request.post_goal_plan_context.is_some() {
             let post_goal_action = request
                 .post_goal_context
@@ -320,7 +329,7 @@ impl GoalToolExecutor {
                 .thread_goals()
                 .set_thread_goal_plan_context_actions(
                     self.thread_id,
-                    outcome.snapshot.plan.plan_id.as_str(),
+                    snapshot.plan.plan_id.as_str(),
                     post_goal_action,
                     post_goal_plan_action,
                 )
@@ -337,10 +346,10 @@ impl GoalToolExecutor {
         self.event_emitter.thread_goal_plan_updated(
             format!("{}-goal-plan", invocation.call_id),
             Some(invocation.turn_id.clone()),
-            outcome.snapshot.clone(),
+            snapshot.clone(),
         );
         let goal_plans = vec![GoalPlanResponse::from_snapshot_for_thread(
-            outcome.snapshot,
+            snapshot,
             self.thread_id,
             self.plan_node_objective_char_limit(),
         )];
@@ -513,42 +522,41 @@ impl GoalToolExecutor {
                 FunctionCallError::RespondToModel(format!("failed to read goal plans: {err}"))
             })
     }
+
+    async fn apply_goal_plan_hierarchy(
+        &self,
+        snapshot: codex_state::ThreadGoalPlanSnapshot,
+        hierarchy: Vec<codex_state::ThreadGoalPlanNodeHierarchyParams>,
+    ) -> Result<codex_state::ThreadGoalPlanSnapshot, FunctionCallError> {
+        if hierarchy.is_empty() {
+            return Ok(snapshot);
+        }
+        self.state_db
+            .thread_goals()
+            .update_thread_goal_plan_node_hierarchy(
+                self.thread_id,
+                snapshot.plan.plan_id.as_str(),
+                hierarchy,
+            )
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to update goal plan hierarchy: {err}"
+                ))
+            })
+    }
 }
 
-fn goal_plan_node_create_params(
-    node: CreateGoalPlanNodeRequest,
-) -> Result<codex_state::ThreadGoalPlanNodeCreateParams, FunctionCallError> {
-    let title = normalize_thread_goal_title(node.title.as_deref())
-        .map_err(FunctionCallError::RespondToModel)?
-        .unwrap_or_else(|| derive_thread_goal_title_from_objective(&node.objective));
-    Ok(codex_state::ThreadGoalPlanNodeCreateParams {
-        key: node.key,
-        objective: node.objective,
-        assigned_thread_id: None,
-        title: Some(title),
-        priority: node.priority.unwrap_or(0),
-        token_budget: node.token_budget,
-        depends_on: node.depends_on,
-    })
-}
-
-fn validate_goal_plan_request(
+fn flatten_goal_plan_request(
     request: &mut CreateGoalPlanRequest,
     plan_config: GoalPlanRuntimeConfig,
-) -> Result<(), FunctionCallError> {
+) -> Result<FlattenedGoalPlanRequest, FunctionCallError> {
     if request.goals.is_empty() {
         return Err(FunctionCallError::RespondToModel(
             "goal plan must contain at least one goal".to_string(),
         ));
     }
     let max_goals = plan_config.max_auto_goals_per_plan.min(MAX_GOAL_PLAN_NODES);
-    if request.goals.len() > max_goals {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "goal plan contains {} goals but max_auto_goals_per_plan is {}",
-            request.goals.len(),
-            max_goals
-        )));
-    }
     validate_goal_budget(request.max_tokens_per_goal_plan)
         .map_err(FunctionCallError::RespondToModel)?;
     if let Some(plan_id) = &mut request.append_to_plan_id {
@@ -570,44 +578,36 @@ fn validate_goal_plan_request(
             ));
         }
     }
+
+    let mut flattened = FlattenedGoalPlanRequest {
+        nodes: Vec::new(),
+        hierarchy: Vec::new(),
+    };
     let mut keys = HashSet::new();
-    for node in &mut request.goals {
-        node.key = node.key.trim().to_string();
-        node.objective = node.objective.trim().to_string();
-        node.depends_on = node
-            .depends_on
-            .iter()
-            .map(|dependency| dependency.trim().to_string())
-            .collect();
-        if node.key.is_empty() {
-            return Err(FunctionCallError::RespondToModel(
-                "goal plan node keys must not be empty".to_string(),
-            ));
-        }
-        if node.key.len() > MAX_GOAL_PLAN_NODE_KEY_LEN {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "goal plan node key `{}` is too long; maximum is {MAX_GOAL_PLAN_NODE_KEY_LEN} bytes",
-                node.key
-            )));
-        }
-        if !is_valid_goal_plan_node_key(&node.key) {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "goal plan node key `{}` must contain only ASCII letters, numbers, underscores, or hyphens",
-                node.key
-            )));
-        }
-        if !keys.insert(node.key.clone()) {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "goal plan node key `{}` is duplicated",
-                node.key
-            )));
-        }
-        validate_thread_goal_objective(&node.objective)
-            .map_err(FunctionCallError::RespondToModel)?;
-        validate_goal_budget(node.token_budget).map_err(FunctionCallError::RespondToModel)?;
+    {
+        let mut context = FlattenGoalPlanContext {
+            max_goals,
+            keys: &mut keys,
+            flattened: &mut flattened,
+        };
+        flatten_goal_plan_nodes(
+            std::mem::take(&mut request.goals),
+            /*parent_key*/ None,
+            /*scope_prefix*/ None,
+            /*nesting_depth*/ 1,
+            request.chain,
+            &mut context,
+        )?;
     }
+    if flattened.nodes.len() > max_goals {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "goal plan contains {} goals but max_auto_goals_per_plan is {max_goals}",
+            flattened.nodes.len()
+        )));
+    }
+
     let appending_to_existing_plan = request.append_to_plan_id.is_some();
-    for node in &request.goals {
+    for node in &flattened.nodes {
         for dependency in &node.depends_on {
             if dependency.is_empty() {
                 return Err(FunctionCallError::RespondToModel(format!(
@@ -629,7 +629,149 @@ fn validate_goal_plan_request(
             }
         }
     }
+    Ok(flattened)
+}
+
+fn flatten_goal_plan_nodes(
+    nodes: Vec<CreateGoalPlanNodeRequest>,
+    parent_key: Option<&str>,
+    scope_prefix: Option<&str>,
+    nesting_depth: i64,
+    chain: bool,
+    context: &mut FlattenGoalPlanContext<'_>,
+) -> Result<(), FunctionCallError> {
+    if nesting_depth > 3 {
+        return Err(FunctionCallError::RespondToModel(
+            "goal plan nesting depth cannot exceed 3".to_string(),
+        ));
+    }
+
+    let sibling_keys = nodes
+        .iter()
+        .map(|node| node.key.trim().to_string())
+        .collect::<HashSet<_>>();
+    let mut previous_key: Option<String> = None;
+    for mut node in nodes {
+        node.key = node.key.trim().to_string();
+        node.objective = node.objective.trim().to_string();
+        if node.key.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "goal plan node keys must not be empty".to_string(),
+            ));
+        }
+        if !is_valid_goal_plan_node_key(&node.key) {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal plan node key `{}` must contain only ASCII letters, numbers, underscores, or hyphens",
+                node.key
+            )));
+        }
+
+        let key = qualify_goal_plan_node_key(scope_prefix, &node.key);
+        if key.len() > MAX_GOAL_PLAN_NODE_KEY_LEN {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal plan node key `{key}` is too long; maximum is {MAX_GOAL_PLAN_NODE_KEY_LEN} bytes"
+            )));
+        }
+        if !context.keys.insert(key.clone()) {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal plan node key `{key}` is duplicated"
+            )));
+        }
+        validate_thread_goal_objective(&node.objective)
+            .map_err(FunctionCallError::RespondToModel)?;
+        validate_goal_budget(node.token_budget).map_err(FunctionCallError::RespondToModel)?;
+
+        let mut depends_on = Vec::new();
+        if let Some(parent_key) = parent_key {
+            push_unique_dependency(&mut depends_on, parent_key.to_string());
+        }
+        if chain && let Some(previous_key) = previous_key.as_deref() {
+            push_unique_dependency(&mut depends_on, previous_key.to_string());
+        }
+        for dependency in node.depends_on {
+            let dependency = dependency.trim().to_string();
+            if dependency.is_empty() {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "goal plan node `{key}` has an empty dependency key"
+                )));
+            }
+            let dependency =
+                qualify_goal_plan_dependency_key(scope_prefix, &dependency, &sibling_keys);
+            push_unique_dependency(&mut depends_on, dependency);
+        }
+
+        let title = normalize_thread_goal_title(node.title.as_deref())
+            .map_err(FunctionCallError::RespondToModel)?
+            .unwrap_or_else(|| derive_thread_goal_title_from_objective(&node.objective));
+        context
+            .flattened
+            .nodes
+            .push(codex_state::ThreadGoalPlanNodeCreateParams {
+                key: key.clone(),
+                objective: node.objective,
+                assigned_thread_id: None,
+                title: Some(title),
+                priority: node.priority.unwrap_or(0),
+                token_budget: node.token_budget,
+                depends_on,
+            });
+        if parent_key.is_some() || nesting_depth != 1 {
+            context
+                .flattened
+                .hierarchy
+                .push(codex_state::ThreadGoalPlanNodeHierarchyParams {
+                    key: key.clone(),
+                    parent_key: parent_key.map(ToString::to_string),
+                    nesting_depth,
+                });
+        }
+        if context.flattened.nodes.len() > context.max_goals {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal plan contains {} goals but max_auto_goals_per_plan is {}",
+                context.flattened.nodes.len(),
+                context.max_goals
+            )));
+        }
+
+        if !node.goals.is_empty() {
+            flatten_goal_plan_nodes(
+                node.goals,
+                Some(&key),
+                Some(&key),
+                nesting_depth + 1,
+                node.chain,
+                context,
+            )?;
+        }
+        previous_key = Some(key);
+    }
     Ok(())
+}
+
+fn qualify_goal_plan_node_key(scope_prefix: Option<&str>, key: &str) -> String {
+    if let Some(scope_prefix) = scope_prefix {
+        format!("{scope_prefix}__{key}")
+    } else {
+        key.to_string()
+    }
+}
+
+fn qualify_goal_plan_dependency_key(
+    scope_prefix: Option<&str>,
+    dependency: &str,
+    sibling_keys: &HashSet<String>,
+) -> String {
+    if scope_prefix.is_some() && !dependency.contains("__") && sibling_keys.contains(dependency) {
+        qualify_goal_plan_node_key(scope_prefix, dependency)
+    } else {
+        dependency.to_string()
+    }
+}
+
+fn push_unique_dependency(depends_on: &mut Vec<String>, dependency: String) {
+    if !depends_on.contains(&dependency) {
+        depends_on.push(dependency);
+    }
 }
 
 fn is_valid_goal_plan_node_key(key: &str) -> bool {
@@ -737,6 +879,8 @@ impl GoalPlanCompletionReport {
                         truncated_objective(&node.objective, max_objective_chars);
                     GoalPlanCompletionNodeReport {
                         key: node.key.clone(),
+                        parent_node_id: node.parent_node_id.clone(),
+                        nesting_depth: node.nesting_depth,
                         objective,
                         title: node.title.clone(),
                         objective_truncated,
@@ -769,6 +913,8 @@ impl GoalPlanNodeResponse {
             plan_id: node.plan_id,
             thread_id: node.thread_id.to_string(),
             assigned_thread_id: node.assigned_thread_id.to_string(),
+            parent_node_id: node.parent_node_id,
+            nesting_depth: node.nesting_depth,
             key: node.key,
             sequence: node.sequence,
             priority: node.priority,

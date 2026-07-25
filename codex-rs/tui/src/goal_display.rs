@@ -1,6 +1,7 @@
 use crate::status::format_tokens_compact;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_protocol::protocol::thread_goal_display_title;
 
 pub(crate) const GOAL_USAGE: &str =
     "Usage: /goal [<objective>|cancel|clear|defer|edit|pause|resume]";
@@ -45,7 +46,8 @@ pub(crate) fn goal_status_label(status: ThreadGoalStatus) -> &'static str {
 }
 
 pub(crate) fn goal_usage_summary(goal: &ThreadGoal) -> String {
-    let mut parts = vec![format!("Objective: {}", goal.objective)];
+    let display_title = thread_goal_display_title(goal.title.as_deref(), &goal.objective);
+    let mut parts = vec![format!("Goal: {display_title}")];
     if goal.time_used_seconds > 0 {
         parts.push(format!(
             "Time: {}.",
@@ -110,7 +112,7 @@ mod tests {
                 /*token_budget*/ Some(50_000),
                 /*tokens_used*/ 63_876,
             )),
-            "Objective: Complete the task described in ../gameboy-long-running-prompt5.txt Time: 2m. Tokens: 63.9K/50K."
+            "Goal: Complete the task described in Time: 2m. Tokens: 63.9K/50K."
         );
     }
 }
