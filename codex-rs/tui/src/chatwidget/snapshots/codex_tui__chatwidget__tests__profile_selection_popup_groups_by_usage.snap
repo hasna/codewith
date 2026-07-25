@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Select Profile
+  Switch auth for this session.
+
+     Active profiles
+  1. beta-high           ChatGPT Pro / high@example.com
+  2. alpha-low           ChatGPT Pro / low@example.com
+› 3. default (current)   usage unknown
+     Exhausted profiles
+  4. zeta-spent          ChatGPT Pro / spent@example.com
+  5. Log in new profile  Create a saved auth profile
+
+  Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down
+  Press enter to confirm or esc to go back

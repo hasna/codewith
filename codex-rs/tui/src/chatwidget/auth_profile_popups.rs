@@ -1,6 +1,12 @@
 //! Auth profile picker for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::auth_profile_popup_order::AuthProfileSelectionEntry;
+use crate::chatwidget::auth_profile_popup_order::AuthProfileSelectionTarget;
+use crate::chatwidget::auth_profile_popup_order::AuthProfileUsageGroup;
+use crate::chatwidget::auth_profile_popup_order::AuthProfileUsageStatus;
+use crate::chatwidget::auth_profile_popup_order::sort_auth_profile_selection_entries;
+use crate::chatwidget::auth_profile_popup_order::usage_snapshot_with_windows;
 use crate::chatwidget::rate_limits::get_limits_duration;
 use crate::status::RATE_LIMIT_STALE_THRESHOLD_MINUTES;
 use crate::status::RateLimitSnapshotDisplay;
@@ -70,13 +76,54 @@ impl ChatWidget {
         current: Option<&str>,
         selected_idx: Option<usize>,
     ) -> SelectionViewParams {
-        let mut items = Vec::with_capacity(profiles.len() + 2);
-        items.push(self.default_auth_profile_item(current.is_none()));
-        items.extend(
-            profiles
-                .into_iter()
-                .map(|profile| self.named_auth_profile_item(profile, current)),
+        let mut profile_entries = Vec::with_capacity(profiles.len() + 1);
+        profile_entries.push(AuthProfileSelectionEntry {
+            target: AuthProfileSelectionTarget::Default,
+            usage_status: self.auth_profile_usage_status(/*profile*/ None),
+            original_index: 0,
+        });
+        for (idx, profile) in profiles.into_iter().enumerate() {
+            let usage_status = self.auth_profile_usage_status(Some(profile.name.as_str()));
+            profile_entries.push(AuthProfileSelectionEntry {
+                target: AuthProfileSelectionTarget::Named(profile),
+                usage_status,
+                original_index: idx + 1,
+            });
+        }
+        sort_auth_profile_selection_entries(&mut profile_entries);
+
+        let has_active_profiles = profile_entries
+            .iter()
+            .any(|entry| entry.usage_status.group == AuthProfileUsageGroup::Active);
+        let has_exhausted_profiles = profile_entries
+            .iter()
+            .any(|entry| entry.usage_status.group == AuthProfileUsageGroup::Exhausted);
+
+        let mut items = Vec::with_capacity(
+            profile_entries
+                .len()
+                .saturating_add(1)
+                .saturating_add(usize::from(has_active_profiles))
+                .saturating_add(usize::from(has_exhausted_profiles)),
         );
+        if has_active_profiles {
+            items.push(auth_profile_group_item("Active profiles"));
+            items.extend(
+                profile_entries
+                    .iter()
+                    .filter(|entry| entry.usage_status.group == AuthProfileUsageGroup::Active)
+                    .map(|entry| self.profile_selection_item(entry, current)),
+            );
+        }
+        if has_exhausted_profiles {
+            items.push(auth_profile_group_item("Exhausted profiles"));
+            items.extend(
+                profile_entries
+                    .iter()
+                    .filter(|entry| entry.usage_status.group == AuthProfileUsageGroup::Exhausted)
+                    .map(|entry| self.profile_selection_item(entry, current)),
+            );
+        }
         items.push(self.new_auth_profile_item());
 
         let initial_selected_idx = selected_idx.map(|idx| idx.min(items.len().saturating_sub(1)));
@@ -92,6 +139,21 @@ impl ChatWidget {
             header: Box::new(header),
             initial_selected_idx,
             ..Default::default()
+        }
+    }
+
+    fn profile_selection_item(
+        &self,
+        entry: &AuthProfileSelectionEntry,
+        current: Option<&str>,
+    ) -> SelectionItem {
+        match &entry.target {
+            AuthProfileSelectionTarget::Default => {
+                self.default_auth_profile_item(current.is_none())
+            }
+            AuthProfileSelectionTarget::Named(profile) => {
+                self.named_auth_profile_item(profile.clone(), current)
+            }
         }
     }
 
@@ -856,6 +918,19 @@ impl ChatWidget {
         compact_usage_hint_for_snapshots(snapshots)
     }
 
+    fn auth_profile_usage_status(&self, profile: Option<&str>) -> AuthProfileUsageStatus {
+        let Some(snapshots) = self.auth_profile_usage_snapshots(profile) else {
+            return AuthProfileUsageStatus::unknown();
+        };
+        if !auth_profile_usage_snapshots_are_fresh(
+            snapshots,
+            Duration::from_secs((RATE_LIMIT_STALE_THRESHOLD_MINUTES as u64).saturating_mul(60)),
+        ) {
+            return AuthProfileUsageStatus::unknown();
+        }
+        AuthProfileUsageStatus::for_snapshots(snapshots)
+    }
+
     fn auth_profile_usage_snapshots(
         &self,
         profile: Option<&str>,
@@ -917,6 +992,14 @@ fn auth_profile_auth_mode_label(auth_mode: codex_app_server_protocol::AuthMode) 
         | codex_app_server_protocol::AuthMode::ChatgptAuthTokens
         | codex_app_server_protocol::AuthMode::PersonalAccessToken => "account",
         codex_app_server_protocol::AuthMode::AgentIdentity => "agent identity",
+    }
+}
+
+fn auth_profile_group_item(name: &str) -> SelectionItem {
+    SelectionItem {
+        name: name.to_string(),
+        is_disabled: true,
+        ..Default::default()
     }
 }
 
@@ -998,23 +1081,6 @@ fn auth_profile_usage_snapshots_are_fresh(
     usage_snapshot_with_windows(snapshots).is_some_and(|snapshot| {
         Local::now().signed_duration_since(snapshot.captured_at) <= freshness
     })
-}
-
-fn usage_snapshot_with_windows(
-    snapshots: &BTreeMap<String, RateLimitSnapshotDisplay>,
-) -> Option<&RateLimitSnapshotDisplay> {
-    snapshots
-        .get("codex")
-        .filter(|snapshot| usage_snapshot_has_windows(snapshot))
-        .or_else(|| {
-            snapshots
-                .values()
-                .find(|snapshot| usage_snapshot_has_windows(snapshot))
-        })
-}
-
-fn usage_snapshot_has_windows(snapshot: &RateLimitSnapshotDisplay) -> bool {
-    snapshot.primary.is_some() || snapshot.secondary.is_some()
 }
 
 /// The weekly usage window from a snapshot, identified by its window length

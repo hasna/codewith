@@ -5,6 +5,7 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
+     Active profiles
 › 1. default (current)   usage unknown
   2. personal            ChatGPT Pro
   3. work                ChatGPT API key

@@ -419,6 +419,7 @@ use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popups;
 mod notifications;
 use self::notifications::Notification;
+mod auth_profile_popup_order;
 mod auth_profile_popups;
 mod permission_popups;
 mod permissions_menu;
