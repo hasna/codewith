@@ -42,7 +42,8 @@ pub struct AuthProfileUsageRecommendation {
 }
 
 /// Stable recommendation reason codes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthProfileUsageRecommendationReason {
     CurrentProfileHealthy,
     CurrentProfileUnknown,

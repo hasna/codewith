@@ -1,7 +1,10 @@
 use crate::auth_profile_usage::AuthProfileUsageHealth;
+use crate::auth_profile_usage::AuthProfileUsageRecommendationReason;
 use crate::auth_profile_usage::TokenUsageProfileResponse;
+use crate::auth_profile_usage::recommend_auth_profile;
 use crate::auth_profile_usage::usage_capture_is_stale;
 use crate::auth_profile_usage::usage_health_for_snapshots;
+use crate::config::AuthProfileAutoSwitchConfig;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -25,6 +28,7 @@ use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -42,6 +46,7 @@ pub struct GetUsageHandler;
 enum GetUsageScope {
     Session,
     Account,
+    AllAccounts,
     Both,
 }
 
@@ -63,6 +68,10 @@ struct GetUsageResponse {
     session: Option<SessionUsageResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<AccountUsageResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accounts: Option<Vec<AccountUsageResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommendation: Option<AccountUsageRecommendationResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +85,7 @@ struct SessionUsageResponse {
 #[serde(rename_all = "camelCase")]
 struct AccountUsageResponse {
     target: AccountUsageTarget,
+    current: bool,
     include_token_profile: bool,
     spend_status: UsageSpendSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +96,15 @@ struct AccountUsageResponse {
     token_profile_error: Option<AccountUsageError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<AccountUsageError>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountUsageRecommendationResponse {
+    profile_name: Option<String>,
+    display_name: String,
+    current: bool,
+    reason: AuthProfileUsageRecommendationReason,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,11 +234,11 @@ impl ToolExecutor<ToolInvocation> for GetUsageHandler {
         };
 
         let args: GetUsageArgs = parse_arguments(&arguments)?;
-        let target_profile = normalize_requested_profile(
-            args.auth_profile.clone(),
-            session.selected_auth_profile().await,
-        )?;
-        let response = get_usage_response(&session, &turn, args, target_profile).await?;
+        let current_profile = session.selected_auth_profile().await;
+        let target_profile =
+            normalize_requested_profile(args.auth_profile.clone(), current_profile.clone())?;
+        let response =
+            get_usage_response(&session, &turn, args, current_profile, target_profile).await?;
         let response = serde_json::to_string_pretty(&response)
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         Ok(boxed_tool_output(FunctionToolOutput::from_text(
@@ -235,10 +254,12 @@ async fn get_usage_response(
     session: &Session,
     turn: &TurnContext,
     args: GetUsageArgs,
+    current_profile: Option<String>,
     target_profile: Option<String>,
 ) -> Result<GetUsageResponse, FunctionCallError> {
     let include_session = matches!(args.scope, GetUsageScope::Session | GetUsageScope::Both);
     let include_account = matches!(args.scope, GetUsageScope::Account | GetUsageScope::Both);
+    let include_accounts = matches!(args.scope, GetUsageScope::AllAccounts);
     let session_usage = if include_session {
         Some(SessionUsageResponse {
             token_usage: session.token_usage_info().await,
@@ -248,14 +269,42 @@ async fn get_usage_response(
         None
     };
     let account_usage = if include_account {
-        Some(fetch_account_usage(session, turn, target_profile, args.include_token_profile).await?)
+        Some(
+            fetch_account_usage(
+                session,
+                turn,
+                target_profile,
+                current_profile.as_deref(),
+                args.include_token_profile,
+            )
+            .await?,
+        )
     } else {
         None
+    };
+    let (accounts_usage, recommendation) = if include_accounts {
+        let accounts = fetch_all_account_usages(
+            session,
+            turn,
+            current_profile.as_deref(),
+            args.include_token_profile,
+        )
+        .await?;
+        let recommendation = Some(account_usage_recommendation(
+            &accounts,
+            current_profile.as_deref(),
+            &turn.config.auth_profile_auto_switch,
+        ));
+        (Some(accounts), recommendation)
+    } else {
+        (None, None)
     };
     Ok(GetUsageResponse {
         scope: args.scope,
         session: session_usage,
         account: account_usage,
+        accounts: accounts_usage,
+        recommendation,
     })
 }
 
@@ -279,9 +328,28 @@ async fn fetch_account_usage(
     session: &Session,
     turn: &TurnContext,
     target_profile: Option<String>,
+    current_profile: Option<&str>,
     include_token_profile: bool,
 ) -> Result<AccountUsageResponse, FunctionCallError> {
     validate_target_profile(turn, target_profile.as_deref())?;
+    fetch_account_usage_unvalidated(
+        session,
+        turn,
+        target_profile,
+        current_profile,
+        include_token_profile,
+    )
+    .await
+}
+
+async fn fetch_account_usage_unvalidated(
+    session: &Session,
+    turn: &TurnContext,
+    target_profile: Option<String>,
+    current_profile: Option<&str>,
+    include_token_profile: bool,
+) -> Result<AccountUsageResponse, FunctionCallError> {
+    let current = target_profile.as_deref() == current_profile;
     let scoped_auth_manager = session
         .services
         .auth_manager
@@ -290,6 +358,7 @@ async fn fetch_account_usage(
     let Some(auth) = scoped_auth_manager.auth().await else {
         return Ok(account_unavailable_response(
             target_profile,
+            current,
             include_token_profile,
             AuthProfileUsageStatusReason::NoAuth,
         ));
@@ -298,6 +367,7 @@ async fn fetch_account_usage(
     if !auth.uses_codex_backend() {
         return Ok(AccountUsageResponse {
             target,
+            current,
             include_token_profile,
             spend_status: UsageSpendSummary::account_without_backend_credits(),
             rate_limits: None,
@@ -313,6 +383,7 @@ async fn fetch_account_usage(
         Err(_) => {
             return Ok(AccountUsageResponse {
                 target,
+                current,
                 include_token_profile,
                 spend_status: UsageSpendSummary::account_without_backend_credits(),
                 rate_limits: None,
@@ -372,6 +443,7 @@ async fn fetch_account_usage(
 
     Ok(AccountUsageResponse {
         target,
+        current,
         include_token_profile,
         spend_status,
         rate_limits,
@@ -407,6 +479,7 @@ fn validate_target_profile(
 
 fn account_unavailable_response(
     target_profile: Option<String>,
+    current: bool,
     include_token_profile: bool,
     reason: AuthProfileUsageStatusReason,
 ) -> AccountUsageResponse {
@@ -417,6 +490,7 @@ fn account_unavailable_response(
             plan: None,
             redacted_account_id: None,
         },
+        current,
         include_token_profile,
         spend_status: UsageSpendSummary::account_without_backend_credits(),
         rate_limits: None,
@@ -424,6 +498,97 @@ fn account_unavailable_response(
         token_profile_error: None,
         error: Some(AccountUsageError { reason }),
     }
+}
+
+async fn fetch_all_account_usages(
+    session: &Session,
+    turn: &TurnContext,
+    current_profile: Option<&str>,
+    include_token_profile: bool,
+) -> Result<Vec<AccountUsageResponse>, FunctionCallError> {
+    let mut targets = vec![None];
+    let mut seen = HashSet::from([None]);
+    for profile in codex_login::list_auth_profiles(
+        &turn.config.codex_home,
+        turn.config.cli_auth_credentials_store_mode,
+    )
+    .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?
+    {
+        let target = Some(profile.name);
+        if seen.insert(target.clone()) {
+            targets.push(target);
+        }
+    }
+
+    let usages = futures::future::join_all(targets.into_iter().map(|target_profile| {
+        fetch_account_usage_unvalidated(
+            session,
+            turn,
+            target_profile,
+            current_profile,
+            include_token_profile,
+        )
+    }))
+    .await;
+    usages.into_iter().collect()
+}
+
+fn account_usage_recommendation(
+    accounts: &[AccountUsageResponse],
+    current_profile: Option<&str>,
+    config: &AuthProfileAutoSwitchConfig,
+) -> AccountUsageRecommendationResponse {
+    let ordered_profiles = accounts
+        .iter()
+        .map(|account| account.target.profile_name.clone())
+        .collect::<Vec<_>>();
+    let health_by_profile = accounts
+        .iter()
+        .filter_map(|account| {
+            let limits = account.rate_limits.as_ref()?;
+            Some((
+                account.target.profile_name.clone(),
+                auth_profile_usage_health_from_summary(&limits.health),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let recommendation = recommend_auth_profile(
+        current_profile,
+        config.strategy,
+        &ordered_profiles,
+        &health_by_profile,
+    );
+    let profile_name = recommendation.profile;
+    AccountUsageRecommendationResponse {
+        display_name: display_name_for_profile(profile_name.as_deref()),
+        current: profile_name.as_deref() == current_profile,
+        profile_name,
+        reason: recommendation.reason,
+    }
+}
+
+fn auth_profile_usage_health_from_summary(
+    summary: &AuthProfileUsageSummary,
+) -> AuthProfileUsageHealth {
+    if summary.stale {
+        return AuthProfileUsageHealth::Unknown;
+    }
+    match summary.status {
+        AuthProfileUsageStatus::Healthy => AuthProfileUsageHealth::Healthy {
+            remaining_percent: summary.remaining_percent.unwrap_or(0.0),
+            resets_at: summary.resets_at,
+        },
+        AuthProfileUsageStatus::Exhausted => AuthProfileUsageHealth::Exhausted {
+            retry_at: summary.resets_at,
+        },
+        AuthProfileUsageStatus::Unknown => AuthProfileUsageHealth::Unknown,
+        #[cfg(test)]
+        AuthProfileUsageStatus::Unavailable => AuthProfileUsageHealth::Unknown,
+    }
+}
+
+fn display_name_for_profile(profile_name: Option<&str>) -> String {
+    profile_name.unwrap_or("Default").to_string()
 }
 
 async fn fetch_rate_limit_snapshots(
@@ -752,6 +917,76 @@ mod tests {
                 "resetsAt": 100,
                 "capturedAt": captured_at,
                 "stale": false
+            })
+        );
+    }
+
+    fn account_usage(
+        profile_name: Option<&str>,
+        current: bool,
+        health: AuthProfileUsageSummary,
+    ) -> AccountUsageResponse {
+        AccountUsageResponse {
+            target: AccountUsageTarget {
+                profile_name: profile_name.map(str::to_string),
+                auth_mode: None,
+                plan: None,
+                redacted_account_id: None,
+            },
+            current,
+            include_token_profile: false,
+            spend_status: UsageSpendSummary::account_without_backend_credits(),
+            rate_limits: Some(AccountRateLimitUsage {
+                captured_at: 123,
+                stale_after_secs: 120,
+                health,
+                snapshots: Vec::new(),
+            }),
+            token_profile: None,
+            token_profile_error: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn account_usage_recommendation_serializes_shared_reason_codes() {
+        let accounts = vec![
+            account_usage(
+                Some("work"),
+                true,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Exhausted,
+                    remaining_percent: Some(0.0),
+                    resets_at: Some(100),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+            account_usage(
+                Some("spare"),
+                false,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Healthy,
+                    remaining_percent: Some(80.0),
+                    resets_at: Some(200),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+        ];
+
+        let recommendation = account_usage_recommendation(&accounts, Some("work"), &config());
+        let response = serde_json::to_value(recommendation).expect("serialize recommendation");
+
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "profileName": "spare",
+                "displayName": "spare",
+                "current": false,
+                "reason": "selected_highest_remaining"
             })
         );
     }

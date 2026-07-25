@@ -332,6 +332,11 @@ impl SessionConfiguration {
             config.selected_auth_profile = auth_profile;
             next_configuration.original_config_do_not_use = Arc::new(config);
         }
+        if let Some(enabled) = updates.auth_profile_auto_switch_enabled {
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            config.auth_profile_auto_switch.enabled = enabled;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
         }
@@ -561,6 +566,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) auth_profile: Option<Option<String>>,
+    pub(crate) auth_profile_auto_switch_enabled: Option<bool>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) model_provider_id: Option<String>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,

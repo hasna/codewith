@@ -13,19 +13,30 @@ pub fn create_get_usage_tool() -> ToolSpec {
         (
             "scope".to_string(),
             JsonSchema::string_enum(
-                vec![json!("session"), json!("account"), json!("both")],
+                vec![
+                    json!("session"),
+                    json!("account"),
+                    json!("all_accounts"),
+                    json!("both"),
+                ],
                 Some(
-                    "Required. Use session for current conversation token usage, account for the selected auth profile's Codex account usage, and both for both surfaces."
+                    "Required. Use session for current conversation token usage, account for the selected auth profile's Codex account usage, all_accounts for every saved auth profile plus the default root account, and both for session plus selected account."
                         .to_string(),
                 ),
             ),
         ),
         (
             "auth_profile".to_string(),
-            JsonSchema::string(Some(
-                "Optional auth profile name for account usage. Omit to inspect the current session profile; pass an empty string to inspect the default root auth without switching."
-                    .to_string(),
-            )),
+            JsonSchema::any_of(
+                vec![
+                    JsonSchema::string(/*description*/ None),
+                    JsonSchema::null(/*description*/ None),
+                ],
+                Some(
+                    "Optional auth profile name for account usage. Omit to inspect the current session profile; pass an empty string to inspect the default root auth without switching. Ignored when scope is all_accounts."
+                        .to_string(),
+                ),
+            ),
         ),
         (
             "include_token_profile".to_string(),
@@ -38,7 +49,7 @@ pub fn create_get_usage_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: GET_USAGE_TOOL_NAME.to_string(),
-        description: "Read current session usage and scoped Codewith auth-profile account usage. This tool is read-only, does not enumerate every saved profile, does not switch profiles, and never returns auth tokens or raw auth storage details."
+        description: "Read current session usage and scoped Codewith auth-profile account usage. This tool is read-only, does not switch profiles, and never returns auth tokens or raw auth storage details."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -70,7 +81,12 @@ mod tests {
             properties
                 .get("scope")
                 .and_then(|scope| scope.enum_values.as_ref()),
-            Some(&vec![json!("session"), json!("account"), json!("both")])
+            Some(&vec![
+                json!("session"),
+                json!("account"),
+                json!("all_accounts"),
+                json!("both")
+            ])
         );
     }
 }

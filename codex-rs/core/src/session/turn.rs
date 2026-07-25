@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
+use crate::auth_profile_usage::AuthProfileUsageHealth;
+use crate::auth_profile_usage::usage_health_for_snapshots;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -15,6 +17,7 @@ use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
+use crate::config::AuthProfileAutoSwitchConfig;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::context_manager::estimate_response_item_model_visible_bytes;
@@ -56,6 +59,8 @@ use crate::stream_events_utils::record_completed_response_item_with_finalized_fa
 use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::handlers::auth_profile_control_spec::MANAGE_AUTH_PROFILES_TOOL_NAME;
+use crate::tools::handlers::auth_profile_usage_control_spec::GET_USAGE_TOOL_NAME;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolRouterParams;
@@ -97,6 +102,7 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
+use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
@@ -104,6 +110,7 @@ use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
@@ -124,6 +131,12 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+const AUTH_PROFILE_USAGE_PROMPT_NUDGE: &str = "When account usage or rate limits may affect progress, use `get_usage` with `scope: \"all_accounts\"` to compare auth profiles before switching; use `manage_auth_profiles` to switch profiles or set `auto_switch_enabled` with `action: \"set_auto_switch\"`.";
+
+/// Remaining-capacity threshold (percent) below which the auth-profile usage nudge is added to the
+/// developer instructions.
+const AUTH_PROFILE_USAGE_LOW_REMAINING_PERCENT: f64 = 20.0;
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1193,15 +1206,85 @@ pub(crate) fn build_prompt(
     turn_context: &TurnContext,
     base_instructions: BaseInstructions,
 ) -> Prompt {
+    let tools = router.model_visible_specs();
     Prompt {
         input,
-        tools: router.model_visible_specs(),
+        tools,
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         personality: turn_context.personality,
         output_schema: turn_context.final_output_json_schema.clone(),
         output_schema_strict: true,
     }
+}
+
+/// Appends the auth-profile usage nudge only when the current profile is actually running low
+/// on Codex capacity. The nudge is deliberately usage-gated so healthy sessions keep byte-identical
+/// developer instructions (and therefore keep their prompt cache).
+async fn with_auth_profile_usage_prompt_nudge(
+    sess: &Session,
+    base_instructions: BaseInstructions,
+    tools: &[ToolSpec],
+) -> BaseInstructions {
+    if !auth_profile_usage_tools_visible(tools) {
+        return base_instructions;
+    }
+    let (rate_limits, auto_switch_config) = {
+        let state = sess.state.lock().await;
+        let config = &state.session_configuration.original_config_do_not_use;
+        (
+            state.latest_rate_limits.clone(),
+            config.auth_profile_auto_switch.clone(),
+        )
+    };
+    let Some(rate_limits) = rate_limits else {
+        return base_instructions;
+    };
+    if !auth_profile_usage_is_low(&rate_limits, &auto_switch_config) {
+        return base_instructions;
+    }
+    append_auth_profile_usage_prompt_nudge(base_instructions)
+}
+
+fn auth_profile_usage_is_low(
+    rate_limits: &RateLimitSnapshot,
+    auto_switch_config: &AuthProfileAutoSwitchConfig,
+) -> bool {
+    match usage_health_for_snapshots(std::slice::from_ref(rate_limits), auto_switch_config) {
+        AuthProfileUsageHealth::Exhausted { .. } => true,
+        AuthProfileUsageHealth::Healthy {
+            remaining_percent, ..
+        } => remaining_percent <= AUTH_PROFILE_USAGE_LOW_REMAINING_PERCENT,
+        AuthProfileUsageHealth::Unknown => false,
+    }
+}
+
+fn append_auth_profile_usage_prompt_nudge(
+    mut base_instructions: BaseInstructions,
+) -> BaseInstructions {
+    if base_instructions
+        .text
+        .contains(AUTH_PROFILE_USAGE_PROMPT_NUDGE)
+    {
+        return base_instructions;
+    }
+
+    if !base_instructions.text.ends_with('\n') {
+        base_instructions.text.push('\n');
+    }
+    base_instructions.text.push('\n');
+    base_instructions
+        .text
+        .push_str(AUTH_PROFILE_USAGE_PROMPT_NUDGE);
+    base_instructions
+}
+
+fn auth_profile_usage_tools_visible(tools: &[ToolSpec]) -> bool {
+    let has_usage = tools.iter().any(|tool| tool.name() == GET_USAGE_TOOL_NAME);
+    let has_profile_control = tools
+        .iter()
+        .any(|tool| tool.name() == MANAGE_AUTH_PROFILES_TOOL_NAME);
+    has_usage && has_profile_control
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1227,6 +1310,12 @@ async fn run_sampling_request(
     let router = built_tools(sess.as_ref(), turn_context.as_ref(), &cancellation_token).await?;
 
     let base_instructions = sess.get_base_instructions().await;
+    let base_instructions = with_auth_profile_usage_prompt_nudge(
+        sess.as_ref(),
+        base_instructions,
+        &router.model_visible_specs(),
+    )
+    .await;
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),

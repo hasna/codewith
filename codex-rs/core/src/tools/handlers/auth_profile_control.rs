@@ -1,3 +1,5 @@
+use crate::config::AuthProfileAutoSwitchConfig;
+use crate::config::AuthProfileAutoSwitchStrategy;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::SessionSettingsUpdate;
 use crate::tools::context::FunctionToolOutput;
@@ -25,6 +27,7 @@ enum ManageAuthProfilesAction {
     List,
     Current,
     Switch,
+    SetAutoSwitch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +36,8 @@ struct ManageAuthProfilesArgs {
     action: ManageAuthProfilesAction,
     #[serde(default)]
     profile: Option<String>,
+    #[serde(default)]
+    auto_switch_enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +47,7 @@ struct ManageAuthProfilesResponse {
     current_profile: Option<String>,
     switched_to: Option<String>,
     profiles: Vec<AuthProfileSummary>,
+    auto_switch: AuthProfileAutoSwitchState,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +61,16 @@ struct AuthProfileSummary {
     account_id: Option<String>,
     plan: Option<String>,
     current: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthProfileAutoSwitchState {
+    enabled: bool,
+    on_5h_limit: bool,
+    on_weekly_limit: bool,
+    strategy: &'static str,
+    profiles: Vec<String>,
 }
 
 #[async_trait::async_trait]
@@ -91,28 +107,47 @@ impl ToolExecutor<ToolInvocation> for ManageAuthProfilesHandler {
         let mut current_profile = session.selected_auth_profile().await;
         let mut switched_to = None;
 
-        if matches!(args.action, ManageAuthProfilesAction::Switch) {
-            let profile = normalize_requested_profile(args.profile)?;
-            session
-                .update_settings(SessionSettingsUpdate {
-                    auth_profile: Some(profile.clone()),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
-            let turn_context = session
-                .new_default_turn_with_sub_id(turn.sub_id.clone())
-                .await;
-            session
-                .refresh_token_context_window_for_profile_switch(&turn_context)
-                .await;
-            current_profile = profile.clone();
-            switched_to = profile;
+        match args.action {
+            ManageAuthProfilesAction::Switch => {
+                let profile = normalize_requested_profile(args.profile)?;
+                session
+                    .update_settings(SessionSettingsUpdate {
+                        auth_profile: Some(profile.clone()),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+                let turn_context = session
+                    .new_default_turn_with_sub_id(turn.sub_id.clone())
+                    .await;
+                session
+                    .refresh_token_context_window_for_profile_switch(&turn_context)
+                    .await;
+                current_profile = profile.clone();
+                switched_to = profile;
+            }
+            ManageAuthProfilesAction::SetAutoSwitch => {
+                let enabled = args.auto_switch_enabled.ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "auto_switch_enabled is required when action is set_auto_switch"
+                            .to_string(),
+                    )
+                })?;
+                session
+                    .update_settings(SessionSettingsUpdate {
+                        auth_profile_auto_switch_enabled: Some(enabled),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+            }
+            ManageAuthProfilesAction::List | ManageAuthProfilesAction::Current => {}
         }
 
+        let config = session.get_config().await;
         let profiles = codex_login::list_auth_profiles(
-            &turn.config.codex_home,
-            turn.config.cli_auth_credentials_store_mode,
+            &config.codex_home,
+            config.cli_auth_credentials_store_mode,
         )
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
         let response = ManageAuthProfilesResponse {
@@ -120,6 +155,7 @@ impl ToolExecutor<ToolInvocation> for ManageAuthProfilesHandler {
             current_profile: current_profile.clone(),
             switched_to,
             profiles: summarize_profiles(profiles, current_profile.as_deref()),
+            auto_switch: summarize_auto_switch(&config.auth_profile_auto_switch),
         };
         let response = serde_json::to_string_pretty(&response)
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
@@ -174,6 +210,23 @@ fn summarize_profiles(
     }));
 
     summaries
+}
+
+fn summarize_auto_switch(config: &AuthProfileAutoSwitchConfig) -> AuthProfileAutoSwitchState {
+    AuthProfileAutoSwitchState {
+        enabled: config.enabled,
+        on_5h_limit: config.on_5h_limit,
+        on_weekly_limit: config.on_weekly_limit,
+        strategy: auth_profile_auto_switch_strategy_name(config.strategy),
+        profiles: config.profiles.clone(),
+    }
+}
+
+fn auth_profile_auto_switch_strategy_name(strategy: AuthProfileAutoSwitchStrategy) -> &'static str {
+    match strategy {
+        AuthProfileAutoSwitchStrategy::HighestAvailable => "highest_available",
+        AuthProfileAutoSwitchStrategy::Ordered => "ordered",
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +289,31 @@ mod tests {
                     "current": true
                 }
             ])
+        );
+    }
+
+    #[test]
+    fn summarize_auto_switch_serializes_session_state() {
+        let state = summarize_auto_switch(&AuthProfileAutoSwitchConfig {
+            enabled: true,
+            profiles: vec!["work".to_string(), "spare".to_string()],
+            on_5h_limit: true,
+            on_weekly_limit: false,
+            strategy: AuthProfileAutoSwitchStrategy::Ordered,
+            heartbeat_interval_secs: 60,
+            heartbeat_freshness_secs: 120,
+        });
+
+        let response = serde_json::to_value(state).expect("serialize auto switch state");
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "enabled": true,
+                "on5hLimit": true,
+                "onWeeklyLimit": false,
+                "strategy": "ordered",
+                "profiles": ["work", "spare"]
+            })
         );
     }
 }
