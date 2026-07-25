@@ -164,6 +164,8 @@ impl ChatWidget {
             last_auth_profile_auto_switch_trigger: None,
             last_no_eligible_auth_profile_trigger: None,
             pending_auth_profile_auto_switch_trigger: None,
+            synthetic_auth_profile_auto_switch_epoch: 0,
+            last_usage_limit_error_message: None,
             auth_profile_auto_switch_cooldowns: BTreeMap::new(),
             usage_self_heal: UsageSelfHealState::default(),
             add_credits_nudge_email_in_flight: None,

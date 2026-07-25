@@ -361,6 +361,8 @@ impl ChatWidget {
         self.rate_limit_warnings = RateLimitWarningState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::default();
         self.pending_auth_profile_auto_switch_trigger = None;
+        // The previous profile's usage-limit block says nothing about the new one.
+        self.last_usage_limit_error_message = None;
         self.prefetch_rate_limits();
         self.refresh_status_line();
     }

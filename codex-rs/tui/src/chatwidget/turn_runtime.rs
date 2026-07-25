@@ -443,6 +443,12 @@ impl ChatWidget {
             }
         });
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
+        if matches!(error_kind, RateLimitErrorKind::UsageLimit) {
+            // Remember the server's own description of this block: the reset-unavailable
+            // fallback runs later, off an async reset-check response that carries no error
+            // text, and needs the advertised reset instant to identify the exhausted window.
+            self.last_usage_limit_error_message = Some(message.clone());
+        }
 
         let should_retry = matches!(error_kind, RateLimitErrorKind::UsageLimit)
             && matches!(
@@ -464,13 +470,21 @@ impl ChatWidget {
         );
         let reset_recovery_was_opted_out =
             matches!(auto_reset_check, UsageLimitAutoResetCheckOutcome::OptedOut);
+        // When no usage-limit reset flow will own the failed turn (auto-reset disabled,
+        // opted out, non-canonical backend, or a manual reset already in progress),
+        // auto-switch to another configured profile driven by this profile's OWN
+        // authoritative usage-limit failure. This restores the switch that #374 removed
+        // when it made rolling snapshots display-only, without reviving the cross-agent
+        // false-cascade (a sibling's snapshot never fails *this* profile's turn).
         let profile_fallback_owns_failed_turn = should_retry
             && matches!(
                 auto_reset_check,
                 UsageLimitAutoResetCheckOutcome::Unavailable
             )
-            && self.manual_usage_limit_reset_is_active()
-            && self.try_auth_profile_switch_after_reset_unavailable();
+            && self.try_auth_profile_switch_for_usage_limit(
+                matches!(error_kind, RateLimitErrorKind::UsageLimit),
+                Some(message.as_str()),
+            );
         if profile_fallback_owns_failed_turn {
             self.resume_after_usage_limit_reset();
         }
