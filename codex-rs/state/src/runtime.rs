@@ -1314,7 +1314,7 @@ mod tests {
         )
         .await
         .expect("open state db");
-        migrator_through(&STATE_MIGRATOR, /*version*/ 60)
+        migrator_through(&STATE_MIGRATOR, /*version*/ 61)
             .run(&pool)
             .await
             .expect("apply pre-goal-correlation state schema");
