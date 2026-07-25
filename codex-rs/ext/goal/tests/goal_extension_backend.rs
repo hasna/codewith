@@ -149,6 +149,9 @@ async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
             "create_goal".to_string(),
             "create_goal_plan".to_string(),
             "activate_goal_plan_node".to_string(),
+            "update_goal_plan_node".to_string(),
+            "insert_goal_plan_node".to_string(),
+            "set_goal_plan_node_status".to_string(),
             "update_goal".to_string(),
             "pause_goal".to_string(),
             "resume_goal".to_string(),
@@ -581,6 +584,168 @@ async fn create_goal_plan_rejects_nesting_beyond_three_levels() -> anyhow::Resul
             .list_thread_goal_plans(thread_id)
             .await?
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_plan_edit_tools_update_insert_and_mark_done_undone() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let invocation = tool_call(
+        "create_goal_plan",
+        "call-create-goal-plan",
+        json!({
+            "goals": [
+                {
+                    "key": "first",
+                    "objective": "Run the first goal"
+                },
+                {
+                    "key": "second",
+                    "objective": "Run the second goal",
+                    "depends_on": ["first"]
+                }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    let plan_id = result["goalPlans"][0]["planId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("created plan id should be returned"))?
+        .to_string();
+    let first_node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("first node id should be returned"))?
+        .to_string();
+    let second_node_id = result["goalPlans"][0]["nodes"][1]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("second node id should be returned"))?
+        .to_string();
+
+    let update_node_tool = tool_by_name(&tools, "update_goal_plan_node");
+    let invocation = tool_call(
+        "update_goal_plan_node",
+        "call-update-node",
+        json!({
+            "node_id": first_node_id,
+            "key": "prep",
+            "objective": "Prepare edited objective",
+            "title": "Prepare",
+            "priority": 7,
+            "token_budget": 25
+        }),
+    );
+    let output = update_node_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["objective"], "Prepare edited objective");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["key"], "prep");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["title"], "Prepare");
+    assert_eq!(result["goalPlans"][0]["nodes"][1]["dependsOn"][0], "prep");
+
+    let invocation = tool_call(
+        "update_goal_plan_node",
+        "call-clear-node-fields",
+        json!({
+            "node_id": first_node_id,
+            "clear_title": true,
+            "clear_token_budget": true
+        }),
+    );
+    let output = update_node_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["title"], serde_json::Value::Null);
+    assert_eq!(result["goal"]["tokenBudget"], serde_json::Value::Null);
+    assert_eq!(
+        result["goalPlans"][0]["nodes"][0]["title"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        result["goalPlans"][0]["nodes"][0]["tokenBudget"],
+        serde_json::Value::Null
+    );
+
+    let insert_node_tool = tool_by_name(&tools, "insert_goal_plan_node");
+    let invocation = tool_call(
+        "insert_goal_plan_node",
+        "call-insert-node",
+        json!({
+            "plan_id": plan_id,
+            "position": "before",
+            "reference_node_id": second_node_id,
+            "key": "middle",
+            "objective": "Run the middle goal",
+            "title": "Middle",
+            "depends_on": ["prep"]
+        }),
+    );
+    let output = insert_node_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["objective"], "Prepare edited objective");
+    assert_eq!(
+        vec!["prep", "middle", "second"],
+        result["goalPlans"][0]["nodes"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("goal plan nodes should be an array"))?
+            .iter()
+            .map(|node| node["key"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+
+    let set_status_tool = tool_by_name(&tools, "set_goal_plan_node_status");
+    let invocation = tool_call(
+        "set_goal_plan_node_status",
+        "call-complete-node",
+        json!({
+            "node_id": first_node_id,
+            "status": "complete"
+        }),
+    );
+    let output = set_status_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["status"], "complete");
+    assert_eq!(result["activatedGoal"]["objective"], "Run the middle goal");
+    assert_eq!(result["goalPlans"][0]["completedNodeCount"], 1);
+
+    let err = match update_node_tool
+        .handle(tool_call(
+            "update_goal_plan_node",
+            "call-edit-complete-node",
+            json!({
+                "node_id": first_node_id,
+                "objective": "This edit should fail"
+            }),
+        ))
+        .await
+    {
+        Ok(_) => panic!("editing a complete node should fail"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("mark it undone first"),
+        "unexpected error: {err}"
+    );
+
+    let invocation = tool_call(
+        "set_goal_plan_node_status",
+        "call-mark-node-pending",
+        json!({
+            "node_id": first_node_id,
+            "status": "pending"
+        }),
+    );
+    let output = set_status_tool.handle(invocation.clone()).await?;
+    let result = output.code_mode_result(&invocation.payload);
+    assert_eq!(result["goal"]["objective"], "Run the middle goal");
+    assert_eq!(result["goal"]["status"], "active");
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "pending");
+    assert_eq!(result["goalPlans"][0]["completedNodeCount"], 0);
     Ok(())
 }
 
@@ -1638,6 +1803,9 @@ async fn installed_goal_tools_require_adversarial_verification_before_completion
         "create_goal",
         "create_goal_plan",
         "activate_goal_plan_node",
+        "update_goal_plan_node",
+        "insert_goal_plan_node",
+        "set_goal_plan_node_status",
         "update_goal",
         "resume_goal",
     ] {

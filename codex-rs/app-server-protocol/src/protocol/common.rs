@@ -627,6 +627,21 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalPlanAddGoalResponse,
     },
+    ThreadGoalPlanUpdateNode => "thread/goalPlan/updateNode" {
+        params: v2::ThreadGoalPlanUpdateNodeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanUpdateNodeResponse,
+    },
+    ThreadGoalPlanInsertNode => "thread/goalPlan/insertNode" {
+        params: v2::ThreadGoalPlanInsertNodeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanInsertNodeResponse,
+    },
+    ThreadGoalPlanSetNodeStatus => "thread/goalPlan/setNodeStatus" {
+        params: v2::ThreadGoalPlanSetNodeStatusParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadGoalPlanSetNodeStatusResponse,
+    },
     ThreadGoalClear => "thread/goal/clear" {
         params: v2::ThreadGoalClearParams,
         serialization: thread_id(params.thread_id),
@@ -4450,8 +4465,44 @@ mod tests {
                 objective: "queue goal mode".to_string(),
             },
         };
-        let clear_request = ClientRequest::ThreadGoalClear {
+        let update_node_request = ClientRequest::ThreadGoalPlanUpdateNode {
             request_id: RequestId::Integer(6),
+            params: v2::ThreadGoalPlanUpdateNodeParams {
+                thread_id: "thr_123".to_string(),
+                node_id: "node_123".to_string(),
+                key: Some("renamed".to_string()),
+                objective: None,
+                title: None,
+                priority: None,
+                token_budget: None,
+                depends_on: None,
+            },
+        };
+        let insert_node_request = ClientRequest::ThreadGoalPlanInsertNode {
+            request_id: RequestId::Integer(7),
+            params: v2::ThreadGoalPlanInsertNodeParams {
+                thread_id: "thr_123".to_string(),
+                plan_id: "plan_123".to_string(),
+                position: v2::ThreadGoalPlanNodeInsertPosition::After,
+                reference_node_id: Some("node_123".to_string()),
+                key: "followup".to_string(),
+                objective: "Follow up".to_string(),
+                title: None,
+                priority: None,
+                token_budget: None,
+                depends_on: None,
+            },
+        };
+        let set_node_status_request = ClientRequest::ThreadGoalPlanSetNodeStatus {
+            request_id: RequestId::Integer(8),
+            params: v2::ThreadGoalPlanSetNodeStatusParams {
+                thread_id: "thr_123".to_string(),
+                node_id: "node_123".to_string(),
+                status: v2::ThreadGoalPlanNodeCompletionStatus::Complete,
+            },
+        };
+        let clear_request = ClientRequest::ThreadGoalClear {
+            request_id: RequestId::Integer(9),
             params: v2::ThreadGoalClearParams {
                 thread_id: "thr_123".to_string(),
             },
@@ -4475,6 +4526,18 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&add_goal_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&update_node_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&insert_node_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&set_node_status_request),
             None
         );
         assert_eq!(

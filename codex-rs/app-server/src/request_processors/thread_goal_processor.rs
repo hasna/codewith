@@ -84,6 +84,36 @@ impl ThreadGoalRequestProcessor {
             .map(|()| None)
     }
 
+    pub(crate) async fn thread_goal_plan_update_node(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanUpdateNodeParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_plan_update_node_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
+    pub(crate) async fn thread_goal_plan_insert_node(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanInsertNodeParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_plan_insert_node_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
+    pub(crate) async fn thread_goal_plan_set_node_status(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanSetNodeStatusParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_plan_set_node_status_inner(request_id, params)
+            .await
+            .map(|()| None)
+    }
+
     pub(crate) async fn thread_goal_clear(
         &self,
         request_id: ConnectionRequestId,
@@ -422,6 +452,228 @@ impl ThreadGoalRequestProcessor {
         Ok(())
     }
 
+    async fn thread_goal_plan_update_node_inner(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanUpdateNodeParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        self.reconcile_thread_goal_rollout(thread_id, &state_db)
+            .await?;
+
+        let listener_command_tx = {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let outcome = self
+            .goal_service
+            .update_thread_goal_plan_node(
+                &state_db,
+                codex_state::ThreadGoalPlanNodeUpdateParams {
+                    thread_id,
+                    node_id: params.node_id,
+                    key: params.key,
+                    objective: params.objective,
+                    title: match params.title {
+                        Some(ThreadGoalPlanNodeTitleUpdate::Clear) => {
+                            codex_state::ThreadGoalPlanNodeTitleUpdate::Set(None)
+                        }
+                        Some(ThreadGoalPlanNodeTitleUpdate::Set { value }) => {
+                            codex_state::ThreadGoalPlanNodeTitleUpdate::Set(Some(value))
+                        }
+                        None => codex_state::ThreadGoalPlanNodeTitleUpdate::Keep,
+                    },
+                    priority: params.priority,
+                    token_budget: match params.token_budget {
+                        Some(ThreadGoalPlanNodeTokenBudgetUpdate::Clear) => {
+                            codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Set(None)
+                        }
+                        Some(ThreadGoalPlanNodeTokenBudgetUpdate::Set { value }) => {
+                            codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Set(Some(value))
+                        }
+                        None => codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Keep,
+                    },
+                    depends_on: params.depends_on,
+                },
+            )
+            .await
+            .map_err(goal_service_error)?;
+        let goal = outcome.goal.clone().map(ThreadGoal::from);
+        let plan = api_thread_goal_plan_from_state_for_thread(outcome.plan.clone(), thread_id);
+        let node = plan
+            .nodes
+            .iter()
+            .find(|node| node.node_id == outcome.node.node_id)
+            .cloned()
+            .ok_or_else(|| internal_error("updated goal-plan node missing from snapshot"))?;
+        self.outgoing
+            .send_response(
+                request_id,
+                ThreadGoalPlanUpdateNodeResponse {
+                    goal: goal.clone(),
+                    plan: plan.clone(),
+                    node,
+                },
+            )
+            .await;
+        if let Some(goal) = goal {
+            self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
+                .await;
+        }
+        self.emit_thread_goal_plan_snapshot_updated_ordered(
+            thread_id,
+            outcome.plan.clone(),
+            listener_command_tx,
+        )
+        .await;
+        outcome.apply_runtime_effects(&self.goal_service).await;
+        Ok(())
+    }
+
+    async fn thread_goal_plan_insert_node_inner(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanInsertNodeParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        self.reconcile_thread_goal_rollout(thread_id, &state_db)
+            .await?;
+
+        let listener_command_tx = {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let position = goal_plan_node_insert_position(params.position, params.reference_node_id)?;
+        let outcome = self
+            .goal_service
+            .insert_thread_goal_plan_node(
+                &state_db,
+                codex_state::ThreadGoalPlanNodeInsertParams {
+                    thread_id,
+                    plan_id: params.plan_id,
+                    position,
+                    key: params.key,
+                    objective: params.objective,
+                    title: params.title,
+                    priority: params.priority.unwrap_or(0),
+                    token_budget: params.token_budget,
+                    depends_on: params.depends_on.unwrap_or_default(),
+                },
+            )
+            .await
+            .map_err(goal_service_error)?;
+        let plan = api_thread_goal_plan_from_state_for_thread(outcome.plan.clone(), thread_id);
+        let inserted_node = plan
+            .nodes
+            .iter()
+            .find(|node| node.node_id == outcome.inserted_node.node_id)
+            .cloned()
+            .ok_or_else(|| internal_error("inserted goal-plan node missing from snapshot"))?;
+        self.outgoing
+            .send_response(
+                request_id,
+                ThreadGoalPlanInsertNodeResponse {
+                    plan: plan.clone(),
+                    inserted_node,
+                },
+            )
+            .await;
+        self.emit_thread_goal_plan_snapshot_updated_ordered(
+            thread_id,
+            outcome.plan,
+            listener_command_tx,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn thread_goal_plan_set_node_status_inner(
+        &self,
+        request_id: ConnectionRequestId,
+        params: ThreadGoalPlanSetNodeStatusParams,
+    ) -> Result<(), JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        let state_db = self.state_db_for_materialized_thread(thread_id).await?;
+        self.reconcile_thread_goal_rollout(thread_id, &state_db)
+            .await?;
+
+        let listener_command_tx = {
+            let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+            let thread_state = thread_state.lock().await;
+            thread_state.listener_command_tx()
+        };
+        let outcome = self
+            .goal_service
+            .set_thread_goal_plan_node_status(
+                &state_db,
+                codex_state::ThreadGoalPlanNodeStatusUpdateParams {
+                    thread_id,
+                    node_id: params.node_id,
+                    status: goal_plan_node_completion_status(params.status),
+                    auto_execute: goal_auto_execute_from_config(&self.config),
+                },
+            )
+            .await
+            .map_err(goal_service_error)?;
+        let goal = outcome.goal.clone().map(ThreadGoal::from);
+        let activated_goal = outcome.activated_goal.clone().map(ThreadGoal::from);
+        let plan = api_thread_goal_plan_from_state_for_thread(outcome.plan.clone(), thread_id);
+        let node = plan
+            .nodes
+            .iter()
+            .find(|node| node.node_id == outcome.node.node_id)
+            .cloned()
+            .ok_or_else(|| internal_error("updated goal-plan node missing from snapshot"))?;
+        self.outgoing
+            .send_response(
+                request_id,
+                ThreadGoalPlanSetNodeStatusResponse {
+                    goal: goal.clone(),
+                    activated_goal: activated_goal.clone(),
+                    cleared_goal: outcome.cleared_goal,
+                    plan: plan.clone(),
+                    node,
+                },
+            )
+            .await;
+        if let Some(goal) = goal {
+            self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx.clone())
+                .await;
+        }
+        if outcome.cleared_goal {
+            self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx.clone())
+                .await;
+        }
+        self.emit_thread_goal_plan_snapshot_updated_ordered(
+            thread_id,
+            outcome.plan.clone(),
+            listener_command_tx.clone(),
+        )
+        .await;
+        if let Some(activated_goal) = activated_goal {
+            self.emit_thread_goal_updated_ordered(thread_id, activated_goal, listener_command_tx)
+                .await;
+        }
+        outcome.apply_runtime_effects(&self.goal_service).await;
+        Ok(())
+    }
+
     async fn state_db_for_materialized_thread(
         &self,
         thread_id: ThreadId,
@@ -646,6 +898,44 @@ pub(super) fn goal_auto_execute_from_config(
         }
         codex_core::config::GoalAutoExecuteMode::AiDirected => {
             codex_state::ThreadGoalPlanAutoExecute::AiDirected
+        }
+    }
+}
+
+fn goal_plan_node_insert_position(
+    position: ThreadGoalPlanNodeInsertPosition,
+    reference_node_id: Option<String>,
+) -> Result<codex_state::ThreadGoalPlanNodeInsertPosition, JSONRPCErrorError> {
+    match position {
+        ThreadGoalPlanNodeInsertPosition::Before => {
+            let reference_node_id = reference_node_id
+                .ok_or_else(|| invalid_request("referenceNodeId is required for before"))?;
+            Ok(codex_state::ThreadGoalPlanNodeInsertPosition::Before(
+                reference_node_id,
+            ))
+        }
+        ThreadGoalPlanNodeInsertPosition::After => {
+            let reference_node_id = reference_node_id
+                .ok_or_else(|| invalid_request("referenceNodeId is required for after"))?;
+            Ok(codex_state::ThreadGoalPlanNodeInsertPosition::After(
+                reference_node_id,
+            ))
+        }
+        ThreadGoalPlanNodeInsertPosition::End => {
+            Ok(codex_state::ThreadGoalPlanNodeInsertPosition::End)
+        }
+    }
+}
+
+fn goal_plan_node_completion_status(
+    status: ThreadGoalPlanNodeCompletionStatus,
+) -> codex_state::ThreadGoalPlanNodeCompletionStatus {
+    match status {
+        ThreadGoalPlanNodeCompletionStatus::Complete => {
+            codex_state::ThreadGoalPlanNodeCompletionStatus::Complete
+        }
+        ThreadGoalPlanNodeCompletionStatus::Pending => {
+            codex_state::ThreadGoalPlanNodeCompletionStatus::Pending
         }
     }
 }

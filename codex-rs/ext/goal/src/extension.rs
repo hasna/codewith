@@ -42,8 +42,11 @@ use crate::runtime::GoalRuntimeHandle;
 use crate::spec::ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
+use crate::spec::INSERT_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::PAUSE_GOAL_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
+use crate::spec::SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME;
+use crate::spec::UPDATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
 use crate::tool::GoalToolExecutor;
@@ -453,6 +456,9 @@ where
                             | GET_GOAL_PLAN_TOOL_NAME
                             | CREATE_GOAL_PLAN_TOOL_NAME
                             | ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME
+                            | UPDATE_GOAL_PLAN_NODE_TOOL_NAME
+                            | INSERT_GOAL_PLAN_NODE_TOOL_NAME
+                            | SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME
                     ));
             if !should_count_for_goal_progress {
                 return;
@@ -540,6 +546,30 @@ where
                 runtime.plan_config_handle(),
             )),
             Arc::new(GoalToolExecutor::activate_plan_node(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config_handle(),
+            )),
+            Arc::new(GoalToolExecutor::update_plan_node(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config_handle(),
+            )),
+            Arc::new(GoalToolExecutor::insert_plan_node(
+                runtime.thread_id(),
+                Arc::clone(&self.state_dbs),
+                runtime.accounting_state(),
+                self.event_emitter.clone(),
+                self.metrics.clone(),
+                runtime.plan_config_handle(),
+            )),
+            Arc::new(GoalToolExecutor::set_plan_node_status(
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),

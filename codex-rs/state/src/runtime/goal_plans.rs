@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT: u32 = 20;
 pub const MAX_THREAD_GOAL_PLAN_LIST_LIMIT: u32 = 50;
 
-const MAX_GOAL_PLAN_NODES: usize = 128;
+pub(super) const MAX_GOAL_PLAN_NODES: usize = 128;
 const MAX_GOAL_PLAN_NODE_KEY_LEN: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -920,7 +920,7 @@ WHERE plan_id = ?
     }
 }
 
-async fn activate_next_ready_node_in_tx(
+pub(super) async fn activate_next_ready_node_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     thread_id: ThreadId,
     plan_id: &str,
@@ -2218,7 +2218,9 @@ WHERE dependency.node_id IN (
     Ok(dependencies_by_node_id)
 }
 
-fn thread_goal_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<crate::ThreadGoal> {
+pub(super) fn thread_goal_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> anyhow::Result<crate::ThreadGoal> {
     crate::model::ThreadGoalRow::try_from_row(row).and_then(crate::ThreadGoal::try_from)
 }
 
@@ -2242,7 +2244,9 @@ fn status_after_budget_limit(
     }
 }
 
-fn validate_plan_create_params(params: &ThreadGoalPlanCreateParams) -> anyhow::Result<()> {
+pub(super) fn validate_plan_create_params(
+    params: &ThreadGoalPlanCreateParams,
+) -> anyhow::Result<()> {
     if params.nodes.is_empty() {
         anyhow::bail!("goal plan must contain at least one goal");
     }

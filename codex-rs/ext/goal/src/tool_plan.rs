@@ -76,6 +76,63 @@ struct ActivateGoalPlanNodeRequest {
     node_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+struct UpdateGoalPlanNodeRequest {
+    node_id: String,
+    key: Option<String>,
+    objective: Option<String>,
+    title: Option<String>,
+    #[serde(default)]
+    clear_title: bool,
+    priority: Option<i64>,
+    token_budget: Option<i64>,
+    #[serde(default)]
+    clear_token_budget: bool,
+    depends_on: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+struct InsertGoalPlanNodeRequest {
+    plan_id: String,
+    position: InsertGoalPlanNodePosition,
+    reference_node_id: Option<String>,
+    key: String,
+    objective: String,
+    title: Option<String>,
+    #[serde(default)]
+    priority: Option<i64>,
+    token_budget: Option<i64>,
+    #[serde(default)]
+    depends_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InsertGoalPlanNodePosition {
+    Before,
+    After,
+    End,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+struct SetGoalPlanNodeStatusRequest {
+    node_id: String,
+    status: SetGoalPlanNodeStatus,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SetGoalPlanNodeStatus {
+    Complete,
+    Pending,
+}
+
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GoalPlanResponse {
@@ -432,6 +489,194 @@ impl GoalToolExecutor {
         )
     }
 
+    pub(crate) async fn handle_update_plan_node(
+        &self,
+        invocation: ToolCall,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let request: UpdateGoalPlanNodeRequest = parse_arguments(invocation.function_arguments()?)?;
+        if request.clear_title && request.title.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "cannot set title and clear_title in the same update".to_string(),
+            ));
+        }
+        if request.clear_token_budget && request.token_budget.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "cannot set token_budget and clear_token_budget in the same update".to_string(),
+            ));
+        }
+        let outcome = self
+            .state_db
+            .thread_goals()
+            .update_thread_goal_plan_node(codex_state::ThreadGoalPlanNodeUpdateParams {
+                thread_id: self.thread_id,
+                node_id: request.node_id,
+                key: request.key,
+                objective: request.objective,
+                title: match request.title {
+                    Some(title) => codex_state::ThreadGoalPlanNodeTitleUpdate::Set(Some(title)),
+                    None if request.clear_title => {
+                        codex_state::ThreadGoalPlanNodeTitleUpdate::Set(None)
+                    }
+                    None => codex_state::ThreadGoalPlanNodeTitleUpdate::Keep,
+                },
+                priority: request.priority,
+                token_budget: match request.token_budget {
+                    Some(token_budget) => {
+                        codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Set(Some(token_budget))
+                    }
+                    None if request.clear_token_budget => {
+                        codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Set(None)
+                    }
+                    None => codex_state::ThreadGoalPlanNodeTokenBudgetUpdate::Keep,
+                },
+                depends_on: request.depends_on,
+            })
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to update goal plan node: {err}"))
+            })?;
+        let updated_goal = outcome.goal.clone().map(protocol_goal_from_state);
+        if let Some(goal) = updated_goal.as_ref() {
+            self.event_emitter.thread_goal_updated(
+                format!("{}:updated-goal", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                goal.clone(),
+            );
+        }
+        let goal = match updated_goal {
+            Some(goal) => Some(goal),
+            None => self.current_goal_response().await?,
+        };
+        self.event_emitter.thread_goal_plan_updated(
+            format!("{}-goal-plan", invocation.call_id),
+            Some(invocation.turn_id.clone()),
+            outcome.snapshot.clone(),
+        );
+        goal_response_with_plan(
+            goal,
+            /*activated_goal*/ None,
+            vec![GoalPlanResponse::from_snapshot_for_thread(
+                outcome.snapshot,
+                self.thread_id,
+                self.plan_node_objective_char_limit(),
+            )],
+            CompletionBudgetReport::Omit,
+        )
+    }
+
+    pub(crate) async fn handle_insert_plan_node(
+        &self,
+        invocation: ToolCall,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let request: InsertGoalPlanNodeRequest = parse_arguments(invocation.function_arguments()?)?;
+        let position = insert_goal_plan_node_position(request.position, request.reference_node_id)?;
+        let outcome = self
+            .state_db
+            .thread_goals()
+            .insert_thread_goal_plan_node(codex_state::ThreadGoalPlanNodeInsertParams {
+                thread_id: self.thread_id,
+                plan_id: request.plan_id,
+                position,
+                key: request.key,
+                objective: request.objective,
+                title: request.title,
+                priority: request.priority.unwrap_or(0),
+                token_budget: request.token_budget,
+                depends_on: request.depends_on,
+            })
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("failed to insert goal plan node: {err}"))
+            })?;
+        self.event_emitter.thread_goal_plan_updated(
+            format!("{}-goal-plan", invocation.call_id),
+            Some(invocation.turn_id.clone()),
+            outcome.snapshot.clone(),
+        );
+        let goal = self.current_goal_response().await?;
+        goal_response_with_plan(
+            goal,
+            /*activated_goal*/ None,
+            vec![GoalPlanResponse::from_snapshot_for_thread(
+                outcome.snapshot,
+                self.thread_id,
+                self.plan_node_objective_char_limit(),
+            )],
+            CompletionBudgetReport::Omit,
+        )
+    }
+
+    pub(crate) async fn handle_set_plan_node_status(
+        &self,
+        invocation: ToolCall,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        let request: SetGoalPlanNodeStatusRequest =
+            parse_arguments(invocation.function_arguments()?)?;
+        let outcome = self
+            .state_db
+            .thread_goals()
+            .set_thread_goal_plan_node_status(codex_state::ThreadGoalPlanNodeStatusUpdateParams {
+                thread_id: self.thread_id,
+                node_id: request.node_id,
+                status: set_goal_plan_node_status(request.status),
+                auto_execute: self
+                    .plan_config
+                    .as_ref()
+                    .ok_or_else(|| {
+                        FunctionCallError::Fatal(
+                            "goal plan tool missing runtime config".to_string(),
+                        )
+                    })?
+                    .current()
+                    .auto_execute,
+            })
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to update goal plan node status: {err}"
+                ))
+            })?;
+        let goal = outcome.goal.clone().map(protocol_goal_from_state);
+        if let Some(goal) = goal.as_ref() {
+            self.event_emitter.thread_goal_updated(
+                format!("{}:updated-goal", invocation.call_id),
+                Some(invocation.turn_id.clone()),
+                goal.clone(),
+            );
+        }
+        let activated_goal = self
+            .apply_activated_goal_from_plan(&invocation, outcome.activated_goal)
+            .await?;
+        self.event_emitter.thread_goal_plan_updated(
+            format!("{}-goal-plan", invocation.call_id),
+            Some(invocation.turn_id.clone()),
+            outcome.snapshot.clone(),
+        );
+        let goal = match goal.or_else(|| activated_goal.clone()) {
+            Some(goal) => Some(goal),
+            None => self.current_goal_response().await?,
+        };
+        goal_response_with_plan(
+            goal,
+            activated_goal.clone(),
+            vec![GoalPlanResponse::from_snapshot_for_thread(
+                outcome.snapshot,
+                self.thread_id,
+                self.plan_node_objective_char_limit(),
+            )],
+            CompletionBudgetReport::Omit,
+        )
+    }
+
+    async fn current_goal_response(&self) -> Result<Option<ThreadGoal>, FunctionCallError> {
+        self.state_db
+            .thread_goals()
+            .get_thread_goal(self.thread_id)
+            .await
+            .map(|goal| goal.map(protocol_goal_from_state))
+            .map_err(|err| FunctionCallError::RespondToModel(format!("failed to read goal: {err}")))
+    }
+
     pub(crate) async fn apply_activated_goal_from_plan(
         &self,
         invocation: &ToolCall,
@@ -544,6 +789,46 @@ impl GoalToolExecutor {
                     "failed to update goal plan hierarchy: {err}"
                 ))
             })
+    }
+}
+
+fn insert_goal_plan_node_position(
+    position: InsertGoalPlanNodePosition,
+    reference_node_id: Option<String>,
+) -> Result<codex_state::ThreadGoalPlanNodeInsertPosition, FunctionCallError> {
+    match position {
+        InsertGoalPlanNodePosition::Before => {
+            let reference_node_id = reference_node_id.ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "reference_node_id is required when position is before".to_string(),
+                )
+            })?;
+            Ok(codex_state::ThreadGoalPlanNodeInsertPosition::Before(
+                reference_node_id,
+            ))
+        }
+        InsertGoalPlanNodePosition::After => {
+            let reference_node_id = reference_node_id.ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "reference_node_id is required when position is after".to_string(),
+                )
+            })?;
+            Ok(codex_state::ThreadGoalPlanNodeInsertPosition::After(
+                reference_node_id,
+            ))
+        }
+        InsertGoalPlanNodePosition::End => Ok(codex_state::ThreadGoalPlanNodeInsertPosition::End),
+    }
+}
+
+fn set_goal_plan_node_status(
+    status: SetGoalPlanNodeStatus,
+) -> codex_state::ThreadGoalPlanNodeCompletionStatus {
+    match status {
+        SetGoalPlanNodeStatus::Complete => {
+            codex_state::ThreadGoalPlanNodeCompletionStatus::Complete
+        }
+        SetGoalPlanNodeStatus::Pending => codex_state::ThreadGoalPlanNodeCompletionStatus::Pending,
     }
 }
 

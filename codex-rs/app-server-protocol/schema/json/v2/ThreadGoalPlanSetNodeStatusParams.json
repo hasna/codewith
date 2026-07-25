@@ -1,0 +1,30 @@
+{
+  "$defs": {
+    "ThreadGoalPlanNodeCompletionStatus": {
+      "enum": [
+        "complete",
+        "pending"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "nodeId": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ThreadGoalPlanNodeCompletionStatus"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "nodeId",
+    "status"
+  ],
+  "title": "ThreadGoalPlanSetNodeStatusParams",
+  "type": "object"
+}

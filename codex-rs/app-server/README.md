@@ -151,6 +151,10 @@ Example with notification opt-out:
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
 - `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`; plan nodes also expose parent linkage and 1-based nesting depth. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
 - `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal, using the node title when present, and refreshed plan snapshot.
+- `thread/goalPlan/addGoal` — queue a new goal into the active goal plan, creating one from the current goal when needed. The runtime chooses append dependencies so existing terminal nodes remain prerequisites.
+- `thread/goalPlan/updateNode` — edit a pending or active goal-plan node's key, objective/prompt, title, priority, token budget, or dependencies. Completed nodes are immutable until marked pending again.
+- `thread/goalPlan/insertNode` — insert a new pending goal-plan node before, after, or at the end of an existing plan's display order. Dependencies remain explicit through `dependsOn`.
+- `thread/goalPlan/setNodeStatus` — mark a goal-plan node `complete` or `pending`; use `pending` to mark a completed node undone before editing it.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goalPlan/updated` — notification emitted whenever a durable goal plan changes; includes the full plan snapshot with aggregate usage.
