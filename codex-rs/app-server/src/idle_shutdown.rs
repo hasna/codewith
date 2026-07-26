@@ -12,6 +12,7 @@ pub(super) async fn receive_transport_event_or_idle<T>(
 ) -> TransportEventOrIdle<T> {
     tokio::select! {
         biased;
+        event = receiver.recv() => TransportEventOrIdle::Event(event),
         () = async {
             match idle_deadline {
                 Some(deadline) if deadline <= tokio::time::Instant::now() => {}
@@ -19,7 +20,6 @@ pub(super) async fn receive_transport_event_or_idle<T>(
                 None => std::future::pending::<()>().await,
             }
         } => TransportEventOrIdle::Idle,
-        event = receiver.recv() => TransportEventOrIdle::Event(event),
     }
 }
 

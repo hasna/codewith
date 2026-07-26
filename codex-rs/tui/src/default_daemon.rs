@@ -25,27 +25,52 @@ pub(super) async fn connect_default_daemon(
             .await
         },
         |socket_path| async move {
+            codex_app_server_daemon::probe_app_server_version(socket_path.as_path())
+                .await
+                .map(|_| socket_path)
+        },
+        |socket_path| async move {
             connect_remote_app_server(RemoteAppServerEndpoint::UnixSocket { socket_path }).await
         },
     )
     .await
 }
 
-async fn connect_default_daemon_with<C, Ensure, EnsureFuture, Connect, ConnectFuture>(
+async fn connect_default_daemon_with<
+    C,
+    Ensure,
+    EnsureFuture,
+    Probe,
+    ProbeFuture,
+    Connect,
+    ConnectFuture,
+>(
     selected_socket_path: AbsolutePathBuf,
     codex_bin: Option<PathBuf>,
     ensure_daemon: Ensure,
+    probe_daemon: Probe,
     connect: Connect,
 ) -> color_eyre::Result<C>
 where
     Ensure: FnOnce(PathBuf) -> EnsureFuture,
     EnsureFuture: Future<Output = anyhow::Result<PathBuf>>,
+    Probe: FnOnce(AbsolutePathBuf) -> ProbeFuture,
+    ProbeFuture: Future<Output = anyhow::Result<AbsolutePathBuf>>,
     Connect: FnOnce(AbsolutePathBuf) -> ConnectFuture,
     ConnectFuture: Future<Output = color_eyre::Result<C>>,
 {
-    let _ = codex_bin;
-    let _ = ensure_daemon;
-    connect(selected_socket_path).await
+    let socket_path = match codex_bin {
+        Some(codex_bin) => {
+            let socket_path = ensure_daemon(codex_bin)
+                .await
+                .map_err(|err| color_eyre::eyre::eyre!("{err:#}"))?;
+            AbsolutePathBuf::try_from(socket_path)?
+        }
+        None => probe_daemon(selected_socket_path)
+            .await
+            .map_err(|err| color_eyre::eyre::eyre!("{err:#}"))?,
+    };
+    connect(socket_path).await
 }
 
 #[cfg(test)]
@@ -83,6 +108,7 @@ mod tests {
                 ensure_count_for_closure.fetch_add(1, Ordering::SeqCst);
                 Ok(replacement_for_ensure.as_path().to_path_buf())
             },
+            |_| async { Err(anyhow::anyhow!("probe should not run")) },
             move |socket_path| async move {
                 connected_paths_for_closure
                     .lock()
@@ -98,6 +124,45 @@ mod tests {
         assert_eq!(
             *connected_paths.lock().expect("connected paths lock"),
             vec![replacement_socket]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_daemon_without_binary_reprobes_before_durable_connect()
+    -> color_eyre::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let selected_socket =
+            AbsolutePathBuf::from_absolute_path(temp_dir.path().join("selected.sock"))?;
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let operations_for_probe = Arc::clone(&operations);
+        let operations_for_connect = Arc::clone(&operations);
+
+        let connected_socket = connect_default_daemon_with(
+            selected_socket.clone(),
+            /*codex_bin*/ None,
+            |_| async { Err(anyhow::anyhow!("ensure should not run")) },
+            move |socket_path| async move {
+                operations_for_probe
+                    .lock()
+                    .expect("operations lock")
+                    .push("probe");
+                Ok(socket_path)
+            },
+            move |socket_path| async move {
+                operations_for_connect
+                    .lock()
+                    .expect("operations lock")
+                    .push("connect");
+                Ok(socket_path)
+            },
+        )
+        .await?;
+
+        assert_eq!(connected_socket, selected_socket);
+        assert_eq!(
+            *operations.lock().expect("operations lock"),
+            vec!["probe", "connect"]
         );
         Ok(())
     }

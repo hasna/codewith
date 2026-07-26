@@ -45,7 +45,7 @@ use crate::managed_install::resolved_managed_codex_bin;
 #[cfg(unix)]
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 #[cfg(unix)]
-const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const RESTART_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -105,21 +105,14 @@ async fn update_once(
         if terminate.recv().now_or_never().flatten().is_some() {
             return Ok(UpdateLoopControl::Stop);
         }
-        match daemon
+        let outcome = daemon
             .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
-            .await?
-        {
-            outcome if retry_delay(outcome).is_some() => {
-                if sleep_or_terminate(
-                    retry_delay(outcome).expect("retry outcome should have a delay"),
-                    terminate,
-                )
-                .await
-                {
-                    return Ok(UpdateLoopControl::Stop);
-                }
-            }
-            _ => return Ok(UpdateLoopControl::Continue),
+            .await?;
+        let Some(delay) = retry_delay(outcome) else {
+            return Ok(UpdateLoopControl::Continue);
+        };
+        if sleep_or_terminate(delay, terminate).await {
+            return Ok(UpdateLoopControl::Stop);
         }
     }
 }
@@ -127,9 +120,10 @@ async fn update_once(
 #[cfg(unix)]
 fn retry_delay(outcome: RestartIfRunningOutcome) -> Option<Duration> {
     match outcome {
-        RestartIfRunningOutcome::Busy => Some(RESTART_RETRY_INTERVAL),
-        RestartIfRunningOutcome::Deferred
-        | RestartIfRunningOutcome::NotRunning
+        RestartIfRunningOutcome::Busy | RestartIfRunningOutcome::Deferred => {
+            Some(RESTART_RETRY_INTERVAL)
+        }
+        RestartIfRunningOutcome::NotRunning
         | RestartIfRunningOutcome::NotReady
         | RestartIfRunningOutcome::AlreadyCurrent
         | RestartIfRunningOutcome::Started

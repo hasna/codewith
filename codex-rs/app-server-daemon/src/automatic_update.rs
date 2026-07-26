@@ -7,13 +7,15 @@ use anyhow::anyhow;
 use tokio::time::sleep;
 
 use crate::Daemon;
+use crate::backend;
 use crate::client;
 use crate::client::ProbeInfo;
 use crate::managed_install::managed_codex_version;
+use crate::settings::DaemonSettings;
 use crate::try_lock_file;
 
 const LOCAL_PROBE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-const LOCAL_PROBE_ATTEMPTS: usize = 1;
+const LOCAL_PROBE_ATTEMPTS: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartIfRunningOutcome {
@@ -55,9 +57,23 @@ fn automatic_restart_action(
     info: Option<&ProbeInfo>,
     managed_version: Option<&str>,
 ) -> AutomaticRestartAction {
-    let _ = remote_control_enabled;
     if !backend_running {
-        return AutomaticRestartAction::LeaveNotRunning;
+        return if remote_control_enabled {
+            AutomaticRestartAction::LeaveNotRunning
+        } else {
+            AutomaticRestartAction::Start
+        };
+    }
+    if !remote_control_enabled {
+        return match (mode, info, managed_version) {
+            (RestartMode::IfVersionChanged, Some(info), Some(managed_version))
+                if info.app_server_version == managed_version =>
+            {
+                AutomaticRestartAction::AlreadyCurrent
+            }
+            (_, Some(_), _) => AutomaticRestartAction::Defer,
+            (_, None, _) => AutomaticRestartAction::Restart,
+        };
     }
     match (mode, info, managed_version) {
         (RestartMode::IfVersionChanged, None, _) => AutomaticRestartAction::NotReady,
@@ -91,7 +107,74 @@ fn should_reexec_updater(
     outcome: RestartIfRunningOutcome,
 ) -> bool {
     updater_refresh_mode == UpdaterRefreshMode::ReexecIfManagedBinaryChanged
-        && outcome == RestartIfRunningOutcome::Restarted
+        && matches!(
+            outcome,
+            RestartIfRunningOutcome::Started | RestartIfRunningOutcome::Restarted
+        )
+}
+
+/// Effects applied after the updater has classified the managed backend.
+///
+/// Implementations keep stop, start, and readiness validation ordered.
+trait AutomaticUpdateEffects {
+    fn stop_backend(&self) -> impl Future<Output = Result<()>> + Send;
+    fn start_backend(&self) -> impl Future<Output = Result<()>> + Send;
+    fn wait_until_ready(&self) -> impl Future<Output = Result<()>> + Send;
+}
+
+struct DaemonAutomaticUpdateEffects<'a> {
+    daemon: &'a Daemon,
+    settings: &'a DaemonSettings,
+    managed_codex_bin: &'a Path,
+    backend: Option<&'a backend::PidBackend>,
+}
+
+impl AutomaticUpdateEffects for DaemonAutomaticUpdateEffects<'_> {
+    async fn stop_backend(&self) -> Result<()> {
+        let Some(backend) = self.backend else {
+            return Err(anyhow!("automatic update restart has no running backend"));
+        };
+        backend.stop().await
+    }
+
+    async fn start_backend(&self) -> Result<()> {
+        let _ = self
+            .daemon
+            .start_backend_with_bin(self.settings, self.managed_codex_bin)
+            .await?;
+        Ok(())
+    }
+
+    async fn wait_until_ready(&self) -> Result<()> {
+        self.daemon.wait_until_ready().await?;
+        Ok(())
+    }
+}
+
+async fn apply_automatic_restart_action<E>(
+    effects: &E,
+    action: AutomaticRestartAction,
+) -> Result<RestartIfRunningOutcome>
+where
+    E: AutomaticUpdateEffects,
+{
+    match action {
+        AutomaticRestartAction::Defer => Ok(RestartIfRunningOutcome::Deferred),
+        AutomaticRestartAction::LeaveNotRunning => Ok(RestartIfRunningOutcome::NotRunning),
+        AutomaticRestartAction::NotReady => Ok(RestartIfRunningOutcome::NotReady),
+        AutomaticRestartAction::AlreadyCurrent => Ok(RestartIfRunningOutcome::AlreadyCurrent),
+        AutomaticRestartAction::Start => {
+            effects.start_backend().await?;
+            effects.wait_until_ready().await?;
+            Ok(RestartIfRunningOutcome::Started)
+        }
+        AutomaticRestartAction::Restart => {
+            effects.stop_backend().await?;
+            effects.start_backend().await?;
+            effects.wait_until_ready().await?;
+            Ok(RestartIfRunningOutcome::Restarted)
+        }
+    }
 }
 
 impl Daemon {
@@ -106,7 +189,8 @@ impl Daemon {
             return Ok(RestartIfRunningOutcome::Busy);
         }
         let settings = self.load_settings().await?;
-        let outcome = if let Some(backend) = self.running_backend_instance(&settings).await? {
+        let backend = self.running_backend_instance(&settings).await?;
+        let (info, managed_version) = if backend.is_some() {
             let info = if settings.remote_control_enabled {
                 client::probe(&self.socket_path).await.ok()
             } else {
@@ -117,61 +201,29 @@ impl Daemon {
             } else {
                 None
             };
-            match automatic_restart_action(
-                settings.remote_control_enabled,
-                /*backend_running*/ true,
-                mode,
-                info.as_ref(),
-                managed_version.as_deref(),
-            ) {
-                AutomaticRestartAction::Defer => RestartIfRunningOutcome::Deferred,
-                AutomaticRestartAction::LeaveNotRunning => RestartIfRunningOutcome::NotRunning,
-                AutomaticRestartAction::NotReady => RestartIfRunningOutcome::NotReady,
-                AutomaticRestartAction::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
-                AutomaticRestartAction::Start => {
-                    let _ = self
-                        .start_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
-                    self.wait_until_ready().await?;
-                    RestartIfRunningOutcome::Started
-                }
-                AutomaticRestartAction::Restart => {
-                    backend.stop().await?;
-                    let _ = self
-                        .start_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
-                    self.wait_until_ready().await?;
-                    RestartIfRunningOutcome::Restarted
-                }
-            }
-        } else if client::probe(&self.socket_path).await.is_ok() {
-            return Err(anyhow!(
-                "app server is running but is not managed by codewith app-server daemon"
-            ));
+            (info, managed_version)
         } else {
-            match automatic_restart_action(
-                settings.remote_control_enabled,
-                /*backend_running*/ false,
-                mode,
-                /*info*/ None,
-                /*managed_version*/ None,
-            ) {
-                AutomaticRestartAction::Start => {
-                    let _ = self
-                        .start_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
-                    self.wait_until_ready().await?;
-                    RestartIfRunningOutcome::Started
-                }
-                AutomaticRestartAction::LeaveNotRunning => RestartIfRunningOutcome::NotRunning,
-                AutomaticRestartAction::Defer
-                | AutomaticRestartAction::NotReady
-                | AutomaticRestartAction::AlreadyCurrent
-                | AutomaticRestartAction::Restart => {
-                    unreachable!("missing backend produced a running-backend action")
-                }
+            if client::probe(&self.socket_path).await.is_ok() {
+                return Err(anyhow!(
+                    "app server is running but is not managed by codewith app-server daemon"
+                ));
             }
+            (None, None)
         };
+        let action = automatic_restart_action(
+            settings.remote_control_enabled,
+            backend.is_some(),
+            mode,
+            info.as_ref(),
+            managed_version.as_deref(),
+        );
+        let effects = DaemonAutomaticUpdateEffects {
+            daemon: self,
+            settings: &settings,
+            managed_codex_bin,
+            backend: backend.as_ref(),
+        };
+        let outcome = apply_automatic_restart_action(&effects, action).await?;
 
         if should_reexec_updater(updater_refresh_mode, outcome) {
             crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
@@ -184,16 +236,19 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
     use pretty_assertions::assert_eq;
 
     use super::AutomaticRestartAction;
+    use super::AutomaticUpdateEffects;
     use super::LOCAL_PROBE_ATTEMPTS;
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
     use super::UpdaterRefreshMode;
+    use super::apply_automatic_restart_action;
     use super::automatic_restart_action;
     use super::probe_local_endpoint;
     use super::should_reexec_updater;
@@ -205,54 +260,97 @@ mod tests {
         }
     }
 
-    #[test]
-    fn local_running_update_defers_without_restart() {
+    #[derive(Default)]
+    struct RecordingEffects {
+        mutations: Mutex<Vec<&'static str>>,
+    }
+
+    impl RecordingEffects {
+        fn mutations(&self) -> Vec<&'static str> {
+            self.mutations.lock().expect("mutations lock").clone()
+        }
+    }
+
+    impl AutomaticUpdateEffects for RecordingEffects {
+        async fn stop_backend(&self) -> anyhow::Result<()> {
+            self.mutations.lock().expect("mutations lock").push("stop");
+            Ok(())
+        }
+
+        async fn start_backend(&self) -> anyhow::Result<()> {
+            self.mutations.lock().expect("mutations lock").push("start");
+            Ok(())
+        }
+
+        async fn wait_until_ready(&self) -> anyhow::Result<()> {
+            self.mutations.lock().expect("mutations lock").push("wait");
+            Ok(())
+        }
+    }
+
+    async fn apply_action(
+        action: AutomaticRestartAction,
+    ) -> (RestartIfRunningOutcome, Vec<&'static str>) {
+        let effects = RecordingEffects::default();
+        let outcome = apply_automatic_restart_action(&effects, action)
+            .await
+            .expect("apply action");
+        (outcome, effects.mutations())
+    }
+
+    #[tokio::test]
+    async fn local_running_update_defers_without_backend_mutation() {
+        let action = automatic_restart_action(
+            /*remote_control_enabled*/ false,
+            /*backend_running*/ true,
+            RestartMode::Always,
+            Some(&probe_info("0.1.77")),
+            Some("0.1.78"),
+        );
         assert_eq!(
-            automatic_restart_action(
-                /*remote_control_enabled*/ false,
-                /*backend_running*/ true,
-                RestartMode::Always,
-                Some(&probe_info("0.1.77")),
-                Some("0.1.78"),
-            ),
-            AutomaticRestartAction::Defer
+            apply_action(action).await,
+            (RestartIfRunningOutcome::Deferred, vec![])
         );
     }
 
-    #[test]
-    fn local_update_defers_then_starts_latest_after_natural_exit() {
+    #[tokio::test]
+    async fn local_update_starts_latest_after_natural_exit_without_stop() {
+        let action = automatic_restart_action(
+            /*remote_control_enabled*/ false,
+            /*backend_running*/ false,
+            RestartMode::Always,
+            /*info*/ None,
+            /*managed_version*/ None,
+        );
         assert_eq!(
-            [
-                automatic_restart_action(
-                    /*remote_control_enabled*/ false,
-                    /*backend_running*/ true,
-                    RestartMode::Always,
-                    Some(&probe_info("0.1.77")),
-                    Some("0.1.78"),
-                ),
-                automatic_restart_action(
-                    /*remote_control_enabled*/ false,
-                    /*backend_running*/ false,
-                    RestartMode::Always,
-                    /*info*/ None,
-                    /*managed_version*/ None,
-                ),
-            ],
-            [AutomaticRestartAction::Defer, AutomaticRestartAction::Start,]
+            apply_action(action).await,
+            (RestartIfRunningOutcome::Started, vec!["start", "wait"])
         );
     }
 
-    #[test]
-    fn local_unresponsive_endpoint_recovers_only_after_probe_confirmation() {
+    #[tokio::test(start_paused = true)]
+    async fn local_unresponsive_endpoint_recovers_after_bounded_probe_confirmation() {
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let probe_count_for_closure = Arc::clone(&probe_count);
+        let info = probe_local_endpoint(move || {
+            probe_count_for_closure.fetch_add(1, Ordering::SeqCst);
+            async { Err(anyhow::anyhow!("not listening")) }
+        })
+        .await;
+        let action = automatic_restart_action(
+            /*remote_control_enabled*/ false,
+            /*backend_running*/ true,
+            RestartMode::IfVersionChanged,
+            info.as_ref(),
+            /*managed_version*/ None,
+        );
+        assert_eq!(probe_count.load(Ordering::SeqCst), LOCAL_PROBE_ATTEMPTS);
         assert_eq!(
-            automatic_restart_action(
-                /*remote_control_enabled*/ false,
-                /*backend_running*/ true,
-                RestartMode::IfVersionChanged,
-                /*info*/ None,
-                /*managed_version*/ None,
-            ),
-            AutomaticRestartAction::Restart
+            apply_action(action).await,
+            (
+                RestartIfRunningOutcome::Restarted,
+                vec!["stop", "start", "wait"],
+            )
         );
     }
 
@@ -298,21 +396,22 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn local_unresponsive_probe_is_retried_to_a_bounded_limit() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_probe = Arc::clone(&attempts);
-
-        assert_eq!(
-            probe_local_endpoint(move || {
-                attempts_for_probe.fetch_add(1, Ordering::SeqCst);
-                async { Err(anyhow::anyhow!("not listening")) }
-            })
-            .await,
-            None
+    #[tokio::test]
+    async fn remote_control_update_still_restarts_immediately() {
+        let action = automatic_restart_action(
+            /*remote_control_enabled*/ true,
+            /*backend_running*/ true,
+            RestartMode::Always,
+            Some(&probe_info("0.1.77")),
+            Some("0.1.78"),
         );
-        assert_eq!(attempts.load(Ordering::SeqCst), 5);
-        assert_eq!(LOCAL_PROBE_ATTEMPTS, 5);
+        assert_eq!(
+            apply_action(action).await,
+            (
+                RestartIfRunningOutcome::Restarted,
+                vec!["stop", "start", "wait"],
+            )
+        );
     }
 
     #[test]
