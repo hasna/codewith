@@ -890,6 +890,23 @@ async fn load_auth_with_profile(
         return Ok(None);
     }
 
+    // Everything above this point is an *explicit* credential injection (env
+    // vars, or an externally supplied ephemeral token). The persisted root
+    // login below is the one thing the ambient `auth_profiles/.active` marker
+    // claims ownership of, so the provider lock applies only here, and only
+    // when no profile was explicitly selected for this process.
+    if selected_auth_profile.is_none() {
+        let ownership = super::profile::root_auth_ownership(codex_home);
+        if !ownership.allows_root_model_auth() {
+            tracing::info!(
+                ?ownership,
+                "not using the root login for Codewith model auth; run \
+                 `codewith profile switch <chatgpt-profile>` to change the active profile"
+            );
+            return Ok(None);
+        }
+    }
+
     // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
     let storage = create_auth_storage(auth_storage_home.clone(), auth_credentials_store_mode);
     let auth_dot_json = match storage.load()? {

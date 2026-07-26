@@ -5475,24 +5475,57 @@ async fn config_ignores_empty_codewith_auth_profile_env() -> std::io::Result<()>
     Ok(())
 }
 
-#[tokio::test]
-#[serial(selected_auth_profile_env)]
-async fn config_resolves_selected_auth_profile_from_active_marker() -> anyhow::Result<()> {
-    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
-    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
-    let codex_home = TempDir::new()?;
+/// Reproduces `codewith profile save <name>`: snapshots the root login into a
+/// named profile and records it in the ambient `auth_profiles/.active` marker.
+fn save_root_login_as_active_profile(
+    codex_home: &Path,
+    name: &str,
+    metadata: Option<codex_login::AuthProfileMetadata>,
+) -> anyhow::Result<()> {
+    let store_mode = codex_config::types::AuthCredentialsStoreMode::File;
+    codex_login::login_with_api_key(codex_home, "sk-root", store_mode)?;
+    codex_login::save_current_auth_profile(codex_home, store_mode, name)?;
+    if let Some(metadata) = metadata {
+        codex_login::save_auth_profile_metadata(codex_home, name, metadata)?;
+    }
+    Ok(())
+}
+
+/// Reproduces `codewith profile switch <name>` onto a provider-locked profile.
+fn switch_to_external_profile(
+    codex_home: &Path,
+    name: &str,
+    subscription_provider: codex_login::AuthProfileSubscriptionProvider,
+) -> anyhow::Result<()> {
+    let store_mode = codex_config::types::AuthCredentialsStoreMode::File;
     codex_login::save_auth_profile_metadata(
-        codex_home.path(),
-        "cursor",
+        codex_home,
+        name,
         codex_login::AuthProfileMetadata {
-            subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+            subscription_provider,
             last_permissions: None,
         },
     )?;
-    codex_login::switch_auth_profile(
+    codex_login::switch_auth_profile(codex_home, store_mode, name)?;
+    Ok(())
+}
+
+/// The ambient `auth_profiles/.active` marker records which profile owns the
+/// *root login*; it must never scope the current process to a named profile.
+/// Doing so silently changes sandbox/approval posture, suppresses env
+/// credentials, disables root-auth mirroring, re-namespaces the app-server
+/// socket, and trips the Infinity Agent guard — all as an invisible side effect
+/// of an unrelated earlier `profile switch`.
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_ignores_active_auth_profile_marker_for_process_selection() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let codex_home = TempDir::new()?;
+    switch_to_external_profile(
         codex_home.path(),
-        codex_config::types::AuthCredentialsStoreMode::File,
         "cursor",
+        codex_login::AuthProfileSubscriptionProvider::Cursor,
     )?;
 
     let config = Config::load_from_base_config_with_overrides(
@@ -5502,7 +5535,197 @@ async fn config_resolves_selected_auth_profile_from_active_marker() -> anyhow::R
     )
     .await?;
 
-    assert_eq!(config.selected_auth_profile.as_deref(), Some("cursor"));
+    assert_eq!(config.selected_auth_profile, None);
+
+    // D7: the Infinity Agent guard keys off the same predicate, so an ambient
+    // marker must not make a plain load unloadable under that tool policy.
+    reject_infinity_agent_auth_profile_inheritance(
+        ToolPolicy::InfinityAgent,
+        config.selected_auth_profile.as_deref(),
+    )
+    .expect("an ambient active-profile marker must not trip the Infinity Agent guard");
+
+    Ok(())
+}
+
+/// D1: a plain invocation must not silently inherit a saved profile's sandbox
+/// and approval posture just because that profile is the ambient active one.
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_active_auth_profile_marker_does_not_inherit_saved_permissions() -> anyhow::Result<()>
+{
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+
+    let baseline_home = TempDir::new()?;
+    let baseline = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        baseline_home.abs(),
+    )
+    .await?;
+
+    let codex_home = TempDir::new()?;
+    save_root_login_as_active_profile(
+        codex_home.path(),
+        "work",
+        Some(saved_auth_profile_permission_metadata(
+            BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+            AskForApproval::Never,
+        )),
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.permissions.permission_profile(),
+        baseline.permissions.permission_profile(),
+    );
+    assert_eq!(
+        config
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.clone()),
+        baseline
+            .permissions
+            .active_permission_profile()
+            .as_ref()
+            .map(|profile| profile.id.clone()),
+    );
+    assert_eq!(
+        config.permissions.approval_policy.value(),
+        baseline.permissions.approval_policy.value(),
+    );
+
+    Ok(())
+}
+
+/// D2: `CODEX_API_KEY` / `CODEX_ACCESS_TOKEN` are suppressed for processes
+/// scoped to a named profile. A single `profile switch` must not silently
+/// suppress them for every later invocation on the machine.
+#[tokio::test]
+#[serial(selected_auth_profile_env, codex_auth_env)]
+async fn config_active_auth_profile_marker_does_not_suppress_env_auth() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+    let _access_token_guard = EnvVarGuard::remove(codex_login::CODEX_ACCESS_TOKEN_ENV_VAR);
+    let _api_key_guard = EnvVarGuard::set(codex_login::CODEX_API_KEY_ENV_VAR, "sk-env");
+
+    let codex_home = TempDir::new()?;
+    save_root_login_as_active_profile(codex_home.path(), "work", None)?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    let auth_manager = codex_login::AuthManager::shared_from_config(
+        &config, /*enable_codex_api_key_env*/ true,
+    )
+    .await;
+
+    assert_eq!(
+        auth_manager
+            .auth_cached()
+            .as_ref()
+            .and_then(codex_login::CodexAuth::api_key),
+        Some("sk-env"),
+    );
+
+    Ok(())
+}
+
+/// D5: a corrupt marker must not brick `Config::load`, because that also takes
+/// out the recovery paths (`codewith login`, `codewith profile list`,
+/// `codewith profile switch`). The credential path fails closed instead — see
+/// `active_marker_that_cannot_be_resolved_blocks_root_openai_auth` in
+/// `codex-login`.
+#[tokio::test]
+#[serial(selected_auth_profile_env)]
+async fn config_load_tolerates_corrupt_active_auth_profile_marker() -> anyhow::Result<()> {
+    let _codewith_guard = EnvVarGuard::remove(CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = EnvVarGuard::remove(CODEX_AUTH_PROFILE_ENV_VAR);
+
+    // (a) `.active` holds a name that is not a legal profile name.
+    let invalid_name_home = TempDir::new()?;
+    let profiles_dir = invalid_name_home.path().join("auth_profiles");
+    std::fs::create_dir_all(&profiles_dir)?;
+    std::fs::write(profiles_dir.join(".active"), "../escape")?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        invalid_name_home.abs(),
+    )
+    .await?;
+    assert_eq!(config.selected_auth_profile, None);
+    // Failing closed on credentials must not be silent.
+    assert!(
+        config
+            .startup_warnings
+            .iter()
+            .any(|warning| warning.contains("which auth profile owns the current login")),
+        "expected a startup warning about the unresolvable marker, got {:?}",
+        config.startup_warnings,
+    );
+
+    // (b) `.active` names a real profile whose metadata is malformed.
+    let malformed_home = TempDir::new()?;
+    save_root_login_as_active_profile(malformed_home.path(), "work", None)?;
+    std::fs::write(
+        malformed_home
+            .path()
+            .join("auth_profiles")
+            .join("work")
+            .join("profile.json"),
+        "{ not json",
+    )?;
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        malformed_home.abs(),
+    )
+    .await?;
+    assert_eq!(config.selected_auth_profile, None);
+    assert!(
+        config
+            .startup_warnings
+            .iter()
+            .any(|warning| warning.contains("which auth profile owns the current login")),
+        "expected a startup warning about the unreadable profile metadata, got {:?}",
+        config.startup_warnings,
+    );
+
+    // (c) A *deliberate* provider lock is a normal state and must stay quiet.
+    let external_home = TempDir::new()?;
+    switch_to_external_profile(
+        external_home.path(),
+        "cursor",
+        codex_login::AuthProfileSubscriptionProvider::Cursor,
+    )?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        external_home.abs(),
+    )
+    .await?;
+    assert!(
+        !config
+            .startup_warnings
+            .iter()
+            .any(|warning| warning.contains("which auth profile owns the current login")),
+        "a deliberate provider lock must not warn, got {:?}",
+        config.startup_warnings,
+    );
 
     Ok(())
 }

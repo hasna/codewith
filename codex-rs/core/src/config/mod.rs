@@ -87,12 +87,12 @@ use codex_features::NetworkProxyConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_install_context::InstallContext;
 use codex_login::AuthManagerConfig;
-use codex_login::AuthProfileError;
 use codex_login::AuthProfilePermissionSettings;
 use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
-use codex_login::active_auth_profile;
+use codex_login::RootAuthOwnership;
 use codex_login::load_auth_profile_metadata;
+use codex_login::root_auth_ownership;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
 use codex_memories_read::memory_root;
@@ -596,8 +596,19 @@ fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Resolves the auth profile this *process* is scoped to.
+///
+/// Only explicit selectors participate: `--auth-profile`,
+/// `CODEWITH_AUTH_PROFILE`, and `CODEX_AUTH_PROFILE`. The ambient
+/// `auth_profiles/.active` marker written by `codewith profile switch` is
+/// deliberately *not* consulted here — see
+/// [`codex_login::RootAuthOwnership`] for why those are different concepts.
+/// A named selection changes sandbox/approval posture, suppresses global env
+/// credentials, disables root-auth mirroring, namespaces the app-server
+/// socket, and is rejected outright under the Infinity Agent tool policy; none
+/// of that may happen as an invisible side effect of an unrelated earlier
+/// command.
 fn resolve_selected_auth_profile(
-    codex_home: &Path,
     explicit_profile: Option<String>,
 ) -> std::io::Result<Option<String>> {
     if let Some(profile) = explicit_profile {
@@ -608,22 +619,9 @@ fn resolve_selected_auth_profile(
         return validate_selected_auth_profile(profile, CODEWITH_AUTH_PROFILE_ENV_VAR).map(Some);
     }
 
-    if let Some(profile) = non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR) {
-        return validate_selected_auth_profile(profile, CODEX_AUTH_PROFILE_ENV_VAR).map(Some);
-    }
-
-    match active_auth_profile(codex_home).map_err(|err| {
-        std::io::Error::other(format!("failed to resolve active auth profile: {err}"))
-    })? {
-        Some(profile) => match load_auth_profile_metadata(codex_home, &profile) {
-            Ok(_) => Ok(Some(profile)),
-            Err(AuthProfileError::ProfileNotFound { .. }) => Ok(None),
-            Err(err) => Err(std::io::Error::other(format!(
-                "failed to load active auth profile metadata: {err}"
-            ))),
-        },
-        None => Ok(None),
-    }
+    non_empty_env(CODEX_AUTH_PROFILE_ENV_VAR)
+        .map(|profile| validate_selected_auth_profile(profile, CODEX_AUTH_PROFILE_ENV_VAR))
+        .transpose()
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -3709,12 +3707,27 @@ impl Config {
             Some(profile) => profile
                 .map(|profile| validate_selected_auth_profile(profile, "--auth-profile"))
                 .transpose()?,
-            None => resolve_selected_auth_profile(&codex_home, /*explicit_profile*/ None)?,
+            None => resolve_selected_auth_profile(/*explicit_profile*/ None)?,
         };
         reject_infinity_agent_auth_profile_inheritance(
             tool_policy,
             selected_auth_profile.as_deref(),
         )?;
+        // A corrupt `auth_profiles/.active` makes the root login unusable for
+        // model auth (see `RootAuthOwnership`). That must not fail the load —
+        // `codewith login` and `codewith profile switch` are how the user
+        // repairs it — but it does need to be visible rather than silent. A
+        // deliberate provider lock is a normal state and is not warned about.
+        if selected_auth_profile.is_none()
+            && let RootAuthOwnership::Unresolvable { detail, .. } =
+                root_auth_ownership(&codex_home)
+        {
+            startup_warnings.push(format!(
+                "Codewith cannot tell which auth profile owns the current login, so it will not \
+                 use those credentials: {detail}. Run `codewith profile switch <name>` or \
+                 `codewith login` to repair it."
+            ));
+        }
         let runtime_permission_overrides_present = sandbox_mode.is_some()
             || permission_profile.is_some()
             || default_permissions_override.is_some()
