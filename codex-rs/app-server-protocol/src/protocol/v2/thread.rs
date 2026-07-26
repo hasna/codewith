@@ -1307,6 +1307,117 @@ pub struct ThreadGoalPlanAddGoalResponse {
     pub created_plan: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanNodeInsertPosition {
+    Before,
+    After,
+    End,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanNodeCompletionStatus {
+    Complete,
+    Pending,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanNodeTitleUpdate {
+    Clear,
+    Set { value: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadGoalPlanNodeTokenBudgetUpdate {
+    Clear,
+    Set { value: i64 },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanUpdateNodeParams {
+    pub thread_id: String,
+    pub node_id: String,
+    #[ts(optional = nullable)]
+    pub key: Option<String>,
+    #[ts(optional = nullable)]
+    pub objective: Option<String>,
+    #[ts(optional = nullable)]
+    pub title: Option<ThreadGoalPlanNodeTitleUpdate>,
+    #[ts(optional = nullable)]
+    pub priority: Option<i64>,
+    #[ts(optional = nullable)]
+    pub token_budget: Option<ThreadGoalPlanNodeTokenBudgetUpdate>,
+    #[ts(optional = nullable)]
+    pub depends_on: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanUpdateNodeResponse {
+    pub goal: Option<ThreadGoal>,
+    pub plan: ThreadGoalPlan,
+    pub node: ThreadGoalPlanNode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanInsertNodeParams {
+    pub thread_id: String,
+    pub plan_id: String,
+    pub position: ThreadGoalPlanNodeInsertPosition,
+    #[ts(optional = nullable)]
+    pub reference_node_id: Option<String>,
+    pub key: String,
+    pub objective: String,
+    #[ts(optional = nullable)]
+    pub title: Option<String>,
+    #[ts(optional = nullable)]
+    pub priority: Option<i64>,
+    #[ts(optional = nullable)]
+    pub token_budget: Option<i64>,
+    #[ts(optional = nullable)]
+    pub depends_on: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanInsertNodeResponse {
+    pub plan: ThreadGoalPlan,
+    pub inserted_node: ThreadGoalPlanNode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanSetNodeStatusParams {
+    pub thread_id: String,
+    pub node_id: String,
+    pub status: ThreadGoalPlanNodeCompletionStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadGoalPlanSetNodeStatusResponse {
+    pub goal: Option<ThreadGoal>,
+    pub activated_goal: Option<ThreadGoal>,
+    pub cleared_goal: bool,
+    pub plan: ThreadGoalPlan,
+    pub node: ThreadGoalPlanNode,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ThreadGoalPlanNodeInsertPosition": {
+      "enum": [
+        "before",
+        "after",
+        "end"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "dependsOn": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "key": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "planId": {
+      "type": "string"
+    },
+    "position": {
+      "$ref": "#/$defs/ThreadGoalPlanNodeInsertPosition"
+    },
+    "priority": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "referenceNodeId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tokenBudget": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "threadId",
+    "planId",
+    "position",
+    "key",
+    "objective"
+  ],
+  "title": "ThreadGoalPlanInsertNodeParams",
+  "type": "object"
+}

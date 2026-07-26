@@ -31,5 +31,8 @@ pub use spec::CREATE_GOAL_PLAN_TOOL_NAME;
 pub use spec::CREATE_GOAL_TOOL_NAME;
 pub use spec::GET_GOAL_PLAN_TOOL_NAME;
 pub use spec::GET_GOAL_TOOL_NAME;
+pub use spec::INSERT_GOAL_PLAN_NODE_TOOL_NAME;
+pub use spec::SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME;
+pub use spec::UPDATE_GOAL_PLAN_NODE_TOOL_NAME;
 pub use spec::UPDATE_GOAL_TOOL_NAME;
 pub use tool::CreateGoalRequest;

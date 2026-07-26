@@ -101,6 +101,7 @@ use tracing::warn;
 mod agent_jobs;
 mod backfill;
 mod background_agents;
+mod goal_plan_edits;
 mod goal_plans;
 mod goals;
 mod local_active_sessions;
@@ -170,6 +171,15 @@ pub(crate) fn redact_state_json_string(value: &Value) -> anyhow::Result<String> 
     crate::redacted_local_state_json_string(value)
 }
 
+pub use goal_plan_edits::ThreadGoalPlanNodeCompletionStatus;
+pub use goal_plan_edits::ThreadGoalPlanNodeInsertOutcome;
+pub use goal_plan_edits::ThreadGoalPlanNodeInsertParams;
+pub use goal_plan_edits::ThreadGoalPlanNodeInsertPosition;
+pub use goal_plan_edits::ThreadGoalPlanNodeMutationOutcome;
+pub use goal_plan_edits::ThreadGoalPlanNodeStatusUpdateParams;
+pub use goal_plan_edits::ThreadGoalPlanNodeTitleUpdate;
+pub use goal_plan_edits::ThreadGoalPlanNodeTokenBudgetUpdate;
+pub use goal_plan_edits::ThreadGoalPlanNodeUpdateParams;
 pub use goal_plans::DEFAULT_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::MAX_THREAD_GOAL_PLAN_LIST_LIMIT;
 pub use goal_plans::ThreadGoalPlanAddOutcome;

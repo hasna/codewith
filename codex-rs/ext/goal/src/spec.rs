@@ -11,6 +11,9 @@ pub const CREATE_GOAL_TOOL_NAME: &str = "create_goal";
 pub const GET_GOAL_PLAN_TOOL_NAME: &str = "get_goal_plan";
 pub const CREATE_GOAL_PLAN_TOOL_NAME: &str = "create_goal_plan";
 pub const ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME: &str = "activate_goal_plan_node";
+pub const UPDATE_GOAL_PLAN_NODE_TOOL_NAME: &str = "update_goal_plan_node";
+pub const INSERT_GOAL_PLAN_NODE_TOOL_NAME: &str = "insert_goal_plan_node";
+pub const SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME: &str = "set_goal_plan_node_status";
 pub const UPDATE_GOAL_TOOL_NAME: &str = "update_goal";
 pub const PAUSE_GOAL_TOOL_NAME: &str = "pause_goal";
 pub const RESUME_GOAL_TOOL_NAME: &str = "resume_goal";
@@ -296,6 +299,230 @@ Do not activate a node whose dependencies are incomplete, and do not use this to
         parameters: JsonSchema::object(
             properties,
             /*required*/ Some(vec!["node_id".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
+pub fn create_update_goal_plan_node_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "node_id".to_string(),
+            JsonSchema::string(Some(
+                "Required stable node id from get_goal_plan for the node to edit.".to_string(),
+            )),
+        ),
+        (
+            "key".to_string(),
+            JsonSchema::string(Some(
+                "Optional new stable short key. Keys must be unique within the plan and contain only ASCII letters, numbers, underscores, or hyphens."
+                    .to_string(),
+            )),
+        ),
+        (
+            "objective".to_string(),
+            JsonSchema::string(Some(
+                "Optional new concrete objective/prompt for this goal-plan node.".to_string(),
+            )),
+        ),
+        (
+            "title".to_string(),
+            JsonSchema::string(Some(
+                "Optional compact display title for this node, at most 4-5 words. Omit to keep the current title."
+                    .to_string(),
+            )),
+        ),
+        (
+            "clear_title".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Set true to clear the node title. Do not combine with title."
+                    .to_string(),
+            )),
+        ),
+        (
+            "priority".to_string(),
+            JsonSchema::integer(Some(
+                "Optional priority for choosing among independent ready goals. Higher runs first."
+                    .to_string(),
+            )),
+        ),
+        (
+            "token_budget".to_string(),
+            JsonSchema::integer(Some(
+                "Optional positive token budget for this node. Omit to keep the current budget."
+                    .to_string(),
+            )),
+        ),
+        (
+            "clear_token_budget".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Set true to clear the node token budget. Do not combine with token_budget."
+                    .to_string(),
+            )),
+        ),
+        (
+            "depends_on".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some(
+                    "A goal-plan node key that must complete before this node is ready."
+                        .to_string(),
+                )),
+                Some(
+                    "Optional replacement dependency list. Omit to keep current dependencies."
+                        .to_string(),
+                ),
+            ),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: UPDATE_GOAL_PLAN_NODE_TOOL_NAME.to_string(),
+        description: format!(
+            r#"Edit an existing goal-plan node's metadata or objective/prompt.
+Completed nodes cannot be edited; mark the node pending with {SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME} before editing it.
+Changing a node key preserves existing dependency edges because dependencies are stored by node id.
+{ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
+        ),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            /*required*/ Some(vec!["node_id".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
+pub fn create_insert_goal_plan_node_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "plan_id".to_string(),
+            JsonSchema::string(Some(
+                "Required stable goal-plan id from get_goal_plan.".to_string(),
+            )),
+        ),
+        (
+            "position".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("before"), json!("after"), json!("end")],
+                Some(
+                    "Required insertion position. Use before/after with reference_node_id, or end to append by display order."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "reference_node_id".to_string(),
+            JsonSchema::string(Some(
+                "Required when position is before or after; ignored when position is end."
+                    .to_string(),
+            )),
+        ),
+        (
+            "key".to_string(),
+            JsonSchema::string(Some(
+                "Required stable short key unique inside this plan.".to_string(),
+            )),
+        ),
+        (
+            "objective".to_string(),
+            JsonSchema::string(Some(
+                "Required concrete objective/prompt for the inserted node.".to_string(),
+            )),
+        ),
+        (
+            "title".to_string(),
+            JsonSchema::string(Some(
+                "Optional compact display title for this node, at most 4-5 words.".to_string(),
+            )),
+        ),
+        (
+            "priority".to_string(),
+            JsonSchema::integer(Some(
+                "Optional priority for choosing among independent ready goals. Higher runs first. Defaults to 0."
+                    .to_string(),
+            )),
+        ),
+        (
+            "token_budget".to_string(),
+            JsonSchema::integer(Some(
+                "Optional positive token budget for this node.".to_string(),
+            )),
+        ),
+        (
+            "depends_on".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some(
+                    "A goal-plan node key that must complete before this node is ready."
+                        .to_string(),
+                )),
+                Some(
+                    "Optional dependency list for the inserted node. Position controls display order; dependencies control readiness."
+                        .to_string(),
+                ),
+            ),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: INSERT_GOAL_PLAN_NODE_TOOL_NAME.to_string(),
+        description: format!(
+            r#"Insert a new pending node into an existing goal plan before, after, or at the end of the current node order.
+Position controls display order; use depends_on to set readiness dependencies intentionally.
+{ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
+        ),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            /*required*/
+            Some(vec![
+                "plan_id".to_string(),
+                "position".to_string(),
+                "key".to_string(),
+                "objective".to_string(),
+            ]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
+pub fn create_set_goal_plan_node_status_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "node_id".to_string(),
+            JsonSchema::string(Some(
+                "Required stable node id from get_goal_plan for the node to mark.".to_string(),
+            )),
+        ),
+        (
+            "status".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("complete"), json!("pending")],
+                Some(
+                    "Required target status. Use complete to mark done and pending to mark undone."
+                        .to_string(),
+                ),
+            ),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME.to_string(),
+        description: format!(
+            r#"Mark a goal-plan node done or undone.
+Only complete and pending are supported here; use update_goal for the active goal's terminal lifecycle when you need normal completion accounting.
+Completed nodes cannot be edited until they are marked pending with this tool.
+{ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
+        ),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            /*required*/ Some(vec!["node_id".to_string(), "status".to_string()]),
             Some(false.into()),
         ),
         output_schema: None,

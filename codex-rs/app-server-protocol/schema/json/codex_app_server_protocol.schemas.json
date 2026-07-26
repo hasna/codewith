@@ -470,6 +470,72 @@
               "$ref": "#/definitions/v2/RequestId"
             },
             "method": {
+              "const": "thread/goalPlan/updateNode",
+              "title": "Thread/goalPlan/updateNodeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalPlanUpdateNodeParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Thread/goalPlan/updateNodeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "const": "thread/goalPlan/insertNode",
+              "title": "Thread/goalPlan/insertNodeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalPlanInsertNodeParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Thread/goalPlan/insertNodeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "const": "thread/goalPlan/setNodeStatus",
+              "title": "Thread/goalPlan/setNodeStatusRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadGoalPlanSetNodeStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "Thread/goalPlan/setNodeStatusRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
               "const": "thread/goal/clear",
               "title": "Thread/goal/clearRequestMethod",
               "type": "string"
@@ -19542,6 +19608,87 @@
         ],
         "type": "string"
       },
+      "ThreadGoalPlanInsertNodeParams": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "dependsOn": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "planId": {
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNodeInsertPosition"
+          },
+          "priority": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "referenceNodeId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tokenBudget": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId",
+          "planId",
+          "position",
+          "key",
+          "objective"
+        ],
+        "title": "ThreadGoalPlanInsertNodeParams",
+        "type": "object"
+      },
+      "ThreadGoalPlanInsertNodeResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "insertedNode": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNode"
+          },
+          "plan": {
+            "$ref": "#/definitions/v2/ThreadGoalPlan"
+          }
+        },
+        "required": [
+          "plan",
+          "insertedNode"
+        ],
+        "title": "ThreadGoalPlanInsertNodeResponse",
+        "type": "object"
+      },
       "ThreadGoalPlanNode": {
         "properties": {
           "assignedThreadId": {
@@ -19648,6 +19795,21 @@
         ],
         "type": "object"
       },
+      "ThreadGoalPlanNodeCompletionStatus": {
+        "enum": [
+          "complete",
+          "pending"
+        ],
+        "type": "string"
+      },
+      "ThreadGoalPlanNodeInsertPosition": {
+        "enum": [
+          "before",
+          "after",
+          "end"
+        ],
+        "type": "string"
+      },
       "ThreadGoalPlanNodeStatus": {
         "enum": [
           "pending",
@@ -19662,6 +19824,141 @@
         ],
         "type": "string"
       },
+      "ThreadGoalPlanNodeTitleUpdate": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "clear",
+                "title": "ClearThreadGoalPlanNodeTitleUpdateType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ClearThreadGoalPlanNodeTitleUpdate",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "set",
+                "title": "SetThreadGoalPlanNodeTitleUpdateType",
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "title": "SetThreadGoalPlanNodeTitleUpdate",
+            "type": "object"
+          }
+        ]
+      },
+      "ThreadGoalPlanNodeTokenBudgetUpdate": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "clear",
+                "title": "ClearThreadGoalPlanNodeTokenBudgetUpdateType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ClearThreadGoalPlanNodeTokenBudgetUpdate",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "set",
+                "title": "SetThreadGoalPlanNodeTokenBudgetUpdateType",
+                "type": "string"
+              },
+              "value": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "title": "SetThreadGoalPlanNodeTokenBudgetUpdate",
+            "type": "object"
+          }
+        ]
+      },
+      "ThreadGoalPlanSetNodeStatusParams": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "nodeId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNodeCompletionStatus"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId",
+          "nodeId",
+          "status"
+        ],
+        "title": "ThreadGoalPlanSetNodeStatusParams",
+        "type": "object"
+      },
+      "ThreadGoalPlanSetNodeStatusResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "activatedGoal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clearedGoal": {
+            "type": "boolean"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNode"
+          },
+          "plan": {
+            "$ref": "#/definitions/v2/ThreadGoalPlan"
+          }
+        },
+        "required": [
+          "clearedGoal",
+          "plan",
+          "node"
+        ],
+        "title": "ThreadGoalPlanSetNodeStatusResponse",
+        "type": "object"
+      },
       "ThreadGoalPlanStatus": {
         "enum": [
           "active",
@@ -19672,6 +19969,98 @@
           "cancelled"
         ],
         "type": "string"
+      },
+      "ThreadGoalPlanUpdateNodeParams": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "dependsOn": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoalPlanNodeTitleUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tokenBudget": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoalPlanNodeTokenBudgetUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "threadId",
+          "nodeId"
+        ],
+        "title": "ThreadGoalPlanUpdateNodeParams",
+        "type": "object"
+      },
+      "ThreadGoalPlanUpdateNodeResponse": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadGoal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node": {
+            "$ref": "#/definitions/v2/ThreadGoalPlanNode"
+          },
+          "plan": {
+            "$ref": "#/definitions/v2/ThreadGoalPlan"
+          }
+        },
+        "required": [
+          "plan",
+          "node"
+        ],
+        "title": "ThreadGoalPlanUpdateNodeResponse",
+        "type": "object"
       },
       "ThreadGoalPlanUpdatedNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -27,16 +27,22 @@ use crate::spec::CREATE_GOAL_PLAN_TOOL_NAME;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::GET_GOAL_PLAN_TOOL_NAME;
 use crate::spec::GET_GOAL_TOOL_NAME;
+use crate::spec::INSERT_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::PAUSE_GOAL_TOOL_NAME;
 use crate::spec::RESUME_GOAL_TOOL_NAME;
+use crate::spec::SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME;
+use crate::spec::UPDATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::spec::create_activate_goal_plan_node_tool;
 use crate::spec::create_create_goal_plan_tool;
 use crate::spec::create_create_goal_tool;
 use crate::spec::create_get_goal_plan_tool;
 use crate::spec::create_get_goal_tool;
+use crate::spec::create_insert_goal_plan_node_tool;
 use crate::spec::create_pause_goal_tool;
 use crate::spec::create_resume_goal_tool;
+use crate::spec::create_set_goal_plan_node_status_tool;
+use crate::spec::create_update_goal_plan_node_tool;
 use crate::spec::create_update_goal_tool;
 use crate::tool_plan::GoalPlanCompletionReport;
 use crate::tool_plan::GoalPlanResponse;
@@ -65,6 +71,9 @@ enum GoalToolKind {
     GetPlan,
     CreatePlan,
     ActivatePlanNode,
+    UpdatePlanNode,
+    InsertPlanNode,
+    SetPlanNodeStatus,
     Update,
     Pause,
     Resume,
@@ -220,6 +229,63 @@ impl GoalToolExecutor {
         }
     }
 
+    pub(crate) fn update_plan_node(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfigHandle,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::UpdatePlanNode,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
+    pub(crate) fn insert_plan_node(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfigHandle,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::InsertPlanNode,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
+    pub(crate) fn set_plan_node_status(
+        thread_id: ThreadId,
+        state_db: Arc<codex_state::StateRuntime>,
+        accounting_state: Arc<GoalAccountingState>,
+        event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
+        plan_config: GoalPlanRuntimeConfigHandle,
+    ) -> Self {
+        Self {
+            kind: GoalToolKind::SetPlanNodeStatus,
+            thread_id,
+            state_db,
+            accounting_state,
+            event_emitter,
+            metrics,
+            plan_config: Some(plan_config),
+        }
+    }
+
     pub(crate) fn update(
         thread_id: ThreadId,
         state_db: Arc<codex_state::StateRuntime>,
@@ -296,6 +362,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::GetPlan => GET_GOAL_PLAN_TOOL_NAME,
             GoalToolKind::CreatePlan => CREATE_GOAL_PLAN_TOOL_NAME,
             GoalToolKind::ActivatePlanNode => ACTIVATE_GOAL_PLAN_NODE_TOOL_NAME,
+            GoalToolKind::UpdatePlanNode => UPDATE_GOAL_PLAN_NODE_TOOL_NAME,
+            GoalToolKind::InsertPlanNode => INSERT_GOAL_PLAN_NODE_TOOL_NAME,
+            GoalToolKind::SetPlanNodeStatus => SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME,
             GoalToolKind::Update => UPDATE_GOAL_TOOL_NAME,
             GoalToolKind::Pause => PAUSE_GOAL_TOOL_NAME,
             GoalToolKind::Resume => RESUME_GOAL_TOOL_NAME,
@@ -309,6 +378,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::GetPlan => create_get_goal_plan_tool(),
             GoalToolKind::CreatePlan => create_create_goal_plan_tool(),
             GoalToolKind::ActivatePlanNode => create_activate_goal_plan_node_tool(),
+            GoalToolKind::UpdatePlanNode => create_update_goal_plan_node_tool(),
+            GoalToolKind::InsertPlanNode => create_insert_goal_plan_node_tool(),
+            GoalToolKind::SetPlanNodeStatus => create_set_goal_plan_node_status_tool(),
             GoalToolKind::Update => create_update_goal_tool(),
             GoalToolKind::Pause => create_pause_goal_tool(),
             GoalToolKind::Resume => create_resume_goal_tool(),
@@ -322,6 +394,9 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
             GoalToolKind::GetPlan => self.handle_get_plan(invocation).await,
             GoalToolKind::CreatePlan => self.handle_create_plan(invocation).await,
             GoalToolKind::ActivatePlanNode => self.handle_activate_plan_node(invocation).await,
+            GoalToolKind::UpdatePlanNode => self.handle_update_plan_node(invocation).await,
+            GoalToolKind::InsertPlanNode => self.handle_insert_plan_node(invocation).await,
+            GoalToolKind::SetPlanNodeStatus => self.handle_set_plan_node_status(invocation).await,
             GoalToolKind::Update => self.handle_update(invocation).await,
             GoalToolKind::Pause => self.handle_pause(invocation).await,
             GoalToolKind::Resume => self.handle_resume(invocation).await,

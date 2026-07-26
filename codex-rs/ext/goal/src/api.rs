@@ -138,6 +138,87 @@ impl GoalPlanAddOutcome {
 }
 
 #[derive(Clone, Debug)]
+pub struct GoalPlanNodeUpdateOutcome {
+    pub goal: Option<ThreadGoal>,
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    pub node: codex_state::ThreadGoalPlanNode,
+    state_goal: Option<codex_state::ThreadGoal>,
+    previous_goal: Option<PreviousGoalSnapshot>,
+}
+
+impl GoalPlanNodeUpdateOutcome {
+    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
+        let Some(state_goal) = self.state_goal.clone() else {
+            return;
+        };
+        if let Some(runtime) = goal_service.runtime_for_thread(state_goal.thread_id)
+            && let Err(err) = runtime
+                .apply_external_goal_set(state_goal, self.previous_goal.clone())
+                .await
+        {
+            tracing::warn!("failed to apply external goal plan node update runtime effects: {err}");
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GoalPlanNodeInsertOutcome {
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    pub inserted_node: codex_state::ThreadGoalPlanNode,
+}
+
+#[derive(Clone, Debug)]
+pub struct GoalPlanNodeStatusOutcome {
+    pub goal: Option<ThreadGoal>,
+    pub activated_goal: Option<ThreadGoal>,
+    pub cleared_goal: bool,
+    pub plan: codex_state::ThreadGoalPlanSnapshot,
+    pub node: codex_state::ThreadGoalPlanNode,
+    thread_id: ThreadId,
+    state_goal: Option<codex_state::ThreadGoal>,
+    state_activated_goal: Option<codex_state::ThreadGoal>,
+    previous_goal: Option<PreviousGoalSnapshot>,
+}
+
+impl GoalPlanNodeStatusOutcome {
+    pub async fn apply_runtime_effects(&self, goal_service: &GoalService) {
+        let Some(runtime) = goal_service.runtime_for_thread(self.thread_id) else {
+            return;
+        };
+
+        if let Some(activated_goal) = self.state_activated_goal.clone() {
+            let previous_goal = self
+                .state_goal
+                .as_ref()
+                .map(PreviousGoalSnapshot::from)
+                .or_else(|| self.previous_goal.clone());
+            if let Err(err) = runtime
+                .apply_external_goal_set(activated_goal, previous_goal)
+                .await
+            {
+                tracing::warn!(
+                    "failed to apply external goal plan node activation runtime effects: {err}"
+                );
+            }
+            return;
+        }
+
+        if let Some(state_goal) = self.state_goal.clone()
+            && let Err(err) = runtime
+                .apply_external_goal_set(state_goal, self.previous_goal.clone())
+                .await
+        {
+            tracing::warn!("failed to apply external goal plan node status runtime effects: {err}");
+        }
+        if self.cleared_goal
+            && let Err(err) = runtime.apply_external_goal_clear().await
+        {
+            tracing::warn!("failed to apply external goal plan node undo runtime effects: {err}");
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct GoalClearOutcome {
     pub cleared: bool,
     pub plan_updates: Vec<codex_state::ThreadGoalPlanSnapshot>,
@@ -463,6 +544,141 @@ impl GoalService {
             added_node: outcome.added_node,
             created_plan: outcome.created_plan,
             state_goal: outcome.activated_goal,
+            previous_goal,
+        })
+    }
+
+    pub async fn update_thread_goal_plan_node(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        params: codex_state::ThreadGoalPlanNodeUpdateParams,
+    ) -> Result<GoalPlanNodeUpdateOutcome, GoalServiceError> {
+        let thread_id = params.thread_id;
+        let runtime = self.runtime_for_thread(thread_id);
+        let _goal_state_permit = match runtime.as_ref() {
+            Some(runtime) => Some(
+                runtime
+                    .goal_state_permit()
+                    .await
+                    .map_err(GoalServiceError::Internal)?,
+            ),
+            None => None,
+        };
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal plan node update: {err}");
+        }
+
+        let previous_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?
+            .as_ref()
+            .map(PreviousGoalSnapshot::from);
+        let outcome = state_db
+            .thread_goals()
+            .update_thread_goal_plan_node(params)
+            .await
+            .map_err(|err| {
+                GoalServiceError::InvalidRequest(format!("failed to update goal plan node: {err}"))
+            })?;
+        Ok(GoalPlanNodeUpdateOutcome {
+            goal: outcome.goal.clone().map(protocol_goal_from_state),
+            plan: outcome.snapshot,
+            node: outcome.node,
+            state_goal: outcome.goal,
+            previous_goal,
+        })
+    }
+
+    pub async fn insert_thread_goal_plan_node(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        params: codex_state::ThreadGoalPlanNodeInsertParams,
+    ) -> Result<GoalPlanNodeInsertOutcome, GoalServiceError> {
+        let thread_id = params.thread_id;
+        let runtime = self.runtime_for_thread(thread_id);
+        let _goal_state_permit = match runtime.as_ref() {
+            Some(runtime) => Some(
+                runtime
+                    .goal_state_permit()
+                    .await
+                    .map_err(GoalServiceError::Internal)?,
+            ),
+            None => None,
+        };
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal plan node insert: {err}");
+        }
+
+        let outcome = state_db
+            .thread_goals()
+            .insert_thread_goal_plan_node(params)
+            .await
+            .map_err(|err| {
+                GoalServiceError::InvalidRequest(format!("failed to insert goal plan node: {err}"))
+            })?;
+        Ok(GoalPlanNodeInsertOutcome {
+            plan: outcome.snapshot,
+            inserted_node: outcome.inserted_node,
+        })
+    }
+
+    pub async fn set_thread_goal_plan_node_status(
+        &self,
+        state_db: &codex_state::StateRuntime,
+        params: codex_state::ThreadGoalPlanNodeStatusUpdateParams,
+    ) -> Result<GoalPlanNodeStatusOutcome, GoalServiceError> {
+        let thread_id = params.thread_id;
+        let runtime = self.runtime_for_thread(thread_id);
+        let _goal_state_permit = match runtime.as_ref() {
+            Some(runtime) => Some(
+                runtime
+                    .goal_state_permit()
+                    .await
+                    .map_err(GoalServiceError::Internal)?,
+            ),
+            None => None,
+        };
+        if let Some(runtime) = runtime.as_ref()
+            && let Err(err) = runtime.prepare_external_goal_mutation().await
+        {
+            tracing::warn!("failed to prepare external goal plan node status update: {err}");
+        }
+
+        let previous_goal = state_db
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .map_err(|err| {
+                GoalServiceError::Internal(format!("failed to read thread goal: {err}"))
+            })?
+            .as_ref()
+            .map(PreviousGoalSnapshot::from);
+        let outcome = state_db
+            .thread_goals()
+            .set_thread_goal_plan_node_status(params)
+            .await
+            .map_err(|err| {
+                GoalServiceError::InvalidRequest(format!(
+                    "failed to update goal plan node status: {err}"
+                ))
+            })?;
+        Ok(GoalPlanNodeStatusOutcome {
+            goal: outcome.goal.clone().map(protocol_goal_from_state),
+            activated_goal: outcome.activated_goal.clone().map(protocol_goal_from_state),
+            cleared_goal: outcome.cleared_goal,
+            plan: outcome.snapshot,
+            node: outcome.node,
+            thread_id,
+            state_goal: outcome.goal,
+            state_activated_goal: outcome.activated_goal,
             previous_goal,
         })
     }
