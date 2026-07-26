@@ -372,6 +372,66 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
 }
 
 #[test]
+fn tool_search_outputs_hide_namespace_tools_rejected_at_serialization_boundary() {
+    let payload = ToolPayload::ToolSearch {
+        arguments: SearchToolCallParams {
+            query: "images".to_string(),
+            limit: None,
+        },
+    };
+    let namespace = |name: &str| {
+        LoadableToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
+            name: name.to_string(),
+            description: codex_tools::default_namespace_description(name),
+            tools: vec![codex_tools::ResponsesApiNamespaceTool::Function(
+                codex_tools::ResponsesApiTool {
+                    name: "imagegen".to_string(),
+                    description: "Generate an image.".to_string(),
+                    strict: false,
+                    defer_loading: Some(true),
+                    parameters: codex_tools::JsonSchema::object(
+                        /*properties*/ Default::default(),
+                        /*required*/ None,
+                        /*additional_properties*/ None,
+                    ),
+                    output_schema: None,
+                },
+            )],
+        })
+    };
+
+    let response = ToolSearchOutput {
+        tools: vec![namespace("image_gen"), namespace("images")],
+    }
+    .to_response_item("search-2", &payload);
+
+    assert_eq!(
+        response,
+        ResponseInputItem::ToolSearchOutput {
+            call_id: "search-2".to_string(),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![json!({
+                "type": "namespace",
+                "name": "images",
+                "description": "Tools in the images namespace.",
+                "tools": [{
+                    "type": "function",
+                    "name": "imagegen",
+                    "description": "Generate an image.",
+                    "strict": false,
+                    "defer_loading": true,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                }],
+            })],
+        }
+    );
+}
+
+#[test]
 fn log_preview_uses_content_items_when_plain_text_is_missing() {
     let output = FunctionToolOutput::from_content(
         vec![FunctionCallOutputContentItem::InputText {

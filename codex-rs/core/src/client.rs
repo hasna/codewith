@@ -858,6 +858,11 @@ impl ModelClient {
     ) -> Result<ResponsesApiRequest> {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
+        for item in &mut input {
+            if let ResponseItem::ToolSearchOutput { tools, .. } = item {
+                tools.retain(|tool| !codex_tools::is_forbidden_reserved_namespace_value(tool));
+            }
+        }
         let mut tools = create_tools_json_for_responses_api(&prompt.tools)?;
         if !model_info.supports_search_tool {
             tools.retain(|tool| {

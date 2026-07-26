@@ -305,6 +305,10 @@ fn build_model_visible_specs_and_registry(
         runtimes,
         hosted_specs,
     } = planned_tools;
+    let runtimes = runtimes
+        .into_iter()
+        .filter(|runtime| namespace_spec_is_safe_for_runtime(&runtime.spec()))
+        .collect::<Vec<_>>();
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
     for runtime in &runtimes {
@@ -347,29 +351,46 @@ fn build_model_visible_specs_and_registry(
 /// and, in release builds, drops the offending tool so the request still ships
 /// (minus one tool) instead of the API rejecting the entire turn.
 ///
-/// `web` is intentionally allowlisted (see
-/// `codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES`): standalone web
-/// search advertises the built-in `web.run` schema on purpose.
+/// `web.run` is intentionally allowlisted: standalone web search advertises
+/// that built-in schema on purpose. Other tools under `web` remain forbidden.
 fn namespace_spec_is_safe_for_wire(spec: &ToolSpec) -> bool {
     let ToolSpec::Namespace(namespace) = spec else {
         return true;
     };
-    let forbidden = codex_tools::is_forbidden_first_party_namespace(&namespace.name);
+    let forbidden_tool_name = namespace.forbidden_reserved_tool_name();
     debug_assert!(
-        !forbidden,
+        forbidden_tool_name.is_none(),
         "first-party tool assembled under Responses-API-reserved namespace `{namespace}` \
-         (wire name `{namespace}.*`); rename it to a non-reserved namespace, or add it to \
-         codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES if it matches the built-in schema",
+         (wire name `{namespace}.{tool_name}`); rename it to a non-reserved namespace, or add \
+         its exact wire name to codex_tools::FIRST_PARTY_ALLOWED_RESERVED_TOOLS if it matches \
+         the built-in schema",
         namespace = namespace.name,
+        tool_name = forbidden_tool_name.unwrap_or("*"),
     );
-    if forbidden {
+    if let Some(tool_name) = forbidden_tool_name {
         warn!(
             namespace = %namespace.name,
+            tool_name,
             "dropping first-party tool under reserved Responses namespace to avoid a runtime 400",
         );
         return false;
     }
     true
+}
+
+fn namespace_spec_is_safe_for_runtime(spec: &ToolSpec) -> bool {
+    let ToolSpec::Namespace(namespace) = spec else {
+        return true;
+    };
+    let Some(tool_name) = namespace.forbidden_reserved_tool_name() else {
+        return true;
+    };
+    warn!(
+        namespace = %namespace.name,
+        tool_name,
+        "dropping runtime under reserved Responses namespace",
+    );
+    false
 }
 
 fn spec_for_model_request(
@@ -648,6 +669,9 @@ fn build_code_mode_executors(
         }
 
         let spec = executor.spec();
+        if !namespace_spec_is_safe_for_runtime(&spec) {
+            continue;
+        }
 
         if exposure == ToolExposure::Deferred {
             // Only show deferred-tool guidance when supported and an included spec is usable by code mode.

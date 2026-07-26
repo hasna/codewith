@@ -57,19 +57,33 @@ pub struct ResponsesApiNamespace {
     pub tools: Vec<ResponsesApiNamespaceTool>,
 }
 
+impl ResponsesApiNamespace {
+    /// Returns the first custom tool that is not vetted for this reserved
+    /// namespace, or `*` when a reserved namespace has no declared tools.
+    pub fn forbidden_reserved_tool_name(&self) -> Option<&str> {
+        self.tools
+            .iter()
+            .find_map(|tool| match tool {
+                ResponsesApiNamespaceTool::Function(tool)
+                    if crate::is_forbidden_first_party_namespace_tool(&self.name, &tool.name) =>
+                {
+                    Some(tool.name.as_str())
+                }
+                ResponsesApiNamespaceTool::Function(_) => None,
+            })
+            .or_else(|| {
+                (self.tools.is_empty() && crate::is_reserved_responses_namespace(&self.name))
+                    .then_some("*")
+            })
+    }
+}
+
 impl Serialize for ResponsesApiNamespace {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        if crate::is_forbidden_first_party_namespace(&self.name) {
-            let tool_name = self
-                .tools
-                .first()
-                .map(|tool| match tool {
-                    ResponsesApiNamespaceTool::Function(tool) => tool.name.as_str(),
-                })
-                .unwrap_or("*");
+        if let Some(tool_name) = self.forbidden_reserved_tool_name() {
             return Err(S::Error::custom(format!(
                 "refusing to serialize custom tool under reserved Responses namespace: {}.{tool_name}",
                 self.name

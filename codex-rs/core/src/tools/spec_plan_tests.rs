@@ -422,6 +422,30 @@ impl ToolExecutor<ExtensionToolCall> for ImagegenExtensionTool {
     }
 }
 
+struct ReservedDeferredImagegenExtensionTool;
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for ReservedDeferredImagegenExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced("image_gen", "imagegen")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        reserved_namespace_spec("image_gen")
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::Deferred
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        panic!("spec planning should not execute extension tools")
+    }
+}
+
 struct DeferredExtensionTool;
 
 #[async_trait::async_trait]
@@ -2341,11 +2365,15 @@ async fn infinity_agent_policy_removes_host_tools_from_plan() {
 // ---------------------------------------------------------------------------
 
 fn reserved_namespace_spec(namespace: &str) -> ToolSpec {
+    reserved_namespace_tool_spec(namespace, "imagegen")
+}
+
+fn reserved_namespace_tool_spec(namespace: &str, tool_name: &str) -> ToolSpec {
     ToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
         name: namespace.to_string(),
         description: codex_tools::default_namespace_description(namespace),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
-            name: "imagegen".to_string(),
+            name: tool_name.to_string(),
             description: "reserved-namespace regression probe".to_string(),
             strict: false,
             defer_loading: None,
@@ -2406,9 +2434,9 @@ fn namespace_guard_allows_non_reserved_and_allowlisted_namespaces() {
     assert!(super::namespace_spec_is_safe_for_wire(
         &reserved_namespace_spec("images")
     ));
-    // `web` is reserved but explicitly allowlisted (standalone web search).
+    // `web.run` is reserved but explicitly allowlisted (standalone web search).
     assert!(super::namespace_spec_is_safe_for_wire(
-        &reserved_namespace_spec("web")
+        &reserved_namespace_tool_spec("web", "run")
     ));
     // Non-namespace specs are never affected by the guard.
     assert!(super::namespace_spec_is_safe_for_wire(
@@ -2420,9 +2448,47 @@ fn namespace_guard_allows_non_reserved_and_allowlisted_namespaces() {
 
 #[test]
 #[should_panic(expected = "reserved")]
+fn namespace_guard_fails_loud_on_unvetted_tool_in_allowlisted_namespace() {
+    super::namespace_spec_is_safe_for_wire(&reserved_namespace_spec("web"));
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
 fn namespace_guard_fails_loud_on_reserved_image_gen_namespace() {
     // In debug/test builds the guard fires a debug_assert so a reintroduced
     // reserved namespace (e.g. a second registration path) is caught in CI
     // instead of shipping a request the API rejects.
     let _ = super::namespace_spec_is_safe_for_wire(&reserved_namespace_spec("image_gen"));
+}
+
+#[tokio::test]
+async fn code_mode_does_not_advertise_or_register_reserved_namespace_runtime() {
+    let probe = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(turn, &[Feature::CodeMode, Feature::ImageGeneration]);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ReservedDeferredImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_lacks(&["image_genimagegen"]);
+    let ToolSpec::Freeform(exec) = probe.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("expected code mode exec tool");
+    };
+    assert!(
+        !exec.description.contains("image_gen__imagegen"),
+        "reserved tool must not be advertised through nested code mode: {}",
+        exec.description
+    );
+    assert!(
+        has_serialized_tool_type(&probe.serialized_tools(), "image_generation"),
+        "hosted image generation should remain as the fallback"
+    );
 }

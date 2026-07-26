@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 pub use codex_tools::ToolOutput;
 pub use codex_tools::ToolPayload;
@@ -175,10 +176,15 @@ impl ToolOutput for ToolSearchOutput {
             tools: self
                 .tools
                 .iter()
-                .map(|tool| {
-                    serde_json::to_value(tool).unwrap_or_else(|err| {
-                        JsonValue::String(format!("failed to serialize tool_search output: {err}"))
-                    })
+                .filter_map(|tool| match serde_json::to_value(tool) {
+                    Ok(tool) => Some(tool),
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "hiding deferred tool rejected by the Responses serialization boundary",
+                        );
+                        None
+                    }
                 })
                 .collect(),
         }

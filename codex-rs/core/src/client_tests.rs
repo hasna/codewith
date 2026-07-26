@@ -445,6 +445,82 @@ fn responses_request_rejects_invalid_strict_tool_schema_before_provider_request(
 }
 
 #[test]
+fn responses_request_rejects_reserved_namespace_tool_before_provider_request() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "image_gen".to_string(),
+            description: "Image tools.".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(test_function_tool(
+                "imagegen",
+            ))],
+        })],
+        ..Default::default()
+    };
+
+    let err = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect_err("reserved namespace should fail before request dispatch");
+
+    assert!(err.to_string().contains("image_gen.imagegen"), "{err}");
+}
+
+#[test]
+fn responses_request_hides_reserved_namespace_tools_from_persisted_tool_search_output() {
+    let client = test_model_client(SessionSource::Cli);
+    let valid_tool = json!({
+        "type": "namespace",
+        "name": "images",
+        "description": "Image tools.",
+        "tools": [{"type": "function", "name": "imagegen"}],
+    });
+    let prompt = crate::Prompt {
+        input: vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-1".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![
+                json!({
+                    "type": "namespace",
+                    "name": "image_gen",
+                    "tools": [{"type": "function", "name": "imagegen"}],
+                }),
+                valid_tool.clone(),
+            ],
+        }],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.input,
+        vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-1".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![valid_tool],
+        }]
+    );
+}
+
+#[test]
 fn responses_request_omits_hosted_web_search_for_models_without_search_support() {
     let client = test_model_client(SessionSource::Cli);
     let function_tool = test_function_tool("exec_command");

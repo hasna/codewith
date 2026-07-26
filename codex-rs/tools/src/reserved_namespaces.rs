@@ -16,6 +16,8 @@
 //! fail serialization for any first-party or deferred namespace tool under a
 //! reserved namespace it is not schema-compatible with.
 
+use serde_json::Value;
+
 /// Namespaces reserved by the OpenAI Responses API for its built-in tools.
 ///
 /// Keep this list sorted. It is the single source of truth consumed by the
@@ -50,6 +52,14 @@ pub const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
 /// namespace, add that namespace here in the same change that introduces it.
 pub const FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES: &[&str] = &["web"];
 
+/// Exact first-party tool names permitted under reserved Responses namespaces.
+///
+/// A namespace allowlist alone is insufficient because it would permit an
+/// unrelated custom schema such as `web.imagegen`. Keep this list limited to
+/// tool names whose owning extension advertises the provider's canonical
+/// schema.
+pub const FIRST_PARTY_ALLOWED_RESERVED_TOOLS: &[(&str, &str)] = &[("web", "run")];
+
 /// True if `namespace` is reserved by the Responses API for a built-in tool.
 pub fn is_reserved_responses_namespace(namespace: &str) -> bool {
     RESERVED_RESPONSES_NAMESPACES.contains(&namespace)
@@ -67,6 +77,44 @@ pub fn is_forbidden_first_party_namespace(namespace: &str) -> bool {
         && !FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES.contains(&namespace)
 }
 
+/// True if a custom tool name is not explicitly vetted for a reserved
+/// Responses namespace.
+pub fn is_forbidden_first_party_namespace_tool(namespace: &str, tool_name: &str) -> bool {
+    is_reserved_responses_namespace(namespace)
+        && !FIRST_PARTY_ALLOWED_RESERVED_TOOLS.contains(&(namespace, tool_name))
+}
+
+/// True if a serialized namespace declaration contains an unvetted reserved
+/// tool name.
+///
+/// This handles persisted and server-originated tool-search output, where the
+/// declaration is already JSON and cannot pass through the typed namespace
+/// serializer again.
+pub fn is_forbidden_reserved_namespace_value(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("namespace") {
+        return false;
+    }
+    let Some(namespace) = value.get("name").and_then(Value::as_str) else {
+        return false;
+    };
+    if !is_reserved_responses_namespace(namespace) {
+        return false;
+    }
+    let Some(tools) = value.get("tools").and_then(Value::as_array) else {
+        return true;
+    };
+    tools.is_empty()
+        || tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) != Some("function")
+                || tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_none_or(|tool_name| {
+                        is_forbidden_first_party_namespace_tool(namespace, tool_name)
+                    })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +129,8 @@ mod tests {
     fn web_is_reserved_but_allowed_for_first_party() {
         assert!(is_reserved_responses_namespace("web"));
         assert!(!is_forbidden_first_party_namespace("web"));
+        assert!(!is_forbidden_first_party_namespace_tool("web", "run"));
+        assert!(is_forbidden_first_party_namespace_tool("web", "imagegen"));
     }
 
     #[test]
@@ -112,6 +162,51 @@ mod tests {
                 is_reserved_responses_namespace(namespace),
                 "allowlisting a non-reserved namespace `{namespace}` is meaningless"
             );
+        }
+    }
+
+    #[test]
+    fn every_allowlisted_tool_uses_an_allowlisted_reserved_namespace() {
+        for (namespace, tool_name) in FIRST_PARTY_ALLOWED_RESERVED_TOOLS {
+            assert!(
+                FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES.contains(namespace),
+                "allowlisted tool `{namespace}.{tool_name}` must use an allowlisted namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn serialized_guard_rejects_only_unvetted_reserved_namespace_tools() {
+        for value in [
+            serde_json::json!({"type": "namespace", "name": "image_gen", "tools": []}),
+            serde_json::json!({
+                "type": "namespace",
+                "name": "image_gen",
+                "tools": [{"type": "function", "name": "imagegen"}],
+            }),
+            serde_json::json!({
+                "type": "namespace",
+                "name": "web",
+                "tools": [{"type": "function", "name": "imagegen"}],
+            }),
+        ] {
+            assert!(is_forbidden_reserved_namespace_value(&value), "{value}");
+        }
+
+        for value in [
+            serde_json::json!({
+                "type": "namespace",
+                "name": "images",
+                "tools": [{"type": "function", "name": "imagegen"}],
+            }),
+            serde_json::json!({
+                "type": "namespace",
+                "name": "web",
+                "tools": [{"type": "function", "name": "run"}],
+            }),
+            serde_json::json!({"type": "function", "name": "image_gen"}),
+        ] {
+            assert!(!is_forbidden_reserved_namespace_value(&value), "{value}");
         }
     }
 }

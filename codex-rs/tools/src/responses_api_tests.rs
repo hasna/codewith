@@ -169,13 +169,13 @@ fn loadable_tool_spec_namespace_serializes_with_deferred_child_tools() {
     );
 }
 
-fn imagegen_namespace(name: &str) -> ResponsesApiNamespace {
+fn namespace_tool(namespace: &str, tool_name: &str) -> ResponsesApiNamespace {
     ResponsesApiNamespace {
-        name: name.to_string(),
-        description: format!("Tools in the {name} namespace."),
+        name: namespace.to_string(),
+        description: format!("Tools in the {namespace} namespace."),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
-            name: "imagegen".to_string(),
-            description: "Generate an image.".to_string(),
+            name: tool_name.to_string(),
+            description: format!("Run {tool_name}."),
             strict: false,
             defer_loading: Some(true),
             parameters: JsonSchema::object(
@@ -191,8 +191,11 @@ fn imagegen_namespace(name: &str) -> ResponsesApiNamespace {
 #[test]
 fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_tools() {
     let results = [
-        serde_json::to_value(ToolSpec::Namespace(imagegen_namespace("image_gen"))),
-        serde_json::to_value(LoadableToolSpec::Namespace(imagegen_namespace("image_gen"))),
+        serde_json::to_value(ToolSpec::Namespace(namespace_tool("image_gen", "imagegen"))),
+        serde_json::to_value(LoadableToolSpec::Namespace(namespace_tool(
+            "image_gen",
+            "imagegen",
+        ))),
     ];
 
     for result in results {
@@ -206,8 +209,20 @@ fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_to
 
 #[test]
 fn namespace_serialization_allows_custom_and_vetted_reserved_namespaces() {
-    for namespace in ["images", "mcp__codex_apps__images", "web"] {
-        serde_json::to_value(ToolSpec::Namespace(imagegen_namespace(namespace)))
-            .unwrap_or_else(|err| panic!("{namespace} should serialize: {err}"));
+    for (namespace, tool_name) in [
+        ("images", "imagegen"),
+        ("mcp__codex_apps__images", "imagegen"),
+        ("web", "run"),
+    ] {
+        serde_json::to_value(ToolSpec::Namespace(namespace_tool(namespace, tool_name)))
+            .unwrap_or_else(|err| panic!("{namespace}.{tool_name} should serialize: {err}"));
     }
+}
+
+#[test]
+fn namespace_serialization_rejects_unvetted_tools_in_allowlisted_namespace() {
+    let err = serde_json::to_value(ToolSpec::Namespace(namespace_tool("web", "imagegen")))
+        .expect_err("web.imagegen must not inherit the web.run exception");
+
+    assert!(err.to_string().contains("web.imagegen"), "{err}");
 }
