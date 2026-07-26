@@ -90,7 +90,9 @@ use codex_login::AuthManagerConfig;
 use codex_login::AuthProfilePermissionSettings;
 use codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR;
 use codex_login::CODEX_AUTH_PROFILE_ENV_VAR;
+use codex_login::RootAuthOwnership;
 use codex_login::load_auth_profile_metadata;
+use codex_login::root_auth_ownership;
 use codex_login::validate_auth_profile_name;
 use codex_mcp::McpConfig;
 use codex_memories_read::memory_root;
@@ -594,6 +596,18 @@ fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Resolves the auth profile this *process* is scoped to.
+///
+/// Only explicit selectors participate: `--auth-profile`,
+/// `CODEWITH_AUTH_PROFILE`, and `CODEX_AUTH_PROFILE`. The ambient
+/// `auth_profiles/.active` marker written by `codewith profile switch` is
+/// deliberately *not* consulted here — see
+/// [`codex_login::RootAuthOwnership`] for why those are different concepts.
+/// A named selection changes sandbox/approval posture, suppresses global env
+/// credentials, disables root-auth mirroring, namespaces the app-server
+/// socket, and is rejected outright under the Infinity Agent tool policy; none
+/// of that may happen as an invisible side effect of an unrelated earlier
+/// command.
 fn resolve_selected_auth_profile(
     explicit_profile: Option<String>,
 ) -> std::io::Result<Option<String>> {
@@ -3699,6 +3713,21 @@ impl Config {
             tool_policy,
             selected_auth_profile.as_deref(),
         )?;
+        // A corrupt `auth_profiles/.active` makes the root login unusable for
+        // model auth (see `RootAuthOwnership`). That must not fail the load —
+        // `codewith login` and `codewith profile switch` are how the user
+        // repairs it — but it does need to be visible rather than silent. A
+        // deliberate provider lock is a normal state and is not warned about.
+        if selected_auth_profile.is_none()
+            && let RootAuthOwnership::Unresolvable { detail, .. } =
+                root_auth_ownership(&codex_home)
+        {
+            startup_warnings.push(format!(
+                "Codewith cannot tell which auth profile owns the current login, so it will not \
+                 use those credentials: {detail}. Run `codewith profile switch <name>` or \
+                 `codewith login` to repair it."
+            ));
+        }
         let runtime_permission_overrides_present = sandbox_mode.is_some()
             || permission_profile.is_some()
             || default_permissions_override.is_some()

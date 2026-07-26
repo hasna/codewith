@@ -15,6 +15,17 @@ codewith profile switch work
 
 Profiles are named local credential snapshots stored under `CODEWITH_HOME` using the configured credential storage mode. Switching a profile replaces the active local Codewith credentials with that saved profile. It does not bypass login, logout, or account authorization; each profile must be created from a normal successful login.
 
+Each profile is locked to the subscription provider it was created for. A profile whose provider is not ChatGPT (Claude.ai, Cursor, Grok) can be listed and switched to like any other, but it never lends OpenAI credentials to Codewith model auth: it carries no `auth.json` of its own, refreshed root tokens are not mirrored into it, and any stray `auth.json` left inside it is ignored rather than used. Selecting such a profile leaves Codewith without ChatGPT model auth — the agent is still free to select any provider it has configured.
+
+### Switching vs. pinning
+
+These are two different mechanisms, and the difference matters:
+
+- `codewith profile switch <name>` changes the **root login** for the whole machine and records the choice in `auth_profiles/.active`. For a ChatGPT profile it copies that profile's credentials into the root login. For a provider-locked profile there are no OpenAI credentials to copy, so the root login keeps whatever it held and Codewith simply stops using it for model auth until you switch back to a ChatGPT profile. Switching does **not** scope later processes to that profile: it does not change their sandbox or approval settings, does not disable `CODEX_API_KEY` / `CODEX_ACCESS_TOKEN`, and does not give them a separate app-server socket.
+- `--auth-profile <name>`, `CODEWITH_AUTH_PROFILE`, and `CODEX_AUTH_PROFILE` **pin one process** to a profile. A pinned process reads that profile's own credentials, inherits the permission settings saved with it, ignores global env credentials, and gets its own app-server socket namespace. Pins always win over the persisted active profile.
+
+If `auth_profiles/.active` or a profile's `profile.json` becomes unreadable, Codewith cannot prove which profile owns the root login, so it fails closed and declines to use root credentials for model auth. Commands do not fail: `codewith profile list`, `codewith profile switch <name>`, and `codewith login` all keep working so you can repair the marker.
+
 For concurrent sessions, prefer per-session auth profile pinning:
 
 ```shell

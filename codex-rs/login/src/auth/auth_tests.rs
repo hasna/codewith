@@ -820,6 +820,158 @@ async fn external_subscription_profile_does_not_fall_back_to_openai_auth() -> an
     Ok(())
 }
 
+/// The point of the provider lock: after `codewith profile switch <external>`,
+/// the root login is no longer Codewith's to use for model auth, even though
+/// the process itself is not scoped to a named profile.
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn active_marker_for_external_profile_blocks_root_openai_auth() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
+    let dir = tempdir()?;
+
+    super::save_auth(
+        dir.path(),
+        &api_key_auth_dot_json("root-key"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    save_auth_profile_metadata(
+        dir.path(),
+        "claude",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    crate::switch_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "claude")?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        /*selected_auth_profile*/ None,
+    )
+    .await;
+
+    // The process is *not* scoped to a named profile ...
+    assert_eq!(manager.selected_auth_profile(), None);
+    // ... but the root login still refuses to serve OpenAI model auth.
+    assert_eq!(manager.auth_cached(), None);
+
+    Ok(())
+}
+
+/// D2 (credential path): the ambient marker must not suppress explicitly
+/// provided env credentials. Env is an explicit operator action; the marker is
+/// not.
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn active_marker_does_not_suppress_env_api_key() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::set(CODEX_API_KEY_ENV_VAR, "sk-env");
+    let dir = tempdir()?;
+
+    super::save_auth(
+        dir.path(),
+        &api_key_auth_dot_json("root-key"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    save_auth_profile_metadata(
+        dir.path(),
+        "claude",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    crate::switch_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "claude")?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        /*selected_auth_profile*/ None,
+    )
+    .await;
+
+    assert_eq!(
+        manager.auth_cached().as_ref().and_then(CodexAuth::api_key),
+        Some("sk-env")
+    );
+
+    Ok(())
+}
+
+/// A marker naming a ChatGPT profile is *not* a lock: `switch` copied that
+/// profile's credentials into the root login, so root auth stays usable.
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn active_marker_for_chatgpt_profile_keeps_root_auth_usable() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
+    let dir = tempdir()?;
+
+    save_auth_profile(
+        dir.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json("work-key"),
+    )?;
+    crate::switch_auth_profile(dir.path(), AuthCredentialsStoreMode::File, "work")?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        /*selected_auth_profile*/ None,
+    )
+    .await;
+
+    assert_eq!(
+        manager.auth_cached().as_ref().and_then(CodexAuth::api_key),
+        Some("work-key")
+    );
+
+    Ok(())
+}
+
+/// D5 (credential path): an unresolvable marker fails closed for credentials
+/// while leaving `Config::load` and the repair commands intact.
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn active_marker_that_cannot_be_resolved_blocks_root_openai_auth() -> anyhow::Result<()> {
+    let _access_token_guard = remove_access_token_env_var();
+    let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
+    let dir = tempdir()?;
+
+    super::save_auth(
+        dir.path(),
+        &api_key_auth_dot_json("root-key"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    std::fs::create_dir_all(dir.path().join("auth_profiles"))?;
+    std::fs::write(
+        dir.path().join("auth_profiles").join(".active"),
+        "../escape",
+    )?;
+
+    let manager = AuthManager::new_with_auth_profile(
+        dir.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ true,
+        AuthCredentialsStoreMode::File,
+        /*chatgpt_base_url*/ None,
+        /*selected_auth_profile*/ None,
+    )
+    .await;
+
+    assert_eq!(manager.auth_cached(), None);
+
+    Ok(())
+}
+
 #[tokio::test]
 #[serial(codex_auth_env)]
 async fn running_session_switch_accepts_external_subscription_profile_without_openai_auth()

@@ -39,9 +39,11 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
+use codex_login::AuthProfileMetadata;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::login_with_api_key;
 use codex_login::save_auth_profile;
+use codex_login::save_auth_profile_metadata;
 use codex_protocol::account::PlanType as AccountPlanType;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
@@ -170,6 +172,22 @@ fn api_key_profile_summary(name: &str, active: bool) -> AuthProfileSummary {
         name: name.to_string(),
         subscription_provider: AuthProfileSubscriptionProvider::Chatgpt,
         auth_mode: Some(AuthMode::ApiKey),
+        email: None,
+        account_id: None,
+        plan: None,
+        active,
+    }
+}
+
+fn external_profile_summary(
+    name: &str,
+    subscription_provider: AuthProfileSubscriptionProvider,
+    active: bool,
+) -> AuthProfileSummary {
+    AuthProfileSummary {
+        name: name.to_string(),
+        subscription_provider,
+        auth_mode: None,
         email: None,
         account_id: None,
         plan: None,
@@ -1135,6 +1153,67 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
                 api_key_profile_summary("first", true),
                 api_key_profile_summary("second", false),
             ],
+            next_cursor: None,
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_profile_switch_accepts_external_subscription_profiles() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), CreateConfigTomlParams::default())?;
+    login_with_api_key(
+        codex_home.path(),
+        "sk-root-key",
+        AuthCredentialsStoreMode::File,
+    )?;
+    save_auth_profile_metadata(
+        codex_home.path(),
+        "cursor",
+        AuthProfileMetadata {
+            subscription_provider: codex_login::AuthProfileSubscriptionProvider::Cursor,
+            last_permissions: None,
+        },
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let switch_id = mcp
+        .send_raw_request("authProfile/switch", Some(json!({ "name": "cursor" })))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(switch_id)),
+    )
+    .await??;
+    let switched: AuthProfileSwitchResponse = to_response(resp)?;
+
+    assert_eq!(
+        switched.profile,
+        external_profile_summary("cursor", AuthProfileSubscriptionProvider::Cursor, true)
+    );
+    assert_account_updated_notification(&mut mcp, None).await?;
+
+    let list_id = mcp
+        .send_raw_request("authProfile/list", Some(json!({})))
+        .await?;
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let profiles: AuthProfileListResponse = to_response(resp)?;
+    assert_eq!(
+        profiles,
+        AuthProfileListResponse {
+            data: vec![external_profile_summary(
+                "cursor",
+                AuthProfileSubscriptionProvider::Cursor,
+                true,
+            )],
             next_cursor: None,
         }
     );

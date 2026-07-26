@@ -4,7 +4,9 @@ use super::TransportEvent;
 use super::acquire_app_server_startup_lock;
 use super::app_server_control_socket_path;
 use super::app_server_control_socket_path_for_auth_profile;
+use super::app_server_startup_lock_path;
 use super::app_server_startup_lock_path_for_auth_profile;
+use super::selected_auth_profile_from_env;
 use super::start_control_socket_acceptor;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
@@ -230,6 +232,93 @@ fn control_socket_path_can_be_scoped_to_auth_profile() {
             .join("work")
             .join("app-server-startup.lock")
     );
+}
+
+/// D4: the control socket and startup lock namespace must agree with the
+/// profile the rest of the runtime considers selected. If `Config` resolved a
+/// profile that `selected_auth_profile_from_env` does not, a profile session
+/// would attach to the root-namespaced daemon, defeating per-profile daemon
+/// isolation and leaving a daemon that can outlive the selection while holding
+/// the wrong credentials.
+#[tokio::test]
+#[serial_test::serial(selected_auth_profile_env)]
+async fn control_socket_namespace_agrees_with_resolved_config_auth_profile() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _codewith_guard = RemoveEnvVarGuard::new(codex_login::CODEWITH_AUTH_PROFILE_ENV_VAR);
+    let _codex_guard = RemoveEnvVarGuard::new(codex_login::CODEX_AUTH_PROFILE_ENV_VAR);
+
+    // An ambient `codewith profile save work` marker, as written by the CLI.
+    codex_login::login_with_api_key(
+        temp_dir.path(),
+        "sk-root",
+        codex_config::types::AuthCredentialsStoreMode::File,
+    )
+    .expect("root login");
+    codex_login::save_current_auth_profile(
+        temp_dir.path(),
+        codex_config::types::AuthCredentialsStoreMode::File,
+        "work",
+    )
+    .expect("save current profile");
+
+    let config = codex_core::config::Config::load_default_with_cli_overrides_for_codex_home(
+        temp_dir.path().to_path_buf(),
+        Vec::new(),
+    )
+    .await
+    .expect("config loads with an ambient active-profile marker");
+
+    assert_eq!(
+        config.selected_auth_profile.as_deref(),
+        selected_auth_profile_from_env()
+            .expect("env auth profile")
+            .as_deref(),
+        "the app-server socket namespace selector must agree with the profile Config selected",
+    );
+
+    assert_eq!(
+        app_server_control_socket_path(temp_dir.path()).expect("control socket path"),
+        app_server_control_socket_path_for_auth_profile(
+            temp_dir.path(),
+            config.selected_auth_profile.as_deref()
+        )
+        .expect("resolved control socket path"),
+    );
+    assert_eq!(
+        app_server_startup_lock_path(temp_dir.path()).expect("startup lock path"),
+        app_server_startup_lock_path_for_auth_profile(
+            temp_dir.path(),
+            config.selected_auth_profile.as_deref()
+        )
+        .expect("resolved startup lock path"),
+    );
+}
+
+struct RemoveEnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl RemoveEnvVarGuard {
+    fn new(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: guarded by `#[serial]` so no other test thread reads or
+        // writes the process environment concurrently.
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for RemoveEnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: see `RemoveEnvVarGuard::new`.
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
 
 #[test]

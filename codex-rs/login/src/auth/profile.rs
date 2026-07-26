@@ -235,6 +235,98 @@ pub fn active_auth_profile(codex_home: &Path) -> Result<Option<String>, AuthProf
     Ok(Some(name.to_string()))
 }
 
+/// Whether the *root* login (`CODEWITH_HOME/auth.json`) is owned by a named
+/// auth profile, according to the ambient `auth_profiles/.active` marker.
+///
+/// This is deliberately a different concept from the *selected* auth profile
+/// (`--auth-profile`, `CODEWITH_AUTH_PROFILE`, `CODEX_AUTH_PROFILE`):
+///
+/// * A **selected** profile scopes one process: it reads that profile's own
+///   credential storage, inherits that profile's saved permission settings,
+///   suppresses global env credentials, disables root-auth mirroring, and gets
+///   its own app-server socket namespace.
+/// * The **`.active` marker** is ambient and machine-wide. It is written by
+///   `codewith profile switch` / `codewith login --profile` and only records
+///   *which profile last wrote the root login*. Processes that were not given
+///   an explicit selector still run on the root login, so none of the
+///   process-scoping consequences above may apply to them.
+///
+/// The marker therefore has exactly one credential consequence, modelled here:
+/// if it names a profile locked to a non-ChatGPT subscription provider, the
+/// root login is not that profile's to give away and its ChatGPT credentials
+/// must not be handed to Codewith model auth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootAuthOwnership {
+    /// No marker, or the marker names a profile that no longer exists. The
+    /// root login is unowned and usable as-is.
+    Unowned,
+    /// The marker names a ChatGPT profile. `switch` mirrored that profile's
+    /// credentials into the root login, so root auth *is* that profile's auth.
+    ChatGpt { profile: String },
+    /// The marker names a profile deliberately locked to another subscription
+    /// provider. This is a normal, user-chosen state: the root login simply is
+    /// not available for Codewith model auth until the user switches back.
+    ExternalProvider {
+        profile: String,
+        provider: AuthProfileSubscriptionProvider,
+    },
+    /// Ownership of the root login could not be determined, so it is not safe
+    /// to assume the credentials are Codewith's to use. Unlike
+    /// [`RootAuthOwnership::ExternalProvider`] this is an abnormal state worth
+    /// surfacing to the user.
+    Unresolvable {
+        profile: Option<String>,
+        detail: String,
+    },
+}
+
+impl RootAuthOwnership {
+    /// Whether the persisted root login may be used for Codewith model auth.
+    pub fn allows_root_model_auth(&self) -> bool {
+        matches!(self, Self::Unowned | Self::ChatGpt { .. })
+    }
+}
+
+/// Resolves [`RootAuthOwnership`] from disk.
+///
+/// Infallible by construction: a corrupt marker or unreadable profile metadata
+/// must never take down `Config::load`, because that would also brick the
+/// commands a user needs in order to *repair* the marker (`codewith login`,
+/// `codewith profile list`, `codewith profile switch`). Unresolvable state is
+/// reported as [`RootAuthOwnership::Unresolvable`] instead, so the credential
+/// path fails closed while the recovery paths keep working.
+pub fn root_auth_ownership(codex_home: &Path) -> RootAuthOwnership {
+    let profile = match active_auth_profile(codex_home) {
+        Ok(None) => return RootAuthOwnership::Unowned,
+        Ok(Some(profile)) => profile,
+        Err(err) => {
+            return RootAuthOwnership::Unresolvable {
+                profile: None,
+                detail: format!("the active auth profile marker could not be read: {err}"),
+            };
+        }
+    };
+
+    match load_auth_profile_metadata(codex_home, &profile) {
+        Ok(metadata)
+            if metadata.subscription_provider == AuthProfileSubscriptionProvider::ChatGpt =>
+        {
+            RootAuthOwnership::ChatGpt { profile }
+        }
+        Ok(metadata) => RootAuthOwnership::ExternalProvider {
+            profile,
+            provider: metadata.subscription_provider,
+        },
+        // The marker points at a profile that has been deleted out from under
+        // it; there is nothing to lock the root login to.
+        Err(AuthProfileError::ProfileNotFound { .. }) => RootAuthOwnership::Unowned,
+        Err(err) => RootAuthOwnership::Unresolvable {
+            detail: format!("auth profile `{profile}` metadata could not be read: {err}"),
+            profile: Some(profile),
+        },
+    }
+}
+
 pub fn clear_active_auth_profile(codex_home: &Path) -> Result<bool, AuthProfileError> {
     let path = active_profile_file(codex_home);
     match fs::remove_file(path) {
@@ -350,6 +442,13 @@ pub fn load_auth_profile(
 ) -> Result<AuthDotJson, AuthProfileError> {
     validate_auth_profile_name(name)?;
     ensure_persistent_auth_storage(auth_credentials_store_mode)?;
+    let metadata = load_auth_profile_metadata(codex_home, name)?;
+    if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+        return Err(AuthProfileError::NonChatGptProfile {
+            name: name.to_string(),
+            provider: metadata.subscription_provider,
+        });
+    }
     load_profile_auth(codex_home, auth_credentials_store_mode, name)
 }
 
@@ -383,10 +482,12 @@ pub fn switch_auth_profile(
 
     let metadata = load_profile_metadata(&auth_profile_dir(codex_home, name))?;
     if metadata.subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
-        return Err(AuthProfileError::NonChatGptProfile {
-            name: name.to_string(),
-            provider: metadata.subscription_provider,
-        });
+        write_active_profile(codex_home, name)?;
+        return Ok(profile_from_metadata(
+            name.to_string(),
+            metadata,
+            /*active*/ true,
+        ));
     }
 
     let auth = load_profile_auth(codex_home, auth_credentials_store_mode, name)?;

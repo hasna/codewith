@@ -516,14 +516,24 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
         }]
     );
 
-    assert!(matches!(
-        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
-        Err(AuthProfileError::NonChatGptProfile {
-            name,
-            provider: AuthProfileSubscriptionProvider::ClaudeAi,
-        }) if name == "claude"
-    ));
-    assert_eq!(active_auth_profile(codex_home.path())?, None);
+    let switched =
+        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?;
+    assert_eq!(
+        switched,
+        AuthProfile {
+            name: "claude".to_string(),
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            auth_mode: None,
+            email: None,
+            account_id: None,
+            plan: None,
+            active: true,
+        }
+    );
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude")
+    );
     assert_eq!(active_storage.load()?, Some(root_auth));
 
     let renamed = rename_auth_profile(
@@ -538,7 +548,10 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
         AuthProfileSubscriptionProvider::ClaudeAi
     );
     assert_eq!(renamed.auth_mode, None);
-    assert_eq!(active_auth_profile(codex_home.path())?, None);
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude-work")
+    );
     assert_eq!(
         load_auth_profile_metadata(codex_home.path(), "claude-work")?,
         metadata
@@ -550,6 +563,12 @@ fn external_subscription_profiles_do_not_require_auth_json() -> anyhow::Result<(
 #[test]
 fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
+    let root_auth = auth_with_key("sk-root");
+    let active_storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+    );
+    active_storage.save(&root_auth)?;
     let metadata = AuthProfileMetadata {
         subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
         last_permissions: None,
@@ -561,6 +580,13 @@ fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<(
         "claude",
         &auth_with_key("sk-stray"),
     )?;
+    assert!(matches!(
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
+    ));
 
     let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
 
@@ -575,6 +601,193 @@ fn external_subscription_profiles_ignore_stray_openai_auth() -> anyhow::Result<(
             plan: None,
             active: false,
         }]
+    );
+
+    let switched =
+        switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?;
+    assert_eq!(switched.auth_mode, None);
+    assert_eq!(
+        active_auth_profile(codex_home.path())?.as_deref(),
+        Some("claude")
+    );
+    assert_eq!(active_storage.load()?, Some(root_auth));
+
+    Ok(())
+}
+
+#[test]
+fn root_auth_ownership_classifies_the_active_marker() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+
+    // No marker at all.
+    assert_eq!(
+        root_auth_ownership(codex_home.path()),
+        RootAuthOwnership::Unowned
+    );
+
+    // Marker naming a ChatGPT profile: `switch` mirrored its credentials into
+    // the root login, so root auth *is* that profile's auth.
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &auth_with_key("sk-work"),
+    )?;
+    write_active_profile(codex_home.path(), "work")?;
+    assert_eq!(
+        root_auth_ownership(codex_home.path()),
+        RootAuthOwnership::ChatGpt {
+            profile: "work".to_string()
+        }
+    );
+
+    // Marker naming a provider-locked profile: root credentials are not its
+    // to give away.
+    save_auth_profile_metadata(
+        codex_home.path(),
+        "claude",
+        AuthProfileMetadata {
+            subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
+            last_permissions: None,
+        },
+    )?;
+    write_active_profile(codex_home.path(), "claude")?;
+    assert_eq!(
+        root_auth_ownership(codex_home.path()),
+        RootAuthOwnership::ExternalProvider {
+            profile: "claude".to_string(),
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }
+    );
+
+    // Marker naming a profile that no longer exists: nothing to lock to.
+    delete_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?;
+    write_active_profile(codex_home.path(), "claude")?;
+    assert_eq!(
+        root_auth_ownership(codex_home.path()),
+        RootAuthOwnership::Unowned
+    );
+
+    Ok(())
+}
+
+/// D5: an unresolvable marker must be reported as `Locked` (so the credential
+/// path fails closed) rather than as an error that would take down
+/// `Config::load` and with it the commands needed to repair the marker.
+#[test]
+fn root_auth_ownership_fails_closed_on_a_corrupt_marker() -> anyhow::Result<()> {
+    // (a) `.active` holds a name that is not a legal profile name.
+    let invalid_name_home = tempdir()?;
+    std::fs::create_dir_all(invalid_name_home.path().join("auth_profiles"))?;
+    std::fs::write(
+        invalid_name_home
+            .path()
+            .join("auth_profiles")
+            .join(".active"),
+        "../escape",
+    )?;
+    assert!(matches!(
+        root_auth_ownership(invalid_name_home.path()),
+        RootAuthOwnership::Unresolvable { profile: None, .. }
+    ));
+
+    // (b) `.active` names a real profile whose metadata is malformed.
+    let malformed_home = tempdir()?;
+    save_auth_profile_metadata(
+        malformed_home.path(),
+        "work",
+        AuthProfileMetadata::default(),
+    )?;
+    write_active_profile(malformed_home.path(), "work")?;
+    std::fs::write(
+        malformed_home
+            .path()
+            .join("auth_profiles")
+            .join("work")
+            .join("profile.json"),
+        "{ not json",
+    )?;
+    assert!(matches!(
+        root_auth_ownership(malformed_home.path()),
+        RootAuthOwnership::Unresolvable { profile: Some(name), .. } if name == "work"
+    ));
+
+    // The corrupt-marker case leaves `profile list` working, which is how a
+    // user discovers what to switch to.
+    assert!(list_auth_profiles(invalid_name_home.path(), AuthCredentialsStoreMode::File).is_ok());
+    // (Malformed `profile.json` still fails `profile list`; that is
+    // pre-existing behaviour of `list_auth_profiles`, unrelated to the marker,
+    // and `switch`/`login` remain available to repair it.)
+    assert!(list_auth_profiles(malformed_home.path(), AuthCredentialsStoreMode::File).is_err());
+    save_auth_profile(
+        malformed_home.path(),
+        AuthCredentialsStoreMode::File,
+        "recovered",
+        &auth_with_key("sk-recovered"),
+    )?;
+    switch_auth_profile(
+        malformed_home.path(),
+        AuthCredentialsStoreMode::File,
+        "recovered",
+    )?;
+    assert_eq!(
+        root_auth_ownership(malformed_home.path()),
+        RootAuthOwnership::ChatGpt {
+            profile: "recovered".to_string()
+        }
+    );
+
+    Ok(())
+}
+
+/// D3: with the marker no longer acting as a process selector, refreshed root
+/// tokens keep being mirrored into the ChatGPT profile that owns the root
+/// login, so `profile list` and the marker do not disagree about which profile
+/// is active.
+#[test]
+fn mirror_active_auth_profile_keeps_list_active_state_in_sync() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let original_auth = auth_with_key("sk-original");
+    let refreshed_auth = auth_with_key("sk-refreshed");
+    let active_storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+    );
+
+    save_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        "work",
+        &original_auth,
+    )?;
+    switch_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "work")?;
+    assert!(
+        list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?
+            .iter()
+            .all(|profile| profile.active)
+    );
+
+    // Simulate a token refresh on the root login: the root store is rewritten
+    // and the owning profile is mirrored.
+    active_storage.save(&refreshed_auth)?;
+    mirror_active_auth_profile(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        &refreshed_auth,
+    )?;
+
+    assert_eq!(
+        load_optional_profile_auth(codex_home.path(), AuthCredentialsStoreMode::File, "work")?,
+        Some(refreshed_auth)
+    );
+    let profiles = list_auth_profiles(codex_home.path(), AuthCredentialsStoreMode::File)?;
+    assert_eq!(
+        profiles
+            .iter()
+            .filter(|profile| profile.active)
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["work"],
     );
 
     Ok(())
@@ -607,9 +820,18 @@ fn mirror_active_auth_profile_skips_external_profiles() -> anyhow::Result<()> {
     )?;
 
     assert_eq!(active_storage.load()?, Some(original_auth));
+    // Nothing was mirrored into the external profile's own storage...
+    assert_eq!(
+        load_optional_profile_auth(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?,
+        None
+    );
+    // ...and the profile refuses to hand out OpenAI credentials regardless.
     assert!(matches!(
         load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
-        Err(AuthProfileError::ProfileNotFound { name }) if name == "claude"
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
     ));
 
     Ok(())
