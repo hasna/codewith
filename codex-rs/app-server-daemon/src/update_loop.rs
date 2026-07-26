@@ -89,6 +89,13 @@ enum UpdateLoopControl {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAttempt {
+    Initial,
+    AwaitingLocalIdle,
+}
+
+#[cfg(unix)]
 async fn update_once(
     running_updater_identity: &ExecutableIdentity,
     terminate: &mut Signal,
@@ -101,19 +108,39 @@ async fn update_once(
     let (restart_mode, updater_refresh_mode) =
         update_modes_for_identities(running_updater_identity, &managed_identity);
 
+    let mut attempt = UpdateAttempt::Initial;
     loop {
         if terminate.recv().now_or_never().flatten().is_some() {
             return Ok(UpdateLoopControl::Stop);
         }
-        let outcome = daemon
-            .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
-            .await?;
+        let outcome = match attempt {
+            UpdateAttempt::Initial => {
+                daemon
+                    .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
+                    .await?
+            }
+            UpdateAttempt::AwaitingLocalIdle => {
+                daemon
+                    .try_complete_deferred_restart(updater_refresh_mode, &managed_codex_bin)
+                    .await?
+            }
+        };
+        attempt = next_update_attempt(attempt, outcome);
         let Some(delay) = retry_delay(outcome) else {
             return Ok(UpdateLoopControl::Continue);
         };
         if sleep_or_terminate(delay, terminate).await {
             return Ok(UpdateLoopControl::Stop);
         }
+    }
+}
+
+#[cfg(unix)]
+fn next_update_attempt(current: UpdateAttempt, outcome: RestartIfRunningOutcome) -> UpdateAttempt {
+    if outcome == RestartIfRunningOutcome::Deferred {
+        UpdateAttempt::AwaitingLocalIdle
+    } else {
+        current
     }
 }
 

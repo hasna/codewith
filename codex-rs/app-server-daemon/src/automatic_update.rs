@@ -58,11 +58,7 @@ fn automatic_restart_action(
     managed_version: Option<&str>,
 ) -> AutomaticRestartAction {
     if !backend_running {
-        return if remote_control_enabled {
-            AutomaticRestartAction::LeaveNotRunning
-        } else {
-            AutomaticRestartAction::Start
-        };
+        return AutomaticRestartAction::LeaveNotRunning;
     }
     if !remote_control_enabled {
         return match (mode, info, managed_version) {
@@ -83,6 +79,19 @@ fn automatic_restart_action(
             AutomaticRestartAction::AlreadyCurrent
         }
         _ => AutomaticRestartAction::Restart,
+    }
+}
+
+fn deferred_restart_action(
+    remote_control_enabled: bool,
+    backend_running: bool,
+) -> AutomaticRestartAction {
+    if remote_control_enabled {
+        AutomaticRestartAction::LeaveNotRunning
+    } else if backend_running {
+        AutomaticRestartAction::Defer
+    } else {
+        AutomaticRestartAction::Start
     }
 }
 
@@ -231,6 +240,39 @@ impl Daemon {
 
         Ok(outcome)
     }
+
+    pub(crate) async fn try_complete_deferred_restart(
+        &self,
+        updater_refresh_mode: UpdaterRefreshMode,
+        managed_codex_bin: &Path,
+    ) -> Result<RestartIfRunningOutcome> {
+        let operation_lock = self.open_operation_lock_file().await?;
+        if !try_lock_file(&operation_lock)? {
+            return Ok(RestartIfRunningOutcome::Busy);
+        }
+        let settings = self.load_settings().await?;
+        let backend = self.running_backend_instance(&settings).await?;
+        let action = deferred_restart_action(settings.remote_control_enabled, backend.is_some());
+        if action == AutomaticRestartAction::Start && client::probe(&self.socket_path).await.is_ok()
+        {
+            return Err(anyhow!(
+                "app server is running but is not managed by codewith app-server daemon"
+            ));
+        }
+        let effects = DaemonAutomaticUpdateEffects {
+            daemon: self,
+            settings: &settings,
+            managed_codex_bin,
+            backend: backend.as_ref(),
+        };
+        let outcome = apply_automatic_restart_action(&effects, action).await?;
+
+        if should_reexec_updater(updater_refresh_mode, outcome) {
+            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
+        }
+
+        Ok(outcome)
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +292,7 @@ mod tests {
     use super::UpdaterRefreshMode;
     use super::apply_automatic_restart_action;
     use super::automatic_restart_action;
+    use super::deferred_restart_action;
     use super::probe_local_endpoint;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
@@ -314,7 +357,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_update_starts_latest_after_natural_exit_without_stop() {
+    async fn local_update_starts_latest_after_deferred_daemon_exits() {
+        let action = deferred_restart_action(
+            /*remote_control_enabled*/ false, /*backend_running*/ false,
+        );
+        assert_eq!(
+            apply_action(action).await,
+            (RestartIfRunningOutcome::Started, vec!["start", "wait"])
+        );
+    }
+
+    #[tokio::test]
+    async fn local_update_preserves_stopped_state_without_prior_deferral() {
         let action = automatic_restart_action(
             /*remote_control_enabled*/ false,
             /*backend_running*/ false,
@@ -324,7 +378,7 @@ mod tests {
         );
         assert_eq!(
             apply_action(action).await,
-            (RestartIfRunningOutcome::Started, vec!["start", "wait"])
+            (RestartIfRunningOutcome::NotRunning, vec![])
         );
     }
 

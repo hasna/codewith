@@ -1,6 +1,8 @@
 use pretty_assertions::assert_eq;
 
 use super::RESTART_RETRY_INTERVAL;
+use super::UpdateAttempt;
+use super::next_update_attempt;
 use super::retry_delay;
 use super::update_failure_diagnostic;
 use super::update_modes_for_identities;
@@ -61,5 +63,16 @@ fn local_update_deferral_uses_short_bounded_retry_cadence() {
             None,
             None,
         ]
+    );
+    assert_eq!(
+        next_update_attempt(UpdateAttempt::Initial, RestartIfRunningOutcome::Deferred),
+        UpdateAttempt::AwaitingLocalIdle
+    );
+    assert_eq!(
+        next_update_attempt(
+            UpdateAttempt::AwaitingLocalIdle,
+            RestartIfRunningOutcome::Busy
+        ),
+        UpdateAttempt::AwaitingLocalIdle
     );
 }
