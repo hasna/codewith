@@ -128,7 +128,6 @@ pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
 mod debug_config;
-mod default_daemon;
 mod diff_model;
 mod diff_render;
 mod exec_cell;
@@ -599,11 +598,9 @@ async fn start_app_server(
         )
         .await
         .map(AppServerClient::InProcess),
-        AppServerTarget::LocalDaemon { endpoint } => {
-            default_daemon::connect_default_daemon(endpoint, arg0_paths.codex_self_exe.as_deref())
-                .await
+        AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
+            connect_remote_app_server(endpoint.clone()).await
         }
-        AppServerTarget::Remote { endpoint } => connect_remote_app_server(endpoint.clone()).await,
     }
 }
 

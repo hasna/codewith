@@ -90,7 +90,6 @@ mod filters;
 mod fs_scope;
 mod fs_watch;
 mod fuzzy_file_search;
-mod idle_shutdown;
 mod image_url;
 pub mod in_process;
 mod mcp_refresh;
@@ -113,8 +112,6 @@ pub use crate::transport::app_server_control_socket_path;
 pub use crate::transport::auth::AppServerWebsocketAuthArgs;
 pub use crate::transport::auth::AppServerWebsocketAuthSettings;
 pub use crate::transport::auth::WebsocketAuthCliMode;
-use idle_shutdown::TransportEventOrIdle;
-use idle_shutdown::receive_transport_event_or_idle;
 
 const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
 const OTEL_SERVICE_NAME: &str = "codex-app-server";
@@ -908,6 +905,22 @@ pub async fn run_main_with_transport_options(
                 }
 
                 tokio::select! {
+                    () = async {
+                        match idle_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if idle_shutdown_after.is_some() => {
+                        if connections.is_empty() {
+                            info!(
+                                "per-session app-server idle-shutdown grace elapsed with no clients connected; exiting"
+                            );
+                            break;
+                        }
+                        // A client reconnected before the grace elapsed; disarm
+                        // until the next time the last connection drops.
+                        idle_deadline = None;
+                    }
                     shutdown_signal_result = shutdown_signal(), if graceful_signal_restart_enabled && !shutdown_state.forced() => {
                         let signal = match shutdown_signal_result {
                             Ok(signal) => signal,
@@ -924,22 +937,9 @@ pub async fn run_main_with_transport_options(
                             warn!("running-turn watcher closed during graceful restart drain");
                         }
                     }
-                    event_or_idle = receive_transport_event_or_idle(&mut transport_event_rx, idle_deadline) => {
-                        let event = match event_or_idle {
-                            TransportEventOrIdle::Event(Some(event)) => event,
-                            TransportEventOrIdle::Event(None) => break,
-                            TransportEventOrIdle::Idle => {
-                                if connections.is_empty() {
-                                    info!(
-                                        "per-session app-server idle-shutdown grace elapsed with no clients connected; exiting"
-                                    );
-                                    break;
-                                }
-                                // A client reconnected before the grace elapsed; disarm
-                                // until the next time the last connection drops.
-                                idle_deadline = None;
-                                continue;
-                            }
+                    event = transport_event_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
                         };
                         match event {
                             TransportEvent::ConnectionOpened {
