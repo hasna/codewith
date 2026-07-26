@@ -109,13 +109,31 @@ async fn update_once(
             .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
             .await?
         {
-            RestartIfRunningOutcome::Busy => {
-                if sleep_or_terminate(RESTART_RETRY_INTERVAL, terminate).await {
+            outcome if retry_delay(outcome).is_some() => {
+                if sleep_or_terminate(
+                    retry_delay(outcome).expect("retry outcome should have a delay"),
+                    terminate,
+                )
+                .await
+                {
                     return Ok(UpdateLoopControl::Stop);
                 }
             }
             _ => return Ok(UpdateLoopControl::Continue),
         }
+    }
+}
+
+#[cfg(unix)]
+fn retry_delay(outcome: RestartIfRunningOutcome) -> Option<Duration> {
+    match outcome {
+        RestartIfRunningOutcome::Busy => Some(RESTART_RETRY_INTERVAL),
+        RestartIfRunningOutcome::Deferred
+        | RestartIfRunningOutcome::NotRunning
+        | RestartIfRunningOutcome::NotReady
+        | RestartIfRunningOutcome::AlreadyCurrent
+        | RestartIfRunningOutcome::Started
+        | RestartIfRunningOutcome::Restarted => None,
     }
 }
 

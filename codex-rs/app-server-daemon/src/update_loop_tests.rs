@@ -1,7 +1,10 @@
 use pretty_assertions::assert_eq;
 
+use super::RESTART_RETRY_INTERVAL;
+use super::retry_delay;
 use super::update_failure_diagnostic;
 use super::update_modes_for_identities;
+use crate::RestartIfRunningOutcome;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
 use crate::managed_install::executable_identity_from_bytes;
@@ -38,5 +41,25 @@ fn updater_failure_diagnostic_includes_error_chain() {
     assert_eq!(
         update_failure_diagnostic(&err),
         "Codewith app-server daemon updater failed: update pass failed: fetch failed"
+    );
+}
+
+#[test]
+fn local_update_deferral_uses_short_bounded_retry_cadence() {
+    assert_eq!(RESTART_RETRY_INTERVAL, std::time::Duration::from_secs(5));
+    assert_eq!(
+        [
+            RestartIfRunningOutcome::Busy,
+            RestartIfRunningOutcome::Deferred,
+            RestartIfRunningOutcome::AlreadyCurrent,
+            RestartIfRunningOutcome::Started,
+        ]
+        .map(retry_delay),
+        [
+            Some(std::time::Duration::from_secs(5)),
+            Some(std::time::Duration::from_secs(5)),
+            None,
+            None,
+        ]
     );
 }
