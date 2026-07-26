@@ -23,6 +23,17 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(70);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
 
+/// Grace period, in milliseconds, before a per-session, TUI-owned app-server
+/// (`app-server --listen unix://`) exits after its last client disconnects.
+///
+/// This bounds how long an orphaned backend can linger when the owning TUI is
+/// signal-killed (e.g. SIGHUP from a closing terminal/tmux pane) and cannot run
+/// cleanup. It is passed via `--exit-on-idle-ms` and kept short so orphans do
+/// not accumulate, yet long enough that a quick relaunch or resume reconnects to
+/// the still-warm daemon instead of paying a cold start. Only the plain default
+/// daemon opts in; remote-control and update-loop daemons must outlive any TUI.
+const PER_SESSION_IDLE_SHUTDOWN_GRACE_MS: &str = "30000";
+
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct PidBackend {
@@ -37,12 +48,6 @@ pub(crate) struct PidBackend {
 struct PidRecord {
     pid: u32,
     process_start_time: String,
-    #[serde(default = "legacy_pid_record_retires_when_idle")]
-    retires_when_idle: bool,
-}
-
-fn legacy_pid_record_retires_when_idle() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,15 +124,6 @@ impl PidBackend {
         }
     }
 
-    pub(crate) async fn retires_when_idle(&self) -> Result<bool> {
-        match self.read_pid_file_state().await? {
-            PidFileState::Running(record) if self.record_is_active(&record).await? => {
-                Ok(record.retires_when_idle)
-            }
-            PidFileState::Missing | PidFileState::Starting | PidFileState::Running(_) => Ok(false),
-        }
-    }
-
     #[cfg(unix)]
     pub(crate) async fn start(&self) -> Result<Option<u32>> {
         if let Some(parent) = self.pid_file.parent() {
@@ -167,12 +163,6 @@ impl PidBackend {
             }
         };
         let mut command = Command::new(&self.codex_bin);
-        if let Some(client_lease_file) = self.client_lease_file() {
-            command.env(
-                codex_app_server_protocol::LOCAL_CLIENT_LEASE_FILE_ENV_VAR,
-                client_lease_file,
-            );
-        }
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
@@ -217,7 +207,6 @@ impl PidBackend {
             Ok(process_start_time) => PidRecord {
                 pid,
                 process_start_time,
-                retires_when_idle: false,
             },
             Err(err) => {
                 let _ = self.terminate_process(pid);
@@ -424,20 +413,16 @@ impl PidBackend {
             } => vec!["app-server", "--remote-control", "--listen", "unix://"],
             PidCommandKind::AppServer {
                 remote_control_enabled: false,
-            } => vec!["app-server", "--listen", "unix://"],
+            } => vec![
+                "app-server",
+                "--listen",
+                "unix://",
+                // Reap this per-session, TUI-owned backend when its owning TUI
+                // goes away instead of leaving an orphan reparented to init.
+                "--exit-on-idle-ms",
+                PER_SESSION_IDLE_SHUTDOWN_GRACE_MS,
+            ],
             PidCommandKind::UpdateLoop => vec!["app-server", "daemon", "pid-update-loop"],
-        }
-    }
-
-    fn client_lease_file(&self) -> Option<PathBuf> {
-        match self.command_kind {
-            PidCommandKind::AppServer {
-                remote_control_enabled: false,
-            } => Some(self.pid_file.with_file_name(crate::CLIENT_LEASE_FILE_NAME)),
-            PidCommandKind::AppServer {
-                remote_control_enabled: true,
-            }
-            | PidCommandKind::UpdateLoop => None,
         }
     }
 

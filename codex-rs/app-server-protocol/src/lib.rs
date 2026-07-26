@@ -4,10 +4,6 @@ mod jsonrpc_lite;
 mod protocol;
 mod schema_fixtures;
 
-/// Internal environment variable used by pid-managed local app-servers to
-/// coordinate established client connections with automatic updater restarts.
-pub const LOCAL_CLIENT_LEASE_FILE_ENV_VAR: &str = "CODEWITH_APP_SERVER_CLIENT_LEASE_FILE";
-
 pub use experimental_api::*;
 pub use export::GenerateTsOptions;
 pub use export::generate_internal_json_schema;

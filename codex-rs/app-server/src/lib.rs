@@ -12,12 +12,8 @@ use codex_login::AuthManager;
 use codex_utils_cli::CliConfigOverrides;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
@@ -177,38 +173,6 @@ enum ShutdownSignal {
     Forceable,
     #[cfg(unix)]
     GracefulOnly,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum TransportEventOrIdle<T> {
-    Event(Option<T>),
-    Idle,
-}
-
-async fn receive_transport_event_or_idle<T>(
-    receiver: &mut mpsc::Receiver<T>,
-    idle_deadline: Option<tokio::time::Instant>,
-) -> TransportEventOrIdle<T> {
-    tokio::select! {
-        biased;
-        event = receiver.recv() => TransportEventOrIdle::Event(event),
-        () = async {
-            match idle_deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending::<()>().await,
-            }
-        } => TransportEventOrIdle::Idle,
-    }
-}
-
-fn acquire_local_client_lease(path: &Path) -> IoResult<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)?;
-    File::try_lock_shared(&file)?;
-    Ok(file)
 }
 
 async fn shutdown_signal() -> IoResult<ShutdownSignal> {
@@ -484,12 +448,6 @@ pub async fn run_main_with_transport_options(
     auth: AppServerWebsocketAuthSettings,
     runtime_options: AppServerRuntimeOptions,
 ) -> IoResult<()> {
-    let local_client_lease_file = if matches!(&transport, AppServerTransport::UnixSocket { .. }) {
-        std::env::var_os(codex_app_server_protocol::LOCAL_CLIENT_LEASE_FILE_ENV_VAR)
-            .map(PathBuf::from)
-    } else {
-        None
-    };
     let (transport_event_tx, mut transport_event_rx) =
         mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(CHANNEL_CAPACITY);
@@ -924,7 +882,6 @@ pub async fn run_main_with_transport_options(
             }
             let mut listen_for_threads = true;
             let mut shutdown_state = ShutdownState::default();
-            let mut active_client_lease: Option<File> = None;
             // Idle-shutdown deadline for per-session control sockets. Armed at
             // startup so a backend whose owning TUI dies before (or right after)
             // connecting still exits after the grace period; disarmed while a
@@ -948,6 +905,22 @@ pub async fn run_main_with_transport_options(
                 }
 
                 tokio::select! {
+                    () = async {
+                        match idle_deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    }, if idle_shutdown_after.is_some() => {
+                        if connections.is_empty() {
+                            info!(
+                                "per-session app-server idle-shutdown grace elapsed with no clients connected; exiting"
+                            );
+                            break;
+                        }
+                        // A client reconnected before the grace elapsed; disarm
+                        // until the next time the last connection drops.
+                        idle_deadline = None;
+                    }
                     shutdown_signal_result = shutdown_signal(), if graceful_signal_restart_enabled && !shutdown_state.forced() => {
                         let signal = match shutdown_signal_result {
                             Ok(signal) => signal,
@@ -964,22 +937,9 @@ pub async fn run_main_with_transport_options(
                             warn!("running-turn watcher closed during graceful restart drain");
                         }
                     }
-                    event_or_idle = receive_transport_event_or_idle(&mut transport_event_rx, idle_deadline) => {
-                        let event = match event_or_idle {
-                            TransportEventOrIdle::Event(Some(event)) => event,
-                            TransportEventOrIdle::Event(None) => break,
-                            TransportEventOrIdle::Idle => {
-                                if connections.is_empty() {
-                                    info!(
-                                        "per-session app-server idle-shutdown grace elapsed with no clients connected; exiting"
-                                    );
-                                    break;
-                                }
-                                // A client reconnected before the grace elapsed; disarm
-                                // until the next time the last connection drops.
-                                idle_deadline = None;
-                                continue;
-                            }
+                    event = transport_event_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
                         };
                         match event {
                             TransportEvent::ConnectionOpened {
@@ -988,27 +948,6 @@ pub async fn run_main_with_transport_options(
                                 writer,
                                 disconnect_sender,
                             } => {
-                                if connections.is_empty()
-                                    && active_client_lease.is_none()
-                                    && let Some(path) = local_client_lease_file.as_deref()
-                                {
-                                    match acquire_local_client_lease(path) {
-                                        Ok(lease) => active_client_lease = Some(lease),
-                                        Err(err) => {
-                                            warn!(
-                                                %err,
-                                                lease_file = %path.display(),
-                                                "rejecting local app-server connection while updater restart is active"
-                                            );
-                                            if let Some(disconnect_sender) =
-                                                disconnect_sender.as_ref()
-                                            {
-                                                disconnect_sender.cancel();
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
                                 let outbound_initialized = Arc::new(AtomicBool::new(false));
                                 let outbound_experimental_api_enabled =
                                     Arc::new(AtomicBool::new(false));
@@ -1056,9 +995,6 @@ pub async fn run_main_with_transport_options(
                                     break;
                                 }
                                 processor.connection_closed(connection_id, &connection_state.session).await;
-                                if connections.is_empty() {
-                                    active_client_lease = None;
-                                }
                                 if shutdown_when_no_connections && connections.is_empty() {
                                     break;
                                 }
@@ -1246,9 +1182,9 @@ pub async fn run_main_with_transport_options(
 /// Resolve whether (and after how long) this app-server should idle-shut-down
 /// once its last client disconnects.
 ///
-/// Idle shutdown only applies to explicitly opted-in `unix://` control sockets.
-/// It is refused for every other role so shared daemons keep running with no
-/// client attached:
+/// Idle shutdown only applies to per-session, TUI-owned `unix://` control
+/// sockets. It is refused for every other role so standalone daemons keep
+/// running with no client attached:
 /// - remote-control daemons must stay up to serve the remote-control channel;
 /// - background-agent hosts/workers must stay up to run queued work;
 /// - stdio servers already exit with their single client (`single_client_mode`);
@@ -1279,12 +1215,7 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 mod tests {
     use super::AppServerTransport;
     use super::Duration;
-    use super::File;
     use super::LogFormat;
-    use super::OpenOptions;
-    use super::TransportEventOrIdle;
-    use super::acquire_local_client_lease;
-    use super::receive_transport_event_or_idle;
     use super::resolve_idle_shutdown_after;
     use pretty_assertions::assert_eq;
 
@@ -1370,37 +1301,6 @@ mod tests {
                 "transport {transport:?} should never idle-shut-down",
             );
         }
-    }
-
-    #[tokio::test]
-    async fn queued_connection_event_wins_at_idle_deadline() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        sender.send("connection opened").await.expect("send event");
-
-        assert_eq!(
-            receive_transport_event_or_idle(&mut receiver, Some(tokio::time::Instant::now())).await,
-            TransportEventOrIdle::Event(Some("connection opened")),
-        );
-    }
-
-    #[test]
-    fn local_connection_lease_blocks_exclusive_updater_lock() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let lease_path = temp_dir.path().join("client.lock");
-        let lease = acquire_local_client_lease(&lease_path).expect("client lease");
-        let updater = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lease_path)
-            .expect("updater lock file");
-
-        assert!(matches!(
-            File::try_lock(&updater).expect_err("client lease should block updater"),
-            std::fs::TryLockError::WouldBlock
-        ));
-        drop(lease);
-        File::try_lock(&updater).expect("updater lock after client exit");
     }
 
     #[test]
