@@ -11,6 +11,7 @@ use crate::active_session_registry::ActivePeerFreshness;
 use crate::active_session_registry::ActivePeerLookupError;
 use crate::active_session_registry::LastSeenAt;
 use crate::request_processors::thread_lifecycle::ListenerTaskContext;
+use tokio::sync::Notify;
 
 use super::thread_mailbox_context::mailbox_context_descriptor_component;
 use super::thread_mailbox_context::mailbox_payload_context_text;
@@ -34,6 +35,32 @@ const MAX_MAILBOX_DISPATCH_ERROR_CHARS: usize = 1_000;
 const MAILBOX_PENDING_WORK_WAKE_ATTEMPTS: usize = 40;
 const MAILBOX_PENDING_WORK_WAKE_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Coalescing wake signal for the dispatcher loop.
+///
+/// Without it the loop only advances on `MAILBOX_DISPATCH_POLL_INTERVAL`, so a
+/// row enqueued right after a tick waits up to a full interval before it can be
+/// claimed. Enqueue paths raise this signal so the next tick runs immediately.
+///
+/// `Notify::notify_one` stores a single permit when nobody is waiting, so a
+/// wake raised while the loop is inside `tick()` is not lost — the next
+/// `wait()` consumes it. Several wakes raised before the loop comes back around
+/// collapse into one extra tick, which is harmless because a tick drains up to
+/// `MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK` rows.
+#[derive(Clone, Default)]
+struct MailboxDispatchWake {
+    notify: Arc<Notify>,
+}
+
+impl MailboxDispatchWake {
+    fn wake(&self) {
+        self.notify.notify_one();
+    }
+
+    async fn wait(&self) {
+        self.notify.notified().await;
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadMailboxDispatcherRuntime {
     active_peer_directory: ActivePeerDirectory,
@@ -51,6 +78,7 @@ pub(crate) struct ThreadMailboxDispatcherRuntime {
     state_db: Option<StateDbHandle>,
     local_active_owner_id: String,
     cancel_token: CancellationToken,
+    wake: MailboxDispatchWake,
     tasks: TaskTracker,
 }
 
@@ -92,6 +120,7 @@ impl ThreadMailboxDispatcherRuntime {
             state_db,
             local_active_owner_id,
             cancel_token: CancellationToken::new(),
+            wake: MailboxDispatchWake::default(),
             tasks: TaskTracker::new(),
         }
     }
@@ -108,6 +137,14 @@ impl ThreadMailboxDispatcherRuntime {
 
     pub(crate) fn shutdown(&self) {
         self.cancel_token.cancel();
+    }
+
+    /// Runs the next dispatcher tick immediately instead of waiting out the
+    /// remainder of `MAILBOX_DISPATCH_POLL_INTERVAL`. Purely a latency hint: the
+    /// tick still applies the same SQL claim filters and delivery policy, so
+    /// waking cannot dispatch anything the poll loop would not have dispatched.
+    pub(crate) fn notify_pending_work(&self) {
+        self.wake.wake();
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
@@ -129,6 +166,7 @@ impl ThreadMailboxDispatcherRuntime {
         loop {
             tokio::select! {
                 _ = self.cancel_token.cancelled() => break,
+                _ = self.wake.wait() => self.tick().await,
                 _ = interval.tick() => self.tick().await,
             }
         }
@@ -1268,5 +1306,51 @@ mod tests {
             })),
             MailboxLocalDeliveryPolicy::LiveOnly
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_wake_raised_while_not_waiting_is_not_lost() {
+        let wake = MailboxDispatchWake::default();
+
+        // The dispatcher spends most of its time inside `tick()`, not parked on
+        // `wait()`, so a wake raised then has to survive until the next wait.
+        wake.wake();
+
+        tokio::time::timeout(Duration::from_secs(5), wake.wait())
+            .await
+            .expect("wake raised while nobody waited should be observed by the next wait");
+    }
+
+    #[tokio::test]
+    async fn dispatch_wake_coalesces_repeated_wakes_into_one_tick() {
+        let wake = MailboxDispatchWake::default();
+        wake.wake();
+        wake.wake();
+        wake.wake();
+
+        tokio::time::timeout(Duration::from_secs(5), wake.wait())
+            .await
+            .expect("first wait should observe the stored wake");
+
+        // A burst of enqueues must not queue up a burst of ticks; one tick
+        // drains up to MAX_MAILBOX_DISPATCH_CLAIMS_PER_TICK rows and the loop
+        // then falls back to the poll interval instead of spinning.
+        tokio::time::timeout(Duration::from_millis(100), wake.wait())
+            .await
+            .expect_err("repeated wakes should collapse into a single pending tick");
+    }
+
+    #[tokio::test]
+    async fn dispatch_wake_is_shared_across_runtime_clones() {
+        // `ThreadMailboxDispatcherRuntime` is cloned into its own run loop and
+        // into request processors, so the signal must be shared, not per-clone.
+        let wake = MailboxDispatchWake::default();
+        let request_processor_copy = wake.clone();
+
+        request_processor_copy.wake();
+
+        tokio::time::timeout(Duration::from_secs(5), wake.wait())
+            .await
+            .expect("a wake raised on a clone should reach the loop's copy");
     }
 }

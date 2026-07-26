@@ -141,6 +141,16 @@ impl ThreadRequestProcessor {
             })
             .await
             .map_err(|err| internal_error(format!("failed to enqueue mailbox message: {err}")))?;
+        if outcome.created
+            && let Some(runtime) = self.thread_mailbox_dispatcher_runtime.as_ref()
+        {
+            // A newly created row is the only thing that can make mailbox work
+            // due right now, so nudge the dispatcher instead of leaving it to
+            // the next poll tick. This only changes *when* the next tick runs:
+            // the SQL claim filters, `nextAttemptAt`, and the delivery policy
+            // still decide whether this row can deliver, trigger, or resume.
+            runtime.notify_pending_work();
+        }
         Ok(ThreadMailboxEnqueueResponse {
             message: api_mailbox_summary(outcome.message),
             created: outcome.created,

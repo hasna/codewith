@@ -588,6 +588,7 @@ impl MessageProcessor {
             thread_watch_manager.clone(),
             Arc::clone(&thread_list_state_permit),
             thread_goal_processor.clone(),
+            thread_mailbox_dispatcher_runtime.clone(),
             state_db.clone(),
             local_active_owner_id.clone(),
             Arc::clone(&skills_watcher),
