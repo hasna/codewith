@@ -1,5 +1,9 @@
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
+
 use super::KnownProviderFallbackModel;
 use super::KnownProviderModelMetadata;
+use super::reasoning_preset;
 
 pub(crate) const FALLBACK_MODELS: &[KnownProviderFallbackModel] = &[
     KnownProviderFallbackModel::new(
@@ -36,6 +40,27 @@ pub(crate) fn metadata(slug: &str) -> Option<KnownProviderModelMetadata> {
             /*supports_search_tool*/ false,
         )),
         _ => None,
+    }
+}
+
+/// Reasoning-effort presets per the xAI docs.
+///
+/// `grok-4.5` accepts `reasoning_effort` with `low`, `medium`, or `high` and defaults to `high`;
+/// reasoning cannot be disabled, so `none` is deliberately not offered. No other xAI chat model is
+/// documented as accepting `reasoning_effort`, so they keep the empty (provider-default) list.
+pub(crate) fn reasoning_levels(
+    slug: &str,
+) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    match slug {
+        "grok-4.5" => (
+            Some(ReasoningEffort::High),
+            vec![
+                reasoning_preset(ReasoningEffort::Low, "Fast, lighter reasoning"),
+                reasoning_preset(ReasoningEffort::Medium, "Balanced reasoning"),
+                reasoning_preset(ReasoningEffort::High, "Most thorough reasoning"),
+            ],
+        ),
+        _ => (None, Vec::new()),
     }
 }
 
