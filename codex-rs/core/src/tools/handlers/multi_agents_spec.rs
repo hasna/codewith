@@ -219,10 +219,19 @@ pub fn create_followup_task_tool() -> ToolSpec {
 }
 
 pub fn create_resume_agent_tool() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "id".to_string(),
-        JsonSchema::string(Some("Agent id to resume.".to_string())),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::string(Some("Agent id to resume.".to_string())),
+        ),
+        (
+            "history_backtrack".to_string(),
+            JsonSchema::integer(Some(
+                "Optional positive number of message/tool-call boundaries to rewind before reopening a closed agent."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),

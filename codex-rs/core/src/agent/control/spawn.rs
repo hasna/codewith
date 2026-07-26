@@ -528,16 +528,22 @@ impl AgentControl {
 
     /// Resume an existing agent thread from a recorded rollout file, then rebuild
     /// the live sub-agent subtree beneath it.
+    ///
+    /// `history_backtrack` optionally rewinds the resumed root agent history by
+    /// that many message/tool-call boundaries before reopening it. Descendants
+    /// are always reloaded from their full persisted history.
     pub(crate) async fn resume_agent_from_rollout(
         &self,
         config: Config,
         thread_id: ThreadId,
+        history_backtrack: Option<u32>,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
         let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
         let resumed_thread_id = Box::pin(self.resume_single_agent_from_rollout(
             config.clone(),
             thread_id,
+            history_backtrack,
             session_source,
         ))
         .await?;
@@ -624,6 +630,7 @@ impl AgentControl {
                     match Box::pin(self.resume_single_agent_from_rollout(
                         config.clone(),
                         child_thread_id,
+                        /*history_backtrack*/ None,
                         child_session_source,
                     ))
                     .await
@@ -658,6 +665,7 @@ impl AgentControl {
         &self,
         config: Config,
         thread_id: ThreadId,
+        history_backtrack: Option<u32>,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
@@ -678,6 +686,14 @@ impl AgentControl {
             history,
             rollout_path: stored_thread.rollout_path,
         });
+        let initial_history = if let Some(history_backtrack) = history_backtrack {
+            crate::thread_manager::backtrack_initial_history_by_message_or_tool_calls(
+                initial_history,
+                history_backtrack,
+            )?
+        } else {
+            initial_history
+        };
         let parent_thread_id = stored_thread.parent_thread_id;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(

@@ -44,6 +44,11 @@ async fn handle_resume_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: ResumeAgentArgs = parse_arguments(&arguments)?;
+    if args.history_backtrack == Some(0) {
+        return Err(FunctionCallError::RespondToModel(
+            "history_backtrack must be >= 1".to_string(),
+        ));
+    }
     let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
         FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
     })?;
@@ -86,6 +91,7 @@ async fn handle_resume_agent(
             &turn,
             receiver_thread_id,
             child_depth,
+            args.history_backtrack,
         ))
         .await
         {
@@ -114,7 +120,12 @@ async fn handle_resume_agent(
             }
         }
     } else {
-        (receiver_agent, None)
+        let error = args.history_backtrack.map(|_| {
+            FunctionCallError::RespondToModel(
+                "history_backtrack only applies when reopening a closed agent.".to_string(),
+            )
+        });
+        (receiver_agent, error)
     };
     session
         .send_event(
@@ -150,6 +161,8 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 struct ResumeAgentArgs {
     id: String,
+    #[serde(default)]
+    history_backtrack: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -180,11 +193,13 @@ async fn try_resume_closed_agent(
     turn: &Arc<TurnContext>,
     receiver_thread_id: ThreadId,
     child_depth: i32,
+    history_backtrack: Option<u32>,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
     Box::pin(session.services.agent_control.resume_agent_from_rollout(
         config,
         receiver_thread_id,
+        history_backtrack,
         thread_spawn_source(
             session.thread_id(),
             &turn.session_source,

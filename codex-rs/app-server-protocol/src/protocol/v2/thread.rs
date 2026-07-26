@@ -474,6 +474,13 @@ pub struct ThreadResumeParams {
     #[ts(optional = nullable)]
     pub history: Option<Vec<ResponseItem>>,
 
+    /// [UNSTABLE] Resume from a prefix ending before the Nth message or
+    /// tool-call boundary counted backward from the source history tail.
+    /// This is non-destructive and does not mutate the source rollout.
+    #[experimental("thread/resume.historyBacktrack")]
+    #[ts(optional = nullable)]
+    pub history_backtrack: Option<u32>,
+
     /// [UNSTABLE] Specify the rollout path to resume from.
     /// If specified for a non-running thread, the thread_id param will be ignored.
     /// If thread_id identifies a running thread, the path must match the active
@@ -653,6 +660,13 @@ pub struct ThreadForkParams {
     )]
     #[ts(optional = nullable)]
     pub path: Option<PathBuf>,
+
+    /// [UNSTABLE] Fork from a prefix ending before the Nth message or
+    /// tool-call boundary counted backward from the source history tail.
+    /// This is non-destructive and does not mutate the source rollout.
+    #[experimental("thread/fork.historyBacktrack")]
+    #[ts(optional = nullable)]
+    pub history_backtrack: Option<u32>,
 
     /// Configuration overrides for the forked thread, if any.
     #[ts(optional = nullable)]

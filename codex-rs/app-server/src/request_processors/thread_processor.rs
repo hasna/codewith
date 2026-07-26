@@ -123,6 +123,11 @@ fn collect_resume_override_mismatches(
             config_snapshot.active_permission_profile
         ));
     }
+    if let Some(history_backtrack) = request.history_backtrack {
+        mismatch_details.push(format!(
+            "historyBacktrack requested={history_backtrack} cannot be applied to an already loaded thread"
+        ));
+    }
     if let Some(requested_personality) = request.personality.as_ref()
         && config_snapshot.personality.as_ref() != Some(requested_personality)
     {
@@ -146,6 +151,31 @@ fn collect_resume_override_mismatches(
         );
     }
     mismatch_details
+}
+
+fn maybe_backtrack_initial_history(
+    initial_history: InitialHistory,
+    history_backtrack: Option<u32>,
+) -> Result<InitialHistory, JSONRPCErrorError> {
+    let Some(history_backtrack) = history_backtrack else {
+        return Ok(initial_history);
+    };
+
+    codex_core::backtrack_initial_history_by_message_or_tool_calls(
+        initial_history,
+        history_backtrack,
+    )
+    .map_err(|err| match err {
+        CodexErr::InvalidRequest(message) => invalid_request(message),
+        err => internal_error(format!("failed to backtrack thread history: {err}")),
+    })
+}
+
+fn validate_history_backtrack(history_backtrack: Option<u32>) -> Result<(), JSONRPCErrorError> {
+    if history_backtrack == Some(0) {
+        return Err(invalid_request("historyBacktrack must be >= 1"));
+    }
+    Ok(())
 }
 
 fn merge_persisted_resume_metadata(
@@ -2949,6 +2979,10 @@ impl ThreadRequestProcessor {
                 .await;
             return Ok(());
         }
+        if let Err(error) = validate_history_backtrack(params.history_backtrack) {
+            self.outgoing.send_error(request_id, error).await;
+            return Ok(());
+        }
         let redact_resume_payloads =
             should_redact_thread_resume_payloads(app_server_client_name.as_deref());
 
@@ -2979,6 +3013,7 @@ impl ThreadRequestProcessor {
         let ThreadResumeParams {
             thread_id,
             history,
+            history_backtrack,
             path,
             model,
             model_provider,
@@ -3021,6 +3056,22 @@ impl ThreadRequestProcessor {
                 return Ok(());
             }
         };
+        let thread_history =
+            match maybe_backtrack_initial_history(thread_history, history_backtrack) {
+                Ok(thread_history) => thread_history,
+                Err(error) => {
+                    self.outgoing.send_error(request_id, error).await;
+                    return Ok(());
+                }
+            };
+        let mut resume_source_thread = resume_source_thread;
+        if history_backtrack.is_some()
+            && let Some(stored_thread) = resume_source_thread.as_mut()
+            && let Some(history) = stored_thread.history.as_mut()
+        {
+            history.items = thread_history.get_rollout_items();
+            stored_thread.preview = preview_from_rollout_items(&history.items);
+        }
 
         let history_cwd = thread_history.session_cwd();
         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
@@ -3117,6 +3168,7 @@ impl ThreadRequestProcessor {
                         rollout_path.as_path(),
                         resume_source_thread,
                         include_turns,
+                        history_backtrack.is_some(),
                     )
                     .await
                 {
@@ -3368,6 +3420,12 @@ impl ThreadRequestProcessor {
                     }
                 }
 
+                if params.history_backtrack.is_some() {
+                    return Err(invalid_request(format!(
+                        "cannot resume loaded thread {existing_thread_id} with historyBacktrack"
+                    )));
+                }
+
                 // Preserve rejoin semantics when another client can still observe
                 // the loaded thread or shutdown did not complete.
                 tracing::warn!(
@@ -3578,6 +3636,7 @@ impl ThreadRequestProcessor {
             .map_err(thread_store_resume_read_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn load_thread_from_resume_source_or_send_internal(
         &self,
         thread_id: ThreadId,
@@ -3586,6 +3645,7 @@ impl ThreadRequestProcessor {
         rollout_path: &Path,
         resume_source_thread: Option<StoredThread>,
         include_turns: bool,
+        use_history_preview: bool,
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
         let session_id = thread.session_configured().session_id.to_string();
@@ -3665,6 +3725,9 @@ impl ThreadRequestProcessor {
         thread.id = thread_id.to_string();
         thread.session_id = session_id;
         thread.path = Some(rollout_path.to_path_buf());
+        if use_history_preview {
+            thread.preview = preview_from_rollout_items(&thread_history.get_rollout_items());
+        }
         if include_turns {
             let history_items = thread_history.get_rollout_items();
             populate_thread_turns_from_history(
@@ -3704,6 +3767,7 @@ impl ThreadRequestProcessor {
         let ThreadForkParams {
             thread_id,
             path,
+            history_backtrack,
             model,
             model_provider,
             service_tier,
@@ -3747,6 +3811,7 @@ impl ThreadRequestProcessor {
                 );
             }
         }
+        validate_history_backtrack(history_backtrack)?;
         let source_thread = self
             .read_stored_thread_for_resume(&thread_id, path.as_ref(), /*include_history*/ true)
             .await?;
@@ -3806,9 +3871,12 @@ impl ThreadRequestProcessor {
         );
         let source_initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: source_thread_id,
-            history: history_items.clone(),
+            history: history_items,
             rollout_path: source_thread.rollout_path.clone(),
         });
+        let source_initial_history =
+            maybe_backtrack_initial_history(source_initial_history, history_backtrack)?;
+        let history_items = source_initial_history.get_rollout_items();
         merge_persisted_auth_profile_from_history(&mut typesafe_overrides, &source_initial_history);
         typesafe_overrides.ephemeral = ephemeral.then_some(true);
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.

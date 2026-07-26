@@ -31,8 +31,13 @@ use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
@@ -79,6 +84,49 @@ async fn list_threads(mcp: &mut TestAppServer) -> Result<ThreadListResponse> {
     )
     .await??;
     to_response::<ThreadListResponse>(list_resp)
+}
+
+fn message_response_item(role: &str, text: &str) -> ResponseItem {
+    let content = if role == "user" {
+        ContentItem::InputText {
+            text: text.to_string(),
+        }
+    } else {
+        ContentItem::OutputText {
+            text: text.to_string(),
+        }
+    };
+    ResponseItem::Message {
+        id: None,
+        role: role.to_string(),
+        content: vec![content],
+        phase: None,
+    }
+}
+
+/// Append a message to a rollout the way a real session records one: the model
+/// history `response_item` followed by the replay `event_msg` that the turn
+/// view is reconstructed from.
+async fn append_message_turn_items(path: &Path, role: &str, text: &str) -> Result<()> {
+    append_rollout_item_to_path(
+        path,
+        &RolloutItem::ResponseItem(message_response_item(role, text)),
+    )
+    .await?;
+    let event = if role == "user" {
+        EventMsg::UserMessage(UserMessageEvent {
+            message: text.to_string(),
+            ..Default::default()
+        })
+    } else {
+        EventMsg::AgentMessage(AgentMessageEvent {
+            message: text.to_string(),
+            phase: None,
+            memory_citation: None,
+        })
+    };
+    append_rollout_item_to_path(path, &RolloutItem::EventMsg(event)).await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -245,6 +293,77 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let mut expected_started_thread = thread;
     expected_started_thread.turns.clear();
     assert_eq!(started.thread, expected_started_thread);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_history_backtrack_copies_prefix_without_mutating_source() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let source_path = codex_home
+        .path()
+        .join("sessions")
+        .join("2025")
+        .join("01")
+        .join("05")
+        .join(format!(
+            "rollout-2025-01-05T12-00-00-{conversation_id}.jsonl"
+        ));
+    append_message_turn_items(&source_path, "assistant", "Saved answer").await?;
+    append_message_turn_items(&source_path, "user", "Second request").await?;
+    append_message_turn_items(&source_path, "assistant", "Second answer").await?;
+    let original_contents = std::fs::read_to_string(&source_path)?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: conversation_id.clone(),
+            history_backtrack: Some(2),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_ne!(thread.id, conversation_id);
+    assert_eq!(
+        thread.forked_from_id.as_deref(),
+        Some(conversation_id.as_str())
+    );
+    assert_eq!(thread.preview, preview);
+    assert_eq!(thread.turns.len(), 1);
+    let turn = &thread.turns[0];
+    assert_eq!(turn.items.len(), 2);
+    assert!(matches!(
+        turn.items.first(),
+        Some(ThreadItem::UserMessage { .. })
+    ));
+    assert!(
+        matches!(
+            &turn.items[1],
+            ThreadItem::AgentMessage { text, .. } if text.as_str() == "Saved answer"
+        ),
+        "expected the first assistant reply to remain after backtrack"
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, original_contents);
 
     Ok(())
 }

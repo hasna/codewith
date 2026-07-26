@@ -385,6 +385,26 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
+fn resume_agent_tool_accepts_optional_history_backtrack() {
+    let ToolSpec::Namespace(namespace) = create_resume_agent_tool() else {
+        panic!("resume_agent should be a namespace tool");
+    };
+    let Some(ResponsesApiNamespaceTool::Function(ResponsesApiTool { parameters, .. })) =
+        namespace.tools.first()
+    else {
+        panic!("resume_agent should be a namespace function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("resume_agent should use object params");
+
+    assert!(properties.contains_key("id"));
+    assert!(properties.contains_key("history_backtrack"));
+    assert_eq!(parameters.required.as_ref(), Some(&vec!["id".to_string()]));
+}
+
+#[test]
 fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     let ToolSpec::Function(ResponsesApiTool {
         description,

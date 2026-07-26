@@ -3193,6 +3193,44 @@ async fn resume_agent_noops_for_active_agent() {
 }
 
 #[tokio::test]
+async fn resume_agent_rejects_history_backtrack_for_active_agent() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let config = turn.config.as_ref().clone();
+    let thread = manager
+        .start_thread(config.clone())
+        .await
+        .expect("start thread");
+    let agent_id = thread.thread_id;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "resume_agent",
+        function_payload(json!({
+            "id": agent_id.to_string(),
+            "history_backtrack": 1,
+        })),
+    );
+
+    let Err(err) = ResumeAgentHandler.handle(invocation).await else {
+        panic!("history_backtrack should be rejected for active agents");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "history_backtrack only applies when reopening a closed agent.".to_string()
+        )
+    );
+
+    let _ = thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+}
+
+#[tokio::test]
 async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
