@@ -6,6 +6,9 @@ use crate::parse_mcp_tool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
+use serde::ser::Error as _;
+use serde::ser::SerializeStruct;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -47,11 +50,38 @@ pub enum LoadableToolSpec {
     Namespace(ResponsesApiNamespace),
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResponsesApiNamespace {
     pub name: String,
     pub description: String,
     pub tools: Vec<ResponsesApiNamespaceTool>,
+}
+
+impl Serialize for ResponsesApiNamespace {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if crate::is_forbidden_first_party_namespace(&self.name) {
+            let tool_name = self
+                .tools
+                .first()
+                .map(|tool| match tool {
+                    ResponsesApiNamespaceTool::Function(tool) => tool.name.as_str(),
+                })
+                .unwrap_or("*");
+            return Err(S::Error::custom(format!(
+                "refusing to serialize custom tool under reserved Responses namespace: {}.{tool_name}",
+                self.name
+            )));
+        }
+
+        let mut namespace = serializer.serialize_struct("ResponsesApiNamespace", 3)?;
+        namespace.serialize_field("name", &self.name)?;
+        namespace.serialize_field("description", &self.description)?;
+        namespace.serialize_field("tools", &self.tools)?;
+        namespace.end()
+    }
 }
 
 pub fn default_namespace_description(namespace_name: &str) -> String {

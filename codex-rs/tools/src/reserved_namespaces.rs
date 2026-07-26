@@ -13,14 +13,14 @@
 //! Because that error rejects the *whole* request, a single mis-namespaced tool
 //! breaks every turn in the session. To prevent this we (1) reject
 //! dynamic/user-supplied tools that try to use a reserved namespace and (2)
-//! guard the first-party assembled tool list so a Codewith tool can never be
-//! shipped under a reserved namespace it is not schema-compatible with.
+//! fail serialization for any first-party or deferred namespace tool under a
+//! reserved namespace it is not schema-compatible with.
 
 /// Namespaces reserved by the OpenAI Responses API for its built-in tools.
 ///
 /// Keep this list sorted. It is the single source of truth consumed by the
 /// dynamic-tool validator, the `multi_agent_v2` namespace validator, and the
-/// first-party tool-assembly guard.
+/// final namespace serializer.
 pub const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
     "api_tool",
     "browser",
@@ -55,9 +55,9 @@ pub fn is_reserved_responses_namespace(namespace: &str) -> bool {
     RESERVED_RESPONSES_NAMESPACES.contains(&namespace)
 }
 
-/// True if a *first-party* namespace tool must not be assembled under
-/// `namespace` because it is Responses-API-reserved and not on Codewith's
-/// vetted allowlist.
+/// True if a custom namespace tool must not be serialized under `namespace`
+/// because it is Responses-API-reserved and not on Codewith's vetted
+/// allowlist.
 ///
 /// This is the regression guard for the `image_gen.imagegen` 400: a
 /// first-party / extension / code-mode tool must never be assembled under

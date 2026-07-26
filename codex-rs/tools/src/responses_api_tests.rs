@@ -192,9 +192,7 @@ fn imagegen_namespace(name: &str) -> ResponsesApiNamespace {
 fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_tools() {
     let results = [
         serde_json::to_value(ToolSpec::Namespace(imagegen_namespace("image_gen"))),
-        serde_json::to_value(LoadableToolSpec::Namespace(imagegen_namespace(
-            "image_gen",
-        ))),
+        serde_json::to_value(LoadableToolSpec::Namespace(imagegen_namespace("image_gen"))),
     ];
 
     for result in results {
