@@ -337,6 +337,7 @@ impl Daemon {
         }
 
         self.ensure_app_server_codex_bin()?;
+        settings.save(&self.settings_file).await?;
         let pid = self.start_app_server_backend(settings).await?;
         let info = self.wait_until_ready().await?;
         Ok(self

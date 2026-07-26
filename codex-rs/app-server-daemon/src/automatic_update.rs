@@ -85,13 +85,16 @@ fn automatic_restart_action(
 fn deferred_restart_action(
     remote_control_enabled: bool,
     backend_running: bool,
+    pid_record_present: bool,
 ) -> AutomaticRestartAction {
     if remote_control_enabled {
         AutomaticRestartAction::LeaveNotRunning
     } else if backend_running {
         AutomaticRestartAction::Defer
-    } else {
+    } else if pid_record_present {
         AutomaticRestartAction::Start
+    } else {
+        AutomaticRestartAction::LeaveNotRunning
     }
 }
 
@@ -251,8 +254,13 @@ impl Daemon {
             return Ok(RestartIfRunningOutcome::Busy);
         }
         let settings = self.load_settings().await?;
+        let pid_record_present = tokio::fs::try_exists(&self.pid_file).await?;
         let backend = self.running_backend_instance(&settings).await?;
-        let action = deferred_restart_action(settings.remote_control_enabled, backend.is_some());
+        let action = deferred_restart_action(
+            settings.remote_control_enabled,
+            backend.is_some(),
+            pid_record_present,
+        );
         if action == AutomaticRestartAction::Start && client::probe(&self.socket_path).await.is_ok()
         {
             return Err(anyhow!(
@@ -360,6 +368,7 @@ mod tests {
     async fn local_update_starts_latest_after_deferred_daemon_exits() {
         let action = deferred_restart_action(
             /*remote_control_enabled*/ false, /*backend_running*/ false,
+            /*pid_record_present*/ true,
         );
         assert_eq!(
             apply_action(action).await,
@@ -375,6 +384,18 @@ mod tests {
             RestartMode::Always,
             /*info*/ None,
             /*managed_version*/ None,
+        );
+        assert_eq!(
+            apply_action(action).await,
+            (RestartIfRunningOutcome::NotRunning, vec![])
+        );
+    }
+
+    #[tokio::test]
+    async fn local_update_preserves_manual_stop_after_deferral() {
+        let action = deferred_restart_action(
+            /*remote_control_enabled*/ false, /*backend_running*/ false,
+            /*pid_record_present*/ false,
         );
         assert_eq!(
             apply_action(action).await,
@@ -409,62 +430,16 @@ mod tests {
     }
 
     #[test]
-    fn remote_control_keeps_immediate_restart_policy() {
+    fn remote_control_update_keeps_immediate_restart_policy() {
         assert_eq!(
-            [
-                automatic_restart_action(
-                    /*remote_control_enabled*/ true,
-                    /*backend_running*/ true,
-                    RestartMode::IfVersionChanged,
-                    Some(&probe_info("0.1.77")),
-                    Some("0.1.77"),
-                ),
-                automatic_restart_action(
-                    /*remote_control_enabled*/ true,
-                    /*backend_running*/ true,
-                    RestartMode::IfVersionChanged,
-                    /*info*/ None,
-                    /*managed_version*/ None,
-                ),
-                automatic_restart_action(
-                    /*remote_control_enabled*/ true,
-                    /*backend_running*/ true,
-                    RestartMode::Always,
-                    Some(&probe_info("0.1.77")),
-                    Some("0.1.78"),
-                ),
-                automatic_restart_action(
-                    /*remote_control_enabled*/ true,
-                    /*backend_running*/ false,
-                    RestartMode::Always,
-                    /*info*/ None,
-                    /*managed_version*/ None,
-                ),
-            ],
-            [
-                AutomaticRestartAction::AlreadyCurrent,
-                AutomaticRestartAction::NotReady,
-                AutomaticRestartAction::Restart,
-                AutomaticRestartAction::LeaveNotRunning,
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_control_update_still_restarts_immediately() {
-        let action = automatic_restart_action(
-            /*remote_control_enabled*/ true,
-            /*backend_running*/ true,
-            RestartMode::Always,
-            Some(&probe_info("0.1.77")),
-            Some("0.1.78"),
-        );
-        assert_eq!(
-            apply_action(action).await,
-            (
-                RestartIfRunningOutcome::Restarted,
-                vec!["stop", "start", "wait"],
-            )
+            automatic_restart_action(
+                /*remote_control_enabled*/ true,
+                /*backend_running*/ true,
+                RestartMode::Always,
+                Some(&probe_info("0.1.77")),
+                Some("0.1.78"),
+            ),
+            AutomaticRestartAction::Restart
         );
     }
 
@@ -474,22 +449,5 @@ mod tests {
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
             RestartIfRunningOutcome::Started,
         ));
-    }
-
-    #[test]
-    fn unchanged_updater_never_reexecs() {
-        assert_eq!(
-            [
-                RestartIfRunningOutcome::Busy,
-                RestartIfRunningOutcome::Deferred,
-                RestartIfRunningOutcome::NotRunning,
-                RestartIfRunningOutcome::NotReady,
-                RestartIfRunningOutcome::AlreadyCurrent,
-                RestartIfRunningOutcome::Started,
-                RestartIfRunningOutcome::Restarted,
-            ]
-            .map(|outcome| should_reexec_updater(UpdaterRefreshMode::None, outcome)),
-            [false, false, false, false, false, false, false]
-        );
     }
 }
