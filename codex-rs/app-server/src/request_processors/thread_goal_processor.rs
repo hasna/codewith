@@ -709,6 +709,8 @@ fn api_thread_goal_plan_node_from_state(
         plan_id: node.plan_id,
         thread_id: node.thread_id.to_string(),
         assigned_thread_id: node.assigned_thread_id.to_string(),
+        parent_node_id: node.parent_node_id,
+        nesting_depth: node.nesting_depth,
         key: node.key,
         sequence: node.sequence,
         priority: node.priority,

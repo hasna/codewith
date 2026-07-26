@@ -4053,6 +4053,11 @@ pub struct ThreadGoalPlanNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub assigned_thread_id: Option<ThreadId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_node_id: Option<String>,
+    #[serde(default = "default_thread_goal_plan_node_nesting_depth")]
+    pub nesting_depth: i64,
     pub key: String,
     pub sequence: i64,
     pub priority: i64,
@@ -4073,6 +4078,10 @@ pub struct ThreadGoalPlanNode {
     pub depends_on: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_thread_goal_plan_node_nesting_depth() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]

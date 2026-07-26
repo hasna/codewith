@@ -636,11 +636,21 @@
         "key": {
           "type": "string"
         },
+        "nestingDepth": {
+          "format": "int64",
+          "type": "integer"
+        },
         "nodeId": {
           "type": "string"
         },
         "objective": {
           "type": "string"
+        },
+        "parentNodeId": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "planId": {
           "type": "string"
@@ -699,6 +709,7 @@
         "planId",
         "threadId",
         "assignedThreadId",
+        "nestingDepth",
         "key",
         "sequence",
         "priority",

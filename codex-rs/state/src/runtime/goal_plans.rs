@@ -50,6 +50,13 @@ pub struct ThreadGoalPlanAddParams {
     pub auto_execute: crate::ThreadGoalPlanAutoExecute,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadGoalPlanNodeHierarchyParams {
+    pub key: String,
+    pub parent_key: Option<String>,
+    pub nesting_depth: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadGoalPlanAdvanceOutcome {
     pub snapshot: crate::ThreadGoalPlanSnapshot,
@@ -92,6 +99,118 @@ impl GoalStore {
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
         let snapshot = append_thread_goal_plan_nodes_in_tx(&mut tx, params, now_ms).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+
+    pub async fn update_thread_goal_plan_node_hierarchy(
+        &self,
+        thread_id: ThreadId,
+        plan_id: &str,
+        nodes: Vec<ThreadGoalPlanNodeHierarchyParams>,
+    ) -> anyhow::Result<crate::ThreadGoalPlanSnapshot> {
+        validate_goal_plan_node_hierarchy_params(&nodes)?;
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let mut tx = self.pool.begin().await?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, plan_id).await?;
+        if snapshot.plan.thread_id != thread_id {
+            anyhow::bail!("goal plan {plan_id} does not belong to thread {thread_id}");
+        }
+        if nodes.is_empty() {
+            tx.commit().await?;
+            return Ok(snapshot);
+        }
+
+        let node_ids_by_key = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.key.as_str(), node.node_id.as_str()))
+            .collect::<HashMap<_, _>>();
+        let mut node_depths_by_key = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.key.as_str(), node.nesting_depth))
+            .collect::<HashMap<_, _>>();
+        for node in &nodes {
+            if !node_ids_by_key.contains_key(node.key.as_str()) {
+                anyhow::bail!("goal plan node `{}` does not exist", node.key);
+            }
+            node_depths_by_key.insert(node.key.as_str(), node.nesting_depth);
+        }
+        for node in &nodes {
+            if let Some(parent_key) = node.parent_key.as_deref() {
+                let parent_depth =
+                    node_depths_by_key.get(parent_key).copied().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "goal plan node `{}` has unknown parent `{parent_key}`",
+                            node.key
+                        )
+                    })?;
+                if node.nesting_depth != parent_depth + 1 {
+                    anyhow::bail!(
+                        "goal plan node `{}` nesting_depth must be one greater than parent `{parent_key}`",
+                        node.key
+                    );
+                }
+            }
+        }
+        for node in nodes {
+            let node_id = node_ids_by_key
+                .get(node.key.as_str())
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("goal plan node `{}` does not exist", node.key))?;
+            let parent_node_id = node
+                .parent_key
+                .as_deref()
+                .map(|parent_key| {
+                    node_ids_by_key.get(parent_key).copied().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "goal plan node `{}` has unknown parent `{parent_key}`",
+                            node.key
+                        )
+                    })
+                })
+                .transpose()?;
+            let updated = sqlx::query(
+                r#"
+UPDATE thread_goal_plan_nodes
+SET
+    parent_node_id = ?,
+    nesting_depth = ?,
+    updated_at_ms = ?
+WHERE plan_id = ?
+  AND node_id = ?
+                "#,
+            )
+            .bind(parent_node_id)
+            .bind(node.nesting_depth)
+            .bind(now_ms)
+            .bind(plan_id)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated != 1 {
+                anyhow::bail!(
+                    "goal plan node `{}` hierarchy update did not apply",
+                    node.key
+                );
+            }
+        }
+
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plans
+SET updated_at_ms = ?
+WHERE plan_id = ?
+            "#,
+        )
+        .bind(now_ms)
+        .bind(plan_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let snapshot = snapshot_thread_goal_plan_in_tx(&mut tx, plan_id).await?;
         tx.commit().await?;
         Ok(snapshot)
     }
@@ -297,6 +416,8 @@ OFFSET ?
 	    plan_id,
 	    thread_id,
 	    assigned_thread_id,
+	    parent_node_id,
+	    nesting_depth,
 	    key,
 	    sequence,
 	    priority,
@@ -1440,6 +1561,8 @@ SELECT
 	    plan_id,
 	    thread_id,
 	    assigned_thread_id,
+	    parent_node_id,
+	    nesting_depth,
 	    key,
 	    sequence,
 	    priority,
@@ -2000,6 +2123,8 @@ pub(super) async fn snapshot_thread_goal_plan_in_tx(
 	    plan_id,
 	    thread_id,
 	    assigned_thread_id,
+	    parent_node_id,
+	    nesting_depth,
 	    key,
 	    sequence,
     priority,
@@ -2194,6 +2319,50 @@ fn validate_plan_add_params(params: &ThreadGoalPlanAddParams) -> anyhow::Result<
     }
     if params.token_budget.is_some_and(|budget| budget <= 0) {
         anyhow::bail!("goal plan node token_budget must be positive when set");
+    }
+    Ok(())
+}
+
+fn validate_goal_plan_node_hierarchy_params(
+    nodes: &[ThreadGoalPlanNodeHierarchyParams],
+) -> anyhow::Result<()> {
+    let mut keys = HashSet::new();
+    for node in nodes {
+        if node.key.trim().is_empty() {
+            anyhow::bail!("goal plan node hierarchy key must not be empty");
+        }
+        if !keys.insert(node.key.as_str()) {
+            anyhow::bail!("goal plan node hierarchy key `{}` is duplicated", node.key);
+        }
+        if let Some(parent_key) = node.parent_key.as_deref() {
+            if parent_key.trim().is_empty() {
+                anyhow::bail!(
+                    "goal plan node `{}` hierarchy parent key must not be empty",
+                    node.key
+                );
+            }
+            if parent_key == node.key {
+                anyhow::bail!("goal plan node `{}` cannot parent itself", node.key);
+            }
+        }
+        if !(1..=3).contains(&node.nesting_depth) {
+            anyhow::bail!(
+                "goal plan node `{}` nesting_depth must be between 1 and 3",
+                node.key
+            );
+        }
+        if node.parent_key.is_none() && node.nesting_depth != 1 {
+            anyhow::bail!(
+                "root goal plan node `{}` must have nesting_depth 1",
+                node.key
+            );
+        }
+        if node.parent_key.is_some() && node.nesting_depth == 1 {
+            anyhow::bail!(
+                "nested goal plan node `{}` must have nesting_depth greater than 1",
+                node.key
+            );
+        }
     }
     Ok(())
 }
@@ -2435,6 +2604,82 @@ mod tests {
                 .map(|node| node.status)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn goal_plan_node_hierarchy_metadata_persists() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .create_thread_goal_plan(ThreadGoalPlanCreateParams {
+                thread_id,
+                auto_execute: crate::ThreadGoalPlanAutoExecute::Off,
+                max_tokens: None,
+                nodes: vec![
+                    goal_node("root", "Run the root goal.", &[]),
+                    goal_node("root__child", "Run the child goal.", &["root"]),
+                    goal_node(
+                        "root__child__grandchild",
+                        "Run the grandchild goal.",
+                        &["root__child"],
+                    ),
+                ],
+            })
+            .await
+            .expect("goal plan should be created");
+
+        let snapshot = runtime
+            .thread_goals()
+            .update_thread_goal_plan_node_hierarchy(
+                thread_id,
+                created.snapshot.plan.plan_id.as_str(),
+                vec![
+                    ThreadGoalPlanNodeHierarchyParams {
+                        key: "root__child".to_string(),
+                        parent_key: Some("root".to_string()),
+                        nesting_depth: 2,
+                    },
+                    ThreadGoalPlanNodeHierarchyParams {
+                        key: "root__child__grandchild".to_string(),
+                        parent_key: Some("root__child".to_string()),
+                        nesting_depth: 3,
+                    },
+                ],
+            )
+            .await
+            .expect("hierarchy metadata should update");
+
+        let root = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key == "root")
+            .expect("root node should exist");
+        let child = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key == "root__child")
+            .expect("child node should exist");
+        let grandchild = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.key == "root__child__grandchild")
+            .expect("grandchild node should exist");
+        assert_eq!(None, root.parent_node_id);
+        assert_eq!(1, root.nesting_depth);
+        assert_eq!(Some(root.node_id.clone()), child.parent_node_id);
+        assert_eq!(2, child.nesting_depth);
+        assert_eq!(Some(child.node_id.clone()), grandchild.parent_node_id);
+        assert_eq!(3, grandchild.nesting_depth);
+
+        let listed = runtime
+            .thread_goals()
+            .list_thread_goal_plans(thread_id)
+            .await
+            .expect("goal plans should list");
+        assert_eq!(snapshot, listed[0]);
     }
 
     #[tokio::test]

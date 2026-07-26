@@ -677,6 +677,8 @@ fn test_plan_node(
         plan_id: format!("plan-{thread_id}"),
         thread_id: thread_id.to_string(),
         assigned_thread_id: thread_id.to_string(),
+        parent_node_id: None,
+        nesting_depth: 1,
         key: key.to_string(),
         sequence: 1,
         priority: 0,

@@ -222,6 +222,7 @@ fn goal_summary_lines(goal: &AppThreadGoal) -> Vec<Line<'static>> {
     lines
 }
 
+#[cfg(test)]
 fn goal_status_label(status: AppThreadGoalStatus) -> &'static str {
     match status {
         AppThreadGoalStatus::Active => "active",
@@ -331,16 +332,11 @@ fn goal_plan_node_item(thread_id: ThreadId, node: ThreadGoalPlanNode) -> Selecti
 
 fn goal_row_name(goal: &AppThreadGoal, is_current: bool) -> String {
     let title = thread_goal_display_title(goal.title.as_deref(), &goal.objective);
-    let label = if is_current {
+    if is_current {
         format!("Current: {title}")
     } else {
         title
-    };
-    middle_dot(vec![
-        label,
-        goal_status_label(goal.status).to_string(),
-        goal_time_part(goal.time_used_seconds),
-    ])
+    }
 }
 
 fn current_goal_detail(goal: &AppThreadGoal) -> String {
@@ -355,18 +351,7 @@ fn current_goal_detail(goal: &AppThreadGoal) -> String {
 }
 
 fn goal_plan_row_name(plan: &ThreadGoalPlan) -> String {
-    middle_dot(vec![
-        format!("Plan: {}", goal_plan_display_name(plan)),
-        plan_status_label(plan.status).to_string(),
-        goal_count_summary(
-            plan.node_count,
-            plan.active_node_count,
-            plan.completed_node_count,
-            plan.deferred_node_count,
-            plan.cancelled_node_count,
-        ),
-        goal_time_part(plan.total_time_used_seconds),
-    ])
+    format!("Plan: {}", goal_plan_display_name(plan))
 }
 
 fn goal_plan_selected_detail(plan: &ThreadGoalPlan) -> String {
@@ -414,6 +399,13 @@ fn goal_plan_node_row_name(node: &ThreadGoalPlanNode) -> String {
     let mut label = thread_goal_display_title(node.title.as_deref(), &node.objective);
     if node.status == ThreadGoalPlanNodeStatus::Active {
         label = format!("Current: {label}");
+    }
+    let indent_level = usize::try_from(node.nesting_depth.saturating_sub(1))
+        .unwrap_or(0)
+        .min(2);
+    if indent_level > 0 {
+        let indent = "  ".repeat(indent_level);
+        label = format!("{indent}{label}");
     }
     let mut parts = vec![
         label,
@@ -548,18 +540,7 @@ fn goal_can_cancel(status: AppThreadGoalStatus) -> bool {
 }
 
 fn goal_plan_search_value(plan: &ThreadGoalPlan) -> String {
-    let node_text = plan
-        .nodes
-        .iter()
-        .map(|node| format!("{} {}", node.key, node.objective))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "{} {} {}",
-        plan.plan_id,
-        goal_plan_display_name(plan),
-        node_text
-    )
+    format!("{} {}", plan.plan_id, goal_plan_display_name(plan))
 }
 
 fn goal_plan_display_name(plan: &ThreadGoalPlan) -> String {
@@ -573,7 +554,7 @@ fn goal_plan_display_name(plan: &ThreadGoalPlan) -> String {
                 .find(|node| node.status != ThreadGoalPlanNodeStatus::Complete)
         })
         .or_else(|| plan.nodes.first())
-        .map(|node| node.objective.clone())
+        .map(|node| thread_goal_display_title(node.title.as_deref(), &node.objective))
         .unwrap_or_else(|| "Goal plan".to_string())
 }
 
@@ -630,29 +611,6 @@ fn goal_usage_parts(
 
 fn goal_time_part(time_used_seconds: i64) -> String {
     format!("time {}", format_goal_elapsed_seconds(time_used_seconds))
-}
-
-fn goal_count_summary(
-    node_count: i64,
-    active: i64,
-    complete: i64,
-    deferred: i64,
-    cancelled: i64,
-) -> String {
-    let mut parts = vec![format!("{node_count} goals")];
-    if active > 0 {
-        parts.push(format!("{active} current"));
-    }
-    if complete > 0 {
-        parts.push(format!("{complete} done"));
-    }
-    if deferred > 0 {
-        parts.push(format!("{deferred} deferred"));
-    }
-    if cancelled > 0 {
-        parts.push(format!("{cancelled} cancelled"));
-    }
-    parts.join(", ")
 }
 
 fn middle_dot(parts: Vec<String>) -> String {

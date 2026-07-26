@@ -211,13 +211,17 @@ async fn goal_plan_detail_snapshot() {
                     /*depends_on*/ Vec::new(),
                     &thread_id_string,
                 ),
-                test_plan_node(
-                    "ship",
-                    "Implement durable dependent goal execution",
-                    ThreadGoalPlanNodeStatus::Pending,
-                    vec!["discover".to_string()],
-                    &thread_id_string,
-                ),
+                ThreadGoalPlanNode {
+                    parent_node_id: Some("node_discover".to_string()),
+                    nesting_depth: 2,
+                    ..test_plan_node(
+                        "ship",
+                        "Implement durable dependent goal execution",
+                        ThreadGoalPlanNodeStatus::Pending,
+                        vec!["discover".to_string()],
+                        &thread_id_string,
+                    )
+                },
             ],
         ),
     );
@@ -587,6 +591,8 @@ fn test_plan_node(
         plan_id: "plan_goal_rollout".to_string(),
         thread_id: thread_id.to_string(),
         assigned_thread_id: thread_id.to_string(),
+        parent_node_id: None,
+        nesting_depth: 1,
         key: key.to_string(),
         sequence: 0,
         priority: 0,

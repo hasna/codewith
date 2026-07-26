@@ -227,6 +227,7 @@ pub use runtime::ThreadGoalPlanAppendParams;
 pub use runtime::ThreadGoalPlanCreateParams;
 pub use runtime::ThreadGoalPlanListPage;
 pub use runtime::ThreadGoalPlanNodeCreateParams;
+pub use runtime::ThreadGoalPlanNodeHierarchyParams;
 pub use runtime::ThreadMonitorCreateParams;
 pub use runtime::ThreadMonitorEventCreateParams;
 pub use runtime::ThreadMonitorUpdate;

@@ -106,64 +106,87 @@ pub fn create_get_goal_plan_tool() -> ToolSpec {
 }
 
 pub fn create_create_goal_plan_tool() -> ToolSpec {
-    let node_properties = BTreeMap::from([
-        (
-            "key".to_string(),
-            JsonSchema::string(Some(
-                "Required stable short key unique inside this plan, for example `investigate`, `implement`, or `verify`."
-                    .to_string(),
-            )),
-        ),
-        (
-            "objective".to_string(),
-            JsonSchema::string(Some(
-                "Required concrete objective for this goal node. Each node should represent substantial work that can be pursued and completed independently."
-                    .to_string(),
-            )),
-        ),
-        (
-            "title".to_string(),
-            JsonSchema::string(Some(
-                "Required compact display title for this goal node, at most 4-5 words. This is shown in the status line, goal plan summaries, and when the node becomes the active goal."
-                    .to_string(),
-            )),
-        ),
-        (
-            "depends_on".to_string(),
-            JsonSchema::array(
+    fn node_schema(depth: i64) -> JsonSchema {
+        let mut node_properties = BTreeMap::from([
+            (
+                "key".to_string(),
                 JsonSchema::string(Some(
-                    "A goal key that must complete before this node is ready.".to_string(),
-                )),
-                Some(
-                    "Optional list of goal keys this node depends on. Omit or use an empty array when the node can run independently."
+                    "Required stable short key unique inside this plan level, for example `investigate`, `implement`, or `verify`."
                         .to_string(),
+                )),
+            ),
+            (
+                "objective".to_string(),
+                JsonSchema::string(Some(
+                    "Required concrete objective for this goal node. Each node should represent substantial work that can be pursued and completed independently."
+                        .to_string(),
+                )),
+            ),
+            (
+                "title".to_string(),
+                JsonSchema::string(Some(
+                    "Required compact display title for this goal node, at most 4-5 words. This is shown in the status line, goal plan summaries, and when the node becomes the active goal."
+                        .to_string(),
+                )),
+            ),
+            (
+                "depends_on".to_string(),
+                JsonSchema::array(
+                    JsonSchema::string(Some(
+                        "A goal key that must complete before this node is ready. In nested goals, a short key that matches a sibling is scoped to the same level; use the flattened parent__child key for another level."
+                            .to_string(),
+                    )),
+                    Some(
+                        "Optional list of goal keys this node depends on. Omit or use an empty array when the node can run independently."
+                            .to_string(),
+                    ),
                 ),
             ),
-        ),
-        (
-            "priority".to_string(),
-            JsonSchema::integer(Some(
-                "Optional priority for choosing among independent ready goals. Higher runs first. Defaults to 0."
-                    .to_string(),
-            )),
-        ),
-        (
-            "token_budget".to_string(),
-            JsonSchema::integer(Some(
-                "Optional positive token budget for this goal node. Omit for unlimited."
-                    .to_string(),
-            )),
-        ),
-    ]);
-    let node_schema = JsonSchema::object(
-        node_properties,
-        Some(vec![
-            "key".to_string(),
-            "objective".to_string(),
-            "title".to_string(),
-        ]),
-        Some(false.into()),
-    );
+            (
+                "chain".to_string(),
+                JsonSchema::boolean(Some(
+                    "Optional. Defaults to false. When this node has child goals, chain those children so each child waits for the previous sibling."
+                        .to_string(),
+                )),
+            ),
+            (
+                "priority".to_string(),
+                JsonSchema::integer(Some(
+                    "Optional priority for choosing among independent ready goals. Higher runs first. Defaults to 0."
+                        .to_string(),
+                )),
+            ),
+            (
+                "token_budget".to_string(),
+                JsonSchema::integer(Some(
+                    "Optional positive token budget for this goal node. Omit for unlimited."
+                        .to_string(),
+                )),
+            ),
+        ]);
+        if depth < 3 {
+            node_properties.insert(
+                "goals".to_string(),
+                JsonSchema::array(
+                    node_schema(depth + 1),
+                    Some(
+                        "Optional child goal nodes. Nesting is limited to three levels; child nodes wait for their parent goal to complete."
+                            .to_string(),
+                    ),
+                ),
+            );
+        }
+        JsonSchema::object(
+            node_properties,
+            Some(vec![
+                "key".to_string(),
+                "objective".to_string(),
+                "title".to_string(),
+            ]),
+            Some(false.into()),
+        )
+    }
+    let node_schema = node_schema(/*depth*/ 1);
     let properties = BTreeMap::from([
         (
             "goals".to_string(),
@@ -174,6 +197,13 @@ pub fn create_create_goal_plan_tool() -> ToolSpec {
                         .to_string(),
                 ),
             ),
+        ),
+        (
+            "chain".to_string(),
+            JsonSchema::boolean(Some(
+                "Optional. Defaults to false. Chain top-level goals so each goal waits for the previous sibling to complete."
+                    .to_string(),
+            )),
         ),
         (
             "clear_existing_goal".to_string(),
@@ -224,6 +254,7 @@ pub fn create_create_goal_plan_tool() -> ToolSpec {
             r#"Create a durable plan made of multiple goals for high-effort work.
 Use this when the task naturally splits into substantial goals, such as investigation, implementation, verification, release follow-up, or parallel independent work.
 Dependencies are optional: use depends_on only when one goal truly requires another goal to finish first. If several goals are independent, leave them dependency-free and use priority to indicate the best next choice.
+Nested goals are supported up to three levels deep. Child goals automatically wait for their parent goal to complete. Set chain to true at the plan level or on a parent goal to make each sibling wait for the previous sibling.
 This is goal orchestration, not workflows. Workflows are higher-level reusable processes and should not be modeled here.
 Automatic execution between ready goals is controlled by global config. When enabled, the next ready goal can be activated without asking the user again. When disabled, the plan is still saved but ready goals wait for explicit activation.
 To add follow-up work from inside an active goal plan, pass append_to_plan_id from get_goal_plan; appended nodes remain pending and use normal dependency and auto-execution rules after the current goal finishes.

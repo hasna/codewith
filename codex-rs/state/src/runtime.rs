@@ -179,6 +179,7 @@ pub use goal_plans::ThreadGoalPlanAppendParams;
 pub use goal_plans::ThreadGoalPlanCreateParams;
 pub use goal_plans::ThreadGoalPlanListPage;
 pub use goal_plans::ThreadGoalPlanNodeCreateParams;
+pub use goal_plans::ThreadGoalPlanNodeHierarchyParams;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalBlockerAuditOutcome;
@@ -2331,7 +2332,7 @@ INSERT INTO thread_goal_plan_nodes (
                 .await
                 .expect("repaired stamps should query");
         assert_eq!(
-            (1..=9).collect::<Vec<i64>>(),
+            (1..=10).collect::<Vec<i64>>(),
             stamped
                 .iter()
                 .map(|(version, _)| *version)
@@ -2347,28 +2348,40 @@ INSERT INTO thread_goal_plan_nodes (
             embedded_deferred_checksum,
             stamped
                 .iter()
-                .find(|(version, _)| *version == 8)
+                .find(|(version, _)| *version == GOALS_DEFERRED_MIGRATION_VERSION)
                 .expect("version 8 stamp")
                 .1,
             "version 8 must carry the embedded deferred checksum after repair"
         );
         // The repaired database converges on the fresh schema: assignment
-        // backfill, title columns, lifecycle table, and all four plan-node
-        // indexes.
-        let (status, assigned_thread_id, goal_title): (String, String, Option<String>) =
-            sqlx::query_as(
-                r#"
-SELECT goal.status, node.assigned_thread_id, goal.title
+        // backfill, title columns, lifecycle table, nesting metadata, and all
+        // plan-node indexes.
+        let (status, assigned_thread_id, goal_title, parent_node_id, nesting_depth): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = sqlx::query_as(
+            r#"
+SELECT
+    goal.status,
+    node.assigned_thread_id,
+    goal.title,
+    node.parent_node_id,
+    node.nesting_depth
 FROM thread_goals goal
 JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
                 "#,
-            )
-            .fetch_one(&query_pool)
-            .await
-            .expect("repaired schema should join goals and nodes");
+        )
+        .fetch_one(&query_pool)
+        .await
+        .expect("repaired schema should join goals and nodes");
         assert_eq!("deferred", status);
         assert_eq!("thread-1", assigned_thread_id);
         assert_eq!(None, goal_title);
+        assert_eq!(None, parent_node_id);
+        assert_eq!(1, nesting_depth);
         let lifecycle_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM thread_goal_context_lifecycle")
                 .fetch_one(&query_pool)
@@ -2396,6 +2409,7 @@ JOIN thread_goal_plan_nodes node ON node.thread_id = goal.thread_id
         assert_eq!(
             vec![
                 "idx_thread_goal_plan_nodes_assigned_status".to_string(),
+                "idx_thread_goal_plan_nodes_parent".to_string(),
                 "idx_thread_goal_plan_nodes_plan_status".to_string(),
                 "idx_thread_goal_plan_nodes_projected_goal".to_string(),
                 "idx_thread_goal_plan_nodes_thread_status".to_string(),
