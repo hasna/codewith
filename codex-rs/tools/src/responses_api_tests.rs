@@ -8,6 +8,7 @@ use super::tool_definition_to_responses_api_tool;
 use crate::JsonSchema;
 use crate::ToolDefinition;
 use crate::ToolName;
+use crate::ToolSpec;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -166,4 +167,49 @@ fn loadable_tool_spec_namespace_serializes_with_deferred_child_tools() {
             ]
         })
     );
+}
+
+fn imagegen_namespace(name: &str) -> ResponsesApiNamespace {
+    ResponsesApiNamespace {
+        name: name.to_string(),
+        description: format!("Tools in the {name} namespace."),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "imagegen".to_string(),
+            description: "Generate an image.".to_string(),
+            strict: false,
+            defer_loading: Some(true),
+            parameters: JsonSchema::object(
+                Default::default(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+            output_schema: None,
+        })],
+    }
+}
+
+#[test]
+fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_tools() {
+    let results = [
+        serde_json::to_value(ToolSpec::Namespace(imagegen_namespace("image_gen"))),
+        serde_json::to_value(LoadableToolSpec::Namespace(imagegen_namespace(
+            "image_gen",
+        ))),
+    ];
+
+    for result in results {
+        let err = result.expect_err("image_gen.imagegen must fail closed before reaching the wire");
+        assert!(
+            err.to_string().contains("image_gen.imagegen"),
+            "error should identify the reserved wire name: {err}"
+        );
+    }
+}
+
+#[test]
+fn namespace_serialization_allows_custom_and_vetted_reserved_namespaces() {
+    for namespace in ["images", "mcp__codex_apps__images", "web"] {
+        serde_json::to_value(ToolSpec::Namespace(imagegen_namespace(namespace)))
+            .unwrap_or_else(|err| panic!("{namespace} should serialize: {err}"));
+    }
 }
