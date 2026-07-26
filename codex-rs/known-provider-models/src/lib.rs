@@ -305,6 +305,7 @@ pub fn provider_supports_reasoning_effort(provider_id: Option<&str>) -> bool {
         || provider_id_matches(provider_id, GOOGLE_PROVIDER_ID)
         || provider_id_matches(provider_id, MINIMAX_PROVIDER_ID)
         || provider_id_matches(provider_id, OPENROUTER_PROVIDER_ID)
+        || provider_id_matches(provider_id, XAI_PROVIDER_ID)
         || provider_id_matches(provider_id, ZAI_PROVIDER_ID)
 }
 
@@ -337,6 +338,11 @@ pub fn openai_compatible_provider_supports_reasoning_effort(
         provider_base_url,
         OPENROUTER_PROVIDER_ID,
         OPENROUTER_BASE_URL,
+    ) || provider_matches(
+        provider_id,
+        provider_base_url,
+        XAI_PROVIDER_ID,
+        XAI_BASE_URL,
     ) || provider_matches(
         provider_id,
         provider_base_url,
@@ -410,6 +416,14 @@ pub fn reasoning_levels_for_openai_compatible_response(
     if provider_matches(
         provider_id,
         provider_base_url,
+        XAI_PROVIDER_ID,
+        XAI_BASE_URL,
+    ) {
+        return xai::reasoning_levels(slug);
+    }
+    if provider_matches(
+        provider_id,
+        provider_base_url,
         ZAI_PROVIDER_ID,
         ZAI_BASE_URL,
     ) {
@@ -448,6 +462,9 @@ pub fn reasoning_levels_for_local_fallback(
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), XIAOMI_PROVIDER_ID) => {
             no_reasoning_levels()
+        }
+        Some(provider_id) if provider_id_matches(Some(provider_id), XAI_PROVIDER_ID) => {
+            xai::reasoning_levels(slug)
         }
         Some(provider_id) if provider_id_matches(Some(provider_id), ZAI_PROVIDER_ID) => {
             zai::reasoning_levels(slug)
@@ -1005,6 +1022,60 @@ mod tests {
                 .iter()
                 .any(|model| model.id == "grok-4.5" && !model.is_default)
         );
+    }
+
+    #[test]
+    fn xai_grok_4_5_exposes_documented_reasoning_effort_levels() {
+        assert!(provider_supports_reasoning_effort(Some(XAI_PROVIDER_ID)));
+        assert!(openai_compatible_provider_supports_reasoning_effort(
+            Some(XAI_PROVIDER_ID),
+            None
+        ));
+
+        // xAI documents `low`/`medium`/`high` for grok-4.5, defaulting to `high`, and reasoning
+        // cannot be disabled, so `none` is not offered.
+        let expected = (
+            Some(ReasoningEffort::High),
+            vec![
+                reasoning_preset(ReasoningEffort::Low, "Fast, lighter reasoning"),
+                reasoning_preset(ReasoningEffort::Medium, "Balanced reasoning"),
+                reasoning_preset(ReasoningEffort::High, "Most thorough reasoning"),
+            ],
+        );
+        assert_eq!(
+            reasoning_levels_for_openai_compatible_response(
+                Some(XAI_PROVIDER_ID),
+                None,
+                None,
+                "grok-4.5",
+            ),
+            expected
+        );
+        assert_eq!(
+            reasoning_levels_for_local_fallback(Some(XAI_PROVIDER_ID), "grok-4.5"),
+            expected
+        );
+    }
+
+    #[test]
+    fn xai_models_without_documented_reasoning_effort_expose_no_levels() {
+        for slug in ["grok-4.3", "grok-build-0.1"] {
+            assert_eq!(
+                reasoning_levels_for_local_fallback(Some(XAI_PROVIDER_ID), slug),
+                no_reasoning_levels(),
+                "unexpected reasoning levels for {slug}"
+            );
+            assert_eq!(
+                reasoning_levels_for_openai_compatible_response(
+                    Some(XAI_PROVIDER_ID),
+                    None,
+                    None,
+                    slug,
+                ),
+                no_reasoning_levels(),
+                "unexpected reasoning levels for {slug}"
+            );
+        }
     }
 
     #[test]
