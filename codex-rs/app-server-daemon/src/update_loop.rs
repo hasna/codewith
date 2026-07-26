@@ -30,8 +30,6 @@ use tokio::time::sleep;
 #[cfg(unix)]
 use crate::Daemon;
 #[cfg(unix)]
-use crate::RestartIfRunningOutcome;
-#[cfg(unix)]
 use crate::RestartMode;
 #[cfg(unix)]
 use crate::UpdaterRefreshMode;
@@ -44,15 +42,14 @@ use crate::managed_install::resolved_managed_codex_bin;
 
 #[cfg(unix)]
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
-#[cfg(unix)]
-const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-#[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[cfg(unix)]
 pub(crate) async fn run() -> Result<()> {
     let mut terminate =
         signal(SignalKind::terminate()).context("failed to install updater shutdown handler")?;
+    let daemon = Daemon::from_environment()?;
+    let _lease_capability = daemon.acquire_updater_lease_capability().await?;
     let running_updater_identity = current_updater_identity().await?;
     if sleep_or_terminate(INITIAL_UPDATE_DELAY, &mut terminate).await {
         return Ok(());
@@ -101,22 +98,13 @@ async fn update_once(
     let (restart_mode, updater_refresh_mode) =
         update_modes_for_identities(running_updater_identity, &managed_identity);
 
-    loop {
-        if terminate.recv().now_or_never().flatten().is_some() {
-            return Ok(UpdateLoopControl::Stop);
-        }
-        match daemon
-            .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
-            .await?
-        {
-            RestartIfRunningOutcome::Busy => {
-                if sleep_or_terminate(RESTART_RETRY_INTERVAL, terminate).await {
-                    return Ok(UpdateLoopControl::Stop);
-                }
-            }
-            _ => return Ok(UpdateLoopControl::Continue),
-        }
+    if terminate.recv().now_or_never().flatten().is_some() {
+        return Ok(UpdateLoopControl::Stop);
     }
+    daemon
+        .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
+        .await?;
+    Ok(UpdateLoopControl::Continue)
 }
 
 #[cfg(unix)]

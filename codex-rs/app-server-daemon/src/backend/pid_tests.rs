@@ -5,7 +5,6 @@ use std::process::Stdio;
 use tempfile::TempDir;
 use tokio::process::Command;
 
-use super::PER_SESSION_IDLE_SHUTDOWN_GRACE_MS;
 use super::PidBackend;
 use super::PidCommandKind;
 use super::PidFileState;
@@ -128,10 +127,12 @@ async fn stale_record_cleanup_preserves_replacement_record() {
     let stale = PidRecord {
         pid: 1,
         process_start_time: "old".to_string(),
+        retires_when_idle: false,
     };
     let replacement = PidRecord {
         pid: 2,
         process_start_time: "new".to_string(),
+        retires_when_idle: false,
     };
     tokio::fs::write(
         &pid_file,
@@ -181,24 +182,35 @@ fn app_server_remote_control_uses_runtime_flag() {
 }
 
 #[test]
-fn app_server_default_daemon_opts_into_idle_shutdown() {
+fn app_server_default_daemon_is_shared_and_does_not_idle_shutdown() {
     let backend = PidBackend::new(
         "codewith".into(),
         "app-server.pid".into(),
         /*remote_control_enabled*/ false,
     );
 
-    // The plain per-session default daemon is TUI-owned and must reap itself
-    // once its last client disconnects (e.g. after a SIGHUP-killed TUI).
     assert_eq!(
         backend.command_args(),
-        vec![
-            "app-server",
-            "--listen",
-            "unix://",
-            "--exit-on-idle-ms",
-            PER_SESSION_IDLE_SHUTDOWN_GRACE_MS,
-        ]
+        vec!["app-server", "--listen", "unix://"]
+    );
+    assert_eq!(
+        backend.client_lease_file(),
+        Some(std::path::PathBuf::from("client.lock"))
+    );
+}
+
+#[test]
+fn legacy_pid_records_are_treated_as_idle_retiring() {
+    let record: PidRecord =
+        serde_json::from_str(r#"{"pid":42,"processStartTime":"legacy"}"#).expect("pid record");
+
+    assert_eq!(
+        record,
+        PidRecord {
+            pid: 42,
+            process_start_time: "legacy".to_string(),
+            retires_when_idle: true,
+        }
     );
 }
 

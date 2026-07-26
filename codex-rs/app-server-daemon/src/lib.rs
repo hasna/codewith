@@ -27,10 +27,13 @@ use tokio::time::sleep;
 
 const START_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+const CLIENT_LEASE_SETTLE_TIMEOUT: Duration = Duration::from_millis(500);
 const OPERATION_LOCK_TIMEOUT: Duration = Duration::from_secs(75);
 const PID_FILE_NAME: &str = "app-server.pid";
 const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
+pub(crate) const CLIENT_LEASE_FILE_NAME: &str = "client.lock";
+const UPDATER_LEASE_CAPABILITY_FILE_NAME: &str = "lease-aware-updater.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
 const AUTH_PROFILE_STATE_DIR_NAME: &str = "auth_profiles";
@@ -79,6 +82,15 @@ pub struct BootstrapOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDaemonStartOptions {
     pub codex_bin: PathBuf,
+}
+
+/// Shared lease held by a local client for the lifetime of its daemon connection.
+///
+/// Automatic updater restarts are deferred while any lease is alive.
+#[derive(Debug)]
+pub struct LocalDaemonLease {
+    _client_file: tokio::fs::File,
+    _legacy_operation_file: Option<tokio::fs::File>,
 }
 
 /// Passively probes an existing app-server socket and returns its reported
@@ -166,6 +178,7 @@ pub struct RemoteControlOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartIfRunningOutcome {
     Busy,
+    Deferred,
     NotRunning,
     NotReady,
     AlreadyCurrent,
@@ -191,7 +204,16 @@ pub(crate) enum UpdaterRefreshMode {
 enum RestartDecision {
     NotReady,
     AlreadyCurrent,
+    Deferred,
     Restart,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartAvailability {
+    Available,
+    ActiveLocalClient,
+    LegacyIdleRetiringDaemon,
 }
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
@@ -204,6 +226,22 @@ pub async fn ensure_local_daemon_started(options: LocalDaemonStartOptions) -> Re
     let daemon = Daemon::from_environment_with_app_server_codex_bin(options.codex_bin)?;
     let _operation_lock = daemon.acquire_operation_lock().await?;
     daemon.start_local().await.map(|output| output.socket_path)
+}
+
+/// Acquires a shared local-client lease for the default app-server daemon.
+///
+/// Callers should retain the returned lease until their durable connection has
+/// closed so automatic updates cannot reset that connection.
+pub async fn acquire_local_daemon_lease(codex_home: &Path) -> Result<LocalDaemonLease> {
+    ensure_supported_platform()?;
+    let daemon = Daemon::from_codex_home_and_app_server_codex_bin(
+        codex_home,
+        managed_codex_bin(codex_home),
+    )?;
+    let operation_lock = daemon.acquire_shared_operation_lock().await?;
+    daemon
+        .acquire_client_lease_with_migration_guard(operation_lock)
+        .await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
@@ -266,6 +304,8 @@ struct Daemon {
     pid_file: PathBuf,
     update_pid_file: PathBuf,
     operation_lock_file: PathBuf,
+    client_lease_file: PathBuf,
+    updater_lease_capability_file: PathBuf,
     settings_file: PathBuf,
     managed_codex_bin: PathBuf,
     app_server_codex_bin: PathBuf,
@@ -297,6 +337,8 @@ impl Daemon {
             pid_file: state_dir.join(PID_FILE_NAME),
             update_pid_file: state_dir.join(UPDATE_PID_FILE_NAME),
             operation_lock_file: state_dir.join(OPERATION_LOCK_FILE_NAME),
+            client_lease_file: state_dir.join(CLIENT_LEASE_FILE_NAME),
+            updater_lease_capability_file: state_dir.join(UPDATER_LEASE_CAPABILITY_FILE_NAME),
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
             managed_codex_bin,
             app_server_codex_bin,
@@ -418,9 +460,26 @@ impl Daemon {
             } else {
                 None
             };
-            match restart_decision(mode, info.as_ref(), managed_version.as_deref()) {
+            let availability =
+                if !settings.remote_control_enabled && backend.retires_when_idle().await? {
+                    RestartAvailability::LegacyIdleRetiringDaemon
+                } else {
+                    let restart_guard = self.acquire_restart_guard_after_probe().await?;
+                    if restart_guard.is_some() {
+                        RestartAvailability::Available
+                    } else {
+                        RestartAvailability::ActiveLocalClient
+                    }
+                };
+            match restart_decision(
+                mode,
+                info.as_ref(),
+                managed_version.as_deref(),
+                availability,
+            ) {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
+                RestartDecision::Deferred => return Ok(RestartIfRunningOutcome::Deferred),
                 RestartDecision::Restart => {
                     backend.stop().await?;
                     let _ = self
@@ -788,8 +847,103 @@ impl Daemon {
         Ok(operation_lock)
     }
 
+    async fn acquire_shared_operation_lock(&self) -> Result<tokio::fs::File> {
+        let operation_lock = self.open_operation_lock_file().await?;
+        let deadline = tokio::time::Instant::now() + OPERATION_LOCK_TIMEOUT;
+        while !try_lock_file_shared(&operation_lock)? {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for daemon operation lock {}",
+                    self.operation_lock_file.display()
+                ));
+            }
+            sleep(START_POLL_INTERVAL).await;
+        }
+        Ok(operation_lock)
+    }
+
     async fn open_operation_lock_file(&self) -> Result<tokio::fs::File> {
-        if let Some(parent) = self.operation_lock_file.parent() {
+        self.open_lock_file(&self.operation_lock_file, "daemon operation")
+            .await
+    }
+
+    async fn acquire_client_lease(&self) -> Result<LocalDaemonLease> {
+        let file = self.open_client_lease_file().await?;
+        if !try_lock_file_shared(&file)? {
+            return Err(anyhow!(
+                "app-server daemon client lease is temporarily unavailable"
+            ));
+        }
+        Ok(LocalDaemonLease {
+            _client_file: file,
+            _legacy_operation_file: None,
+        })
+    }
+
+    async fn acquire_client_lease_with_migration_guard(
+        &self,
+        operation_lock: tokio::fs::File,
+    ) -> Result<LocalDaemonLease> {
+        let mut lease = self.acquire_client_lease().await?;
+        let capability_file = self.open_updater_lease_capability_file().await?;
+        if try_lock_file(&capability_file)? {
+            lease._legacy_operation_file = Some(operation_lock);
+        }
+        Ok(lease)
+    }
+
+    pub(crate) async fn acquire_updater_lease_capability(&self) -> Result<tokio::fs::File> {
+        let file = self.open_updater_lease_capability_file().await?;
+        let deadline = tokio::time::Instant::now() + OPERATION_LOCK_TIMEOUT;
+        while !try_lock_file(&file)? {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for updater lease capability {}",
+                    self.updater_lease_capability_file.display()
+                ));
+            }
+            sleep(START_POLL_INTERVAL).await;
+        }
+        Ok(file)
+    }
+
+    #[cfg(test)]
+    async fn try_acquire_restart_guard(&self) -> Result<Option<tokio::fs::File>> {
+        let file = self.open_client_lease_file().await?;
+        if try_lock_file(&file)? {
+            Ok(Some(file))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn acquire_restart_guard_after_probe(&self) -> Result<Option<tokio::fs::File>> {
+        let file = self.open_client_lease_file().await?;
+        let deadline = tokio::time::Instant::now() + CLIENT_LEASE_SETTLE_TIMEOUT;
+        while !try_lock_file(&file)? {
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            sleep(START_POLL_INTERVAL).await;
+        }
+        Ok(Some(file))
+    }
+
+    async fn open_client_lease_file(&self) -> Result<tokio::fs::File> {
+        self.open_lock_file(&self.client_lease_file, "daemon client lease")
+            .await
+    }
+
+    async fn open_updater_lease_capability_file(&self) -> Result<tokio::fs::File> {
+        self.open_lock_file(
+            &self.updater_lease_capability_file,
+            "updater lease capability",
+        )
+        .await
+    }
+
+    async fn open_lock_file(&self, path: &Path, label: &str) -> Result<tokio::fs::File> {
+        if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| {
                 format!(
                     "failed to create daemon state directory {}",
@@ -801,14 +955,9 @@ impl Daemon {
             .create(true)
             .truncate(false)
             .write(true)
-            .open(&self.operation_lock_file)
+            .open(path)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to open daemon operation lock {}",
-                    self.operation_lock_file.display()
-                )
-            })
+            .with_context(|| format!("failed to open {label} {}", path.display()))
     }
 
     async fn output(
@@ -888,8 +1037,9 @@ fn restart_decision(
     mode: RestartMode,
     info: Option<&client::ProbeInfo>,
     managed_version: Option<&str>,
+    availability: RestartAvailability,
 ) -> RestartDecision {
-    match (mode, info, managed_version) {
+    let decision = match (mode, info, managed_version) {
         (RestartMode::IfVersionChanged, None, _) => RestartDecision::NotReady,
         (RestartMode::IfVersionChanged, Some(info), Some(managed_version))
             if info.app_server_version == managed_version =>
@@ -897,6 +1047,13 @@ fn restart_decision(
             RestartDecision::AlreadyCurrent
         }
         _ => RestartDecision::Restart,
+    };
+    match (decision, availability) {
+        (
+            RestartDecision::Restart,
+            RestartAvailability::ActiveLocalClient | RestartAvailability::LegacyIdleRetiringDaemon,
+        ) => RestartDecision::Deferred,
+        (decision, _) => decision,
     }
 }
 
@@ -906,7 +1063,10 @@ fn should_reexec_updater(
     outcome: RestartIfRunningOutcome,
 ) -> bool {
     updater_refresh_mode == UpdaterRefreshMode::ReexecIfManagedBinaryChanged
-        && outcome == RestartIfRunningOutcome::Restarted
+        && matches!(
+            outcome,
+            RestartIfRunningOutcome::NotRunning | RestartIfRunningOutcome::Restarted
+        )
 }
 
 #[cfg(unix)]
@@ -925,6 +1085,27 @@ fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     Err(err).context("failed to lock daemon operation")
 }
 
+#[cfg(unix)]
+fn try_lock_file_shared(file: &tokio::fs::File) -> Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        return Ok(false);
+    }
+    Err(err).context("failed to lock daemon client lease")
+}
+
+#[cfg(not(unix))]
+fn try_lock_file_shared(_file: &tokio::fs::File) -> Result<bool> {
+    Ok(true)
+}
+
 #[cfg(not(unix))]
 fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
     Ok(true)
@@ -932,6 +1113,8 @@ fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::time::Duration;
+
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -943,6 +1126,7 @@ mod tests {
     use super::LifecycleStatus;
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
+    use super::RestartAvailability;
     use super::RestartDecision;
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
@@ -983,10 +1167,11 @@ mod tests {
     }
 
     #[test]
-    fn updater_reexec_waits_for_validated_restart() {
+    fn updater_reexecs_after_restart_or_when_daemon_is_idle() {
         assert_eq!(
             [
                 RestartIfRunningOutcome::Busy,
+                RestartIfRunningOutcome::Deferred,
                 RestartIfRunningOutcome::NotReady,
                 RestartIfRunningOutcome::AlreadyCurrent,
                 RestartIfRunningOutcome::NotRunning,
@@ -995,7 +1180,7 @@ mod tests {
             .map(|outcome| {
                 should_reexec_updater(UpdaterRefreshMode::ReexecIfManagedBinaryChanged, outcome)
             }),
-            [false, false, false, false, true]
+            [false, false, false, false, true, true]
         );
     }
 
@@ -1004,13 +1189,14 @@ mod tests {
         assert_eq!(
             [
                 RestartIfRunningOutcome::Busy,
+                RestartIfRunningOutcome::Deferred,
                 RestartIfRunningOutcome::NotReady,
                 RestartIfRunningOutcome::AlreadyCurrent,
                 RestartIfRunningOutcome::NotRunning,
                 RestartIfRunningOutcome::Restarted,
             ]
             .map(|outcome| should_reexec_updater(UpdaterRefreshMode::None, outcome)),
-            [false, false, false, false, false]
+            [false, false, false, false, false, false]
         );
     }
 
@@ -1026,17 +1212,25 @@ mod tests {
                     RestartMode::IfVersionChanged,
                     Some(&current_info),
                     Some("0.1.0"),
+                    RestartAvailability::Available,
                 ),
                 restart_decision(
                     RestartMode::IfVersionChanged,
                     /*info*/ None,
                     /*managed_version*/ None,
+                    RestartAvailability::Available,
                 ),
-                restart_decision(RestartMode::Always, Some(&current_info), Some("0.1.0")),
+                restart_decision(
+                    RestartMode::Always,
+                    Some(&current_info),
+                    Some("0.1.0"),
+                    RestartAvailability::Available,
+                ),
                 restart_decision(
                     RestartMode::Always,
                     /*info*/ None,
                     /*managed_version*/ None,
+                    RestartAvailability::Available,
                 ),
             ],
             [
@@ -1046,6 +1240,173 @@ mod tests {
                 RestartDecision::Restart,
             ]
         );
+    }
+
+    #[test]
+    fn updater_defers_requested_restart_until_local_clients_leave() {
+        let current_info = ProbeInfo {
+            app_server_version: "0.1.0".to_string(),
+        };
+
+        assert_eq!(
+            [
+                restart_decision(
+                    RestartMode::IfVersionChanged,
+                    Some(&current_info),
+                    Some("0.2.0"),
+                    RestartAvailability::ActiveLocalClient,
+                ),
+                restart_decision(
+                    RestartMode::Always,
+                    Some(&current_info),
+                    Some("0.1.0"),
+                    RestartAvailability::ActiveLocalClient,
+                ),
+                restart_decision(
+                    RestartMode::Always,
+                    Some(&current_info),
+                    Some("0.1.0"),
+                    RestartAvailability::LegacyIdleRetiringDaemon,
+                ),
+                restart_decision(
+                    RestartMode::Always,
+                    Some(&current_info),
+                    Some("0.1.0"),
+                    RestartAvailability::Available,
+                ),
+            ],
+            [
+                RestartDecision::Deferred,
+                RestartDecision::Deferred,
+                RestartDecision::Deferred,
+                RestartDecision::Restart,
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn clients_hold_legacy_operation_guard_until_lease_aware_updater_runs() {
+        let codex_home = TempDir::new().expect("temp dir");
+        let daemon = Daemon::from_codex_home_and_app_server_codex_bin(
+            codex_home.path(),
+            codex_home.path().join("codewith"),
+        )
+        .expect("daemon paths");
+
+        let operation_lock = daemon
+            .acquire_shared_operation_lock()
+            .await
+            .expect("operation lock");
+        let legacy_lease = daemon
+            .acquire_client_lease_with_migration_guard(operation_lock)
+            .await
+            .expect("legacy lease");
+        let competing_operation = daemon
+            .open_operation_lock_file()
+            .await
+            .expect("competing operation");
+        assert!(!super::try_lock_file(&competing_operation).expect("operation check"));
+        let second_operation_lock = daemon
+            .acquire_shared_operation_lock()
+            .await
+            .expect("second shared operation lock");
+        let second_legacy_lease = daemon
+            .acquire_client_lease_with_migration_guard(second_operation_lock)
+            .await
+            .expect("second legacy lease");
+        drop(legacy_lease);
+        assert!(!super::try_lock_file(&competing_operation).expect("operation check"));
+        drop(second_legacy_lease);
+        assert!(super::try_lock_file(&competing_operation).expect("operation check"));
+        drop(competing_operation);
+
+        let _lease_capability = daemon
+            .acquire_updater_lease_capability()
+            .await
+            .expect("lease-aware updater");
+        let operation_lock = daemon
+            .acquire_shared_operation_lock()
+            .await
+            .expect("operation lock");
+        let current_lease = daemon
+            .acquire_client_lease_with_migration_guard(operation_lock)
+            .await
+            .expect("current lease");
+        let manual_operation = daemon
+            .open_operation_lock_file()
+            .await
+            .expect("manual operation");
+        assert!(super::try_lock_file(&manual_operation).expect("manual operation check"));
+        assert!(
+            daemon
+                .try_acquire_restart_guard()
+                .await
+                .expect("restart guard")
+                .is_none()
+        );
+        drop(current_lease);
+    }
+
+    #[tokio::test]
+    async fn local_client_leases_block_automatic_restart_until_all_are_released() {
+        let codex_home = TempDir::new().expect("temp dir");
+        let daemon = Daemon::from_codex_home_and_app_server_codex_bin(
+            codex_home.path(),
+            codex_home.path().join("codewith"),
+        )
+        .expect("daemon paths");
+
+        let first_lease = daemon.acquire_client_lease().await.expect("first lease");
+        let second_lease = daemon.acquire_client_lease().await.expect("second lease");
+        assert!(
+            daemon
+                .try_acquire_restart_guard()
+                .await
+                .expect("restart guard")
+                .is_none()
+        );
+
+        drop(first_lease);
+        assert!(
+            daemon
+                .try_acquire_restart_guard()
+                .await
+                .expect("restart guard")
+                .is_none()
+        );
+
+        drop(second_lease);
+        assert!(
+            daemon
+                .try_acquire_restart_guard()
+                .await
+                .expect("restart guard")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn updater_absorbs_probe_lease_close_before_restart_decision() {
+        let codex_home = TempDir::new().expect("temp dir");
+        let daemon = Daemon::from_codex_home_and_app_server_codex_bin(
+            codex_home.path(),
+            codex_home.path().join("codewith"),
+        )
+        .expect("daemon paths");
+        let probe_lease = daemon.acquire_client_lease().await.expect("probe lease");
+        let release_probe = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            drop(probe_lease);
+        });
+
+        assert!(
+            daemon
+                .acquire_restart_guard_after_probe()
+                .await
+                .expect("restart guard")
+                .is_some()
+        );
+        release_probe.await.expect("release probe");
     }
 
     #[test]
@@ -1130,6 +1491,8 @@ mod tests {
             pid_file: temp_dir.path().join("app-server.pid"),
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),
             operation_lock_file: temp_dir.path().join("daemon.lock"),
+            client_lease_file: temp_dir.path().join("client.lock"),
+            updater_lease_capability_file: temp_dir.path().join("lease-aware-updater.lock"),
             settings_file: temp_dir.path().join("settings.json"),
             managed_codex_bin: temp_dir.path().join("missing-codewith"),
             app_server_codex_bin: temp_dir.path().join("runtime-codewith"),
@@ -1160,6 +1523,8 @@ mod tests {
             pid_file: temp_dir.path().join("app-server.pid"),
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),
             operation_lock_file: temp_dir.path().join("daemon.lock"),
+            client_lease_file: temp_dir.path().join("client.lock"),
+            updater_lease_capability_file: temp_dir.path().join("lease-aware-updater.lock"),
             settings_file: temp_dir.path().join("settings.json"),
             managed_codex_bin: temp_dir.path().join("missing-codewith"),
             app_server_codex_bin: temp_dir.path().join("runtime-codewith"),
@@ -1182,6 +1547,8 @@ mod tests {
             pid_file: temp_dir.path().join("app-server.pid"),
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),
             operation_lock_file: temp_dir.path().join("daemon.lock"),
+            client_lease_file: temp_dir.path().join("client.lock"),
+            updater_lease_capability_file: temp_dir.path().join("lease-aware-updater.lock"),
             settings_file: temp_dir.path().join("settings.json"),
             managed_codex_bin: temp_dir.path().join("managed-codewith"),
             app_server_codex_bin: temp_dir.path().join("runtime-codewith"),

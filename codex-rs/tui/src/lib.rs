@@ -302,6 +302,13 @@ const TUI_LOG_FILE_NAME: &str = "codex-tui.log";
 const AUTO_CONNECT_DAEMON_CONNECT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(50);
 
+#[derive(Debug)]
+struct DefaultDaemonConnection<C> {
+    socket_path: AbsolutePathBuf,
+    app_server: C,
+    _lease: codex_app_server_daemon::LocalDaemonLease,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_embedded_app_server(
     arg0_paths: Arg0DispatchPaths,
@@ -512,32 +519,67 @@ async fn maybe_probe_default_daemon_socket(_codex_home: &Path) -> Option<Absolut
 }
 
 #[cfg(unix)]
-async fn maybe_start_default_daemon_socket(
+async fn maybe_connect_default_daemon(
     codex_home: &Path,
     codex_bin: Option<&Path>,
-) -> Option<AbsolutePathBuf> {
-    maybe_start_default_daemon_socket_with(codex_home, codex_bin, |codex_bin| async move {
-        codex_app_server_daemon::ensure_local_daemon_started(
-            codex_app_server_daemon::LocalDaemonStartOptions { codex_bin },
-        )
-        .await
-    })
+) -> Option<DefaultDaemonConnection<AppServerClient>> {
+    maybe_connect_default_daemon_with(
+        codex_home,
+        codex_bin,
+        |socket_path| async move {
+            connect_remote_app_server(RemoteAppServerEndpoint::UnixSocket { socket_path }).await
+        },
+        |codex_bin| async move {
+            codex_app_server_daemon::ensure_local_daemon_started(
+                codex_app_server_daemon::LocalDaemonStartOptions { codex_bin },
+            )
+            .await
+        },
+    )
     .await
 }
 
 #[cfg(unix)]
-async fn maybe_start_default_daemon_socket_with<F, Fut>(
+async fn maybe_connect_default_daemon_with<C, Connect, ConnectFut, Start, StartFut>(
     codex_home: &Path,
     codex_bin: Option<&Path>,
-    start_daemon: F,
-) -> Option<AbsolutePathBuf>
+    mut connect: Connect,
+    start_daemon: Start,
+) -> Option<DefaultDaemonConnection<C>>
 where
-    F: FnOnce(PathBuf) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<PathBuf>>,
+    Connect: FnMut(AbsolutePathBuf) -> ConnectFut,
+    ConnectFut: std::future::Future<Output = color_eyre::Result<C>>,
+    Start: FnOnce(PathBuf) -> StartFut,
+    StartFut: std::future::Future<Output = anyhow::Result<PathBuf>>,
 {
-    if let Some(socket_path) = maybe_probe_default_daemon_socket(codex_home).await {
-        return Some(socket_path);
+    let lease = match codex_app_server_daemon::acquire_local_daemon_lease(codex_home).await {
+        Ok(lease) => lease,
+        Err(err) => {
+            tracing::debug!(%err, "failed to acquire default app-server daemon client lease");
+            return None;
+        }
+    };
+
+    let socket_path = match codex_app_server_client::app_server_control_socket_path(codex_home) {
+        Ok(socket_path) => socket_path,
+        Err(err) => {
+            tracing::debug!(%err, "failed to resolve default app-server daemon socket");
+            return None;
+        }
+    };
+    match connect(socket_path.clone()).await {
+        Ok(app_server) => {
+            return Some(DefaultDaemonConnection {
+                socket_path,
+                app_server,
+                _lease: lease,
+            });
+        }
+        Err(err) => {
+            tracing::debug!(%err, socket_path = %socket_path.display(), "default app-server daemon is not ready");
+        }
     }
+    drop(lease);
 
     let Some(codex_bin) = codex_bin else {
         tracing::debug!(
@@ -548,7 +590,28 @@ where
 
     match start_daemon(codex_bin.to_path_buf()).await {
         Ok(socket_path) => match AbsolutePathBuf::try_from(socket_path) {
-            Ok(socket_path) => Some(socket_path),
+            Ok(socket_path) => {
+                let lease = match codex_app_server_daemon::acquire_local_daemon_lease(codex_home)
+                    .await
+                {
+                    Ok(lease) => lease,
+                    Err(err) => {
+                        tracing::debug!(%err, "failed to reacquire default app-server daemon client lease");
+                        return None;
+                    }
+                };
+                match connect(socket_path.clone()).await {
+                    Ok(app_server) => Some(DefaultDaemonConnection {
+                        socket_path,
+                        app_server,
+                        _lease: lease,
+                    }),
+                    Err(err) => {
+                        tracing::debug!(%err, "failed to connect to started default app-server daemon");
+                        None
+                    }
+                }
+            }
             Err(err) => {
                 tracing::debug!(%err, "default app-server daemon returned a non-absolute socket path");
                 None
@@ -562,10 +625,10 @@ where
 }
 
 #[cfg(not(unix))]
-async fn maybe_start_default_daemon_socket(
+async fn maybe_connect_default_daemon(
     _codex_home: &Path,
     _codex_bin: Option<&Path>,
-) -> Option<AbsolutePathBuf> {
+) -> Option<DefaultDaemonConnection<AppServerClient>> {
     None
 }
 
@@ -1092,13 +1155,22 @@ pub async fn run_main(
         cli.bypass_hook_trust,
     );
     let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
-        maybe_start_default_daemon_socket(&codex_home, arg0_paths.codex_self_exe.as_deref()).await
+        maybe_connect_default_daemon(&codex_home, arg0_paths.codex_self_exe.as_deref()).await
     } else {
         None
     };
+    let (default_daemon_socket, preconnected_app_server, _default_daemon_lease) =
+        match default_daemon {
+            Some(DefaultDaemonConnection {
+                socket_path,
+                app_server,
+                _lease,
+            }) => (Some(socket_path), Some(app_server), Some(_lease)),
+            None => (None, None, None),
+        };
     let app_server_target = app_server_target_for_launch(
         explicit_remote_endpoint,
-        default_daemon,
+        default_daemon_socket,
         reuse_implicit_local_daemon,
     );
     let remote_cwd_override = cli
@@ -1442,6 +1514,7 @@ pub async fn run_main(
         loader_overrides,
         strict_config,
         app_server_target,
+        preconnected_app_server,
         remote_cwd_override,
         config,
         manually_selected_oss_provider,
@@ -1465,6 +1538,7 @@ async fn run_ratatui_app(
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     app_server_target: AppServerTarget,
+    preconnected_app_server: Option<AppServerClient>,
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
     manually_selected_oss_provider: Option<String>,
@@ -1527,21 +1601,26 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
 
-    let app_server_session = match start_app_server(
-        &app_server_target,
-        arg0_paths.clone(),
-        initial_config.clone(),
-        cli_kv_overrides.clone(),
-        loader_overrides.clone(),
-        strict_config,
-        cloud_config_bundle.clone(),
-        feedback.clone(),
-        log_db.clone(),
-        state_db.clone(),
-        environment_manager.clone(),
-    )
-    .await
-    {
+    let app_server = match preconnected_app_server {
+        Some(app_server) => Ok(app_server),
+        None => {
+            start_app_server(
+                &app_server_target,
+                arg0_paths.clone(),
+                initial_config.clone(),
+                cli_kv_overrides.clone(),
+                loader_overrides.clone(),
+                strict_config,
+                cloud_config_bundle.clone(),
+                feedback.clone(),
+                log_db.clone(),
+                state_db.clone(),
+                environment_manager.clone(),
+            )
+            .await
+        }
+    };
+    let app_server_session = match app_server {
         Ok(app_server) => AppServerSession::new(app_server, app_server_target.thread_params_mode()),
         Err(err) => {
             terminal_restore_guard.restore_silently();
@@ -2539,9 +2618,12 @@ mod tests {
         let start_count_for_closure = Arc::clone(&start_count);
         let unexpected_socket_path = codex_home.path().join("unexpected.sock");
 
-        let socket_path = maybe_start_default_daemon_socket_with(
+        let socket_path = maybe_connect_default_daemon_with(
             codex_home.path(),
             /*codex_bin*/ None,
+            |_| async {
+                Err::<(), color_eyre::Report>(color_eyre::eyre::eyre!("daemon is not ready"))
+            },
             move |_| async move {
                 start_count_for_closure.fetch_add(1, Ordering::SeqCst);
                 Ok(unexpected_socket_path)
@@ -2549,7 +2631,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(socket_path, None);
+        assert!(socket_path.is_none());
         assert_eq!(start_count.load(Ordering::SeqCst), 0);
         Ok(())
     }
@@ -2561,15 +2643,14 @@ mod tests {
         let codex_home = TempDir::new()?;
         let socket_path =
             codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
-        std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
-        let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
         let start_count = Arc::new(AtomicUsize::new(0));
         let start_count_for_closure = Arc::clone(&start_count);
         let unexpected_socket_path = codex_home.path().join("unexpected.sock");
 
-        let resolved_socket_path = maybe_start_default_daemon_socket_with(
+        let resolved_socket_path = maybe_connect_default_daemon_with(
             codex_home.path(),
             Some(std::path::Path::new("/bin/codewith")),
+            |_| async { Ok(()) },
             move |_| async move {
                 start_count_for_closure.fetch_add(1, Ordering::SeqCst);
                 Ok(unexpected_socket_path)
@@ -2577,7 +2658,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(resolved_socket_path, Some(socket_path));
+        assert_eq!(
+            resolved_socket_path.map(|daemon| daemon.socket_path),
+            Some(socket_path)
+        );
         assert_eq!(start_count.load(Ordering::SeqCst), 0);
         Ok(())
     }
@@ -2590,10 +2674,21 @@ mod tests {
         let expected_socket_path = AbsolutePathBuf::try_from(started_socket_path.clone())?;
         let start_count = Arc::new(AtomicUsize::new(0));
         let start_count_for_closure = Arc::clone(&start_count);
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_closure = Arc::clone(&connect_count);
 
-        let socket_path = maybe_start_default_daemon_socket_with(
+        let socket_path = maybe_connect_default_daemon_with(
             codex_home.path(),
             Some(std::path::Path::new("/bin/codewith")),
+            move |_| {
+                let connect_count = Arc::clone(&connect_count_for_closure);
+                async move {
+                    if connect_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        color_eyre::eyre::bail!("daemon is not ready");
+                    }
+                    Ok(())
+                }
+            },
             move |codex_bin| {
                 let started_socket_path = started_socket_path.clone();
                 async move {
@@ -2605,8 +2700,12 @@ mod tests {
         )
         .await;
 
-        assert_eq!(socket_path, Some(expected_socket_path));
+        assert_eq!(
+            socket_path.map(|daemon| daemon.socket_path),
+            Some(expected_socket_path)
+        );
         assert_eq!(start_count.load(Ordering::SeqCst), 1);
+        assert_eq!(connect_count.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
@@ -2625,11 +2724,22 @@ mod tests {
         );
         let start_count = Arc::new(AtomicUsize::new(0));
         let start_count_for_closure = Arc::clone(&start_count);
+        let connect_count = Arc::new(AtomicUsize::new(0));
+        let connect_count_for_closure = Arc::clone(&connect_count);
         let expected_socket_path_for_closure = expected_socket_path.clone();
 
-        let socket_path = maybe_start_default_daemon_socket_with(
+        let socket_path = maybe_connect_default_daemon_with(
             codex_home.path(),
             Some(std::path::Path::new("/bin/codewith")),
+            move |_| {
+                let connect_count = Arc::clone(&connect_count_for_closure);
+                async move {
+                    if connect_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        color_eyre::eyre::bail!("daemon is not ready");
+                    }
+                    Ok(())
+                }
+            },
             move |_| {
                 let expected_socket_path = expected_socket_path_for_closure.clone();
                 async move {
@@ -2640,8 +2750,12 @@ mod tests {
         )
         .await;
 
-        assert_eq!(socket_path, Some(expected_socket_path));
+        assert_eq!(
+            socket_path.map(|daemon| daemon.socket_path),
+            Some(expected_socket_path)
+        );
         assert_eq!(start_count.load(Ordering::SeqCst), 1);
+        assert_eq!(connect_count.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
