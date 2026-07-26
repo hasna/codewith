@@ -3397,6 +3397,50 @@ async fn profile_selection_popup_groups_by_usage_and_keeps_exhausted_selectable(
 }
 
 #[tokio::test]
+async fn profile_popup_refresh_keeps_cursor_on_same_profile_when_usage_reorders() {
+    // Usage landing while the popup is open re-sorts the rows, so the in-place
+    // refresh has to follow the profile the cursor was on instead of holding a
+    // now-stale row index (which would silently point at another profile).
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "alpha", "alpha@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "bravo", "bravo@example.com");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    drain_profile_usage_refresh_events(&mut rx);
+    // The cursor opens on the current (default) row; move it down onto `bravo`.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        popup.contains("› 3. bravo"),
+        "expected the cursor on bravo before the refresh:\n{popup}"
+    );
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("alpha".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 10, /*primary_used_percent*/ 5,
+        )],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("bravo".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 60, /*primary_used_percent*/ 40,
+        )],
+    );
+    drain_profile_usage_refresh_events(&mut rx);
+    assert!(chat.refresh_profile_popup_if_active());
+
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        popup.contains("› 2. bravo"),
+        "expected the cursor to follow bravo after the re-sort:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn profile_popup_requests_usage_heartbeat_when_selected_usage_is_missing() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
     chat.thread_id = Some(ThreadId::new());

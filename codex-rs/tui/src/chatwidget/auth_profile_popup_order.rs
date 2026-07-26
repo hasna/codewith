@@ -14,6 +14,27 @@ pub(super) struct AuthProfileSelectionEntry {
     pub(super) original_index: usize,
 }
 
+/// Identity of a rendered profile-popup row. The popup is re-sorted whenever new
+/// usage lands, so an in-place refresh has to restore the cursor by identity
+/// rather than by index (otherwise the cursor silently lands on a different
+/// profile).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum AuthProfilePopupRow {
+    GroupHeader,
+    Default,
+    Named(String),
+    NewProfile,
+}
+
+impl AuthProfileSelectionTarget {
+    pub(super) fn popup_row(&self) -> AuthProfilePopupRow {
+        match self {
+            Self::Default => AuthProfilePopupRow::Default,
+            Self::Named(profile) => AuthProfilePopupRow::Named(profile.name.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AuthProfileUsageGroup {
     Active,

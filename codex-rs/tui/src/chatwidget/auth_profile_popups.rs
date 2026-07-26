@@ -1,6 +1,7 @@
 //! Auth profile picker for `ChatWidget`.
 
 use super::*;
+use crate::chatwidget::auth_profile_popup_order::AuthProfilePopupRow;
 use crate::chatwidget::auth_profile_popup_order::AuthProfileSelectionEntry;
 use crate::chatwidget::auth_profile_popup_order::AuthProfileSelectionTarget;
 use crate::chatwidget::auth_profile_popup_order::AuthProfileUsageGroup;
@@ -71,7 +72,7 @@ impl ChatWidget {
     }
 
     fn profile_selection_view_params(
-        &self,
+        &mut self,
         profiles: Vec<AuthProfile>,
         current: Option<&str>,
         selected_idx: Option<usize>,
@@ -98,33 +99,36 @@ impl ChatWidget {
         let has_exhausted_profiles = profile_entries
             .iter()
             .any(|entry| entry.usage_status.group == AuthProfileUsageGroup::Exhausted);
+        // Group headers only earn their row when there is actually more than one
+        // group to tell apart.
+        let show_group_headers = has_active_profiles && has_exhausted_profiles;
 
         let mut items = Vec::with_capacity(
             profile_entries
                 .len()
                 .saturating_add(1)
-                .saturating_add(usize::from(has_active_profiles))
-                .saturating_add(usize::from(has_exhausted_profiles)),
+                .saturating_add(2 * usize::from(show_group_headers)),
         );
-        if has_active_profiles {
-            items.push(auth_profile_group_item("Active profiles"));
-            items.extend(
-                profile_entries
-                    .iter()
-                    .filter(|entry| entry.usage_status.group == AuthProfileUsageGroup::Active)
-                    .map(|entry| self.profile_selection_item(entry, current)),
-            );
-        }
-        if has_exhausted_profiles {
-            items.push(auth_profile_group_item("Exhausted profiles"));
-            items.extend(
-                profile_entries
-                    .iter()
-                    .filter(|entry| entry.usage_status.group == AuthProfileUsageGroup::Exhausted)
-                    .map(|entry| self.profile_selection_item(entry, current)),
-            );
+        let mut rows = Vec::with_capacity(items.capacity());
+        for group in [
+            AuthProfileUsageGroup::Active,
+            AuthProfileUsageGroup::Exhausted,
+        ] {
+            let group_entries = profile_entries
+                .iter()
+                .filter(|entry| entry.usage_status.group == group);
+            if show_group_headers {
+                items.push(auth_profile_group_item(auth_profile_group_label(group)));
+                rows.push(AuthProfilePopupRow::GroupHeader);
+            }
+            for entry in group_entries {
+                items.push(self.profile_selection_item(entry, current));
+                rows.push(entry.target.popup_row());
+            }
         }
         items.push(self.new_auth_profile_item());
+        rows.push(AuthProfilePopupRow::NewProfile);
+        self.auth_profile_popup_rows = rows;
 
         let initial_selected_idx = selected_idx.map(|idx| idx.min(items.len().saturating_sub(1)));
         let mut header = ColumnRenderable::new();
@@ -176,12 +180,25 @@ impl ChatWidget {
             }
         };
 
-        let current = self.config.selected_auth_profile.as_deref();
-        let mut params = self.profile_selection_view_params(profiles, current, Some(selected_idx));
+        let current = self.config.selected_auth_profile.clone();
+        // Landing usage can re-sort the list (and move rows between the active and
+        // exhausted groups), so remember which row the cursor was on and restore it
+        // by identity below.
+        let selected_row = self.auth_profile_popup_rows.get(selected_idx).cloned();
+        let mut params =
+            self.profile_selection_view_params(profiles, current.as_deref(), Some(selected_idx));
         // This is an in-place refresh (e.g. a usage heartbeat landing), so honor
         // the user's current cursor instead of snapping back to the active
         // profile row (Bug B).
         params.prefer_initial_over_current = true;
+        if let Some(selected_row) = selected_row
+            && let Some(restored_idx) = self
+                .auth_profile_popup_rows
+                .iter()
+                .position(|row| *row == selected_row)
+        {
+            params.initial_selected_idx = Some(restored_idx);
+        }
         self.bottom_pane
             .replace_selection_view_if_active(AUTH_PROFILE_POPUP_VIEW_ID, params)
     }
@@ -1000,6 +1017,13 @@ fn auth_profile_group_item(name: &str) -> SelectionItem {
         name: name.to_string(),
         is_disabled: true,
         ..Default::default()
+    }
+}
+
+fn auth_profile_group_label(group: AuthProfileUsageGroup) -> &'static str {
+    match group {
+        AuthProfileUsageGroup::Active => "Active profiles",
+        AuthProfileUsageGroup::Exhausted => "Exhausted profiles",
     }
 }
 

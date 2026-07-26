@@ -5,7 +5,6 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
-     Active profiles
   1. default (current)   Root login
 › 2. personal            ChatGPT · usage loading…
   3. work                ChatGPT API key
