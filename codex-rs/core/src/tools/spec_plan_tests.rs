@@ -378,6 +378,26 @@ impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
     }
 }
 
+struct SchemaLessWebRunImpostor;
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for SchemaLessWebRunImpostor {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced("web", "run")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        reserved_namespace_tool_spec("web", "run")
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        panic!("spec planning should not execute extension tools")
+    }
+}
+
 struct ImagegenExtensionTool;
 
 #[async_trait::async_trait]
@@ -412,6 +432,26 @@ impl ToolExecutor<ExtensionToolCall> for ImagegenExtensionTool {
                 output_schema: None,
             })],
         })
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        panic!("spec planning should not execute extension tools")
+    }
+}
+
+struct MismatchedImagegenExtensionTool;
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for MismatchedImagegenExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced("images", "imagegen")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        reserved_namespace_spec("image_gen")
     }
 
     async fn handle(
@@ -2490,5 +2530,71 @@ async fn code_mode_does_not_advertise_or_register_reserved_namespace_runtime() {
     assert!(
         has_serialized_tool_type(&probe.serialized_tools(), "image_generation"),
         "hosted image generation should remain as the fallback"
+    );
+}
+
+#[tokio::test]
+async fn schema_less_web_run_impostor_is_dropped_and_hosted_fallback_remains() {
+    let probe = probe_with(
+        |turn| {
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(SchemaLessWebRunImpostor)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_lacks(&["webrun"]);
+    let serialized_tools = probe.serialized_tools();
+    assert!(
+        has_serialized_tool_type(&serialized_tools, "web_search"),
+        "hosted web search should remain when web.run is not canonical: {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "web", "run"),
+        "schema-less web.run must not reach the Responses boundary: {serialized_tools:?}"
+    );
+}
+
+#[tokio::test]
+async fn mismatched_imagegen_spec_is_dropped_and_hosted_fallback_remains() {
+    let probe = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(MismatchedImagegenExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_lacks(&["imagesimagegen"]);
+    let serialized_tools = probe.serialized_tools();
+    assert!(
+        has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "hosted image generation should remain when the extension spec is rejected: \
+         {serialized_tools:?}"
+    );
+    assert!(
+        !has_serialized_namespace_function(&serialized_tools, "image_gen", "imagegen"),
+        "stale reserved image_gen.imagegen must not reach the Responses boundary: \
+         {serialized_tools:?}"
     );
 }

@@ -212,7 +212,6 @@ fn namespace_serialization_allows_custom_and_vetted_reserved_namespaces() {
     for (namespace, tool_name) in [
         ("images", "imagegen"),
         ("mcp__codex_apps__images", "imagegen"),
-        ("web", "run"),
     ] {
         serde_json::to_value(ToolSpec::Namespace(namespace_tool(namespace, tool_name)))
             .unwrap_or_else(|err| panic!("{namespace}.{tool_name} should serialize: {err}"));
@@ -225,4 +224,17 @@ fn namespace_serialization_rejects_unvetted_tools_in_allowlisted_namespace() {
         .expect_err("web.imagegen must not inherit the web.run exception");
 
     assert!(err.to_string().contains("web.imagegen"), "{err}");
+}
+
+#[test]
+fn namespace_serialization_rejects_name_only_web_run_impostors() {
+    let results = [
+        serde_json::to_value(ToolSpec::Namespace(namespace_tool("web", "run"))),
+        serde_json::to_value(LoadableToolSpec::Namespace(namespace_tool("web", "run"))),
+    ];
+
+    for result in results {
+        let err = result.expect_err("generic web.run must not bypass reserved schema validation");
+        assert!(err.to_string().contains("web.run"), "{err}");
+    }
 }

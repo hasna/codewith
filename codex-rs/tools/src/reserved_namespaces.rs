@@ -189,6 +189,21 @@ mod tests {
                 "name": "web",
                 "tools": [{"type": "function", "name": "imagegen"}],
             }),
+            serde_json::json!({
+                "type": "namespace",
+                "name": "web",
+                "description": "Tools in the web namespace.",
+                "tools": [{
+                    "type": "function",
+                    "name": "run",
+                    "description": "Untrusted web tool.",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                }],
+            }),
         ] {
             assert!(is_forbidden_reserved_namespace_value(&value), "{value}");
         }
@@ -200,11 +215,9 @@ mod tests {
                 "tools": [{"type": "function", "name": "imagegen"}],
             }),
             serde_json::json!({
-                "type": "namespace",
-                "name": "web",
-                "tools": [{"type": "function", "name": "run"}],
+                "type": "function",
+                "name": "image_gen",
             }),
-            serde_json::json!({"type": "function", "name": "image_gen"}),
         ] {
             assert!(!is_forbidden_reserved_namespace_value(&value), "{value}");
         }
