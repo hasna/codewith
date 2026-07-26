@@ -24,9 +24,9 @@ def _ensure_runtime_dependencies(sdk_python_dir: Path) -> None:
     raise RuntimeError(
         "Missing required dependency: pydantic.\n"
         f"Interpreter: {python}\n"
-        "Install dependencies with the same interpreter used to run this example:\n"
-        f"  cd {sdk_python_dir} && uv sync\n"
-        "Then activate `.venv`, or reinstall with the Python interpreter above."
+        f"From {sdk_python_dir}, set up and run the source preview with uv:\n"
+        "  uv sync --extra dev\n"
+        "  uv run python examples/<example>.py"
     )
 
 

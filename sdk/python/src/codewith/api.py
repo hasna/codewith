@@ -73,7 +73,17 @@ from .models import InitializeResponse, JsonObject, Notification
 
 
 class Codewith:
-    """Synchronous client for creating threads and running Codewith turns.
+    """Synchronous client for creating app-server threads and running turns.
+
+    By default, the source preview launches the pinned upstream Codex runtime
+    from ``openai-codex-cli-bin``. For Codewith experiments, pass its executable
+    explicitly::
+
+        from codewith import CodexConfig, Codewith
+
+        config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+        with Codewith(config=config) as client:
+            thread = client.thread_start()
 
     The client starts its runtime connection during construction. Use it as a
     context manager so resources are closed promptly.
@@ -102,7 +112,7 @@ class Codewith:
         self._client.close()
 
     def login_api_key(self, api_key: str) -> None:
-        """Authenticate Codewith with an API key."""
+        """Authenticate the active runtime with an API key."""
         self._client.account_login_start(
             LoginAccountParams(
                 root=ApiKeyLoginAccountParams(
@@ -121,11 +131,11 @@ class Codewith:
         return start_device_code_login(self._client)
 
     def account(self, *, refresh_token: bool = False) -> GetAccountResponse:
-        """Read the current Codewith account state."""
+        """Read the active runtime's account state."""
         return self._client.account_read(GetAccountParams(refresh_token=refresh_token))
 
     def logout(self) -> None:
-        """Clear the current Codewith account session."""
+        """Clear the active runtime's account session."""
         self._client.account_logout()
 
     # BEGIN GENERATED: Codewith.flat_methods
@@ -147,7 +157,7 @@ class Codewith:
         session_start_source: ThreadStartSource | None = None,
         thread_source: ThreadSource | None = None,
     ) -> Thread:
-        """Create a new Codewith conversation thread."""
+        """Create a new conversation thread in the active runtime."""
         approval_policy, approvals_reviewer = _approval_mode_settings(approval_mode)
         params = ThreadStartParams(
             approval_policy=approval_policy,
@@ -280,16 +290,26 @@ class Codewith:
     # END GENERATED: Codewith.flat_methods
 
     def models(self, *, include_hidden: bool = False) -> ModelListResponse:
-        """List available models reported by Codewith."""
+        """List available models reported by the active runtime."""
         return self._client.model_list(include_hidden=include_hidden)
 
 
 class AsyncCodewith:
-    """Async mirror of :class:`Codewith`.
+    """Async client for creating app-server threads and running turns.
 
-    Prefer ``async with AsyncCodewith()`` so initialization and shutdown are
-    explicit and paired. The async client initializes lazily on context entry
-    or first awaited API use.
+    By default, the source preview launches the pinned upstream Codex runtime
+    from ``openai-codex-cli-bin``. For Codewith experiments, pass its executable
+    explicitly::
+
+        from codewith import AsyncCodewith, CodexConfig
+
+        config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+        async with AsyncCodewith(config=config) as client:
+            thread = await client.thread_start()
+
+    Prefer an async context manager so initialization and shutdown are explicit
+    and paired. The async client initializes lazily on context entry or first
+    awaited API use.
     """
 
     def __init__(self, config: CodexConfig | None = None) -> None:
@@ -326,8 +346,9 @@ class AsyncCodewith:
     def metadata(self) -> InitializeResponse:
         if self._init is None:
             raise RuntimeError(
-                "AsyncCodewith is not initialized yet. Prefer `async with AsyncCodewith()`; "
-                "initialization also happens on first awaited API use."
+                "AsyncCodewith is not initialized yet. Use it as an async context manager, "
+                "for example `async with client:`; initialization also happens on first "
+                "awaited API use."
             )
         return self._init
 
@@ -337,7 +358,7 @@ class AsyncCodewith:
         self._initialized = False
 
     async def login_api_key(self, api_key: str) -> None:
-        """Authenticate Codewith with an API key."""
+        """Authenticate the active runtime with an API key."""
         await self._ensure_initialized()
         await self._client.account_login_start(
             LoginAccountParams(
@@ -359,12 +380,12 @@ class AsyncCodewith:
         return await async_start_device_code_login(self)
 
     async def account(self, *, refresh_token: bool = False) -> GetAccountResponse:
-        """Read the current Codewith account state."""
+        """Read the active runtime's account state."""
         await self._ensure_initialized()
         return await self._client.account_read(GetAccountParams(refresh_token=refresh_token))
 
     async def logout(self) -> None:
-        """Clear the current Codewith account session."""
+        """Clear the active runtime's account session."""
         await self._ensure_initialized()
         await self._client.account_logout()
 
@@ -387,7 +408,7 @@ class AsyncCodewith:
         session_start_source: ThreadStartSource | None = None,
         thread_source: ThreadSource | None = None,
     ) -> AsyncThread:
-        """Create a new Codewith conversation thread."""
+        """Create a new conversation thread in the active runtime."""
         await self._ensure_initialized()
         approval_policy, approvals_reviewer = _approval_mode_settings(approval_mode)
         params = ThreadStartParams(

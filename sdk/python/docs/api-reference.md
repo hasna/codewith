@@ -1,8 +1,13 @@
-# Codewith Python SDK (Beta) - API Reference
+# Codewith Python SDK (Source Preview) - API Reference
 
 Public surface of `codewith` for Codewith workflows.
 
-This SDK is in beta. Public APIs may change before `1.0`. Turn streams are routed by turn ID so one client can consume multiple active turns concurrently.
+`hasna-codewith-sdk` is not published on PyPI, and this source preview is not
+the supported integration path. Its default dependency is upstream Codex, not
+Codewith. For Codewith experiments, set `CodexConfig.codex_bin` to an explicit
+local Codewith executable. For supported integrations today, use the
+[TypeScript SDK](../../typescript/README.md). Turn streams are routed by turn ID
+so one client can consume multiple active turns concurrently.
 Thread starts default to `ApprovalMode.auto_review`; turn starts accept an optional `approval_mode` override.
 
 ## Package Entry
@@ -76,7 +81,9 @@ Properties/methods:
 Context manager:
 
 ```python
-with Codewith() as client:
+config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+
+with Codewith(config=config) as client:
     ...
 ```
 
@@ -89,7 +96,7 @@ AsyncCodewith(config: CodexConfig | None = None)
 Preferred usage:
 
 ```python
-async with AsyncCodewith() as client:
+async with AsyncCodewith(config=config) as client:
     ...
 ```
 
@@ -116,7 +123,7 @@ Properties/methods:
 Async context manager:
 
 ```python
-async with AsyncCodewith() as client:
+async with AsyncCodewith(config=config) as client:
     ...
 ```
 
@@ -189,9 +196,11 @@ Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 Use `sandbox=` consistently on thread lifecycle methods and turns:
 
 ```python
-from codewith import Codewith, Sandbox
+from codewith import Codewith, CodexConfig, Sandbox
 
-with Codewith() as client:
+config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+
+with Codewith(config=config) as client:
     thread = client.thread_start(sandbox=Sandbox.workspace_write)
     result = thread.run("Review the diff only.", sandbox=Sandbox.read_only)
 ```
@@ -284,9 +293,11 @@ from codewith import (
 ## Example
 
 ```python
-from codewith import Codewith
+from codewith import Codewith, CodexConfig
 
-with Codewith() as client:
+config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+
+with Codewith(config=config) as client:
     thread = client.thread_start(model="gpt-5.4", config={"model_reasoning_effort": "high"})
     result = thread.run("Say hello in one sentence.")
     print(result.final_response)

@@ -1,21 +1,34 @@
 # FAQ
 
-## Is the Python SDK stable?
+## Is the Python SDK published?
 
-`hasna-codewith-sdk` is a public beta. Install it with
-`pip install hasna-codewith-sdk`; public APIs may change before `1.0`. While beta
-releases are the only published SDK releases, pip selects the latest beta.
-After a stable release exists, pass `--pre` to opt into newer prereleases.
+No. `hasna-codewith-sdk` is not published on PyPI. The checked-in Python code
+is a source preview, its APIs may change, and it is not the supported
+integration path. For supported integrations today, use the
+[TypeScript SDK](../../typescript/README.md).
 
-## Why does the SDK install a runtime package?
+## Does `uv sync` provide a Codewith runtime?
 
-The SDK and runtime packages are versioned independently. Each SDK release
-pins and installs one compatible runtime dependency automatically.
+No. `uv sync --extra dev` resolves the upstream `openai-codex-cli-bin` version
+pinned in `pyproject.toml`. Default startup uses that upstream Codex executable;
+it does not provide supported Codewith behavior.
+
+To experiment with Codewith, pass an explicit local Codewith executable:
+
+```python
+from codewith import Codewith, CodexConfig
+
+config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+
+with Codewith(config=config) as client:
+    ...
+```
 
 ## Thread vs turn
 
 - A `Thread` is conversation state.
-- A `Turn` is one model execution inside that thread.
+- A `Turn` is one submitted unit of work and its complete response cycle inside
+  that thread. It may span multiple model samples and tool-call continuations.
 - Multi-turn chat means multiple turns on the same `Thread`.
 
 ## `run()` vs `stream()`
@@ -30,9 +43,9 @@ Choose `run()` for most apps. Choose `stream()` for progress UIs, custom timeout
 
 - `Codewith` is the sync public API.
 - `AsyncCodewith` is an async replica of the same public API shape.
-- Prefer `async with AsyncCodewith()` for async code. It is the standard path for
-  explicit startup/shutdown, and `AsyncCodewith` initializes lazily on context
-  entry or first awaited API use.
+- Prefer `async with AsyncCodewith(config=config)` for async code. It is the
+  standard path for explicit startup/shutdown, and `AsyncCodewith` initializes
+  lazily on context entry or first awaited API use.
 
 If your app is not already async, stay with `Codewith`.
 
@@ -92,13 +105,15 @@ This avoids duplicate ways to do the same operation and keeps behavior explicit.
 
 ## Why does constructor fail?
 
-`Codewith()` is eager: it starts transport and calls `initialize` in `__init__`.
+`Codewith(config=...)` is eager: it starts transport and calls `initialize` in
+`__init__`.
 
 Common causes:
 
-- installation is incomplete and the pinned `openai-codex-cli-bin` dependency is missing
 - local `codex_bin` override points to a missing file
 - a custom local Codewith executable does not support the SDK operation being used
+- no explicit `codex_bin` was provided, so startup selected the upstream Codex
+  dependency instead of Codewith
 
 ## Why does a turn "hang"?
 
@@ -112,7 +127,8 @@ A turn is complete only when `turn/completed` arrives for that turn ID.
 Use `retry_on_overload(...)` for transient overload failures (`ServerBusyError`).
 
 Do not blindly retry all errors. For `InvalidParamsError` or
-`MethodNotFoundError`, fix the input or use the runtime pinned by the SDK.
+`MethodNotFoundError`, fix the input or use the explicitly configured local
+Codewith executable.
 
 ## Common pitfalls
 

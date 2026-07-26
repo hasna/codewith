@@ -93,9 +93,9 @@ def _installed_codex_path() -> Path:
         from codex_cli_bin import bundled_codex_path
     except ImportError as exc:
         raise FileNotFoundError(
-            "Unable to locate the pinned Codewith runtime. Install the published SDK build "
-            f"with its {RUNTIME_PKG_NAME} dependency, or set CodexConfig.codex_bin "
-            "explicitly."
+            f"The Python SDK preview's runtime dependency ({RUNTIME_PKG_NAME}) is missing. "
+            "From sdk/python, run `uv sync --extra dev` for source setup. To run Codewith, "
+            "set CodexConfig.codex_bin to a Codewith executable."
         ) from exc
 
     return bundled_codex_path()
@@ -172,10 +172,10 @@ def _resolve_codex_bin(config: "CodexConfig") -> Path:
 
 @dataclass(slots=True)
 class CodexConfig:
-    """Configuration for launching and identifying the local Codewith runtime.
+    """Configuration for launching and identifying the Python SDK runtime.
 
-    Most callers can use ``Codewith()`` without configuration. Set ``codex_bin``
-    only when intentionally using a specific local Codewith executable.
+    The source preview defaults to its pinned upstream Codex runtime. To run
+    Codewith experiments, explicitly set ``codex_bin`` to a Codewith executable.
     """
 
     codex_bin: str | None = None
@@ -190,7 +190,7 @@ class CodexConfig:
 
 
 class CodexClient:
-    """Synchronous typed JSON-RPC client for `codewith app-server` over stdio."""
+    """Synchronous typed JSON-RPC client for an app-server process over stdio."""
 
     def __init__(
         self,
