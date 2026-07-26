@@ -50,11 +50,11 @@ The managed daemon lifecycle assumes Codewith is installed through `install.sh`
 and launches the standalone managed binary under `CODEWITH_HOME`. Local TUI
 auto-start is a separate no-updater path described below.
 
-| Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
-| --- | --- | --- | --- |
-| `install.sh` has run, but only `start` is used | `start` uses `CODEWITH_HOME/packages/standalone/current/codewith` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
-| `install.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEWITH_HOME/packages/standalone/current/codewith` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
-| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
+| Situation                                       | What starts                                                                   | Does this daemon fetch new binaries?                                                              | Does a running app-server eventually move to a newer binary on its own?                                                                                                                                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install.sh` has run, but only `start` is used  | `start` uses `CODEWITH_HOME/packages/standalone/current/codewith`             | No                                                                                                | No. The managed path is used when starting or restarting, but no updater is installed.                                                                                                                                                                          |
+| `install.sh` has run, then `bootstrap` is used  | The pidfile backend uses `CODEWITH_HOME/packages/standalone/current/codewith` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly.                    | Not directly. The updater installs the latest standalone release and replaces only its own process image when the managed executable changes. A running app-server adopts the new binary through its existing idle retirement or an explicit lifecycle command. |
+| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path            | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | The updater may replace its own process image on the next successful pass, but it does not restart app-server. App-server adopts the managed binary after existing idle retirement, an explicit `restart` or `bootstrap`, or the next lifecycle start.          |
 
 ### Standalone installs
 
@@ -64,9 +64,12 @@ For installs created by `install.sh`:
 - `bootstrap` is supported
 - `bootstrap` starts a detached pid-backed updater loop that fetches via
   `install.sh`
-- after a successful refresh, if app-server is running and the managed binary
-  contents changed, the updater restarts app-server with that binary first and
-  only then replaces its own process image
+- after a successful refresh, if the managed binary contents changed, the
+  updater replaces only its own process image; it does not inspect, stop, or
+  restart app-server
+- a running app-server adopts the refreshed binary through its existing idle
+  retirement or explicit lifecycle; release operators should run `restart` or
+  rerun `bootstrap` when immediate adoption is required
 - the updater loop is not reboot-persistent; it must be started again by
   rerunning `bootstrap` after a reboot
 
@@ -87,12 +90,16 @@ remote-control flows.
 This daemon does not watch arbitrary executable files for replacement. If some
 other tool updates the managed binary path:
 
-- without `bootstrap`, a currently running app-server remains on the old
-  executable image until an explicit `restart`
+- without `bootstrap`, a local app-server remains on the old executable image
+  until its existing idle retirement and next start; an active remote-control
+  daemon remains on the old image until an explicit `restart`
 - with `bootstrap`, the detached updater loop notices the changed managed
-  binary on its next successful scheduled pass after running `install.sh`; if
-  app-server is running, it refreshes app-server first and then refreshes itself
-  once that replacement starts successfully
+  binary on its next successful scheduled pass after running `install.sh` and
+  replaces only its own process image
+- app-server adoption remains governed by the existing lifecycle: local idle
+  retirement may replace it on the next start, while an active remote-control
+  daemon requires an explicit `restart` or `bootstrap`; release operators
+  should use that explicit lifecycle when immediate adoption is required
 
 ## Lifecycle semantics
 
