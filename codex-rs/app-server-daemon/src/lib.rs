@@ -162,38 +162,6 @@ pub struct RemoteControlOutput {
     pub app_server_version: Option<String>,
 }
 
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RestartIfRunningOutcome {
-    Busy,
-    NotRunning,
-    NotReady,
-    AlreadyCurrent,
-    Restarted,
-}
-
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RestartMode {
-    IfVersionChanged,
-    Always,
-}
-
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdaterRefreshMode {
-    None,
-    ReexecIfManagedBinaryChanged,
-}
-
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RestartDecision {
-    NotReady,
-    AlreadyCurrent,
-    Restart,
-}
-
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
     Daemon::from_environment()?.run(command).await
@@ -397,52 +365,6 @@ impl Daemon {
                 Some(info.app_server_version),
             )
             .await)
-    }
-
-    #[cfg(unix)]
-    pub(crate) async fn try_restart_if_running(
-        &self,
-        mode: RestartMode,
-        updater_refresh_mode: UpdaterRefreshMode,
-        managed_codex_bin: &Path,
-    ) -> Result<RestartIfRunningOutcome> {
-        let operation_lock = self.open_operation_lock_file().await?;
-        if !try_lock_file(&operation_lock)? {
-            return Ok(RestartIfRunningOutcome::Busy);
-        }
-        let settings = self.load_settings().await?;
-        let outcome = if let Some(backend) = self.running_backend_instance(&settings).await? {
-            let info = client::probe(&self.socket_path).await.ok();
-            let managed_version = if info.is_some() {
-                Some(managed_codex_version(managed_codex_bin).await?)
-            } else {
-                None
-            };
-            match restart_decision(mode, info.as_ref(), managed_version.as_deref()) {
-                RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
-                RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
-                RestartDecision::Restart => {
-                    backend.stop().await?;
-                    let _ = self
-                        .start_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
-                    self.wait_until_ready().await?;
-                    RestartIfRunningOutcome::Restarted
-                }
-            }
-        } else if client::probe(&self.socket_path).await.is_ok() {
-            return Err(anyhow!(
-                "app server is running but is not managed by codewith app-server daemon"
-            ));
-        } else {
-            RestartIfRunningOutcome::NotRunning
-        };
-
-        if should_reexec_updater(updater_refresh_mode, outcome) {
-            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
-        }
-
-        Ok(outcome)
     }
 
     async fn stop(&self) -> Result<LifecycleOutput> {
@@ -884,32 +806,6 @@ fn already_remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus
 }
 
 #[cfg(unix)]
-fn restart_decision(
-    mode: RestartMode,
-    info: Option<&client::ProbeInfo>,
-    managed_version: Option<&str>,
-) -> RestartDecision {
-    match (mode, info, managed_version) {
-        (RestartMode::IfVersionChanged, None, _) => RestartDecision::NotReady,
-        (RestartMode::IfVersionChanged, Some(info), Some(managed_version))
-            if info.app_server_version == managed_version =>
-        {
-            RestartDecision::AlreadyCurrent
-        }
-        _ => RestartDecision::Restart,
-    }
-}
-
-#[cfg(unix)]
-fn should_reexec_updater(
-    updater_refresh_mode: UpdaterRefreshMode,
-    outcome: RestartIfRunningOutcome,
-) -> bool {
-    updater_refresh_mode == UpdaterRefreshMode::ReexecIfManagedBinaryChanged
-        && outcome == RestartIfRunningOutcome::Restarted
-}
-
-#[cfg(unix)]
 fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     use std::os::fd::AsRawFd;
 
@@ -943,14 +839,7 @@ mod tests {
     use super::LifecycleStatus;
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
-    use super::RestartDecision;
-    use super::RestartIfRunningOutcome;
-    use super::RestartMode;
-    use super::UpdaterRefreshMode;
     use super::app_server_daemon_state_dir_for_auth_profile;
-    use super::restart_decision;
-    use super::should_reexec_updater;
-    use crate::client::ProbeInfo;
     use crate::settings::DaemonSettings;
 
     #[test]
@@ -979,72 +868,6 @@ mod tests {
                 .join("app-server-daemon")
                 .join("auth_profiles")
                 .join("work")
-        );
-    }
-
-    #[test]
-    fn updater_reexec_waits_for_validated_restart() {
-        assert_eq!(
-            [
-                RestartIfRunningOutcome::Busy,
-                RestartIfRunningOutcome::NotReady,
-                RestartIfRunningOutcome::AlreadyCurrent,
-                RestartIfRunningOutcome::NotRunning,
-                RestartIfRunningOutcome::Restarted,
-            ]
-            .map(|outcome| {
-                should_reexec_updater(UpdaterRefreshMode::ReexecIfManagedBinaryChanged, outcome)
-            }),
-            [false, false, false, false, true]
-        );
-    }
-
-    #[test]
-    fn unchanged_updater_never_reexecs() {
-        assert_eq!(
-            [
-                RestartIfRunningOutcome::Busy,
-                RestartIfRunningOutcome::NotReady,
-                RestartIfRunningOutcome::AlreadyCurrent,
-                RestartIfRunningOutcome::NotRunning,
-                RestartIfRunningOutcome::Restarted,
-            ]
-            .map(|outcome| should_reexec_updater(UpdaterRefreshMode::None, outcome)),
-            [false, false, false, false, false]
-        );
-    }
-
-    #[test]
-    fn restart_decision_preserves_forced_refreshes() {
-        let current_info = ProbeInfo {
-            app_server_version: "0.1.0".to_string(),
-        };
-
-        assert_eq!(
-            [
-                restart_decision(
-                    RestartMode::IfVersionChanged,
-                    Some(&current_info),
-                    Some("0.1.0"),
-                ),
-                restart_decision(
-                    RestartMode::IfVersionChanged,
-                    /*info*/ None,
-                    /*managed_version*/ None,
-                ),
-                restart_decision(RestartMode::Always, Some(&current_info), Some("0.1.0")),
-                restart_decision(
-                    RestartMode::Always,
-                    /*info*/ None,
-                    /*managed_version*/ None,
-                ),
-            ],
-            [
-                RestartDecision::AlreadyCurrent,
-                RestartDecision::NotReady,
-                RestartDecision::Restart,
-                RestartDecision::Restart,
-            ]
         );
     }
 

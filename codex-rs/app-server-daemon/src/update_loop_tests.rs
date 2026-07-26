@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use pretty_assertions::assert_eq;
+use tempfile::TempDir;
 
 use super::UpdateCycleOutcome;
 use super::complete_update_cycle;
@@ -12,19 +13,17 @@ use super::perform_update_cycle;
 use super::update_failure_diagnostic;
 use crate::managed_install::executable_identity_from_bytes;
 
-async fn write_managed_binary(bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
-    let temp_dir = tempfile::tempdir().expect("create temp dir");
+async fn write_managed_binary(bytes: &[u8]) -> anyhow::Result<(TempDir, PathBuf)> {
+    let temp_dir = tempfile::tempdir()?;
     let managed_codex_bin = temp_dir.path().join("codewith");
-    tokio::fs::write(&managed_codex_bin, bytes)
-        .await
-        .expect("write managed binary");
-    (temp_dir, managed_codex_bin)
+    tokio::fs::write(&managed_codex_bin, bytes).await?;
+    Ok((temp_dir, managed_codex_bin))
 }
 
 #[tokio::test]
-async fn perform_update_cycle_reexecs_after_installed_identity_changes() {
+async fn perform_update_cycle_reexecs_after_installed_identity_changes() -> anyhow::Result<()> {
     let running_identity = executable_identity_from_bytes(b"old");
-    let (_temp_dir, managed_codex_bin) = write_managed_binary(b"old").await;
+    let (_temp_dir, managed_codex_bin) = write_managed_binary(b"old").await?;
     let install_path = managed_codex_bin.clone();
     let requested_paths = Arc::new(Mutex::new(Vec::new()));
     let requested_paths_for_reexec = Arc::clone(&requested_paths);
@@ -48,12 +47,13 @@ async fn perform_update_cycle_reexecs_after_installed_identity_changes() {
         *requested_paths.lock().expect("lock requested paths"),
         vec![std::fs::canonicalize(&managed_codex_bin).expect("resolve managed binary")]
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn perform_update_cycle_does_not_reexec_for_unchanged_identity() {
+async fn perform_update_cycle_does_not_reexec_for_unchanged_identity() -> anyhow::Result<()> {
     let running_identity = executable_identity_from_bytes(b"same");
-    let (_temp_dir, managed_codex_bin) = write_managed_binary(b"same").await;
+    let (_temp_dir, managed_codex_bin) = write_managed_binary(b"same").await?;
     let reexec_count = Arc::new(AtomicUsize::new(0));
     let reexec_count_for_cycle = Arc::clone(&reexec_count);
 
@@ -68,6 +68,7 @@ async fn perform_update_cycle_does_not_reexec_for_unchanged_identity() {
     .expect("complete update cycle");
 
     assert_eq!(reexec_count.load(Ordering::SeqCst), 0);
+    Ok(())
 }
 
 #[tokio::test]
