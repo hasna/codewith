@@ -1,5 +1,10 @@
 # Python SDK Examples
 
+These examples exercise the checked-in Python SDK source preview.
+`hasna-codewith-sdk` is not published on PyPI, and these examples are not the
+supported integration path. For supported integrations today, use the
+[TypeScript SDK](../../typescript/README.md).
+
 Each example folder contains runnable versions:
 
 - `sync.py` (public sync surface: `Codewith`)
@@ -14,47 +19,54 @@ multimodal or structured input lists.
 ## Prerequisites
 
 - Python `>=3.10`
-- Install the SDK for the same Python interpreter you will use to run examples
-
-Install the published beta:
-
-```bash
-python -m pip install hasna-codewith-sdk
-```
-
-The SDK installs its pinned `openai-codex-cli-bin` Codewith runtime dependency.
-The pinned runtime version comes from the SDK package dependency.
+- `uv` installed and available on `PATH`
+- A checkout of this repository
+- An explicit path to a local Codewith executable for Codewith experiments
 
 ## Run From A Checkout
 
-Contributors using these checked-in scripts should install development
-dependencies from `sdk/python`:
+From `sdk/python`, create the source preview's local environment:
 
 ```bash
 uv sync --extra dev
-source .venv/bin/activate
 ```
 
-The examples bootstrap local SDK imports from `sdk/python/src`. If the pinned
-runtime is not already installed, the bootstrap installs the matching runtime
-package for the active interpreter and cleans up temporary files afterward.
+Use `uv run` for every example command so the project environment is selected
+without platform-specific activation.
 
-## Run examples
+The examples bootstrap local SDK imports from `sdk/python/src`. Their checked-in
+bootstrap resolves the upstream `openai-codex-cli-bin` dependency, so running
+the examples unchanged exercises upstream Codex, not Codewith.
+The pinned runtime version comes from the SDK package dependency.
+
+To adapt an example for a Codewith experiment, replace its `runtime_config()`
+value with an explicit local executable:
+
+```python
+from codewith import CodexConfig
+
+config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+```
+
+Pass `config=config` to `Codewith` or `AsyncCodewith`.
+
+## Run Source-Preview Examples
 
 From `sdk/python`:
 
 ```bash
-python examples/<example-folder>/sync.py
-python examples/<example-folder>/async.py
+uv run python examples/<example-folder>/sync.py
+uv run python examples/<example-folder>/async.py
 ```
 
-The checked-in examples use the local SDK source tree automatically.
+The checked-in examples use the local SDK source tree and upstream runtime
+dependency automatically.
 
-## Recommended first run
+## Recommended Source-Preview First Run
 
 ```bash
-python examples/01_quickstart_constructor/sync.py
-python examples/01_quickstart_constructor/async.py
+uv run python examples/01_quickstart_constructor/sync.py
+uv run python examples/01_quickstart_constructor/async.py
 ```
 
 ## Index

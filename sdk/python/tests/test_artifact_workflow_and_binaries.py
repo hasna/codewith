@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -44,6 +45,18 @@ def _load_runtime_setup_module():
     spec = importlib.util.spec_from_file_location("_runtime_setup", runtime_setup_path)
     if spec is None or spec.loader is None:
         raise AssertionError(f"Failed to load runtime setup module: {runtime_setup_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_examples_bootstrap_module():
+    """Load the shared examples bootstrap so tests exercise its user-facing errors."""
+    bootstrap_path = ROOT / "examples" / "_bootstrap.py"
+    spec = importlib.util.spec_from_file_location("examples_bootstrap", bootstrap_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"Failed to load bootstrap module: {bootstrap_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -825,6 +838,139 @@ def test_default_runtime_is_resolved_from_installed_runtime_package(
     config = client_module.CodexConfig()
     assert config.codex_bin is None
     assert client_module.resolve_codex_bin(config, ops) == fake_binary
+
+
+def test_codex_config_help_describes_upstream_default_and_codewith_override() -> None:
+    from codewith import client as client_module
+
+    assert inspect.getdoc(client_module.CodexConfig) == (
+        "Configuration for launching and identifying the Python SDK runtime.\n\n"
+        "The source preview defaults to its pinned upstream Codex runtime. To run\n"
+        "Codewith experiments, explicitly set ``codex_bin`` to a Codewith executable."
+    )
+    assert inspect.getdoc(client_module.CodexClient) == (
+        "Synchronous typed JSON-RPC client for an app-server process over stdio."
+    )
+
+
+def test_public_help_describes_upstream_default_and_codewith_override() -> None:
+    import codewith as codewith_module
+    from codewith import AsyncCodewith, Codewith
+
+    help_text = {
+        "package": inspect.getdoc(codewith_module),
+        "sync": inspect.getdoc(Codewith),
+        "async": inspect.getdoc(AsyncCodewith),
+    }
+
+    assert {
+        name: {
+            "upstream_default": "openai-codex-cli-bin" in text,
+            "explicit_codewith": ('CodexConfig(codex_bin="/absolute/path/to/codewith")' in text),
+            "bare_sync_constructor": "Codewith()" in text,
+            "bare_async_constructor": "AsyncCodewith()" in text,
+        }
+        for name, text in help_text.items()
+    } == {
+        name: {
+            "upstream_default": True,
+            "explicit_codewith": True,
+            "bare_sync_constructor": False,
+            "bare_async_constructor": False,
+        }
+        for name in help_text
+    }
+
+
+def test_public_method_help_is_runtime_neutral() -> None:
+    from codewith import AsyncCodewith, Codewith
+
+    assert {
+        "Codewith.login_api_key": inspect.getdoc(Codewith.login_api_key),
+        "Codewith.account": inspect.getdoc(Codewith.account),
+        "Codewith.logout": inspect.getdoc(Codewith.logout),
+        "Codewith.thread_start": inspect.getdoc(Codewith.thread_start),
+        "Codewith.models": inspect.getdoc(Codewith.models),
+        "AsyncCodewith.login_api_key": inspect.getdoc(AsyncCodewith.login_api_key),
+        "AsyncCodewith.account": inspect.getdoc(AsyncCodewith.account),
+        "AsyncCodewith.logout": inspect.getdoc(AsyncCodewith.logout),
+        "AsyncCodewith.thread_start": inspect.getdoc(AsyncCodewith.thread_start),
+    } == {
+        "Codewith.login_api_key": "Authenticate the active runtime with an API key.",
+        "Codewith.account": "Read the active runtime's account state.",
+        "Codewith.logout": "Clear the active runtime's account session.",
+        "Codewith.thread_start": "Create a new conversation thread in the active runtime.",
+        "Codewith.models": "List available models reported by the active runtime.",
+        "AsyncCodewith.login_api_key": "Authenticate the active runtime with an API key.",
+        "AsyncCodewith.account": "Read the active runtime's account state.",
+        "AsyncCodewith.logout": "Clear the active runtime's account session.",
+        "AsyncCodewith.thread_start": "Create a new conversation thread in the active runtime.",
+    }
+
+
+def test_generated_thread_start_help_is_runtime_neutral() -> None:
+    script = _load_update_script_module()
+    expected_docstring = '"""Create a new conversation thread in the active runtime."""'
+
+    assert {
+        "sync": expected_docstring in script._render_codex_block([], [], [], []),
+        "async": expected_docstring in script._render_async_codex_block([], [], [], []),
+    } == {
+        "sync": True,
+        "async": True,
+    }
+
+
+def test_async_metadata_error_does_not_recommend_a_bare_constructor() -> None:
+    from codewith import AsyncCodewith
+
+    client = AsyncCodewith()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _ = client.metadata
+
+    assert str(exc_info.value) == (
+        "AsyncCodewith is not initialized yet. Use it as an async context manager, "
+        "for example `async with client:`; initialization also happens on first "
+        "awaited API use."
+    )
+
+
+def test_missing_installed_runtime_describes_source_preview_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codewith import client as client_module
+
+    monkeypatch.setitem(sys.modules, "codex_cli_bin", None)
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        client_module._installed_codex_path()
+
+    assert str(exc_info.value) == (
+        "The Python SDK preview's runtime dependency (openai-codex-cli-bin) is missing. "
+        "From sdk/python, run `uv sync --extra dev` for source setup. To run Codewith, "
+        "set CodexConfig.codex_bin to a Codewith executable."
+    )
+
+
+def test_example_bootstrap_missing_dependency_uses_uv_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap = _load_examples_bootstrap_module()
+    sdk_python_dir = tmp_path / "sdk" / "python"
+    monkeypatch.setattr(bootstrap.importlib.util, "find_spec", lambda _name: None)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        bootstrap._ensure_runtime_dependencies(sdk_python_dir)
+
+    assert str(exc_info.value) == (
+        "Missing required dependency: pydantic.\n"
+        f"Interpreter: {sys.executable}\n"
+        f"From {sdk_python_dir}, set up and run the source preview with uv:\n"
+        "  uv sync --extra dev\n"
+        "  uv run python examples/<example>.py"
+    )
 
 
 def test_runtime_path_dir_is_prepended_without_duplicates(tmp_path: Path) -> None:

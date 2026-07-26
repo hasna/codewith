@@ -1,25 +1,49 @@
 # Getting Started
 
-This guide gets a published Codewith Python SDK beta installation running
-with a multi-turn thread.
+This guide runs the Codewith Python SDK source preview from a repository
+checkout with a multi-turn thread.
 
-## 1. Install
+`hasna-codewith-sdk` is not published on PyPI, and this preview is not the
+supported integration path. For supported integrations today, use the
+[TypeScript SDK](../../typescript/README.md).
 
-Install the SDK:
-
-```bash
-pip install hasna-codewith-sdk
-```
+## 1. Set Up From Source
 
 Requirements:
 
 - Python `>=3.10`
+- `uv` installed and available on `PATH`
+- A checkout of this repository
+- An explicit path to a local Codewith executable for Codewith experiments
 - An existing Codewith account session, or one of the login flows below
 
-The SDK installs its compatible `openai-codex-cli-bin` runtime dependency
-automatically. While beta releases are the only published SDK releases, this
-normal install command selects the latest beta. After a stable release exists,
-use `pip install --pre hasna-codewith-sdk` to opt into a newer prerelease.
+From the repository root:
+
+```bash
+cd sdk/python
+uv sync --extra dev
+```
+
+This creates a local environment for the checked-in SDK source and resolves the
+upstream `openai-codex-cli-bin` version pinned in `pyproject.toml`. That
+dependency starts upstream Codex by default; it is not a Codewith runtime, and
+`uv sync` alone does not provide supported Codewith behavior.
+
+Use `uv run` for Python commands so the project environment is selected without
+platform-specific activation:
+
+```bash
+uv run python path/to/script.py
+```
+
+To experiment with Codewith, configure the explicit local executable once and
+pass the config to every client shown below:
+
+```python
+from codewith import CodexConfig
+
+codewith_config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+```
 
 ## 2. Authenticate When Needed
 
@@ -29,7 +53,7 @@ login:
 ```python
 from codewith import Codewith
 
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     login = client.login_chatgpt()
     print(login.auth_url)
     print(login.wait().success)
@@ -38,7 +62,7 @@ with Codewith() as client:
 For device-code login:
 
 ```python
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     login = client.login_chatgpt_device_code()
     print(login.verification_url, login.user_code)
     print(login.wait().success)
@@ -47,7 +71,7 @@ with Codewith() as client:
 For API-key login:
 
 ```python
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     client.login_api_key("sk-...")
     print(client.account().account)
 ```
@@ -57,7 +81,7 @@ with Codewith() as client:
 ```python
 from codewith import Codewith, Sandbox
 
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     thread = client.thread_start(sandbox=Sandbox.workspace_write)
     result = thread.run("Say hello in one sentence.")
 
@@ -79,7 +103,7 @@ Use one enum for the initial thread and later turn overrides:
 ```python
 from codewith import Codewith, Sandbox
 
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     thread = client.thread_start(sandbox=Sandbox.workspace_write)
     thread.run("Make the requested changes.")
     review = thread.run("Review the diff only.", sandbox=Sandbox.read_only)
@@ -100,7 +124,7 @@ also applies to subsequent turns on that thread.
 ```python
 from codewith import Codewith
 
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     thread = client.thread_start()
     thread.run("Summarize Rust ownership in two bullets.")
     result = thread.run("Now explain it to a Python developer.")
@@ -110,7 +134,7 @@ with Codewith() as client:
 To resume a stored thread later:
 
 ```python
-with Codewith() as client:
+with Codewith(config=codewith_config) as client:
     thread = client.thread_resume("thr_123")
     print(thread.run("Continue where we left off.").final_response)
 ```
@@ -124,7 +148,7 @@ from codewith import AsyncCodewith, Sandbox
 
 
 async def main() -> None:
-    async with AsyncCodewith() as client:
+    async with AsyncCodewith(config=codewith_config) as client:
         thread = await client.thread_start(sandbox=Sandbox.workspace_write)
         result = await thread.run("Continue where we left off.")
         print(result.final_response)
@@ -147,18 +171,7 @@ help(CodexConfig)
 ```
 
 ```bash
-python -m pydoc codewith
-```
-
-## Developing From This Repository
-
-Contributors working from a checkout can install development dependencies from
-the repository:
-
-```bash
-cd sdk/python
-uv sync --extra dev
-source .venv/bin/activate
+uv run python -m pydoc codewith
 ```
 
 ## Next Stops

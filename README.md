@@ -111,6 +111,16 @@ Use built-in session tools while working:
 - `/loop`, `/schedule`, and `/monitor` manage recurring work and lightweight monitors
 - `/agent` and `/side` organize parallel or side conversations
 
+## SDKs
+
+For integrations, Codewith currently supports and focuses on the published
+[TypeScript SDK](./sdk/typescript/README.md), available as
+`@hasna/codewith-sdk`.
+
+The [Python SDK](./sdk/python/README.md) is a source preview. Its code is
+available in this repository, but `hasna-codewith-sdk` is not published on
+PyPI.
+
 ## Docs
 
 - [**Changelog**](./CHANGELOG.md) - Release notes for Codewith product versions

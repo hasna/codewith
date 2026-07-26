@@ -1,12 +1,13 @@
-"""Python SDK for running Codewith workflows.
+"""Python SDK source preview for app-server workflows.
 
-Start with :class:`Codewith` for synchronous applications or
-:class:`AsyncCodewith` for async applications. Most programs create a thread and
-run a turn::
+The default development setup runs the pinned upstream Codex runtime from
+``openai-codex-cli-bin``. To experiment with Codewith, configure its executable
+explicitly::
 
-    from codewith import Codewith, Sandbox
+    from codewith import CodexConfig, Codewith, Sandbox
 
-    with Codewith() as client:
+    config = CodexConfig(codex_bin="/absolute/path/to/codewith")
+    with Codewith(config=config) as client:
         thread = client.thread_start(sandbox=Sandbox.workspace_write)
         result = thread.run("Describe this project.")
         print(result.final_response)

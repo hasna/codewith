@@ -4,6 +4,9 @@ Embed the Codewith agent in your workflows and apps.
 
 The TypeScript SDK wraps the `codewith` CLI from `@hasna/codewith`. It spawns the CLI and exchanges JSONL events over stdin/stdout.
 
+`@hasna/codewith-sdk` is published on npm and is Codewith's currently supported
+SDK for integrations.
+
 ## Installation
 
 ```bash
