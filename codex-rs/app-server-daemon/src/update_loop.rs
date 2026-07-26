@@ -1,4 +1,10 @@
 #[cfg(unix)]
+use std::future::Future;
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::process::Command as StdCommand;
 #[cfg(unix)]
 use std::process::Stdio;
@@ -10,6 +16,8 @@ use anyhow::Context;
 use anyhow::Result;
 #[cfg(not(unix))]
 use anyhow::bail;
+#[cfg(unix)]
+use codex_utils_home_dir::find_codex_home;
 #[cfg(unix)]
 use futures::FutureExt;
 #[cfg(unix)]
@@ -28,24 +36,16 @@ use tokio::signal::unix::signal;
 use tokio::time::sleep;
 
 #[cfg(unix)]
-use crate::Daemon;
-#[cfg(unix)]
-use crate::RestartIfRunningOutcome;
-#[cfg(unix)]
-use crate::RestartMode;
-#[cfg(unix)]
-use crate::UpdaterRefreshMode;
-#[cfg(unix)]
 use crate::managed_install::ExecutableIdentity;
 #[cfg(unix)]
 use crate::managed_install::executable_identity;
+#[cfg(unix)]
+use crate::managed_install::managed_codex_bin;
 #[cfg(unix)]
 use crate::managed_install::resolved_managed_codex_bin;
 
 #[cfg(unix)]
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
-#[cfg(unix)]
-const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -54,14 +54,28 @@ pub(crate) async fn run() -> Result<()> {
     let mut terminate =
         signal(SignalKind::terminate()).context("failed to install updater shutdown handler")?;
     let running_updater_identity = current_updater_identity().await?;
+    let codex_home = find_codex_home().context("failed to resolve CODEWITH_HOME")?;
+    let managed_codex_bin = managed_codex_bin(&codex_home);
     if sleep_or_terminate(INITIAL_UPDATE_DELAY, &mut terminate).await {
         return Ok(());
     }
     loop {
-        match update_once(&running_updater_identity, &mut terminate).await {
-            Ok(UpdateLoopControl::Continue) => {}
+        match perform_update_cycle(
+            &running_updater_identity,
+            &managed_codex_bin,
+            install_latest_standalone,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                if terminate.recv().now_or_never().flatten().is_some() {
+                    return Ok(());
+                }
+                if let Err(err) = complete_update_cycle(outcome, reexec_managed_updater) {
+                    eprintln!("{}", update_failure_diagnostic(&err));
+                }
+            }
             Err(err) => eprintln!("{}", update_failure_diagnostic(&err)),
-            Ok(UpdateLoopControl::Stop) => return Ok(()),
         }
         if sleep_or_terminate(UPDATE_INTERVAL, &mut terminate).await {
             return Ok(());
@@ -83,40 +97,42 @@ async fn sleep_or_terminate(duration: Duration, terminate: &mut Signal) -> bool 
 }
 
 #[cfg(unix)]
-enum UpdateLoopControl {
-    Continue,
-    Stop,
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCycleOutcome {
+    Unchanged,
+    Reexec(PathBuf),
 }
 
 #[cfg(unix)]
-async fn update_once(
+async fn perform_update_cycle<Install, InstallFuture>(
     running_updater_identity: &ExecutableIdentity,
-    terminate: &mut Signal,
-) -> Result<UpdateLoopControl> {
-    install_latest_standalone().await?;
+    managed_codex_bin: &Path,
+    install_latest: Install,
+) -> Result<UpdateCycleOutcome>
+where
+    Install: FnOnce() -> InstallFuture,
+    InstallFuture: Future<Output = Result<()>>,
+{
+    install_latest().await?;
 
-    let daemon = Daemon::from_environment()?;
-    let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
+    let managed_codex_bin = resolved_managed_codex_bin(managed_codex_bin).await?;
     let managed_identity = executable_identity(&managed_codex_bin).await?;
-    let (restart_mode, updater_refresh_mode) =
-        update_modes_for_identities(running_updater_identity, &managed_identity);
-
-    loop {
-        if terminate.recv().now_or_never().flatten().is_some() {
-            return Ok(UpdateLoopControl::Stop);
-        }
-        match daemon
-            .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
-            .await?
-        {
-            RestartIfRunningOutcome::Busy => {
-                if sleep_or_terminate(RESTART_RETRY_INTERVAL, terminate).await {
-                    return Ok(UpdateLoopControl::Stop);
-                }
-            }
-            _ => return Ok(UpdateLoopControl::Continue),
-        }
+    if running_updater_identity != &managed_identity {
+        Ok(UpdateCycleOutcome::Reexec(managed_codex_bin))
+    } else {
+        Ok(UpdateCycleOutcome::Unchanged)
     }
+}
+
+#[cfg(unix)]
+fn complete_update_cycle<Reexec>(outcome: UpdateCycleOutcome, reexec: Reexec) -> Result<()>
+where
+    Reexec: FnOnce(&Path) -> Result<()>,
+{
+    if let UpdateCycleOutcome::Reexec(managed_codex_bin) = outcome {
+        reexec(&managed_codex_bin)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -127,27 +143,12 @@ async fn current_updater_identity() -> Result<ExecutableIdentity> {
 }
 
 #[cfg(unix)]
-fn update_modes_for_identities(
-    running_updater_identity: &ExecutableIdentity,
-    managed_identity: &ExecutableIdentity,
-) -> (RestartMode, UpdaterRefreshMode) {
-    if running_updater_identity == managed_identity {
-        (RestartMode::IfVersionChanged, UpdaterRefreshMode::None)
-    } else {
-        (
-            RestartMode::Always,
-            UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
-        )
-    }
-}
-
-#[cfg(unix)]
 fn update_failure_diagnostic(err: &anyhow::Error) -> String {
     format!("Codewith app-server daemon updater failed: {err:#}")
 }
 
 #[cfg(unix)]
-pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Result<()> {
+pub(crate) fn reexec_managed_updater(managed_codex_bin: &Path) -> Result<()> {
     let err = StdCommand::new(managed_codex_bin)
         .args(["app-server", "daemon", "pid-update-loop"])
         .exec();
@@ -174,6 +175,8 @@ async fn install_latest_standalone() -> Result<()> {
 
     let mut child = Command::new("/bin/sh")
         .arg("-s")
+        .env_remove("CODEWITH_RELEASE")
+        .env_remove("CODEX_RELEASE")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
