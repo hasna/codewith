@@ -6,11 +6,11 @@ expression: popup
   Switch auth for this session.
 
      Active profiles
-  1. beta-high           ChatGPT Pro / high@example.com
-  2. alpha-low           ChatGPT Pro / low@example.com
+  1. beta-high           ChatGPT Pro
+  2. alpha-low           ChatGPT Pro
 › 3. default (current)   usage unknown
      Exhausted profiles
-  4. zeta-spent          ChatGPT Pro / spent@example.com
+  4. zeta-spent          ChatGPT Pro
   5. Log in new profile  Create a saved auth profile
 
   Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down
