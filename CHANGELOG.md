@@ -42,6 +42,17 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.78] - 2026-07-26
+
+Tag: `rust-v0.1.78`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.78>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.77...rust-v0.1.78>
+
+Release headlined by scalable deferred skill discovery, richer durable goal
+plans, environment-aware session continuation, and more reliable auth-profile
+switching. It also hotfixes the standalone updater so automatic hourly checks
+cannot restart the shared app-server and reset active Unix WebSocket clients.
+
 ### Added
 
 - Skills now scale to large catalogs. When the full skill catalog does not fit
@@ -50,6 +61,7 @@ Known evidence gaps:
   `skills.list` catalog-search tool (available in the app-server and MCP-server
   extension registries). The starter list is dealt round-robin across skill
   scopes, so bundled system skills cannot starve a workspace's own skills.
+  (#394)
 - `skills.list` supports paging: `limit` (default 5, max 50) and an unbounded
   `offset`, with a `next_offset` cursor in the response, so every ranked match
   is reachable without rewording the query. The walk is bounded by the catalog
@@ -68,6 +80,33 @@ Known evidence gaps:
   held back from the starter list. `codex.thread.skills.truncated` now also
   flags deferral, so a large catalog can no longer report a big drop in kept
   skills alongside `truncated = 0`.
+- Goals: edit, insert, complete, and reopen durable goal-plan nodes, and compose
+  recursive or chained goal plans up to the configured depth. (#414, #419)
+- Sessions: persist terminal, profile, and thread context for environment-aware
+  recovery; resume or restart a project session from a chosen history point;
+  and use `/continue <session-id>` to synthesize prior-session context.
+  (#397, #403, #413)
+- TUI: enrich the switchable-agent list, add multi-level keyboard navigation to
+  `/config`, and let Shift+Enter flush all queued messages into the active
+  stream. (#392, #393, #398)
+- Providers: expose documented xAI reasoning-effort controls and dynamic,
+  reset-aware usage-limit alerts. (#396, #416)
+- Config: add per-error retry and model switching to the self-healing category.
+  (#401)
+
+### Changed
+
+- Auth: bind profiles to their subscription provider and model catalog while
+  preserving explicit provider/model selection, and group the `/profile`
+  picker into active and exhausted profiles. (#412, #420)
+- Tools: harden `AuthCapsule` to the fixed MCP-only v2 policy. (#402)
+- Agents: require durable admission for background agents and improve
+  multi-agent wait and follow-up guidance. (#390, #395)
+- SDK docs now distinguish the published TypeScript SDK from unpublished
+  support surfaces. (#423)
+- CI: add the Blacksmith Testbox workflow, configurable build commands, required
+  Linux packages, and truthful build-command exit handling. (#407, #408, #409,
+  #421)
 
 ### Fixed
 
@@ -105,6 +144,17 @@ Known evidence gaps:
   treated as reset-unknown. When every alternate profile is also rate-limited,
   the agent no longer switches onto an exhausted profile and instead reports the
   earliest reset time so the user knows when a profile becomes usable again.
+  (#391, #406)
+- App server: automatic standalone-updater checks now install and re-exec only
+  the updater; they never stop or restart the shared app-server, so active
+  remote-control WebSocket sessions are not reset. (#425, #427)
+- Auth: scope usage-cache invalidation to the profile that was relogged.
+  (#410)
+- Goals: harden blocked-goal hold semantics and durable admission. (#379)
+- TUI: preserve queued messages and flush the intended steer. (#411)
+- Tools: reject first-party tools that collide with the reserved
+  `image_gen` namespace before sending a provider request. (#389)
+- Models: normalize the `ultra` reasoning-effort alias consistently. (#405)
 
 ## [0.1.77] - 2026-07-23
 
