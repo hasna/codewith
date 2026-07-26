@@ -14,7 +14,10 @@ on:
         default: true
         type: boolean
       build_command:
-        description: Build/test command to run on the Blacksmith box (empty = just warm). Run from repo root.
+        description: >-
+          Build/test command to run on the Blacksmith box (empty = just warm). Runs from the
+          repo root in a login shell, verbatim -- $?, ${PIPESTATUS[0]}, $(...) and $((...))
+          are evaluated there, not by the workflow. A non-zero exit fails this run.
         required: false
         default: ""
         type: string
@@ -120,14 +123,48 @@ jobs:
           . "$HOME/.codewith-testbox-env"
           cargo check --workspace --all-targets
 
+      # This step is a build GATE: if the operator's command fails, the run MUST be red.
+      #
+      # The command is handed to the shell through `env:` and referenced as "$BUILD_COMMAND".
+      # It is never interpolated into the script text. Two separate reasons, both load-bearing:
+      #
+      #  1. Correctness. `bash -lc "${{ inputs.build_command }}"` pastes the operator's text
+      #     inside a double-quoted string in THIS script, so this shell expands $?,
+      #     ${PIPESTATUS[0]}, $(...) and $((...)) before the inner shell ever sees them.
+      #     A submitted `...; rc1=$?; ...; rc2=${PIPESTATUS[0]}; exit $(( rc1 + rc2 ))`
+      #     degraded to `...; rc1=0; ...; rc2=0; exit 0`, so a clippy error[E0004] was
+      #     reported as a green required check (run 30190166288). Through `env:` the value
+      #     is data, not script text, and the inner shell parses it exactly as typed.
+      #  2. Security. Interpolating an input into a `run:` body is a script-injection sink
+      #     (the input becomes part of the program). workflow_dispatch needs write access so
+      #     the blast radius is limited, but the env-var form removes the sink outright --
+      #     the same one-line change fixes both problems. Every other workflow in this repo
+      #     already passes inputs via `env:`; this step was the only exception.
+      #
+      # The inner `bash -lc` is deliberate: the operator gets a plain login shell (toolchain
+      # env, no -e/-o pipefail), so idioms like `cmd; rc=$?` collect statuses as written
+      # instead of aborting at the first failure. Its exit status is captured and re-raised
+      # explicitly below, which is what makes the gate honest.
       - name: Run build command on Blacksmith box
         if: ${{ inputs.build_command != '' }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
         run: |
+          set -euo pipefail
           . "$HOME/.codewith-testbox-env"
-          echo "::group::${{ inputs.build_command }}"
-          set -o pipefail
-          bash -lc "${{ inputs.build_command }}"
+          echo "::group::build command"
+          printf '%s\n' "$BUILD_COMMAND"
           echo "::endgroup::"
+          # `|| status=$?` keeps the failure ours to report and is safe under `set -e`.
+          # Output is intentionally NOT wrapped in a log group: a collapsed group hides the
+          # compiler errors that explain why the gate went red.
+          status=0
+          bash -lc "$BUILD_COMMAND" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Testbox build command failed::exit status ${status}"
+            exit "$status"
+          fi
+          echo "build command exited 0"
 
       # Must be the LAST step: hands the box over and holds it open for
       # `blacksmith testbox run --id <id> "<cmd>"`.
