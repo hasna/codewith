@@ -634,14 +634,14 @@ pub(crate) struct ChatWidget {
     auth_profile_rate_limit_snapshots_by_profile:
         BTreeMap<Option<String>, BTreeMap<String, RateLimitSnapshotDisplay>>,
     auth_profile_usage_heartbeat_requested_at_by_profile: BTreeMap<Option<String>, Instant>,
-    /// Row identities of the profile popup as last rendered, so an in-place
-    /// refresh can restore the cursor onto the same profile after a re-sort.
-    auth_profile_popup_rows: Vec<self::auth_profile_popup_order::AuthProfilePopupRow>,
     auth_profile_usage_heartbeat_failed_at_by_profile: BTreeMap<Option<String>, Instant>,
     /// Earliest known future reset (unix seconds) for a profile whose cached codex usage is
     /// exhausted. While the reset is in the future we suppress usage heartbeats for that
     /// profile instead of re-polling a limit we already know is capped.
     auth_profile_usage_exhausted_reset_at_by_profile: BTreeMap<Option<String>, i64>,
+    /// Row identities of the profile popup as last rendered, so an in-place
+    /// refresh can restore the cursor onto the same profile after a re-sort.
+    auth_profile_popup_rows: Vec<self::auth_profile_popup_order::AuthProfilePopupRow>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,

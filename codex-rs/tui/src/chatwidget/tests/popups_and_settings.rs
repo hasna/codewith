@@ -3149,8 +3149,14 @@ async fn profile_detail_shows_provider_and_weekly_usage_not_email() {
     while rx.try_recv().is_ok() {}
 
     chat.open_profile_popup();
-    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    // `personal` has known usage left, so it sorts above the (usage-unknown)
+    // default row the cursor opens on.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("› 1. personal"),
+        "expected the cursor on personal, got:\n{popup}"
+    );
     assert!(
         popup.contains("ChatGPT · weekly 60% left"),
         "expected provider + weekly usage detail, got:\n{popup}"
