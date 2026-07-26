@@ -3149,8 +3149,14 @@ async fn profile_detail_shows_provider_and_weekly_usage_not_email() {
     while rx.try_recv().is_ok() {}
 
     chat.open_profile_popup();
-    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    // `personal` has known usage left, so it sorts above the (usage-unknown)
+    // default row the cursor opens on.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("› 1. personal"),
+        "expected the cursor on personal, got:\n{popup}"
+    );
     assert!(
         popup.contains("ChatGPT · weekly 60% left"),
         "expected provider + weekly usage detail, got:\n{popup}"
@@ -3311,7 +3317,8 @@ async fn profile_selection_popup_shows_usage_hints() {
         .insert(Some("personal".to_string()), stale_snapshots);
 
     chat.open_profile_popup();
-    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
     let popup = render_bottom_popup(&chat, /*width*/ 120);
     assert_chatwidget_snapshot!("profile_selection_popup_usage_hints", popup);
@@ -3326,6 +3333,117 @@ async fn profile_selection_popup_shows_usage_hints() {
     assert!(popup.contains("weekly"));
     assert!(popup.contains("ChatGPT API key"));
     assert!(popup.contains("Enter switch / l relogin / r rename"));
+}
+
+#[tokio::test]
+async fn profile_selection_popup_groups_by_usage_and_keeps_exhausted_selectable() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "alpha-low", "low@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "zeta-spent", "spent@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "beta-high", "high@example.com");
+    while rx.try_recv().is_ok() {}
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("alpha-low".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 70, /*primary_used_percent*/ 60,
+        )],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("zeta-spent".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 100, /*primary_used_percent*/ 10,
+        )],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("beta-high".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 10, /*primary_used_percent*/ 5,
+        )],
+    );
+
+    chat.open_profile_popup();
+    drain_profile_usage_refresh_events(&mut rx);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert_chatwidget_snapshot!("profile_selection_popup_groups_by_usage", popup);
+    assert!(
+        popup.find("Active profiles").expect("active group")
+            < popup.find("beta-high").expect("high row"),
+        "expected active group before high profile:\n{popup}"
+    );
+    assert!(
+        popup.find("beta-high").expect("high row") < popup.find("alpha-low").expect("low row"),
+        "expected highest remaining profile first:\n{popup}"
+    );
+    assert!(
+        popup.find("alpha-low").expect("low row") < popup.find("default").expect("default row"),
+        "expected known active profiles before unknown usage:\n{popup}"
+    );
+    assert!(
+        popup.find("Exhausted profiles").expect("exhausted group")
+            < popup.find("zeta-spent").expect("spent row"),
+        "expected exhausted group before spent profile:\n{popup}"
+    );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SwitchAuthProfile {
+            profile,
+            reason,
+            resume_queued_input,
+        ..
+        }) if profile.as_deref() == Some("zeta-spent")
+            && reason == crate::app_event::AuthProfileSwitchReason::Manual
+            && !resume_queued_input
+    );
+}
+
+#[tokio::test]
+async fn profile_popup_refresh_keeps_cursor_on_same_profile_when_usage_reorders() {
+    // Usage landing while the popup is open re-sorts the rows, so the in-place
+    // refresh has to follow the profile the cursor was on instead of holding a
+    // now-stale row index (which would silently point at another profile).
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.thread_id = Some(ThreadId::new());
+    save_popup_chatgpt_auth_profile(&chat, "alpha", "alpha@example.com");
+    save_popup_chatgpt_auth_profile(&chat, "bravo", "bravo@example.com");
+    while rx.try_recv().is_ok() {}
+
+    chat.open_profile_popup();
+    drain_profile_usage_refresh_events(&mut rx);
+    // The cursor opens on the current (default) row; move it down onto `bravo`.
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        popup.contains("› 3. bravo"),
+        "expected the cursor on bravo before the refresh:\n{popup}"
+    );
+
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("alpha".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 10, /*primary_used_percent*/ 5,
+        )],
+    );
+    chat.on_auth_profile_rate_limit_snapshots(
+        Some("bravo".to_string()),
+        vec![profile_usage_snapshot(
+            /*secondary_used_percent*/ 60, /*primary_used_percent*/ 40,
+        )],
+    );
+    drain_profile_usage_refresh_events(&mut rx);
+    assert!(chat.refresh_profile_popup_if_active());
+
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        popup.contains("› 2. bravo"),
+        "expected the cursor to follow bravo after the re-sort:\n{popup}"
+    );
 }
 
 #[tokio::test]

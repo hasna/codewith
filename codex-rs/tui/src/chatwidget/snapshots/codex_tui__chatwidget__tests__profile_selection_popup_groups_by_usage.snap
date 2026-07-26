@@ -5,10 +5,13 @@ expression: popup
   Select Profile
   Switch auth for this session.
 
-  1. work (current)      ChatGPT API key
-  2. default             Root login
-› 3. personal            ChatGPT · weekly 60% left
-  4. Log in new profile  Create a saved auth profile
+     Active profiles
+  1. beta-high           ChatGPT Pro
+  2. alpha-low           ChatGPT Pro
+› 3. default (current)   usage unknown
+     Exhausted profiles
+  4. zeta-spent          ChatGPT Pro
+  5. Log in new profile  Create a saved auth profile
 
   Enter switch / l relogin / r rename / d delete / s settings / [ up / ] down
   Press enter to confirm or esc to go back

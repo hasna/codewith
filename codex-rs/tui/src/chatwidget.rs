@@ -419,6 +419,7 @@ use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popups;
 mod notifications;
 use self::notifications::Notification;
+mod auth_profile_popup_order;
 mod auth_profile_popups;
 mod permission_popups;
 mod permissions_menu;
@@ -638,6 +639,9 @@ pub(crate) struct ChatWidget {
     /// exhausted. While the reset is in the future we suppress usage heartbeats for that
     /// profile instead of re-polling a limit we already know is capped.
     auth_profile_usage_exhausted_reset_at_by_profile: BTreeMap<Option<String>, i64>,
+    /// Row identities of the profile popup as last rendered, so an in-place
+    /// refresh can restore the cursor onto the same profile after a re-sort.
+    auth_profile_popup_rows: Vec<self::auth_profile_popup_order::AuthProfilePopupRow>,
     rate_limit_poller: Option<tokio::task::JoinHandle<()>>,
     auth_profile_auto_switch_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshot>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
