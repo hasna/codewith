@@ -642,9 +642,18 @@ fn mirror_active_auth_profile_skips_external_profiles() -> anyhow::Result<()> {
     )?;
 
     assert_eq!(active_storage.load()?, Some(original_auth));
+    // Nothing was mirrored into the external profile's own storage...
+    assert_eq!(
+        load_optional_profile_auth(codex_home.path(), AuthCredentialsStoreMode::File, "claude")?,
+        None
+    );
+    // ...and the profile refuses to hand out OpenAI credentials regardless.
     assert!(matches!(
         load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "claude"),
-        Err(AuthProfileError::ProfileNotFound { name }) if name == "claude"
+        Err(AuthProfileError::NonChatGptProfile {
+            name,
+            provider: AuthProfileSubscriptionProvider::ClaudeAi,
+        }) if name == "claude"
     ));
 
     Ok(())

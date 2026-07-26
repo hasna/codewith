@@ -15,6 +15,10 @@ codewith profile switch work
 
 Profiles are named local credential snapshots stored under `CODEWITH_HOME` using the configured credential storage mode. Switching a profile replaces the active local Codewith credentials with that saved profile. It does not bypass login, logout, or account authorization; each profile must be created from a normal successful login.
 
+`codewith profile switch <name>` records the selection in `auth_profiles/.active`, and later Codewith processes start on that profile unless `--auth-profile`, `CODEWITH_AUTH_PROFILE`, or `CODEX_AUTH_PROFILE` overrides it (those selectors always win).
+
+Each profile is locked to the subscription provider it was created for. A profile whose provider is not ChatGPT (Claude.ai, Cursor, Grok) can be listed and switched to like any other, but it never lends OpenAI credentials to Codewith model auth: it carries no `auth.json` of its own, refreshed root tokens are not mirrored into it, and any stray `auth.json` left inside it is ignored rather than used. Selecting such a profile therefore leaves Codewith without ChatGPT model auth for that process — the agent is still free to select any provider it has configured.
+
 For concurrent sessions, prefer per-session auth profile pinning:
 
 ```shell
