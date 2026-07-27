@@ -11,6 +11,8 @@ use serde::ser::Error as _;
 use serde::ser::SerializeStruct;
 use serde_json::Value;
 
+const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FreeformTool {
     pub name: String,
@@ -57,9 +59,54 @@ pub struct ResponsesApiNamespace {
     pub tools: Vec<ResponsesApiNamespaceTool>,
 }
 
+/// A namespace spec whose wire identity is reserved for the built-in web search
+/// implementation.
+///
+/// The fields are private so generic extension, MCP, deferred, and persisted
+/// namespace specs cannot gain built-in provenance from a matching name alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltInWebSearchToolSpec {
+    namespace: ResponsesApiNamespace,
+}
+
+impl BuiltInWebSearchToolSpec {
+    pub(crate) fn new() -> Self {
+        let parameters = crate::parse_tool_input_schema_without_compaction(
+            &codex_api::search_commands_tool_schema(),
+        )
+        .unwrap_or_else(|err| panic!("canonical web-search schema should parse: {err}"));
+        Self {
+            namespace: ResponsesApiNamespace {
+                name: "web".to_string(),
+                description: default_namespace_description("web"),
+                tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                    name: "run".to_string(),
+                    description: WEB_RUN_DESCRIPTION.to_string(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters,
+                    output_schema: None,
+                })],
+            },
+        }
+    }
+
+    pub fn namespace(&self) -> &ResponsesApiNamespace {
+        &self.namespace
+    }
+
+    pub(crate) fn set_run_description(&mut self, description: String) {
+        let [ResponsesApiNamespaceTool::Function(tool)] = self.namespace.tools.as_mut_slice()
+        else {
+            unreachable!("built-in web search must contain exactly one function");
+        };
+        tool.description = description;
+    }
+}
+
 impl ResponsesApiNamespace {
-    /// Returns the first custom tool that is not vetted for this reserved
-    /// namespace, or `*` when a reserved namespace has no declared tools.
+    /// Returns the first custom tool under a reserved namespace, or `*` when a
+    /// reserved namespace has no declared tools.
     pub fn forbidden_reserved_tool_name(&self) -> Option<&str> {
         self.tools
             .iter()
@@ -90,12 +137,31 @@ impl Serialize for ResponsesApiNamespace {
             )));
         }
 
-        let mut namespace = serializer.serialize_struct("ResponsesApiNamespace", 3)?;
-        namespace.serialize_field("name", &self.name)?;
-        namespace.serialize_field("description", &self.description)?;
-        namespace.serialize_field("tools", &self.tools)?;
-        namespace.end()
+        serialize_namespace(self, serializer)
     }
+}
+
+impl Serialize for BuiltInWebSearchToolSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serialize_namespace(&self.namespace, serializer)
+    }
+}
+
+fn serialize_namespace<S>(
+    namespace: &ResponsesApiNamespace,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut state = serializer.serialize_struct("ResponsesApiNamespace", 3)?;
+    state.serialize_field("name", &namespace.name)?;
+    state.serialize_field("description", &namespace.description)?;
+    state.serialize_field("tools", &namespace.tools)?;
+    state.end()
 }
 
 pub fn default_namespace_description(namespace_name: &str) -> String {

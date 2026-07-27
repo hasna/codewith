@@ -3860,6 +3860,7 @@ name = "codex-tools"
 version = "0.1.78"
 dependencies = [
  "async-trait",
+ "codex-api",
  "codex-app-server-protocol",
  "codex-code-mode",
  "codex-features",
@@ -4240,7 +4241,6 @@ dependencies = [
  "codex-utils-output-truncation",
  "http 1.4.0",
  "pretty_assertions",
- "schemars 1.2.1",
  "serde_json",
  "url",
 ]

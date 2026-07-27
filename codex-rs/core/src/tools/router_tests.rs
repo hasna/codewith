@@ -757,28 +757,17 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
 fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<String> {
     specs
         .iter()
-        .find_map(|spec| match spec {
-            ToolSpec::Namespace(namespace) if namespace.name == namespace_name => Some(
+        .find_map(|spec| {
+            let namespace = spec.namespace()?;
+            (namespace.name == namespace_name).then(|| {
                 namespace
                     .tools
                     .iter()
                     .map(|tool| match tool {
                         ResponsesApiNamespaceTool::Function(tool) => tool.name.clone(),
                     })
-                    .collect(),
-            ),
-            ToolSpec::Function(_)
-            | ToolSpec::Freeform(_)
-            | ToolSpec::ToolSearch { .. }
-            | ToolSpec::ImageGeneration { .. }
-            | ToolSpec::WebSearch { .. }
-            | ToolSpec::AnthropicWebSearch { .. }
-            | ToolSpec::OpenRouterWebSearch { .. }
-            | ToolSpec::XaiWebSearch { .. }
-            | ToolSpec::XiaomiWebSearch { .. }
-            | ToolSpec::QwenWebSearch { .. }
-            | ToolSpec::ZaiWebSearch { .. }
-            | ToolSpec::Namespace(_) => None,
+                    .collect()
+            })
         })
         .unwrap_or_default()
 }

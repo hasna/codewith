@@ -379,13 +379,13 @@ fn tool_search_outputs_hide_namespace_tools_rejected_at_serialization_boundary()
             limit: None,
         },
     };
-    let namespace = |name: &str| {
+    let namespace = |name: &str, tool_name: &str| {
         LoadableToolSpec::Namespace(codex_tools::ResponsesApiNamespace {
             name: name.to_string(),
             description: codex_tools::default_namespace_description(name),
             tools: vec![codex_tools::ResponsesApiNamespaceTool::Function(
                 codex_tools::ResponsesApiTool {
-                    name: "imagegen".to_string(),
+                    name: tool_name.to_string(),
                     description: "Generate an image.".to_string(),
                     strict: false,
                     defer_loading: Some(true),
@@ -401,7 +401,11 @@ fn tool_search_outputs_hide_namespace_tools_rejected_at_serialization_boundary()
     };
 
     let response = ToolSearchOutput {
-        tools: vec![namespace("image_gen"), namespace("images")],
+        tools: vec![
+            namespace("image_gen", "imagegen"),
+            namespace("web", "run"),
+            namespace("images", "imagegen"),
+        ],
     }
     .to_response_item("search-2", &payload);
 

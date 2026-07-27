@@ -53,6 +53,7 @@ impl ToolSearchInfo {
             }
             ToolSpec::ToolSearch { .. }
             | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::BuiltInWebSearch(_)
             | ToolSpec::WebSearch { .. }
             | ToolSpec::AnthropicWebSearch { .. }
             | ToolSpec::OpenRouterWebSearch { .. }
@@ -84,6 +85,15 @@ pub fn default_tool_search_text(tool_name: &ToolName, spec: &ToolSpec) -> String
     match spec {
         ToolSpec::Function(tool) => append_function_search_text(tool, &mut parts),
         ToolSpec::Namespace(namespace) => {
+            push_search_part(&mut parts, namespace.name.clone());
+            push_search_part(&mut parts, namespace.description.clone());
+            for tool in &namespace.tools {
+                let ResponsesApiNamespaceTool::Function(tool) = tool;
+                append_function_search_text(tool, &mut parts);
+            }
+        }
+        ToolSpec::BuiltInWebSearch(web_search) => {
+            let namespace = web_search.namespace();
             push_search_part(&mut parts, namespace.name.clone());
             push_search_part(&mut parts, namespace.description.clone());
             for tool in &namespace.tools {

@@ -22,41 +22,73 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 
-pub(crate) struct ExtensionToolAdapter(Arc<dyn codex_tools::ToolExecutor<ExtensionToolCall>>);
+pub(crate) struct ExtensionToolAdapter {
+    executor: Arc<dyn codex_tools::ToolExecutor<ExtensionToolCall>>,
+    tool_name: ToolName,
+    spec: ToolSpec,
+    exposure: crate::tools::registry::ToolExposure,
+    search_info: Option<ToolSearchInfo>,
+    supports_parallel_tool_calls: bool,
+}
 
 impl ExtensionToolAdapter {
     pub(crate) fn new(executor: Arc<dyn codex_tools::ToolExecutor<ExtensionToolCall>>) -> Self {
-        Self(executor)
+        let tool_name = executor.tool_name();
+        let spec = executor.spec();
+        let exposure = executor.exposure();
+        let search_info = if exposure == crate::tools::registry::ToolExposure::Deferred {
+            executor.search_info().and_then(|search_info| {
+                let ToolSearchInfo { entry, source_info } = search_info;
+                ToolSearchInfo::from_tool_spec(&tool_name, spec.clone(), source_info).map(
+                    |mut snapshotted| {
+                        snapshotted.entry.search_text = entry.search_text;
+                        snapshotted
+                    },
+                )
+            })
+        } else {
+            None
+        };
+        Self {
+            tool_name,
+            spec,
+            exposure,
+            search_info,
+            supports_parallel_tool_calls: executor.supports_parallel_tool_calls(),
+            executor,
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
     fn tool_name(&self) -> ToolName {
-        self.0.tool_name()
+        self.tool_name.clone()
     }
 
     fn spec(&self) -> ToolSpec {
-        self.0.spec()
+        self.spec.clone()
     }
 
     fn exposure(&self) -> crate::tools::registry::ToolExposure {
-        self.0.exposure()
+        self.exposure
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
-        self.0.supports_parallel_tool_calls()
+        self.supports_parallel_tool_calls
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
-        self.0.search_info()
+        self.search_info.clone()
     }
 
     async fn handle(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        self.0.handle(to_extension_call(&invocation).await).await
+        self.executor
+            .handle(to_extension_call(&invocation).await)
+            .await
     }
 }
 
@@ -133,6 +165,8 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use codex_extension_api::ExtensionData;
     use codex_extension_api::TurnItemContributor;
@@ -195,6 +229,203 @@ mod tests {
                 json!({ "ok": true }),
             )))
         }
+    }
+
+    #[derive(Default)]
+    struct MetadataReadCounts {
+        tool_name: AtomicUsize,
+        spec: AtomicUsize,
+        exposure: AtomicUsize,
+        search_info: AtomicUsize,
+        supports_parallel_tool_calls: AtomicUsize,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct MetadataReadSnapshot {
+        tool_name: usize,
+        spec: usize,
+        exposure: usize,
+        search_info: usize,
+        supports_parallel_tool_calls: usize,
+    }
+
+    impl MetadataReadCounts {
+        fn snapshot(&self) -> MetadataReadSnapshot {
+            MetadataReadSnapshot {
+                tool_name: self.tool_name.load(Ordering::SeqCst),
+                spec: self.spec.load(Ordering::SeqCst),
+                exposure: self.exposure.load(Ordering::SeqCst),
+                search_info: self.search_info.load(Ordering::SeqCst),
+                supports_parallel_tool_calls: self
+                    .supports_parallel_tool_calls
+                    .load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    struct DeferredSearchInfoExtensionExecutor {
+        metadata_reads: Arc<MetadataReadCounts>,
+    }
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::ToolExecutor<codex_tools::ToolCall>
+        for DeferredSearchInfoExtensionExecutor
+    {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            self.metadata_reads.tool_name.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolName::plain("extension_echo")
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            self.metadata_reads.spec.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolExecutor::spec(&StubExtensionExecutor)
+        }
+
+        fn exposure(&self) -> codex_tools::ToolExposure {
+            self.metadata_reads.exposure.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolExposure::Deferred
+        }
+
+        fn search_info(&self) -> Option<codex_tools::ToolSearchInfo> {
+            self.metadata_reads
+                .search_info
+                .fetch_add(1, Ordering::SeqCst);
+            Some(codex_tools::ToolSearchInfo {
+                entry: codex_tools::ToolSearchEntry {
+                    search_text: "custom extension search text".to_string(),
+                    output: codex_tools::LoadableToolSpec::Function(
+                        codex_tools::ResponsesApiTool {
+                            name: "drifted_output".to_string(),
+                            description: "Must not replace the admitted snapshot.".to_string(),
+                            strict: false,
+                            parameters: codex_tools::JsonSchema::default(),
+                            output_schema: None,
+                            defer_loading: Some(true),
+                        },
+                    ),
+                },
+                source_info: Some(codex_tools::ToolSearchSourceInfo {
+                    name: "custom source".to_string(),
+                    description: Some("custom source description".to_string()),
+                }),
+            })
+        }
+
+        fn supports_parallel_tool_calls(&self) -> bool {
+            self.metadata_reads
+                .supports_parallel_tool_calls
+                .fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        async fn handle(
+            &self,
+            _call: codex_tools::ToolCall,
+        ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
+            panic!("metadata snapshot test must not execute extension tools")
+        }
+    }
+
+    #[test]
+    fn deferred_search_info_preserves_metadata_with_admitted_spec() {
+        let metadata_reads = Arc::new(MetadataReadCounts::default());
+        let handler = ExtensionToolAdapter::new(Arc::new(DeferredSearchInfoExtensionExecutor {
+            metadata_reads: Arc::clone(&metadata_reads),
+        }));
+        let search_info =
+            crate::tools::registry::ToolExecutor::search_info(&handler).expect("search metadata");
+
+        assert_eq!(
+            search_info.entry.search_text,
+            "custom extension search text"
+        );
+        assert_eq!(
+            search_info.source_info,
+            Some(codex_tools::ToolSearchSourceInfo {
+                name: "custom source".to_string(),
+                description: Some("custom source description".to_string()),
+            })
+        );
+        let codex_tools::LoadableToolSpec::Function(output) = search_info.entry.output else {
+            panic!("expected snapshotted function output");
+        };
+        assert_eq!(output.name, "extension_echo");
+        assert_eq!(output.defer_loading, Some(true));
+        assert_eq!(
+            metadata_reads.snapshot(),
+            MetadataReadSnapshot {
+                tool_name: 1,
+                spec: 1,
+                exposure: 1,
+                search_info: 1,
+                supports_parallel_tool_calls: 1,
+            }
+        );
+
+        for _ in 0..2 {
+            assert_eq!(
+                crate::tools::registry::ToolExecutor::tool_name(&handler),
+                codex_tools::ToolName::plain("extension_echo")
+            );
+            assert!(matches!(
+                crate::tools::registry::ToolExecutor::spec(&handler),
+                codex_tools::ToolSpec::Function(_)
+            ));
+            assert_eq!(
+                crate::tools::registry::ToolExecutor::exposure(&handler),
+                codex_tools::ToolExposure::Deferred
+            );
+            assert!(crate::tools::registry::ToolExecutor::search_info(&handler).is_some());
+            assert!(crate::tools::registry::ToolExecutor::supports_parallel_tool_calls(&handler));
+        }
+        assert_eq!(
+            metadata_reads.snapshot(),
+            MetadataReadSnapshot {
+                tool_name: 1,
+                spec: 1,
+                exposure: 1,
+                search_info: 1,
+                supports_parallel_tool_calls: 1,
+            }
+        );
+    }
+
+    struct DeferredWithoutSearchInfoExtensionExecutor;
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::ToolExecutor<codex_tools::ToolCall>
+        for DeferredWithoutSearchInfoExtensionExecutor
+    {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            codex_tools::ToolName::plain("extension_echo")
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            codex_tools::ToolExecutor::spec(&StubExtensionExecutor)
+        }
+
+        fn exposure(&self) -> codex_tools::ToolExposure {
+            codex_tools::ToolExposure::Deferred
+        }
+
+        fn search_info(&self) -> Option<codex_tools::ToolSearchInfo> {
+            None
+        }
+
+        async fn handle(
+            &self,
+            _call: codex_tools::ToolCall,
+        ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
+            panic!("metadata snapshot test must not execute extension tools")
+        }
+    }
+
+    #[test]
+    fn deferred_extension_without_search_info_stays_undiscoverable() {
+        let handler =
+            ExtensionToolAdapter::new(Arc::new(DeferredWithoutSearchInfoExtensionExecutor));
+
+        assert!(crate::tools::registry::ToolExecutor::search_info(&handler).is_none());
     }
 
     struct CapturingExtensionExecutor {

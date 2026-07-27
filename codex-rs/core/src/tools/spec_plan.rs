@@ -95,6 +95,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::warn;
 
+mod extension_admission;
+
+use extension_admission::HostedToolReplacement;
+use extension_admission::extension_spec_is_accepted;
+use extension_admission::namespace_spec_is_safe_for_runtime;
+use extension_admission::namespace_spec_is_safe_for_wire;
+use extension_admission::runtime_replaces_hosted_tool;
+
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 const IMAGE_GEN_NAMESPACE: &str = "images";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
@@ -105,6 +113,7 @@ type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 struct PlannedTools {
     runtimes: Vec<PlannedRuntime>,
     hosted_specs: Vec<ToolSpec>,
+    extension_hosted_replacements: HashSet<HostedToolReplacement>,
 }
 
 impl PlannedTools {
@@ -136,6 +145,10 @@ impl PlannedTools {
 
     fn add_hosted_spec(&mut self, spec: ToolSpec) {
         self.hosted_specs.push(spec);
+    }
+
+    fn note_extension_hosted_replacement(&mut self, replacement: HostedToolReplacement) {
+        self.extension_hosted_replacements.insert(replacement);
     }
 
     fn runtimes(&self) -> &[PlannedRuntime] {
@@ -304,6 +317,7 @@ fn build_model_visible_specs_and_registry(
     let PlannedTools {
         runtimes,
         hosted_specs,
+        extension_hosted_replacements: _,
     } = planned_tools;
     let runtimes = runtimes
         .into_iter()
@@ -332,65 +346,11 @@ fn build_model_visible_specs_and_registry(
     let registry = ToolRegistry::from_tools(runtimes);
     let model_visible_specs = merge_into_namespaces(specs)
         .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
-        })
+        .filter(|spec| namespace_tools_enabled(turn_context) || !spec.is_namespace())
         .filter(namespace_spec_is_safe_for_wire)
         .collect();
 
     (model_visible_specs, registry)
-}
-
-/// Defense-in-depth guard against a first-party namespace tool being assembled
-/// under a Responses-API-reserved built-in namespace.
-///
-/// This is the durable regression guard for the `image_gen.imagegen` 400: the
-/// standalone image tool must live under the non-reserved `images` namespace,
-/// never `image_gen`. If a future refactor (or a second registration path)
-/// reintroduces a reserved namespace, this fails loudly in debug/test builds
-/// and, in release builds, drops the offending tool so the request still ships
-/// (minus one tool) instead of the API rejecting the entire turn.
-///
-/// `web.run` is intentionally allowlisted: standalone web search advertises
-/// that built-in schema on purpose. Other tools under `web` remain forbidden.
-fn namespace_spec_is_safe_for_wire(spec: &ToolSpec) -> bool {
-    let ToolSpec::Namespace(namespace) = spec else {
-        return true;
-    };
-    let forbidden_tool_name = namespace.forbidden_reserved_tool_name();
-    debug_assert!(
-        forbidden_tool_name.is_none(),
-        "first-party tool assembled under Responses-API-reserved namespace `{namespace}` \
-         (wire name `{namespace}.{tool_name}`); rename it to a non-reserved namespace, or add \
-         its exact wire name to codex_tools::FIRST_PARTY_ALLOWED_RESERVED_TOOLS if it matches \
-         the built-in schema",
-        namespace = namespace.name,
-        tool_name = forbidden_tool_name.unwrap_or("*"),
-    );
-    if let Some(tool_name) = forbidden_tool_name {
-        warn!(
-            namespace = %namespace.name,
-            tool_name,
-            "dropping first-party tool under reserved Responses namespace to avoid a runtime 400",
-        );
-        return false;
-    }
-    true
-}
-
-fn namespace_spec_is_safe_for_runtime(spec: &ToolSpec) -> bool {
-    let ToolSpec::Namespace(namespace) = spec else {
-        return true;
-    };
-    let Some(tool_name) = namespace.forbidden_reserved_tool_name() else {
-        return true;
-    };
-    warn!(
-        namespace = %namespace.name,
-        tool_name,
-        "dropping runtime under reserved Responses namespace",
-    );
-    false
 }
 
 fn spec_for_model_request(
@@ -412,7 +372,10 @@ fn spec_for_model_request(
     }
 }
 
-fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
+fn hosted_model_tool_specs(
+    context: &CoreToolPlanContext<'_>,
+    planned_tools: &PlannedTools,
+) -> Vec<ToolSpec> {
     let turn_context = context.turn_context;
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
     if turn_context.model_info.use_responses_lite {
@@ -421,10 +384,16 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
 
     let mut specs = Vec::new();
     let standalone_web_search_available = standalone_web_search_enabled(turn_context)
-        && context
-            .extension_tool_executors
-            .iter()
-            .any(|executor| executor.tool_name() == ToolName::namespaced("web", "run"));
+        && planned_tools
+            .extension_hosted_replacements
+            .contains(&HostedToolReplacement::WebSearch)
+        && planned_tools.runtimes().iter().any(|runtime| {
+            runtime_replaces_hosted_tool(
+                turn_context,
+                runtime.as_ref(),
+                HostedToolReplacement::WebSearch,
+            )
+        });
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider and model both support hosted search. `None` prevents emitting a hosted
     // search tool.
@@ -446,7 +415,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     }
     // TODO: Remove hosted image generation once the standalone extension is ready.
     if image_generation_tool_enabled(turn_context)
-        && !standalone_image_generation_available(turn_context, context.extension_tool_executors)
+        && !standalone_image_generation_available(turn_context, planned_tools)
     {
         specs.push(create_image_generation_tool("png"));
     }
@@ -531,15 +500,22 @@ fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool
 
 fn standalone_image_generation_available(
     turn_context: &TurnContext,
-    extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    planned_tools: &PlannedTools,
 ) -> bool {
     if image_generation_excluded_from_code_mode(turn_context) {
         return false;
     }
 
     standalone_image_generation_extension_registerable(turn_context)
-        && extension_tools.iter().any(|executor| {
-            executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+        && planned_tools
+            .extension_hosted_replacements
+            .contains(&HostedToolReplacement::ImageGeneration)
+        && planned_tools.runtimes().iter().any(|runtime| {
+            runtime_replaces_hosted_tool(
+                turn_context,
+                runtime.as_ref(),
+                HostedToolReplacement::ImageGeneration,
+            )
         })
 }
 
@@ -755,7 +731,7 @@ fn code_mode_namespace_descriptions(
 ) -> BTreeMap<String, codex_code_mode::ToolNamespaceDescription> {
     let mut namespace_descriptions = BTreeMap::new();
     for spec in specs {
-        let ToolSpec::Namespace(namespace) = spec else {
+        let Some(namespace) = spec.namespace() else {
             continue;
         };
 
@@ -780,7 +756,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_runtime_tools(context, planned_tools);
     add_extension_tools(context, planned_tools);
     add_dynamic_tools(context, planned_tools);
-    for spec in hosted_model_tool_specs(context) {
+    for spec in hosted_model_tool_specs(context, planned_tools) {
         planned_tools.add_hosted_spec(spec);
     }
 }
@@ -1129,6 +1105,7 @@ fn append_tool_search_executor(
         .runtimes()
         .iter()
         .filter(|executor| executor.exposure() == ToolExposure::Deferred)
+        .filter(|executor| namespace_spec_is_safe_for_runtime(&executor.spec()))
         .filter_map(|executor| executor.search_info())
         .collect::<Vec<_>>();
     if search_infos.is_empty() {
@@ -1182,7 +1159,8 @@ fn append_extension_tool_executors(
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
 
     for executor in executors.iter().cloned() {
-        let tool_name = executor.tool_name();
+        let adapter = ExtensionToolAdapter::new(executor);
+        let tool_name = adapter.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
             && (!standalone_web_search_enabled || !web_search_mode_on)
         {
@@ -1194,11 +1172,22 @@ fn append_extension_tool_executors(
         {
             continue;
         }
+        if !extension_spec_is_accepted(&adapter.spec(), &tool_name) {
+            continue;
+        }
         if !reserved_tool_names.insert(tool_name.clone()) {
             warn!("Skipping extension tool `{tool_name}`: tool already registered");
             continue;
         }
-        planned_tools.add(ExtensionToolAdapter::new(executor));
+        for replacement in [
+            HostedToolReplacement::WebSearch,
+            HostedToolReplacement::ImageGeneration,
+        ] {
+            if tool_name == replacement.tool_name() && replacement.matches_spec(&adapter.spec()) {
+                planned_tools.note_extension_hosted_replacement(replacement);
+            }
+        }
+        planned_tools.add(adapter);
     }
 }
 

@@ -208,7 +208,7 @@ fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_to
 }
 
 #[test]
-fn namespace_serialization_allows_custom_and_vetted_reserved_namespaces() {
+fn namespace_serialization_allows_custom_namespaces() {
     for (namespace, tool_name) in [
         ("images", "imagegen"),
         ("mcp__codex_apps__images", "imagegen"),
@@ -219,7 +219,64 @@ fn namespace_serialization_allows_custom_and_vetted_reserved_namespaces() {
 }
 
 #[test]
-fn namespace_serialization_rejects_unvetted_tools_in_allowlisted_namespace() {
+fn ordinary_function_serialization_is_unchanged() {
+    let tool = ToolSpec::Function(ResponsesApiTool {
+        name: "ordinary_tool".to_string(),
+        description: "An ordinary function tool.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::default(),
+        output_schema: None,
+    });
+
+    let value = serde_json::to_value(tool).expect("ordinary function tool should serialize");
+    assert_eq!(value["type"], "function");
+    assert_eq!(value["name"], "ordinary_tool");
+}
+
+#[test]
+fn built_in_web_search_serializes_reserved_namespace_with_typed_provenance() {
+    let value = serde_json::to_value(ToolSpec::built_in_web_search())
+        .expect("typed built-in web search should serialize");
+
+    assert_eq!(value["type"], "namespace");
+    assert_eq!(value["name"], "web");
+    assert_eq!(value["description"], "Tools in the web namespace.");
+    assert_eq!(value["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(value["tools"][0]["type"], "function");
+    assert_eq!(value["tools"][0]["name"], "run");
+    assert_eq!(value["tools"][0]["strict"], false);
+    assert!(
+        value["tools"][0]["description"]
+            .as_str()
+            .is_some_and(|description| description.starts_with("Tool for accessing the internet."))
+    );
+    let properties = value["tools"][0]["parameters"]["properties"]
+        .as_object()
+        .expect("canonical web.run parameters should have properties");
+    assert_eq!(properties.len(), 11);
+    for property in [
+        "search_query",
+        "image_query",
+        "open",
+        "click",
+        "find",
+        "screenshot",
+        "finance",
+        "weather",
+        "sports",
+        "time",
+        "response_length",
+    ] {
+        assert!(
+            properties.contains_key(property),
+            "canonical web.run schema should contain `{property}`"
+        );
+    }
+}
+
+#[test]
+fn namespace_serialization_rejects_other_tools_in_reserved_namespace() {
     let err = serde_json::to_value(ToolSpec::Namespace(namespace_tool("web", "imagegen")))
         .expect_err("web.imagegen must not inherit the web.run exception");
 

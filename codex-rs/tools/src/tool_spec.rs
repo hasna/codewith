@@ -1,4 +1,5 @@
 use crate::AdditionalProperties;
+use crate::BuiltInWebSearchToolSpec;
 use crate::FreeformTool;
 use crate::JsonSchema;
 use crate::JsonSchemaPrimitiveType;
@@ -24,6 +25,8 @@ pub enum ToolSpec {
     Function(ResponsesApiTool),
     #[serde(rename = "namespace")]
     Namespace(ResponsesApiNamespace),
+    #[serde(rename = "namespace")]
+    BuiltInWebSearch(BuiltInWebSearchToolSpec),
     #[serde(rename = "tool_search")]
     ToolSearch {
         execution: String,
@@ -74,10 +77,17 @@ pub enum ToolSpec {
 }
 
 impl ToolSpec {
+    /// Builds the reserved `web.run` declaration with explicit built-in
+    /// provenance. Generic namespace specs never receive this exception.
+    pub fn built_in_web_search() -> Self {
+        Self::BuiltInWebSearch(BuiltInWebSearchToolSpec::new())
+    }
+
     pub fn name(&self) -> &str {
         match self {
             ToolSpec::Function(tool) => tool.name.as_str(),
             ToolSpec::Namespace(namespace) => namespace.name.as_str(),
+            ToolSpec::BuiltInWebSearch(tool) => tool.namespace().name.as_str(),
             ToolSpec::ToolSearch { .. } => "tool_search",
             ToolSpec::ImageGeneration { .. } => "image_generation",
             ToolSpec::WebSearch { .. }
@@ -89,6 +99,28 @@ impl ToolSpec {
             | ToolSpec::ZaiWebSearch { .. } => "web_search",
             ToolSpec::Freeform(tool) => tool.name.as_str(),
         }
+    }
+
+    pub fn namespace(&self) -> Option<&ResponsesApiNamespace> {
+        match self {
+            ToolSpec::Namespace(namespace) => Some(namespace),
+            ToolSpec::BuiltInWebSearch(tool) => Some(tool.namespace()),
+            ToolSpec::Function(_)
+            | ToolSpec::ToolSearch { .. }
+            | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::AnthropicWebSearch { .. }
+            | ToolSpec::OpenRouterWebSearch { .. }
+            | ToolSpec::XaiWebSearch { .. }
+            | ToolSpec::XiaomiWebSearch { .. }
+            | ToolSpec::QwenWebSearch { .. }
+            | ToolSpec::ZaiWebSearch { .. }
+            | ToolSpec::Freeform(_) => None,
+        }
+    }
+
+    pub fn is_namespace(&self) -> bool {
+        self.namespace().is_some()
     }
 }
 
@@ -121,14 +153,8 @@ pub fn create_tools_json_for_responses_api(
 fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_json::Error> {
     match tool {
         ToolSpec::Function(tool) => validate_responses_api_tool(tool),
-        ToolSpec::Namespace(namespace) => {
-            for tool in &namespace.tools {
-                match tool {
-                    ResponsesApiNamespaceTool::Function(tool) => validate_responses_api_tool(tool)?,
-                }
-            }
-            Ok(())
-        }
+        ToolSpec::Namespace(namespace) => validate_namespace_tools(namespace),
+        ToolSpec::BuiltInWebSearch(tool) => validate_namespace_tools(tool.namespace()),
         ToolSpec::ToolSearch { .. }
         | ToolSpec::ImageGeneration { .. }
         | ToolSpec::WebSearch { .. }
@@ -140,6 +166,15 @@ fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_jso
         | ToolSpec::ZaiWebSearch { .. }
         | ToolSpec::Freeform(_) => Ok(()),
     }
+}
+
+fn validate_namespace_tools(namespace: &ResponsesApiNamespace) -> Result<(), serde_json::Error> {
+    for tool in &namespace.tools {
+        match tool {
+            ResponsesApiNamespaceTool::Function(tool) => validate_responses_api_tool(tool)?,
+        }
+    }
+    Ok(())
 }
 
 fn validate_responses_api_tool(tool: &ResponsesApiTool) -> Result<(), serde_json::Error> {

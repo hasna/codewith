@@ -492,6 +492,11 @@ fn responses_request_hides_reserved_namespace_tools_from_persisted_tool_search_o
                     "name": "image_gen",
                     "tools": [{"type": "function", "name": "imagegen"}],
                 }),
+                json!({
+                    "type": "namespace",
+                    "name": "web",
+                    "tools": [{"type": "function", "name": "run"}],
+                }),
                 valid_tool.clone(),
             ],
         }],
