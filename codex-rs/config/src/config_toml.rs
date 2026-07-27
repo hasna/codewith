@@ -73,6 +73,7 @@ const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
 ];
+const VALID_MODEL_REASONING_EFFORTS: &str = "none, minimal, low, medium, high, xhigh, max";
 
 pub const DEFAULT_PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
 
@@ -82,6 +83,31 @@ const fn default_allow_login_shell() -> Option<bool> {
 
 fn default_history() -> Option<History> {
     Some(History::default())
+}
+
+pub(crate) fn deserialize_model_reasoning_effort<'de, D>(
+    deserializer: D,
+) -> Result<Option<ReasoningEffort>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let effort = match value.as_str() {
+        "none" => ReasoningEffort::None,
+        "minimal" => ReasoningEffort::Minimal,
+        "low" => ReasoningEffort::Low,
+        "medium" => ReasoningEffort::Medium,
+        "high" => ReasoningEffort::High,
+        "xhigh" => ReasoningEffort::XHigh,
+        "max" => ReasoningEffort::Custom("max".to_string()),
+        _ => {
+            return Err(D::Error::custom(format!(
+                "invalid model_reasoning_effort `{value}`; valid values are: \
+                 {VALID_MODEL_REASONING_EFFORTS}"
+            )));
+        }
+    };
+    Ok(Some(effort))
 }
 
 const fn default_project_doc_max_bytes() -> Option<usize> {
@@ -455,6 +481,7 @@ pub struct ConfigToml {
     /// Defaults to `false`.
     pub show_raw_agent_reasoning: Option<bool>,
 
+    #[serde(default, deserialize_with = "deserialize_model_reasoning_effort")]
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
@@ -1207,6 +1234,67 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
+    }
+
+    #[test]
+    fn model_reasoning_effort_accepts_supported_values() {
+        let supported = [
+            ("none", ReasoningEffort::None),
+            ("minimal", ReasoningEffort::Minimal),
+            ("low", ReasoningEffort::Low),
+            ("medium", ReasoningEffort::Medium),
+            ("high", ReasoningEffort::High),
+            ("xhigh", ReasoningEffort::XHigh),
+            ("max", ReasoningEffort::Custom("max".to_string())),
+        ];
+
+        for (value, expected) in supported {
+            let config: ConfigToml = toml::from_str(&format!(
+                r#"
+model_reasoning_effort = "{value}"
+
+[profiles.review]
+model_reasoning_effort = "{value}"
+"#
+            ))
+            .expect("supported reasoning effort should deserialize");
+
+            assert_eq!(
+                (
+                    config.model_reasoning_effort,
+                    config
+                        .profiles
+                        .get("review")
+                        .and_then(|profile| profile.model_reasoning_effort.clone()),
+                ),
+                (Some(expected.clone()), Some(expected)),
+            );
+        }
+    }
+
+    #[test]
+    fn model_reasoning_effort_rejects_unsupported_top_level_value() {
+        let err = toml::from_str::<ConfigToml>(r#"model_reasoning_effort = "ultra""#)
+            .expect_err("unsupported top-level reasoning effort should be rejected");
+
+        let message = err.to_string();
+        assert!(message.contains("invalid model_reasoning_effort `ultra`"));
+        assert!(message.contains("valid values are: none, minimal, low, medium, high, xhigh, max"));
+    }
+
+    #[test]
+    fn model_reasoning_effort_rejects_unsupported_profile_value() {
+        let err = toml::from_str::<ConfigToml>(
+            r#"
+[profiles.review]
+model_reasoning_effort = "HIGH"
+"#,
+        )
+        .expect_err("unsupported profile reasoning effort should be rejected");
+
+        let message = err.to_string();
+        assert!(message.contains("invalid model_reasoning_effort `HIGH`"));
+        assert!(message.contains("valid values are: none, minimal, low, medium, high, xhigh, max"));
     }
 
     #[test]
