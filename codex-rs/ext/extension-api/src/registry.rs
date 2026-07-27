@@ -16,6 +16,18 @@ use crate::TurnInputContributor;
 use crate::TurnItemContributor;
 use crate::TurnLifecycleContributor;
 
+/// Host-assigned authority for replacing a hosted model tool.
+///
+/// Tool contributors cannot declare this capability through their public tool
+/// metadata. The embedding host assigns it to a specific registered
+/// contributor instance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum HostToolCapability {
+    WebSearch,
+    ImageGeneration,
+}
+
 /// Mutable registry used while hosts register typed runtime contributions.
 pub struct ExtensionRegistryBuilder<C: Sync> {
     event_sink: Arc<dyn ExtensionEventSink>,
@@ -26,6 +38,7 @@ pub struct ExtensionRegistryBuilder<C: Sync> {
     context_contributors: Vec<Arc<dyn ContextContributor>>,
     turn_input_contributors: Vec<Arc<dyn TurnInputContributor>>,
     tool_contributors: Vec<Arc<dyn ToolContributor>>,
+    host_tool_capabilities: Vec<(Arc<dyn ToolContributor>, HostToolCapability)>,
     tool_lifecycle_contributors: Vec<Arc<dyn ToolLifecycleContributor>>,
     turn_item_contributors: Vec<Arc<dyn TurnItemContributor>>,
     approval_review_contributors: Vec<Arc<dyn ApprovalReviewContributor>>,
@@ -43,6 +56,7 @@ impl<C: Sync> Default for ExtensionRegistryBuilder<C> {
             context_contributors: Vec::new(),
             turn_input_contributors: Vec::new(),
             tool_contributors: Vec::new(),
+            host_tool_capabilities: Vec::new(),
             tool_lifecycle_contributors: Vec::new(),
             turn_item_contributors: Vec::new(),
         }
@@ -111,6 +125,33 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
         self.tool_contributors.push(contributor);
     }
 
+    /// Assigns hosted replacement authority to a registered contributor.
+    ///
+    /// Returns `false` when the supplied contributor instance was not
+    /// registered with this builder or already has the same capability.
+    pub fn assign_host_tool_capability(
+        &mut self,
+        contributor: &Arc<dyn ToolContributor>,
+        capability: HostToolCapability,
+    ) -> bool {
+        if !self
+            .tool_contributors
+            .iter()
+            .any(|registered| Arc::ptr_eq(registered, contributor))
+            || self
+                .host_tool_capabilities
+                .iter()
+                .any(|(registered, assigned)| {
+                    Arc::ptr_eq(registered, contributor) && *assigned == capability
+                })
+        {
+            return false;
+        }
+        self.host_tool_capabilities
+            .push((Arc::clone(contributor), capability));
+        true
+    }
+
     /// Registers one tool-lifecycle contributor.
     pub fn tool_lifecycle_contributor(&mut self, contributor: Arc<dyn ToolLifecycleContributor>) {
         self.tool_lifecycle_contributors.push(contributor);
@@ -133,6 +174,7 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
             context_contributors: self.context_contributors,
             turn_input_contributors: self.turn_input_contributors,
             tool_contributors: self.tool_contributors,
+            host_tool_capabilities: self.host_tool_capabilities,
             tool_lifecycle_contributors: self.tool_lifecycle_contributors,
             turn_item_contributors: self.turn_item_contributors,
         }
@@ -149,6 +191,7 @@ pub struct ExtensionRegistry<C: Sync> {
     context_contributors: Vec<Arc<dyn ContextContributor>>,
     turn_input_contributors: Vec<Arc<dyn TurnInputContributor>>,
     tool_contributors: Vec<Arc<dyn ToolContributor>>,
+    host_tool_capabilities: Vec<(Arc<dyn ToolContributor>, HostToolCapability)>,
     tool_lifecycle_contributors: Vec<Arc<dyn ToolLifecycleContributor>>,
     turn_item_contributors: Vec<Arc<dyn TurnItemContributor>>,
     approval_review_contributors: Vec<Arc<dyn ApprovalReviewContributor>>,
@@ -213,6 +256,31 @@ impl<C: Sync> ExtensionRegistry<C> {
     /// Returns the registered native tool contributors.
     pub fn tool_contributors(&self) -> &[Arc<dyn ToolContributor>] {
         &self.tool_contributors
+    }
+
+    /// Returns host-assigned authority for this exact contributor instance.
+    pub fn host_tool_capability(
+        &self,
+        contributor: &Arc<dyn ToolContributor>,
+    ) -> Option<HostToolCapability> {
+        self.host_tool_capabilities
+            .iter()
+            .find_map(|(registered, capability)| {
+                Arc::ptr_eq(registered, contributor).then_some(*capability)
+            })
+    }
+
+    /// Returns every host authority assigned to this exact contributor.
+    pub fn host_tool_capabilities(
+        &self,
+        contributor: &Arc<dyn ToolContributor>,
+    ) -> Vec<HostToolCapability> {
+        self.host_tool_capabilities
+            .iter()
+            .filter_map(|(registered, capability)| {
+                Arc::ptr_eq(registered, contributor).then_some(*capability)
+            })
+            .collect()
     }
 
     /// Returns the registered tool-lifecycle contributors.

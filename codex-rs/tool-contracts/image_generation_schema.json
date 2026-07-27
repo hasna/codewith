@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["generate", "edit"]
+    },
+    "prompt": {
+      "type": "string"
+    }
+  },
+  "required": ["prompt", "action"],
+  "additionalProperties": false
+}

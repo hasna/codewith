@@ -45,7 +45,7 @@ pub(crate) fn skill_catalog_search_availability(session: &Session) -> SkillCatal
     let available = crate::tools::router::extension_tool_executors(session)
         .iter()
         .any(|executor| {
-            let name = executor.tool_name();
+            let name = executor.executor.tool_name();
             name.namespace.as_deref() == Some(codex_core_skills::SKILLS_TOOL_NAMESPACE)
                 && name.name == codex_core_skills::SKILLS_LIST_TOOL_NAME
         });

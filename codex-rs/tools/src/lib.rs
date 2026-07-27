@@ -1,6 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod bounded_json;
 mod code_mode;
 mod dynamic_tool;
 mod function_call_error;
@@ -21,6 +22,7 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
+pub use bounded_json::bounded_json_serialized_len;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
@@ -52,6 +54,8 @@ pub use request_plugin_install::verified_connector_install_completed;
 pub use reserved_namespaces::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES;
 pub use reserved_namespaces::RESERVED_RESPONSES_NAMESPACES;
 pub use reserved_namespaces::is_forbidden_first_party_namespace;
+pub use reserved_namespaces::is_forbidden_reserved_namespace_spec;
+pub use reserved_namespaces::is_forbidden_reserved_namespace_value;
 pub use reserved_namespaces::is_reserved_responses_namespace;
 pub use response_history::retain_tail_from_last_n_user_messages;
 pub use response_history::truncate_assistant_output_text_to_token_budget;
@@ -61,9 +65,14 @@ pub use responses_api::LoadableToolSpec;
 pub use responses_api::ResponsesApiNamespace;
 pub use responses_api::ResponsesApiNamespaceTool;
 pub use responses_api::ResponsesApiTool;
+pub use responses_api::canonical_image_generation_namespace;
+pub use responses_api::canonical_web_search_namespace;
 pub use responses_api::coalesce_loadable_tool_specs;
 pub use responses_api::default_namespace_description;
 pub use responses_api::dynamic_tool_to_responses_api_tool;
+pub use responses_api::is_canonical_image_generation_namespace;
+pub use responses_api::is_canonical_web_search_namespace;
+pub use responses_api::is_canonical_web_search_namespace_value;
 pub use responses_api::mcp_tool_to_deferred_responses_api_tool;
 pub use responses_api::mcp_tool_to_responses_api_tool;
 pub use responses_api::tool_definition_to_responses_api_tool;
@@ -93,6 +102,12 @@ pub use tool_discovery::ListAvailablePluginsToInstallResult;
 pub use tool_discovery::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 pub use tool_discovery::RequestPluginInstallEntry;
 pub use tool_discovery::TOOL_SEARCH_DEFAULT_LIMIT;
+pub use tool_discovery::TOOL_SEARCH_MAX_DECLARATION_BYTES;
+pub use tool_discovery::TOOL_SEARCH_MAX_HISTORY_BYTES;
+pub use tool_discovery::TOOL_SEARCH_MAX_HISTORY_RESULTS;
+pub use tool_discovery::TOOL_SEARCH_MAX_PROJECTION_BYTES;
+pub use tool_discovery::TOOL_SEARCH_MAX_RESULTS;
+pub use tool_discovery::TOOL_SEARCH_MAX_SEARCH_TEXT_BYTES;
 pub use tool_discovery::TOOL_SEARCH_TOOL_NAME;
 pub use tool_discovery::ToolSearchSourceInfo;
 pub use tool_discovery::collect_request_plugin_install_entries;
@@ -110,3 +125,5 @@ pub use tool_spec::ResponsesApiWebSearchUserLocation;
 pub use tool_spec::ToolSpec;
 pub use tool_spec::ZaiWebSearchConfig;
 pub use tool_spec::create_tools_json_for_responses_api;
+pub use tool_spec::tool_spec_to_chat_api_value;
+pub use tool_spec::tool_spec_to_responses_api_value;

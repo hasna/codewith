@@ -57,5 +57,6 @@ pub use contributors::TurnStartInput;
 pub use contributors::TurnStopInput;
 pub use registry::ExtensionRegistry;
 pub use registry::ExtensionRegistryBuilder;
+pub use registry::HostToolCapability;
 pub use registry::empty_extension_registry;
 pub use state::ExtensionData;

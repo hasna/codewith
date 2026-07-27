@@ -213,7 +213,7 @@ fn unexpected_status_preserves_http_status_in_protocol_error() {
     );
 
     // The public-safe typed error must not leak the provider response body.
-    let event = err.to_error_event(None);
+    let event = err.to_error_event(/*message_prefix*/ None);
     assert_eq!(
         event.codex_error_info,
         Some(CodexErrorInfo::HttpConnectionFailed {

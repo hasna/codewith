@@ -4,7 +4,14 @@ use serde::Serialize;
 
 const TUI_CLIENT_NAME: &str = "codex-tui";
 pub const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
-pub const TOOL_SEARCH_DEFAULT_LIMIT: usize = 8;
+pub const TOOL_SEARCH_MAX_RESULTS: usize = 8;
+pub const TOOL_SEARCH_DEFAULT_LIMIT: usize = TOOL_SEARCH_MAX_RESULTS;
+pub const TOOL_SEARCH_MAX_DECLARATION_BYTES: usize = 10_000;
+pub const TOOL_SEARCH_MAX_PROJECTION_BYTES: usize = 10_000;
+/// Allows several full searches while retaining a hard cumulative item bound.
+pub const TOOL_SEARCH_MAX_HISTORY_RESULTS: usize = TOOL_SEARCH_MAX_RESULTS * 4;
+pub const TOOL_SEARCH_MAX_HISTORY_BYTES: usize = 32_000;
+pub const TOOL_SEARCH_MAX_SEARCH_TEXT_BYTES: usize = 16_000;
 pub const LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME: &str = "list_available_plugins_to_install";
 pub const REQUEST_PLUGIN_INSTALL_TOOL_NAME: &str = "request_plugin_install";
 

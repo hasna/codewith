@@ -575,13 +575,14 @@ impl ModelClient {
                     RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
                     self.state.auth_env_telemetry.clone(),
                 ));
-        let request = self.build_responses_request(
+        let request = self.build_responses_request_for_wire(
             &client_setup.api_provider,
             prompt,
             model_info,
             settings.effort,
             settings.summary,
             settings.service_tier,
+            WireApi::Responses,
         )?;
         let ResponsesApiRequest {
             model,
@@ -856,9 +857,57 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
     ) -> Result<ResponsesApiRequest> {
+        self.build_responses_request_for_wire(
+            provider,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            self.state.provider.info().wire_api,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_responses_request_for_wire(
+        &self,
+        provider: &codex_api::Provider,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        wire_api: WireApi,
+    ) -> Result<ResponsesApiRequest> {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
-        let mut tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        let reserved_namespace_policy = match wire_api {
+            WireApi::Chat => crate::tools::tool_search_history::ReservedNamespacePolicy::Allow,
+            WireApi::Responses => {
+                crate::tools::tool_search_history::ReservedNamespacePolicy::Reject
+            }
+        };
+        crate::tools::tool_search_history::sanitize_client_tool_search_history(
+            &mut input,
+            reserved_namespace_policy,
+        );
+        let mut tools = match wire_api {
+            WireApi::Chat => prompt
+                .tools
+                .iter()
+                .map(codex_tools::tool_spec_to_chat_api_value)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            WireApi::Responses if self.state.provider.info().wire_api == WireApi::Chat => {
+                let tools = prompt
+                    .tools
+                    .iter()
+                    .filter(|spec| !codex_tools::is_forbidden_reserved_namespace_spec(spec))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                create_tools_json_for_responses_api(&tools)?
+            }
+            WireApi::Responses => create_tools_json_for_responses_api(&prompt.tools)?,
+        };
         if !model_info.supports_search_tool {
             tools.retain(|tool| {
                 !matches!(

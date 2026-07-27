@@ -58,11 +58,14 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
+use crate::tools::router::ExtensionToolRegistration;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -75,7 +78,6 @@ use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
-use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolName;
@@ -95,6 +97,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::warn;
 
+mod extension_admission;
+
+use extension_admission::HostedToolReplacement;
+use extension_admission::extension_spec_is_accepted;
+use extension_admission::namespace_spec_is_safe_for_untrusted_runtime;
+use extension_admission::namespace_spec_is_safe_for_wire;
+use extension_admission::runtime_replaces_hosted_tool;
+
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 const IMAGE_GEN_NAMESPACE: &str = "images";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
@@ -105,6 +115,7 @@ type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 struct PlannedTools {
     runtimes: Vec<PlannedRuntime>,
     hosted_specs: Vec<ToolSpec>,
+    extension_hosted_replacements: HashSet<HostedToolReplacement>,
 }
 
 impl PlannedTools {
@@ -138,6 +149,10 @@ impl PlannedTools {
         self.hosted_specs.push(spec);
     }
 
+    fn note_extension_hosted_replacement(&mut self, replacement: HostedToolReplacement) {
+        self.extension_hosted_replacements.insert(replacement);
+    }
+
     fn runtimes(&self) -> &[PlannedRuntime] {
         &self.runtimes
     }
@@ -149,7 +164,7 @@ struct CoreToolPlanContext<'a> {
     mcp_tools: Option<&'a [ToolInfo]>,
     deferred_mcp_tools: Option<&'a [ToolInfo]>,
     discoverable_tools: Option<&'a [DiscoverableTool]>,
-    extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    extension_tools: &'a [ExtensionToolRegistration],
     dynamic_tools: &'a [DynamicToolSpec],
     default_agent_type_description: &'a str,
     wait_agent_timeouts: WaitAgentTimeoutOptions,
@@ -186,13 +201,13 @@ fn build_infinity_agent_tool_router(
         mcp_tools,
         deferred_mcp_tools,
         discoverable_tools,
-        extension_tool_executors,
+        extension_tools,
         dynamic_tools,
     } = params;
     if discoverable_tools
         .as_ref()
         .is_some_and(|tools| !tools.is_empty())
-        || !extension_tool_executors.is_empty()
+        || !extension_tools.is_empty()
     {
         return Err(
             "Infinity Agent tool planning received a forbidden extension or discoverable source"
@@ -268,7 +283,7 @@ fn build_tool_specs_and_registry(
         mcp_tools,
         deferred_mcp_tools,
         discoverable_tools,
-        extension_tool_executors,
+        extension_tools,
         dynamic_tools,
     } = params;
     let default_agent_type_description =
@@ -278,7 +293,7 @@ fn build_tool_specs_and_registry(
         mcp_tools: mcp_tools.as_deref(),
         deferred_mcp_tools: deferred_mcp_tools.as_deref(),
         discoverable_tools: discoverable_tools.as_deref(),
-        extension_tool_executors: &extension_tool_executors,
+        extension_tools: &extension_tools,
         dynamic_tools,
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
@@ -304,7 +319,12 @@ fn build_model_visible_specs_and_registry(
     let PlannedTools {
         runtimes,
         hosted_specs,
+        extension_hosted_replacements: _,
     } = planned_tools;
+    let runtimes = runtimes
+        .into_iter()
+        .filter(|runtime| namespace_spec_is_safe_for_wire(turn_context, &runtime.spec()))
+        .collect::<Vec<_>>();
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
     for runtime in &runtimes {
@@ -328,48 +348,11 @@ fn build_model_visible_specs_and_registry(
     let registry = ToolRegistry::from_tools(runtimes);
     let model_visible_specs = merge_into_namespaces(specs)
         .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
-        })
-        .filter(namespace_spec_is_safe_for_wire)
+        .filter(|spec| namespace_tools_enabled(turn_context) || !spec.is_namespace())
+        .filter(|spec| namespace_spec_is_safe_for_wire(turn_context, spec))
         .collect();
 
     (model_visible_specs, registry)
-}
-
-/// Defense-in-depth guard against a first-party namespace tool being assembled
-/// under a Responses-API-reserved built-in namespace.
-///
-/// This is the durable regression guard for the `image_gen.imagegen` 400: the
-/// standalone image tool must live under the non-reserved `images` namespace,
-/// never `image_gen`. If a future refactor (or a second registration path)
-/// reintroduces a reserved namespace, this fails loudly in debug/test builds
-/// and, in release builds, drops the offending tool so the request still ships
-/// (minus one tool) instead of the API rejecting the entire turn.
-///
-/// `web` is intentionally allowlisted (see
-/// `codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES`): standalone web
-/// search advertises the built-in `web.run` schema on purpose.
-fn namespace_spec_is_safe_for_wire(spec: &ToolSpec) -> bool {
-    let ToolSpec::Namespace(namespace) = spec else {
-        return true;
-    };
-    let forbidden = codex_tools::is_forbidden_first_party_namespace(&namespace.name);
-    debug_assert!(
-        !forbidden,
-        "first-party tool assembled under Responses-API-reserved namespace `{namespace}` \
-         (wire name `{namespace}.*`); rename it to a non-reserved namespace, or add it to \
-         codex_tools::FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES if it matches the built-in schema",
-        namespace = namespace.name,
-    );
-    if forbidden {
-        warn!(
-            namespace = %namespace.name,
-            "dropping first-party tool under reserved Responses namespace to avoid a runtime 400",
-        );
-        return false;
-    }
-    true
 }
 
 fn spec_for_model_request(
@@ -383,6 +366,11 @@ fn spec_for_model_request(
         ToolMode::CodeMode | ToolMode::CodeModeOnly
     ) && exposure != ToolExposure::DirectModelOnly
         && !is_excluded_from_code_mode(turn_context, tool_name)
+        && !matches!(
+            &spec,
+            ToolSpec::Namespace(namespace)
+                if codex_tools::is_canonical_web_search_namespace(namespace)
+        )
         && codex_code_mode::is_code_mode_nested_tool(spec.name())
     {
         codex_tools::augment_tool_spec_for_code_mode(spec)
@@ -391,7 +379,10 @@ fn spec_for_model_request(
     }
 }
 
-fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
+fn hosted_model_tool_specs(
+    context: &CoreToolPlanContext<'_>,
+    planned_tools: &PlannedTools,
+) -> Vec<ToolSpec> {
     let turn_context = context.turn_context;
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
     if turn_context.model_info.use_responses_lite {
@@ -400,10 +391,16 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
 
     let mut specs = Vec::new();
     let standalone_web_search_available = standalone_web_search_enabled(turn_context)
-        && context
-            .extension_tool_executors
-            .iter()
-            .any(|executor| executor.tool_name() == ToolName::namespaced("web", "run"));
+        && planned_tools
+            .extension_hosted_replacements
+            .contains(&HostedToolReplacement::WebSearch)
+        && planned_tools.runtimes().iter().any(|runtime| {
+            runtime_replaces_hosted_tool(
+                turn_context,
+                runtime.as_ref(),
+                HostedToolReplacement::WebSearch,
+            )
+        });
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider and model both support hosted search. `None` prevents emitting a hosted
     // search tool.
@@ -425,7 +422,7 @@ fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     }
     // TODO: Remove hosted image generation once the standalone extension is ready.
     if image_generation_tool_enabled(turn_context)
-        && !standalone_image_generation_available(turn_context, context.extension_tool_executors)
+        && !standalone_image_generation_available(turn_context, planned_tools)
     {
         specs.push(create_image_generation_tool("png"));
     }
@@ -510,15 +507,22 @@ fn standalone_image_generation_model_visible(turn_context: &TurnContext) -> bool
 
 fn standalone_image_generation_available(
     turn_context: &TurnContext,
-    extension_tools: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    planned_tools: &PlannedTools,
 ) -> bool {
     if image_generation_excluded_from_code_mode(turn_context) {
         return false;
     }
 
     standalone_image_generation_extension_registerable(turn_context)
-        && extension_tools.iter().any(|executor| {
-            executor.tool_name() == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+        && planned_tools
+            .extension_hosted_replacements
+            .contains(&HostedToolReplacement::ImageGeneration)
+        && planned_tools.runtimes().iter().any(|runtime| {
+            runtime_replaces_hosted_tool(
+                turn_context,
+                runtime.as_ref(),
+                HostedToolReplacement::ImageGeneration,
+            )
         })
 }
 
@@ -648,6 +652,9 @@ fn build_code_mode_executors(
         }
 
         let spec = executor.spec();
+        if !namespace_spec_is_safe_for_wire(turn_context, &spec) {
+            continue;
+        }
 
         if exposure == ToolExposure::Deferred {
             // Only show deferred-tool guidance when supported and an included spec is usable by code mode.
@@ -731,7 +738,7 @@ fn code_mode_namespace_descriptions(
 ) -> BTreeMap<String, codex_code_mode::ToolNamespaceDescription> {
     let mut namespace_descriptions = BTreeMap::new();
     for spec in specs {
-        let ToolSpec::Namespace(namespace) = spec else {
+        let Some(namespace) = spec.namespace() else {
             continue;
         };
 
@@ -756,7 +763,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_runtime_tools(context, planned_tools);
     add_extension_tools(context, planned_tools);
     add_dynamic_tools(context, planned_tools);
-    for spec in hosted_model_tool_specs(context) {
+    for spec in hosted_model_tool_specs(context, planned_tools) {
         planned_tools.add_hosted_spec(spec);
     }
 }
@@ -1046,7 +1053,15 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
     if let Some(mcp_tools) = context.mcp_tools {
         for tool in mcp_tools {
             match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add(handler),
+                Ok(handler)
+                    if namespace_spec_is_safe_for_untrusted_runtime(
+                        context.turn_context,
+                        &handler.spec(),
+                    ) =>
+                {
+                    planned_tools.add(handler);
+                }
+                Ok(_) => {}
                 Err(err) => warn!(
                     "Skipping MCP tool `{}`: failed to build tool spec: {err}",
                     tool.canonical_tool_name()
@@ -1058,7 +1073,15 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
     if let Some(deferred_mcp_tools) = context.deferred_mcp_tools {
         for tool in deferred_mcp_tools {
             match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add_with_exposure(handler, ToolExposure::Deferred),
+                Ok(handler)
+                    if namespace_spec_is_safe_for_untrusted_runtime(
+                        context.turn_context,
+                        &handler.spec(),
+                    ) =>
+                {
+                    planned_tools.add_with_exposure(handler, ToolExposure::Deferred);
+                }
+                Ok(_) => {}
                 Err(err) => warn!(
                     "Skipping deferred MCP tool `{}`: failed to build tool spec: {err}",
                     tool.canonical_tool_name()
@@ -1077,6 +1100,18 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
             );
             continue;
         };
+        if !namespace_spec_is_safe_for_untrusted_runtime(context.turn_context, &handler.spec()) {
+            continue;
+        }
+        let tool_name = handler.tool_name();
+        if planned_tools
+            .runtimes()
+            .iter()
+            .any(|runtime| runtime.tool_name() == tool_name)
+        {
+            warn!("Skipping dynamic tool `{tool_name}`: tool already registered");
+            continue;
+        }
 
         planned_tools.add(handler);
     }
@@ -1085,11 +1120,7 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
 fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     // Extension ToolContributor implementations are resolved into executors
     // before planning. Core only adapts those executors into its runtime set.
-    append_extension_tool_executors(
-        context.turn_context,
-        context.extension_tool_executors,
-        planned_tools,
-    );
+    append_extension_tool_executors(context.turn_context, context.extension_tools, planned_tools);
 }
 
 fn append_tool_search_executor(
@@ -1105,6 +1136,7 @@ fn append_tool_search_executor(
         .runtimes()
         .iter()
         .filter(|executor| executor.exposure() == ToolExposure::Deferred)
+        .filter(|executor| namespace_spec_is_safe_for_wire(turn_context, &executor.spec()))
         .filter_map(|executor| executor.search_info())
         .collect::<Vec<_>>();
     if search_infos.is_empty() {
@@ -1125,10 +1157,10 @@ fn prepend_code_mode_executors(
 
 fn append_extension_tool_executors(
     turn_context: &TurnContext,
-    executors: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    registrations: &[ExtensionToolRegistration],
     planned_tools: &mut PlannedTools,
 ) {
-    if executors.is_empty() {
+    if registrations.is_empty() {
         return;
     }
 
@@ -1156,11 +1188,25 @@ fn append_extension_tool_executors(
 
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
+    let mut trusted_tool_names = HashSet::new();
 
-    for executor in executors.iter().cloned() {
-        let tool_name = executor.tool_name();
+    for registration in registrations {
+        let adapter = ExtensionToolAdapter::new(Arc::clone(&registration.executor));
+        let host_capability = registration
+            .host_capabilities
+            .iter()
+            .copied()
+            .find(|capability| host_capability_matches_tool(*capability, &adapter.tool_name()));
+        let adapter = match host_capability {
+            Some(capability) => adapter.with_host_spec(host_tool_spec(capability)),
+            None => adapter,
+        };
+        let tool_name = adapter.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
-            && (!standalone_web_search_enabled || !web_search_mode_on)
+            && turn_context.provider.info().wire_api != WireApi::Chat
+            && (host_capability != Some(HostToolCapability::WebSearch)
+                || !standalone_web_search_enabled
+                || !web_search_mode_on)
         {
             continue;
         }
@@ -1170,11 +1216,51 @@ fn append_extension_tool_executors(
         {
             continue;
         }
+        if !extension_spec_is_accepted(turn_context, &adapter.spec(), &tool_name) {
+            continue;
+        }
+        if host_capability.is_some() {
+            if !trusted_tool_names.insert(tool_name.clone()) {
+                warn!("Skipping extension tool `{tool_name}`: host capability already claimed");
+                continue;
+            }
+            planned_tools
+                .runtimes
+                .retain(|runtime| runtime.tool_name() != tool_name);
+            reserved_tool_names.remove(&tool_name);
+        }
         if !reserved_tool_names.insert(tool_name.clone()) {
             warn!("Skipping extension tool `{tool_name}`: tool already registered");
             continue;
         }
-        planned_tools.add(ExtensionToolAdapter::new(executor));
+        if let Some(capability) = host_capability {
+            planned_tools.note_extension_hosted_replacement(
+                HostedToolReplacement::from_host_capability(capability),
+            );
+        }
+        planned_tools.add(adapter);
+    }
+}
+
+fn host_capability_matches_tool(capability: HostToolCapability, tool_name: &ToolName) -> bool {
+    match capability {
+        HostToolCapability::WebSearch => tool_name == &ToolName::namespaced("web", "run"),
+        HostToolCapability::ImageGeneration => {
+            tool_name == &ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+        }
+        _ => false,
+    }
+}
+
+fn host_tool_spec(capability: HostToolCapability) -> ToolSpec {
+    match capability {
+        HostToolCapability::WebSearch => {
+            ToolSpec::Namespace(codex_tools::canonical_web_search_namespace())
+        }
+        HostToolCapability::ImageGeneration => {
+            ToolSpec::Namespace(codex_tools::canonical_image_generation_namespace())
+        }
+        _ => unreachable!("unknown host tool capability"),
     }
 }
 

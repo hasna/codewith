@@ -7,6 +7,8 @@ use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
+use crate::canonical_web_search_namespace;
+use crate::is_forbidden_reserved_namespace_spec;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -74,6 +76,14 @@ pub enum ToolSpec {
 }
 
 impl ToolSpec {
+    /// Builds the canonical generic `web.run` declaration.
+    ///
+    /// Replacement authority is assigned by the host when the contributor is
+    /// registered; it is not encoded in this public tool spec.
+    pub fn built_in_web_search() -> Self {
+        Self::Namespace(canonical_web_search_namespace())
+    }
+
     pub fn name(&self) -> &str {
         match self {
             ToolSpec::Function(tool) => tool.name.as_str(),
@@ -89,6 +99,27 @@ impl ToolSpec {
             | ToolSpec::ZaiWebSearch { .. } => "web_search",
             ToolSpec::Freeform(tool) => tool.name.as_str(),
         }
+    }
+
+    pub fn namespace(&self) -> Option<&ResponsesApiNamespace> {
+        match self {
+            ToolSpec::Namespace(namespace) => Some(namespace),
+            ToolSpec::Function(_)
+            | ToolSpec::ToolSearch { .. }
+            | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::AnthropicWebSearch { .. }
+            | ToolSpec::OpenRouterWebSearch { .. }
+            | ToolSpec::XaiWebSearch { .. }
+            | ToolSpec::XiaomiWebSearch { .. }
+            | ToolSpec::QwenWebSearch { .. }
+            | ToolSpec::ZaiWebSearch { .. }
+            | ToolSpec::Freeform(_) => None,
+        }
+    }
+
+    pub fn is_namespace(&self) -> bool {
+        self.namespace().is_some()
     }
 }
 
@@ -110,22 +141,51 @@ pub fn create_tools_json_for_responses_api(
     let mut tools_json = Vec::new();
 
     for tool in tools {
-        validate_tool_spec_for_responses_api(tool)?;
-        let json = serde_json::to_value(tool)?;
-        tools_json.push(json);
+        tools_json.push(tool_spec_to_responses_api_value(tool)?);
     }
 
     Ok(tools_json)
+}
+
+/// Serializes one tool exactly as it will be shown to a Responses model.
+pub fn tool_spec_to_responses_api_value(tool: &ToolSpec) -> Result<Value, serde_json::Error> {
+    validate_tool_spec_for_responses_api(tool)?;
+    let mut value = serde_json::to_value(tool)?;
+    add_tool_search_limit_constraints(tool, &mut value);
+    Ok(value)
+}
+
+/// Serializes one tool as it will be handed to the Chat transport.
+///
+/// Chat accepts namespaces that Responses reserves, but shares the same
+/// client-executed `tool_search` parser and therefore needs the same bounds.
+pub fn tool_spec_to_chat_api_value(tool: &ToolSpec) -> Result<Value, serde_json::Error> {
+    let mut value = serde_json::to_value(tool)?;
+    add_tool_search_limit_constraints(tool, &mut value);
+    Ok(value)
+}
+
+fn add_tool_search_limit_constraints(tool: &ToolSpec, value: &mut Value) {
+    if matches!(tool, ToolSpec::ToolSearch { .. })
+        && let Some(limit) = value.pointer_mut("/parameters/properties/limit")
+        && let Some(limit) = limit.as_object_mut()
+    {
+        limit.insert("type".to_string(), Value::String("integer".to_string()));
+        limit.insert("minimum".to_string(), Value::from(1));
+        limit.insert(
+            "maximum".to_string(),
+            Value::from(crate::TOOL_SEARCH_MAX_RESULTS),
+        );
+    }
 }
 
 fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_json::Error> {
     match tool {
         ToolSpec::Function(tool) => validate_responses_api_tool(tool),
         ToolSpec::Namespace(namespace) => {
-            for tool in &namespace.tools {
-                match tool {
-                    ResponsesApiNamespaceTool::Function(tool) => validate_responses_api_tool(tool)?,
-                }
+            validate_namespace_tools(namespace)?;
+            if is_forbidden_reserved_namespace_spec(tool) {
+                return Err(reserved_namespace_error(namespace));
             }
             Ok(())
         }
@@ -140,6 +200,29 @@ fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_jso
         | ToolSpec::ZaiWebSearch { .. }
         | ToolSpec::Freeform(_) => Ok(()),
     }
+}
+
+fn reserved_namespace_error(namespace: &ResponsesApiNamespace) -> serde_json::Error {
+    let tool_name = match namespace.tools.as_slice() {
+        [ResponsesApiNamespaceTool::Function(tool)] => tool.name.as_str(),
+        _ => "*",
+    };
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!(
+            "refusing custom tool under reserved Responses namespace: {}.{tool_name}",
+            namespace.name
+        ),
+    ))
+}
+
+fn validate_namespace_tools(namespace: &ResponsesApiNamespace) -> Result<(), serde_json::Error> {
+    for tool in &namespace.tools {
+        match tool {
+            ResponsesApiNamespaceTool::Function(tool) => validate_responses_api_tool(tool)?,
+        }
+    }
+    Ok(())
 }
 
 fn validate_responses_api_tool(tool: &ResponsesApiTool) -> Result<(), serde_json::Error> {

@@ -75,6 +75,26 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
     test_model_client_with_parent(session_source, /*parent_thread_id*/ None)
 }
 
+fn test_chat_model_client(session_source: SessionSource) -> ModelClient {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    let thread_id = ThreadId::new();
+    ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id.into(),
+        thread_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider.name.clone(),
+        provider,
+        session_source,
+        /*parent_thread_id*/ None,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+    )
+}
+
 fn test_model_client_with_parent(
     session_source: SessionSource,
     parent_thread_id: Option<ThreadId>,
@@ -441,6 +461,329 @@ fn responses_request_rejects_invalid_strict_tool_schema_before_provider_request(
         err.to_string()
             .contains("missing required properties: include_live_sessions"),
         "{err}"
+    );
+}
+
+#[test]
+fn responses_request_rejects_reserved_namespace_tool_before_provider_request() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "image_gen".to_string(),
+            description: "Image tools.".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(test_function_tool(
+                "imagegen",
+            ))],
+        })],
+        ..Default::default()
+    };
+
+    let err = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect_err("reserved namespace should fail before request dispatch");
+
+    assert!(err.to_string().contains("image_gen.imagegen"), "{err}");
+}
+
+#[test]
+fn chat_request_keeps_reserved_namespace_until_transport_flattening() {
+    let client = test_chat_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "web".to_string(),
+            description: "Chat tools.".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(test_function_tool(
+                "lookup",
+            ))],
+        })],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://example.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("chat transport should flatten web.lookup after request construction");
+
+    assert_eq!(request.tools[0]["name"], "web");
+    assert_eq!(request.tools[0]["tools"][0]["name"], "lookup");
+}
+
+#[test]
+fn responses_request_sanitizes_only_client_tool_search_output_and_preserves_canonical_web() {
+    let client = test_model_client(SessionSource::Cli);
+    let valid_tool = json!({
+        "type": "namespace",
+        "name": "images",
+        "description": "Image tools.",
+        "tools": [{"type": "function", "name": "imagegen"}],
+    });
+    let canonical_web = serde_json::to_value(ToolSpec::built_in_web_search())
+        .expect("canonical web.run should serialize");
+    let server_tools = vec![
+        json!({
+            "type": "namespace",
+            "name": "image_gen",
+            "tools": [{"type": "function", "name": "imagegen"}],
+        }),
+        canonical_web.clone(),
+    ];
+    let prompt = crate::Prompt {
+        input: vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-client".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![
+                    json!({
+                        "type": "namespace",
+                        "name": "image_gen",
+                        "tools": [{"type": "function", "name": "imagegen"}],
+                    }),
+                    canonical_web.clone(),
+                    valid_tool.clone(),
+                ],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    assert_eq!(
+        request.input,
+        vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-client".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![canonical_web, valid_tool],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools,
+            },
+        ]
+    );
+}
+
+#[test]
+fn chat_request_preserves_deferred_namespaces_reserved_only_by_responses() {
+    let client = test_chat_model_client(SessionSource::Cli);
+    let reserved_tool = json!({
+        "type": "namespace",
+        "name": "image_gen",
+        "tools": [{"type": "function", "name": "imagegen"}],
+    });
+    let prompt = crate::Prompt {
+        input: vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-chat".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![reserved_tool.clone()],
+        }],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://example.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("Chat request should preserve its valid deferred namespace");
+
+    assert_eq!(
+        request.input,
+        vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-chat".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![reserved_tool],
+        }]
+    );
+}
+
+#[test]
+fn responses_request_bounds_cumulative_client_tool_search_history() {
+    let client = test_model_client(SessionSource::Cli);
+    let legacy_tool = |marker: &str| {
+        json!({
+            "type": "function",
+            "name": marker,
+            "description": "x".repeat(20_000),
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            },
+        })
+    };
+    let server_tools = vec![legacy_tool("server-history")];
+    let prompt = crate::Prompt {
+        input: vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-oldest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("oldest")],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-newest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("newest")],
+            },
+        ],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    let client_outputs = request
+        .input
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::ToolSearchOutput {
+                execution, tools, ..
+            } if execution == "client" => Some(tools),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let aggregate_count = client_outputs
+        .iter()
+        .map(|tools| tools.len())
+        .sum::<usize>();
+    let aggregate_bytes = client_outputs
+        .iter()
+        .flat_map(|tools| tools.iter())
+        .map(|tool| {
+            serde_json::to_vec(tool)
+                .expect("tool should serialize")
+                .len()
+        })
+        .sum::<usize>();
+    assert!(
+        aggregate_count <= codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS,
+        "resumed client history exceeded the aggregate result count: {aggregate_count}"
+    );
+    assert!(
+        aggregate_bytes <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES,
+        "resumed client history exceeded the aggregate byte budget: {aggregate_bytes}"
+    );
+    assert!(
+        client_outputs
+            .iter()
+            .flat_map(|tools| tools.iter())
+            .any(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some("oldest")),
+        "legacy sanitization must retain the previously sent request prefix"
+    );
+    assert_eq!(
+        request.input[1],
+        ResponseItem::ToolSearchOutput {
+            call_id: Some("legacy-server".to_string()),
+            status: "completed".to_string(),
+            execution: "server".to_string(),
+            tools: server_tools,
+        },
+        "server-owned history must remain byte-for-byte intact"
+    );
+}
+
+#[test]
+fn responses_request_bounds_oversized_legacy_tool_search_output() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        input: vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("legacy-oversized".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: (0..32)
+                .map(|index| {
+                    json!({
+                        "type": "function",
+                        "name": format!("legacy_{index}"),
+                        "description": "x".repeat(1_000),
+                    })
+                })
+                .collect(),
+        }],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+    let [
+        ResponseItem::ToolSearchOutput {
+            execution, tools, ..
+        },
+    ] = request.input.as_slice()
+    else {
+        panic!("expected one tool_search_output");
+    };
+    assert_eq!(execution, "client");
+    assert!(tools.len() <= codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS);
+    assert!(
+        serde_json::to_vec(tools)
+            .expect("tools should serialize")
+            .len()
+            <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES
     );
 }
 

@@ -1,8 +1,54 @@
 use codex_tools::JsonSchema;
+use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
+use codex_tools::TOOL_SEARCH_MAX_DECLARATION_BYTES;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
+use codex_tools::tool_spec_to_responses_api_value;
 use std::collections::BTreeMap;
+
+pub(crate) const TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS: usize = 64;
+
+pub(crate) fn bounded_source_infos(
+    source_infos: BTreeMap<String, Option<String>>,
+) -> Vec<ToolSearchSourceInfo> {
+    let mut retained = Vec::new();
+    for (name, description) in source_infos {
+        if retained.len() >= TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS {
+            break;
+        }
+        let source = ToolSearchSourceInfo { name, description };
+        let mut candidate = retained.clone();
+        candidate.push(source.clone());
+        if declaration_fits(&candidate) {
+            retained = candidate;
+            continue;
+        }
+        if source.description.is_some() {
+            candidate.pop();
+            candidate.push(ToolSearchSourceInfo {
+                description: None,
+                ..source
+            });
+            if declaration_fits(&candidate) {
+                retained = candidate;
+            }
+        }
+    }
+    retained
+}
+
+fn declaration_fits(source_infos: &[ToolSearchSourceInfo]) -> bool {
+    tool_spec_to_responses_api_value(&create_tool_search_tool(
+        source_infos,
+        TOOL_SEARCH_DEFAULT_LIMIT,
+    ))
+    .ok()
+    .and_then(|value| {
+        codex_tools::bounded_json_serialized_len(&value, TOOL_SEARCH_MAX_DECLARATION_BYTES)
+    })
+    .is_some()
+}
 
 pub(crate) fn create_tool_search_tool(
     searchable_sources: &[ToolSearchSourceInfo],
@@ -15,7 +61,7 @@ pub(crate) fn create_tool_search_tool(
         ),
         (
             "limit".to_string(),
-            JsonSchema::number(Some(format!(
+            JsonSchema::integer(Some(format!(
                 "Maximum number of tools to return. Defaults to {default_limit}."
             ))),
         ),
@@ -65,6 +111,8 @@ pub(crate) fn create_tool_search_tool(
 mod tests {
     use super::*;
     use codex_tools::JsonSchema;
+    use codex_tools::create_tools_json_for_responses_api;
+    use codex_tools::tool_spec_to_chat_api_value;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
 
@@ -97,7 +145,7 @@ mod tests {
                 parameters: JsonSchema::object(BTreeMap::from([
                         (
                             "limit".to_string(),
-                            JsonSchema::number(Some(
+                            JsonSchema::integer(Some(
                                     "Maximum number of tools to return. Defaults to 8."
                                         .to_string(),
                                 ),),
@@ -108,6 +156,42 @@ mod tests {
                         ),
                     ]), Some(vec!["query".to_string()]), Some(false.into())),
             }
+        );
+    }
+
+    #[test]
+    fn tool_search_limit_wire_schema_matches_handler_bounds() {
+        let spec = create_tool_search_tool(&[], /*default_limit*/ 8);
+        let [wire_spec] = create_tools_json_for_responses_api(&[spec])
+            .expect("tool_search declaration should serialize")
+            .try_into()
+            .expect("one declaration");
+
+        assert_eq!(
+            wire_spec.pointer("/parameters/properties/limit"),
+            Some(&serde_json::json!({
+                "type": "integer",
+                "description": "Maximum number of tools to return. Defaults to 8.",
+                "minimum": 1,
+                "maximum": 8,
+            }))
+        );
+    }
+
+    #[test]
+    fn tool_search_limit_schema_matches_handler_bounds_for_chat() {
+        let spec = create_tool_search_tool(&[], /*default_limit*/ 8);
+        let wire_spec =
+            tool_spec_to_chat_api_value(&spec).expect("Chat declaration should serialize");
+
+        assert_eq!(
+            wire_spec.pointer("/parameters/properties/limit"),
+            Some(&serde_json::json!({
+                "type": "integer",
+                "description": "Maximum number of tools to return. Defaults to 8.",
+                "minimum": 1,
+                "maximum": 8,
+            }))
         );
     }
 }

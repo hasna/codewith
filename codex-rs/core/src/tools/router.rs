@@ -9,6 +9,7 @@ use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::spec_plan::build_tool_router;
+use codex_extension_api::HostToolCapability;
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
@@ -47,8 +48,14 @@ pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) deferred_mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) discoverable_tools: Option<Vec<DiscoverableTool>>,
-    pub(crate) extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
+    pub(crate) extension_tools: Vec<ExtensionToolRegistration>,
     pub(crate) dynamic_tools: &'a [DynamicToolSpec],
+}
+
+#[derive(Clone)]
+pub(crate) struct ExtensionToolRegistration {
+    pub(crate) executor: Arc<dyn ToolExecutor<ExtensionToolCall>>,
+    pub(crate) host_capabilities: Vec<HostToolCapability>,
 }
 
 impl ToolRouter {
@@ -211,6 +218,14 @@ impl ToolRouter {
                             "failed to parse tool_search arguments: {err}"
                         ))
                     })?;
+                if arguments.limit.is_some_and(|limit| {
+                    !(1..=codex_tools::TOOL_SEARCH_MAX_RESULTS).contains(&limit)
+                }) {
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "tool_search limit must be an integer from 1 through {}",
+                        codex_tools::TOOL_SEARCH_MAX_RESULTS
+                    )));
+                }
                 Ok(Some(ToolCall {
                     tool_name: ToolName::plain("tool_search"),
                     call_id,
@@ -331,19 +346,27 @@ fn validate_infinity_agent_arguments(arguments: &str) -> Result<(), FunctionCall
     )
 }
 
-pub(crate) fn extension_tool_executors(
-    session: &Session,
-) -> Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>> {
+pub(crate) fn extension_tool_executors(session: &Session) -> Vec<ExtensionToolRegistration> {
     session
         .services
         .extensions
         .tool_contributors()
         .iter()
         .flat_map(|contributor| {
-            contributor.tools(
-                &session.services.session_extension_data,
-                &session.services.thread_extension_data,
-            )
+            let capabilities = session
+                .services
+                .extensions
+                .host_tool_capabilities(contributor);
+            contributor
+                .tools(
+                    &session.services.session_extension_data,
+                    &session.services.thread_extension_data,
+                )
+                .into_iter()
+                .map(move |executor| ExtensionToolRegistration {
+                    host_capabilities: capabilities.clone(),
+                    executor,
+                })
         })
         .collect()
 }

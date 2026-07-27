@@ -79,7 +79,7 @@ impl TestToolServer {
         );
         encrypted_output_tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
-        let tools = vec![
+        let mut tools = vec![
             Self::echo_tool(),
             Self::echo_dash_tool(),
             Self::cwd_tool(),
@@ -90,6 +90,9 @@ impl TestToolServer {
             sandbox_meta_tool,
             encrypted_output_tool,
         ];
+        if std::env::var_os("MCP_TEST_INCLUDE_IMAGEGEN_TOOL").is_some() {
+            tools.push(Self::imagegen_tool());
+        }
         let resources = vec![Self::memo_resource()];
         let resource_templates = vec![Self::memo_template()];
         Self {
@@ -103,6 +106,30 @@ impl TestToolServer {
         Self::build_echo_tool(
             "echo",
             "Echo back the provided message and include environment data.",
+        )
+    }
+
+    fn imagegen_tool() -> Tool {
+        #[expect(clippy::expect_used)]
+        let schema: JsonObject = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["generate", "edit"],
+                },
+                "prompt": {
+                    "type": "string",
+                },
+            },
+            "required": ["prompt", "action"],
+            "additionalProperties": false,
+        }))
+        .expect("imagegen tool schema should deserialize");
+        Tool::new(
+            Cow::Borrowed("imagegen"),
+            Cow::Borrowed("Untrusted MCP image generator used for collision tests."),
+            Arc::new(schema),
         )
     }
 
@@ -521,6 +548,9 @@ impl ServerHandler for TestToolServer {
                 result.structured_content = Some(json!({"encrypted_output": "ignored"}));
                 Ok(result)
             }
+            "imagegen" => Ok(Self::structured_result(json!({
+                "source": "untrusted-mcp",
+            }))),
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
                     Some(arguments) => serde_json::from_value(serde_json::Value::Object(

@@ -1802,6 +1802,7 @@ dependencies = [
  "codex-client",
  "codex-known-provider-models",
  "codex-protocol",
+ "codex-tool-contracts",
  "codex-utils-rustls-provider",
  "eventsource-stream",
  "futures",
@@ -3041,7 +3042,6 @@ dependencies = [
  "codex-utils-absolute-path",
  "http 1.4.0",
  "pretty_assertions",
- "schemars 1.2.1",
  "serde",
  "serde_json",
 ]
@@ -3856,6 +3856,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-tool-contracts"
+version = "0.1.78"
+
+[[package]]
 name = "codex-tools"
 version = "0.1.78"
 dependencies = [
@@ -3864,6 +3868,7 @@ dependencies = [
  "codex-code-mode",
  "codex-features",
  "codex-protocol",
+ "codex-tool-contracts",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-output-truncation",
@@ -4240,7 +4245,6 @@ dependencies = [
  "codex-utils-output-truncation",
  "http 1.4.0",
  "pretty_assertions",
- "schemars 1.2.1",
  "serde_json",
  "url",
 ]

@@ -26,27 +26,29 @@ pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
             ToolSpec::Freeform(tool)
         }
         ToolSpec::Namespace(mut namespace) => {
-            for tool in &mut namespace.tools {
-                match tool {
-                    ResponsesApiNamespaceTool::Function(tool) => {
-                        let tool_name =
-                            ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                        let definition = CodeModeToolDefinition {
-                            name: code_mode_name_for_tool_name(&tool_name),
-                            tool_name,
-                            description: tool.description.clone(),
-                            kind: CodeModeToolKind::Function,
-                            input_schema: serde_json::to_value(&tool.parameters).ok(),
-                            output_schema: tool.output_schema.clone(),
-                        };
-                        tool.description =
-                            codex_code_mode::augment_tool_definition(definition).description;
-                    }
-                }
-            }
+            augment_namespace_for_code_mode(&mut namespace);
             ToolSpec::Namespace(namespace)
         }
         other => other,
+    }
+}
+
+fn augment_namespace_for_code_mode(namespace: &mut crate::ResponsesApiNamespace) {
+    for tool in &mut namespace.tools {
+        match tool {
+            ResponsesApiNamespaceTool::Function(tool) => {
+                let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
+                let definition = CodeModeToolDefinition {
+                    name: code_mode_name_for_tool_name(&tool_name),
+                    tool_name,
+                    description: tool.description.clone(),
+                    kind: CodeModeToolKind::Function,
+                    input_schema: serde_json::to_value(&tool.parameters).ok(),
+                    output_schema: tool.output_schema.clone(),
+                };
+                tool.description = codex_code_mode::augment_tool_definition(definition).description;
+            }
+        }
     }
 }
 
@@ -119,23 +121,7 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
                 output_schema: None,
             }]
         }
-        ToolSpec::Namespace(namespace) => namespace
-            .tools
-            .iter()
-            .map(|tool| match tool {
-                ResponsesApiNamespaceTool::Function(tool) => {
-                    let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                    CodeModeToolDefinition {
-                        name: code_mode_name_for_tool_name(&tool_name),
-                        tool_name,
-                        description: tool.description.clone(),
-                        kind: CodeModeToolKind::Function,
-                        input_schema: serde_json::to_value(&tool.parameters).ok(),
-                        output_schema: tool.output_schema.clone(),
-                    }
-                }
-            })
-            .collect(),
+        ToolSpec::Namespace(namespace) => code_mode_definitions_for_namespace(namespace),
         ToolSpec::ImageGeneration { .. }
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::WebSearch { .. }
@@ -146,6 +132,28 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
         | ToolSpec::QwenWebSearch { .. }
         | ToolSpec::ZaiWebSearch { .. } => Vec::new(),
     }
+}
+
+fn code_mode_definitions_for_namespace(
+    namespace: &crate::ResponsesApiNamespace,
+) -> Vec<CodeModeToolDefinition> {
+    namespace
+        .tools
+        .iter()
+        .map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(tool) => {
+                let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
+                CodeModeToolDefinition {
+                    name: code_mode_name_for_tool_name(&tool_name),
+                    tool_name,
+                    description: tool.description.clone(),
+                    kind: CodeModeToolKind::Function,
+                    input_schema: serde_json::to_value(&tool.parameters).ok(),
+                    output_schema: tool.output_schema.clone(),
+                }
+            }
+        })
+        .collect()
 }
 
 pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {

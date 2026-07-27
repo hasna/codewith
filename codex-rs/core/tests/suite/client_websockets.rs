@@ -166,6 +166,79 @@ async fn responses_websocket_streams_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consecutive_websocket_requests_preserve_tool_search_history_prefix() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![ev_response_created("resp-1"), ev_completed("resp-1")],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
+    .await;
+    let harness = websocket_harness(&server).await;
+    let mut client_session = harness.client.new_session();
+    let initial_output = ResponseItem::ToolSearchOutput {
+        call_id: Some("search-initial".to_string()),
+        status: "completed".to_string(),
+        execution: "client".to_string(),
+        tools: (0..codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS)
+            .map(|index| json!({"type": "function", "name": format!("initial_{index}")}))
+            .collect(),
+    };
+    let first_prompt = prompt_with_input(vec![initial_output.clone()]);
+    let second_prompt = prompt_with_input(vec![
+        initial_output,
+        ResponseItem::ToolSearchOutput {
+            call_id: Some("search-later".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![json!({"type": "function", "name": "later"})],
+        },
+    ]);
+
+    stream_until_complete(&mut client_session, &harness, &first_prompt).await;
+    stream_until_complete(&mut client_session, &harness, &second_prompt).await;
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first_body = connection[0].body_json();
+    let second_body = connection[1].body_json();
+    let first_input = first_body["input"]
+        .as_array()
+        .expect("first request input")
+        .clone();
+    let second_input = second_body["input"]
+        .as_array()
+        .expect("second request input")
+        .clone();
+    assert_eq!(
+        first_input
+            .first()
+            .and_then(|item| item.get("tools"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS)
+    );
+    assert_eq!(second_body["previous_response_id"], json!("resp-1"));
+    assert_eq!(second_input.len(), 1);
+    assert_eq!(second_input[0]["call_id"], json!("search-later"));
+    assert_eq!(
+        second_input[0]["tools"],
+        json!([]),
+        "the incremental suffix cannot evict tools retained by previous_response_id"
+    );
+    assert_eq!(
+        first_input
+            .iter()
+            .filter_map(|item| item.get("tools").and_then(serde_json::Value::as_array))
+            .flatten()
+            .count(),
+        codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_streams_without_feature_flag_when_provider_supports_websockets() {
     skip_if_no_network!();
 

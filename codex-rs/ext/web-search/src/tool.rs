@@ -7,31 +7,24 @@ use codex_api::SearchSettings;
 use codex_core::web_search_action_detail;
 use codex_extension_api::ExtensionTurnItem;
 use codex_extension_api::FunctionCallError;
-use codex_extension_api::ResponsesApiTool;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolSpec;
-use codex_extension_api::parse_tool_input_schema_without_compaction;
 use codex_login::default_client::build_reqwest_client;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::items::WebSearchItem;
 use codex_protocol::models::WebSearchAction;
-use codex_tools::ResponsesApiNamespace;
-use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolExposure;
-use codex_tools::default_namespace_description;
 use http::HeaderMap;
 use url::Url;
 
 use crate::history::recent_input;
 use crate::output::SearchOutput;
-use crate::schema::commands_schema;
 
 pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
-const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
 
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
@@ -46,24 +39,7 @@ impl ToolExecutor<ToolCall> for WebSearchTool {
     }
 
     fn spec(&self) -> ToolSpec {
-        // parse schema without compaction that removes field metadata/descriptions to match hosted tool definition
-        let parameters = match parse_tool_input_schema_without_compaction(&commands_schema()) {
-            Ok(parameters) => parameters,
-            Err(err) => panic!("search command schema should parse: {err}"),
-        };
-
-        ToolSpec::Namespace(ResponsesApiNamespace {
-            name: WEB_NAMESPACE.to_string(),
-            description: default_namespace_description(WEB_NAMESPACE),
-            tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
-                name: RUN_TOOL_NAME.to_string(),
-                description: WEB_RUN_DESCRIPTION.to_string(),
-                strict: false,
-                parameters,
-                output_schema: None,
-                defer_loading: None,
-            })],
-        })
+        ToolSpec::built_in_web_search()
     }
 
     fn exposure(&self) -> ToolExposure {

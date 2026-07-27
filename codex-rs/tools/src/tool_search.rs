@@ -71,6 +71,44 @@ impl ToolSearchInfo {
             source_info,
         })
     }
+
+    pub fn is_valid_projection_for(&self, tool_name: &ToolName, spec: &ToolSpec) -> bool {
+        let contract_matches = match (&self.entry.output, spec) {
+            (LoadableToolSpec::Function(output), ToolSpec::Function(admitted)) => {
+                tool_name.namespace.is_none()
+                    && output.name == tool_name.name
+                    && output.name == admitted.name
+                    && output.strict == admitted.strict
+                    && output.parameters == admitted.parameters
+            }
+            (LoadableToolSpec::Namespace(output), ToolSpec::Namespace(admitted)) => {
+                let [ResponsesApiNamespaceTool::Function(output_tool)] = output.tools.as_slice()
+                else {
+                    return false;
+                };
+                let [ResponsesApiNamespaceTool::Function(admitted_tool)] =
+                    admitted.tools.as_slice()
+                else {
+                    return false;
+                };
+                tool_name.namespace.as_deref() == Some(output.name.as_str())
+                    && output.name == admitted.name
+                    && output_tool.name == tool_name.name
+                    && output_tool.name == admitted_tool.name
+                    && output_tool.strict == admitted_tool.strict
+                    && output_tool.parameters == admitted_tool.parameters
+            }
+            _ => false,
+        };
+        contract_matches && self.projection_size_bytes() <= crate::TOOL_SEARCH_MAX_PROJECTION_BYTES
+    }
+
+    pub fn projection_size_bytes(&self) -> usize {
+        serde_json::to_vec(&self.entry.output)
+            .map_or(crate::TOOL_SEARCH_MAX_PROJECTION_BYTES + 1, |value| {
+                value.len()
+            })
+    }
 }
 
 pub fn default_tool_search_text(tool_name: &ToolName, spec: &ToolSpec) -> String {

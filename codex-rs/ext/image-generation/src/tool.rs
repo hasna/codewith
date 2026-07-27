@@ -13,7 +13,6 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
-use codex_extension_api::parse_tool_input_schema;
 use codex_protocol::items::ImageGenerationItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -22,14 +21,9 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_tools::ResponsesApiNamespace;
-use codex_tools::ResponsesApiNamespaceTool;
-use codex_tools::ResponsesApiTool;
 use codex_tools::ToolExposure;
-use codex_tools::default_namespace_description;
+use codex_tools::canonical_image_generation_namespace;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use schemars::JsonSchema;
-use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
@@ -40,7 +34,6 @@ use crate::backend::CodexImagesBackend;
 
 const IMAGE_MODEL: &str = "gpt-image-2";
 const MAX_EDIT_IMAGES: usize = 5;
-const IMAGEGEN_DESCRIPTION: &str = include_str!("../imagegen_description.md");
 
 #[derive(Clone)]
 pub(crate) struct ImageGenerationTool {
@@ -64,14 +57,14 @@ impl ImageGenerationTool {
     }
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImagegenArgs {
     prompt: String,
     action: ImagegenAction,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ImagegenAction {
     Generate,
@@ -286,37 +279,8 @@ fn parse_args(call: &ToolCall) -> Result<ImagegenArgs, FunctionCallError> {
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
 }
 
-/// Builds the namespace function schema exposed to the model.
 fn imagegen_tool_spec() -> ToolSpec {
-    let mut schema_value = serde_json::to_value(
-        SchemaSettings::draft2019_09()
-            .with(|settings| settings.inline_subschemas = true)
-            .into_generator()
-            .into_root_schema_for::<ImagegenArgs>(),
-    )
-    .unwrap_or_else(|err| panic!("imagegen schema should serialize: {err}"));
-    let Value::Object(ref mut schema) = schema_value else {
-        unreachable!("imagegen root schema must be an object");
-    };
-    let mut input_schema = Map::new();
-    for key in ["properties", "required", "type", "additionalProperties"] {
-        if let Some(value) = schema.remove(key) {
-            input_schema.insert(key.to_string(), value);
-        }
-    }
-    ToolSpec::Namespace(ResponsesApiNamespace {
-        name: IMAGE_GEN_NAMESPACE.to_string(),
-        description: default_namespace_description(IMAGE_GEN_NAMESPACE),
-        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
-            name: IMAGEGEN_TOOL_NAME.to_string(),
-            description: IMAGEGEN_DESCRIPTION.to_string(),
-            strict: false,
-            parameters: parse_tool_input_schema(&Value::Object(input_schema))
-                .unwrap_or_else(|err| panic!("imagegen input schema should parse: {err}")),
-            output_schema: None,
-            defer_loading: None,
-        })],
-    })
+    ToolSpec::Namespace(canonical_image_generation_namespace())
 }
 
 struct GeneratedImageOutput {

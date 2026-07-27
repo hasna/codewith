@@ -238,7 +238,7 @@ async fn code_mode_can_call_standalone_web_search() -> Result<()> {
         .mount(&server)
         .await;
 
-    responses::mount_sse_once(
+    let initial_mock = responses::mount_sse_once(
         &server,
         sse(vec![
             ev_response_created("resp-1"),
@@ -290,6 +290,22 @@ text(result);
     let test = builder.build(&server).await?;
 
     test.submit_turn("Search the web from code mode").await?;
+
+    let initial_request = initial_mock.single_request();
+    assert!(
+        initial_request.tool_by_name("web", "run").is_some(),
+        "hybrid Code Mode should retain direct web.run alongside nested access"
+    );
+    assert!(
+        !initial_request
+            .body_json()
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools
+                .iter()
+                .any(|tool| { tool.get("type").and_then(Value::as_str) == Some("web_search") })),
+        "legacy install should retain hosted replacement behavior"
+    );
 
     let search_request = server
         .received_requests()

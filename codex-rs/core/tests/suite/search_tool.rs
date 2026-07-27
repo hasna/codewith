@@ -11,6 +11,7 @@ use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
@@ -118,6 +119,311 @@ fn tool_search_output_has_namespace_child(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_tool_search_output_history_is_preserved_across_turns() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let server_tools = vec![json!({
+        "type": "namespace",
+        "name": "image_gen",
+        "description": "Server-owned reserved namespace declaration.",
+        "tools": [{
+            "type": "function",
+            "name": "imagegen",
+            "description": "Server-owned schema.",
+            "strict": false,
+            "defer_loading": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server_marker": {"type": "string"},
+                },
+                "required": ["server_marker"],
+                "additionalProperties": false,
+            },
+        }],
+    })];
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "tool_search_output",
+                        "call_id": null,
+                        "status": "completed",
+                        "execution": "server",
+                        "tools": server_tools,
+                    },
+                }),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    test.submit_turn("Run server-side tool search").await?;
+    test.submit_turn("Keep the server result in history")
+        .await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let outputs = requests[1].inputs_of_type("tool_search_output");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0]["execution"], "server");
+    assert_eq!(outputs[0]["tools"], json!(server_tools));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_client_tool_search_history_has_one_cumulative_request_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resumed-tool-search"),
+            ev_assistant_message("msg-resumed-tool-search", "done"),
+            ev_completed("resp-resumed-tool-search"),
+        ]),
+    )
+    .await;
+    let legacy_tool = |marker: &str| {
+        json!({
+            "type": "function",
+            "name": marker,
+            "description": "x".repeat(20_000),
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            },
+        })
+    };
+    let server_tools = vec![legacy_tool("server-history")];
+    let mut builder = test_codex();
+    let initial = builder.build(&server).await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    initial
+        .codex
+        .inject_response_items(vec![
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("parallel-oldest".to_string()),
+                status: Some("completed".to_string()),
+                execution: "client".to_string(),
+                arguments: json!({"query": "oldest"}),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("parallel-oldest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("oldest")],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("parallel-newest".to_string()),
+                status: Some("completed".to_string()),
+                execution: "client".to_string(),
+                arguments: json!({"query": "newest"}),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("parallel-newest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("newest")],
+            },
+        ])
+        .await?;
+    initial.codex.submit(Op::Shutdown).await?;
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete)
+    })
+    .await;
+
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+    resumed
+        .submit_turn("Resume with bounded tool search history")
+        .await?;
+
+    let request = response_mock.single_request();
+    let outputs = request.inputs_of_type("tool_search_output");
+    let client_outputs = outputs
+        .iter()
+        .filter(|output| output.get("execution").and_then(Value::as_str) == Some("client"))
+        .collect::<Vec<_>>();
+    let client_tools = client_outputs
+        .iter()
+        .flat_map(|output| {
+            output
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let aggregate_bytes = client_tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_vec(tool)
+                .expect("tool should serialize")
+                .len()
+        })
+        .sum::<usize>();
+    assert!(client_tools.len() <= codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS);
+    assert!(aggregate_bytes <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES);
+    assert!(
+        client_tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(Value::as_str) == Some("oldest")),
+        "persisted resume must preserve the previously sent oldest prefix"
+    );
+    let server_output = outputs
+        .iter()
+        .find(|output| output.get("execution").and_then(Value::as_str) == Some("server"))
+        .expect("server-owned output should remain in history");
+    assert_eq!(server_output["tools"], json!(server_tools));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parallel_and_repeated_tool_search_outputs_share_one_append_only_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parallel-search"),
+                ev_tool_search_call(
+                    "parallel-a",
+                    &json!({"query": "shared budget marker", "limit": 8}),
+                ),
+                ev_tool_search_call(
+                    "parallel-b",
+                    &json!({"query": "shared budget marker", "limit": 8}),
+                ),
+                ev_tool_search_call(
+                    "parallel-c",
+                    &json!({"query": "shared budget marker", "limit": 8}),
+                ),
+                ev_tool_search_call(
+                    "parallel-d",
+                    &json!({"query": "shared budget marker", "limit": 8}),
+                ),
+                ev_completed("resp-parallel-search"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-repeated-search"),
+                ev_tool_search_call(
+                    "repeated",
+                    &json!({"query": "shared budget marker", "limit": 1}),
+                ),
+                ev_completed("resp-repeated-search"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-budget-done"),
+                ev_assistant_message("msg-budget-done", "done"),
+                ev_completed("resp-budget-done"),
+            ]),
+        ],
+    )
+    .await;
+    let dynamic_tools = (0..9)
+        .map(|index| DynamicToolSpec {
+            namespace: None,
+            name: format!("budget_tool_{index}"),
+            description: format!("Shared budget marker tool {index}."),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: true,
+        })
+        .collect();
+    let mut builder = test_codex().with_config(configure_search_capable_model);
+    let base_test = builder.build(&server).await?;
+    let new_thread = base_test
+        .thread_manager
+        .start_thread_with_tools(base_test.config.clone(), dynamic_tools)
+        .await?;
+    let mut test = base_test;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
+
+    test.submit_turn("Exercise parallel and repeated discovery")
+        .await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    let parallel_outputs = requests[1]
+        .inputs_of_type("tool_search_output")
+        .into_iter()
+        .filter(|output| output.get("execution").and_then(Value::as_str) == Some("client"))
+        .collect::<Vec<_>>();
+    let parallel_tool_count = parallel_outputs
+        .iter()
+        .filter_map(|output| output.get("tools").and_then(Value::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    assert_eq!(
+        parallel_tool_count,
+        codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS,
+        "parallel outputs must share one cumulative result budget"
+    );
+    assert!(
+        parallel_outputs.iter().take(2).all(|output| output["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())),
+        "one default search must not exhaust discovery for the next search"
+    );
+
+    let repeated_outputs = requests[2]
+        .inputs_of_type("tool_search_output")
+        .into_iter()
+        .filter(|output| output.get("execution").and_then(Value::as_str) == Some("client"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &repeated_outputs[..parallel_outputs.len()],
+        parallel_outputs.as_slice(),
+        "later search output must not mutate the previously sent request prefix"
+    );
+    let repeated = repeated_outputs
+        .iter()
+        .find(|output| output.get("call_id").and_then(Value::as_str) == Some("repeated"))
+        .expect("repeated output should be present");
+    assert_eq!(repeated["tools"], json!([]));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_tool_enabled_by_default_adds_tool_search() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -164,7 +470,12 @@ async fn search_tool_enabled_by_default_adds_tool_search() -> Result<()> {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query for deferred tools."},
-                    "limit": {"type": "number", "description": "Maximum number of tools to return. Defaults to 8."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of tools to return. Defaults to 8.",
+                        "minimum": 1,
+                        "maximum": 8
+                    },
                 },
                 "required": ["query"],
                 "additionalProperties": false,
