@@ -5,15 +5,16 @@ use anyhow::Result;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
-use codex_image_generation_extension::install as install_image_generation_extension;
+use codex_image_generation_extension::install_with_handle as install_image_generation_extension;
 use codex_login::CodexAuth;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_web_search_extension::install as install_web_search_extension;
+use codex_web_search_extension::install_with_handle as install_web_search_extension;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
@@ -26,8 +27,16 @@ const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 fn responses_extensions(auth: &CodexAuth) -> Arc<ExtensionRegistry<Config>> {
     let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
     let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
-    install_web_search_extension(&mut extension_builder, Arc::clone(&auth_manager));
-    install_image_generation_extension(&mut extension_builder, auth_manager);
+    let web_search =
+        install_web_search_extension(&mut extension_builder, Arc::clone(&auth_manager));
+    assert!(
+        extension_builder.assign_host_tool_capability(&web_search, HostToolCapability::WebSearch)
+    );
+    let image_generation = install_image_generation_extension(&mut extension_builder, auth_manager);
+    assert!(
+        extension_builder
+            .assign_host_tool_capability(&image_generation, HostToolCapability::ImageGeneration,)
+    );
     Arc::new(extension_builder.build())
 }
 
@@ -93,9 +102,12 @@ async fn responses_lite_uses_standalone_web_search_and_hides_unavailable_image_g
         Some("true")
     );
     let body = request.body_json();
-    request
+    let web_run = request
         .tool_by_name("web", "run")
         .context("Responses Lite should expose standalone web search")?;
+    let canonical_web = serde_json::to_value(codex_tools::canonical_web_search_namespace())
+        .context("canonical web namespace should serialize")?;
+    assert_eq!(web_run, canonical_web["tools"][0]);
     assert!(request.tool_by_name("images", "imagegen").is_none());
     let tools = body["tools"]
         .as_array()

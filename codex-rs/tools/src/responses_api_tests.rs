@@ -9,6 +9,7 @@ use crate::JsonSchema;
 use crate::ToolDefinition;
 use crate::ToolName;
 use crate::ToolSpec;
+use crate::create_tools_json_for_responses_api;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -169,6 +170,58 @@ fn loadable_tool_spec_namespace_serializes_with_deferred_child_tools() {
     );
 }
 
+#[test]
+fn canonical_generic_web_run_serializes_for_chat_and_responses() {
+    let namespace = ToolSpec::built_in_web_search()
+        .namespace()
+        .expect("canonical web search namespace")
+        .clone();
+    let generic = ToolSpec::Namespace(namespace);
+
+    let serialized =
+        serde_json::to_value(&generic).expect("generic canonical web.run should serialize");
+    assert_eq!(serialized["type"], "namespace");
+    assert_eq!(serialized["name"], "web");
+    assert_eq!(serialized["tools"][0]["name"], "run");
+    assert_eq!(
+        create_tools_json_for_responses_api(&[generic])
+            .expect("canonical generic web.run should pass Responses validation"),
+        vec![serialized]
+    );
+}
+
+#[test]
+fn canonical_web_run_schema_is_deep_pinned() {
+    let namespace = super::canonical_web_search_namespace();
+    let [ResponsesApiNamespaceTool::Function(tool)] = namespace.tools.as_slice() else {
+        panic!("canonical web namespace should contain exactly one function");
+    };
+    let expected: serde_json::Value =
+        serde_json::from_str(codex_tool_contracts::WEB_RUN_SCHEMA_JSON)
+            .expect("valid pinned schema");
+
+    assert_eq!(
+        serde_json::to_value(&tool.parameters).expect("serialize canonical schema"),
+        expected
+    );
+}
+
+#[test]
+fn canonical_image_generation_schema_is_exact() {
+    let namespace = super::canonical_image_generation_namespace();
+    let [ResponsesApiNamespaceTool::Function(tool)] = namespace.tools.as_slice() else {
+        panic!("canonical images namespace should contain exactly one function");
+    };
+
+    assert_eq!(
+        serde_json::to_value(&tool.parameters).expect("serialize image schema"),
+        serde_json::from_str::<serde_json::Value>(
+            codex_tool_contracts::IMAGE_GENERATION_SCHEMA_JSON
+        )
+        .expect("valid pinned image schema")
+    );
+}
+
 fn namespace_tool(namespace: &str, tool_name: &str) -> ResponsesApiNamespace {
     ResponsesApiNamespace {
         name: namespace.to_string(),
@@ -190,21 +243,19 @@ fn namespace_tool(namespace: &str, tool_name: &str) -> ResponsesApiNamespace {
 
 #[test]
 fn namespace_serialization_rejects_reserved_image_gen_for_direct_and_deferred_tools() {
-    let results = [
-        serde_json::to_value(ToolSpec::Namespace(namespace_tool("image_gen", "imagegen"))),
-        serde_json::to_value(LoadableToolSpec::Namespace(namespace_tool(
-            "image_gen",
-            "imagegen",
-        ))),
-    ];
+    let namespace = namespace_tool("image_gen", "imagegen");
+    serde_json::to_value(ToolSpec::Namespace(namespace.clone()))
+        .expect("generic serialization must remain available for Chat transports");
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Namespace(namespace.clone())])
+        .expect_err("image_gen.imagegen must fail closed at the Responses boundary");
+    assert!(
+        err.to_string().contains("image_gen.imagegen"),
+        "error should identify the reserved wire name: {err}"
+    );
 
-    for result in results {
-        let err = result.expect_err("image_gen.imagegen must fail closed before reaching the wire");
-        assert!(
-            err.to_string().contains("image_gen.imagegen"),
-            "error should identify the reserved wire name: {err}"
-        );
-    }
+    let deferred = serde_json::to_value(LoadableToolSpec::Namespace(namespace))
+        .expect("deferred declarations use generic serialization");
+    assert!(crate::is_forbidden_reserved_namespace_value(&deferred));
 }
 
 #[test]
@@ -277,21 +328,22 @@ fn built_in_web_search_serializes_reserved_namespace_with_typed_provenance() {
 
 #[test]
 fn namespace_serialization_rejects_other_tools_in_reserved_namespace() {
-    let err = serde_json::to_value(ToolSpec::Namespace(namespace_tool("web", "imagegen")))
-        .expect_err("web.imagegen must not inherit the web.run exception");
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Namespace(namespace_tool(
+        "web", "imagegen",
+    ))])
+    .expect_err("web.imagegen must not inherit the web.run exception");
 
     assert!(err.to_string().contains("web.imagegen"), "{err}");
 }
 
 #[test]
 fn namespace_serialization_rejects_name_only_web_run_impostors() {
-    let results = [
-        serde_json::to_value(ToolSpec::Namespace(namespace_tool("web", "run"))),
-        serde_json::to_value(LoadableToolSpec::Namespace(namespace_tool("web", "run"))),
-    ];
+    let namespace = namespace_tool("web", "run");
+    let err = create_tools_json_for_responses_api(&[ToolSpec::Namespace(namespace.clone())])
+        .expect_err("generic web.run must not bypass reserved schema validation");
+    assert!(err.to_string().contains("web.run"), "{err}");
 
-    for result in results {
-        let err = result.expect_err("generic web.run must not bypass reserved schema validation");
-        assert!(err.to_string().contains("web.run"), "{err}");
-    }
+    let deferred = serde_json::to_value(LoadableToolSpec::Namespace(namespace))
+        .expect("deferred declarations use generic serialization");
+    assert!(crate::is_forbidden_reserved_namespace_value(&deferred));
 }

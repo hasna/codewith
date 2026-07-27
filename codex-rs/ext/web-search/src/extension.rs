@@ -126,10 +126,20 @@ impl ToolContributor for WebSearchExtension {
 }
 
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
+    install_with_handle(registry, auth_manager);
+}
+
+/// Installs web search and returns the exact contributor handle for host policy.
+pub fn install_with_handle(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+) -> Arc<dyn ToolContributor> {
     let extension = Arc::new(WebSearchExtension { auth_manager });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
-    registry.tool_contributor(extension);
+    let contributor: Arc<dyn ToolContributor> = extension;
+    registry.tool_contributor(Arc::clone(&contributor));
+    contributor
 }
 
 #[cfg(test)]

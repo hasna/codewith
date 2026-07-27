@@ -7,6 +7,7 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -17,7 +18,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
-use codex_web_search_extension::install as install_web_search_extension;
+use codex_web_search_extension::install_with_handle as install_web_search_extension;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::AppsTestToolLoading;
 use core_test_support::apps_test_server::DIRECT_CALENDAR_APP_ONLY_TOOL;
@@ -268,7 +269,10 @@ text(result);
     let auth = CodexAuth::from_api_key("dummy");
     let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
     let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
-    install_web_search_extension(&mut extension_builder, auth_manager);
+    let web_search = install_web_search_extension(&mut extension_builder, auth_manager);
+    assert!(
+        extension_builder.assign_host_tool_capability(&web_search, HostToolCapability::WebSearch)
+    );
     let mut builder = test_codex()
         .with_auth(auth)
         .with_extensions(Arc::new(extension_builder.build()))

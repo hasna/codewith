@@ -12,6 +12,8 @@ use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
+use codex_tools::TOOL_SEARCH_MAX_PROJECTION_BYTES;
+use codex_tools::TOOL_SEARCH_MAX_RESULTS;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
@@ -31,6 +33,9 @@ impl ToolSearchHandler {
         let mut entries = Vec::with_capacity(search_infos.len());
         let mut search_source_infos = Vec::new();
         for search_info in search_infos {
+            if search_info.projection_size_bytes() > TOOL_SEARCH_MAX_PROJECTION_BYTES {
+                continue;
+            }
             entries.push(search_info.entry);
             if let Some(source_info) = search_info.source_info {
                 search_source_infos.push(source_info);
@@ -114,6 +119,11 @@ impl ToolSearchHandler {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
+        if limit > TOOL_SEARCH_MAX_RESULTS {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "limit must not exceed {TOOL_SEARCH_MAX_RESULTS}"
+            )));
+        }
         let results = self
             .search_engine
             .search(query, limit)
@@ -127,9 +137,21 @@ impl ToolSearchHandler {
         &self,
         results: impl IntoIterator<Item = &'a ToolSearchEntry>,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
-        Ok(coalesce_loadable_tool_specs(
-            results.into_iter().map(|entry| entry.output.clone()),
-        ))
+        let mut output = Vec::new();
+        for entry in results.into_iter().take(TOOL_SEARCH_MAX_RESULTS) {
+            let candidate = coalesce_loadable_tool_specs(
+                output
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(entry.output.clone())),
+            );
+            let within_budget = serde_json::to_vec(&candidate)
+                .is_ok_and(|serialized| serialized.len() <= TOOL_SEARCH_MAX_PROJECTION_BYTES);
+            if within_budget {
+                output = candidate;
+            }
+        }
+        Ok(output)
     }
 }
 
@@ -248,6 +270,69 @@ mod tests {
                 }),
             ],
         );
+    }
+
+    #[test]
+    fn search_output_is_bounded_by_result_count_and_serialized_bytes() {
+        let entries = (0..9)
+            .map(|index| ToolSearchEntry {
+                search_text: format!("bounded tool {index}"),
+                output: LoadableToolSpec::Function(ResponsesApiTool {
+                    name: format!("bounded_tool_{index}"),
+                    description: "x".repeat(6_000),
+                    strict: false,
+                    defer_loading: Some(true),
+                    parameters: codex_tools::JsonSchema::default(),
+                    output_schema: None,
+                }),
+            })
+            .collect::<Vec<_>>();
+        let handler = ToolSearchHandler::new(
+            entries
+                .iter()
+                .cloned()
+                .map(|entry| ToolSearchInfo {
+                    entry,
+                    source_info: None,
+                })
+                .collect(),
+        );
+
+        let output = handler
+            .search_output_tools(entries.iter())
+            .expect("bounded search output");
+        assert!(output.len() <= 8, "tool_search returned too many results");
+        assert!(
+            serde_json::to_vec(&output)
+                .expect("tool_search output should serialize")
+                .len()
+                <= 10_000,
+            "tool_search exceeded the aggregate context ceiling"
+        );
+    }
+
+    #[test]
+    fn search_rejects_limit_above_maximum() {
+        let entry = ToolSearchEntry {
+            search_text: "bounded tool".to_string(),
+            output: LoadableToolSpec::Function(ResponsesApiTool {
+                name: "bounded_tool".to_string(),
+                description: "Bounded tool.".to_string(),
+                strict: false,
+                defer_loading: Some(true),
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+            }),
+        };
+        let handler = ToolSearchHandler::new(vec![ToolSearchInfo {
+            entry,
+            source_info: None,
+        }]);
+
+        let error = handler
+            .search("bounded", 9)
+            .expect_err("tool_search must reject a limit above the protocol maximum");
+        assert!(error.to_string().contains("limit"));
     }
 
     fn tool_info(server_name: &str, tool_name: &str, description_prefix: &str) -> ToolInfo {

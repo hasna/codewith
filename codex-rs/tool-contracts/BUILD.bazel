@@ -1,0 +1,12 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "tool-contracts",
+    crate_name = "codex_tool_contracts",
+    compile_data = [
+        "image_generation_description.md",
+        "image_generation_schema.json",
+        "web_run_description.md",
+        "web_run_schema.json",
+    ],
+)

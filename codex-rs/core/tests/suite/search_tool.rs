@@ -118,6 +118,73 @@ fn tool_search_output_has_namespace_child(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_tool_search_output_history_is_preserved_across_turns() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let server_tools = vec![json!({
+        "type": "namespace",
+        "name": "image_gen",
+        "description": "Server-owned reserved namespace declaration.",
+        "tools": [{
+            "type": "function",
+            "name": "imagegen",
+            "description": "Server-owned schema.",
+            "strict": false,
+            "defer_loading": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server_marker": {"type": "string"},
+                },
+                "required": ["server_marker"],
+                "additionalProperties": false,
+            },
+        }],
+    })];
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "tool_search_output",
+                        "call_id": null,
+                        "status": "completed",
+                        "execution": "server",
+                        "tools": server_tools,
+                    },
+                }),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    test.submit_turn("Run server-side tool search").await?;
+    test.submit_turn("Keep the server result in history")
+        .await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let outputs = requests[1].inputs_of_type("tool_search_output");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0]["execution"], "server");
+    assert_eq!(outputs[0]["tools"], json!(server_tools));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_tool_enabled_by_default_adds_tool_search() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

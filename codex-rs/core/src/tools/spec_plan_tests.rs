@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use codex_config::ToolPolicy;
+use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -47,6 +48,7 @@ use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::policy::test_mcp_policy;
+use crate::tools::router::ExtensionToolRegistration;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 
@@ -56,6 +58,7 @@ struct ToolPlanInputs {
     deferred_mcp_tools: Option<Vec<ToolInfo>>,
     discoverable_tools: Option<Vec<DiscoverableTool>>,
     extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
+    host_tool_capabilities: Vec<(ToolName, HostToolCapability)>,
     dynamic_tools: Vec<DynamicToolSpec>,
 }
 
@@ -193,13 +196,31 @@ async fn probe_with(
 ) -> ToolPlanProbe {
     let (_session, mut turn) = make_session_and_context().await;
     configure_turn(&mut turn);
+    let extension_tools = inputs
+        .extension_tool_executors
+        .into_iter()
+        .map(|executor| {
+            let tool_name = executor.tool_name();
+            let host_capability =
+                inputs
+                    .host_tool_capabilities
+                    .iter()
+                    .find_map(|(expected_name, capability)| {
+                        (expected_name == &tool_name).then_some(*capability)
+                    });
+            ExtensionToolRegistration {
+                executor,
+                host_capability,
+            }
+        })
+        .collect();
     let router = ToolRouter::from_turn_context(
         &turn,
         ToolRouterParams {
             mcp_tools: inputs.mcp_tools,
             deferred_mcp_tools: inputs.deferred_mcp_tools,
             discoverable_tools: inputs.discoverable_tools,
-            extension_tool_executors: inputs.extension_tool_executors,
+            extension_tools,
             dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
     );
@@ -1696,8 +1717,12 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
     )
     .await;
-    code_mode_only_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
-    code_mode_only_standalone_imagegen.assert_visible_lacks(&["image_generation", "images"]);
+    code_mode_only_standalone_imagegen.assert_visible_contains(&[
+        "exec",
+        "wait",
+        "image_generation",
+    ]);
+    code_mode_only_standalone_imagegen.assert_visible_lacks(&["images"]);
     code_mode_only_standalone_imagegen.assert_registered_contains(&["imagesimagegen"]);
 
     let code_mode_standalone_imagegen = probe_with(
@@ -1722,18 +1747,49 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
     )
     .await;
-    code_mode_standalone_imagegen.assert_visible_contains(&["exec", "wait"]);
-    code_mode_standalone_imagegen.assert_visible_lacks(&["image_generation", "images"]);
+    code_mode_standalone_imagegen.assert_visible_contains(&["exec", "wait", "image_generation"]);
+    code_mode_standalone_imagegen.assert_visible_lacks(&["images"]);
     code_mode_standalone_imagegen.assert_registered_contains(&["imagesimagegen"]);
     let serialized_tools = code_mode_standalone_imagegen.serialized_tools();
     assert!(
-        !has_serialized_tool_type(&serialized_tools, "image_generation"),
-        "normal CodeMode should not expose hosted image generation when nested imagegen is registered: {serialized_tools:?}"
+        has_serialized_tool_type(&serialized_tools, "image_generation"),
+        "an ordinary images.imagegen contributor must not suppress hosted image generation: \
+         {serialized_tools:?}"
     );
     assert!(
         !has_serialized_namespace_function(&serialized_tools, "images", "imagegen"),
         "normal CodeMode should not expose reserved images.imagegen top-level: {serialized_tools:?}"
     );
+
+    let trusted_code_mode_imagegen = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::CodeMode,
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = false;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("images", "imagegen"),
+                HostToolCapability::ImageGeneration,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+    trusted_code_mode_imagegen.assert_visible_contains(&["exec", "wait"]);
+    trusted_code_mode_imagegen.assert_visible_lacks(&["image_generation", "images"]);
+    trusted_code_mode_imagegen.assert_registered_contains(&["imagesimagegen"]);
 
     let excluded_code_mode_imagegen = probe_with(
         |turn| {
@@ -1911,11 +1967,15 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
     )
     .await;
-    standalone_web_search.assert_visible_lacks(&["web_search"]);
+    standalone_web_search.assert_visible_contains(&["web_search"]);
     standalone_web_search.assert_registered_contains(&["webrun"]);
     assert!(
         has_serialized_namespace_function(&standalone_web_search.serialized_tools(), "web", "run"),
         "canonical standalone web.run should remain model-visible"
+    );
+    assert!(
+        has_serialized_tool_type(&standalone_web_search.serialized_tools(), "web_search"),
+        "an ordinary contributor must not gain hosted replacement authority from its spec"
     );
 
     let unsupported_provider = probe(|turn| {
@@ -2315,7 +2375,7 @@ async fn infinity_agent_policy_rejects_dynamic_runtime_with_valid_mcp_manifest()
             mcp_tools: Some(tools),
             deferred_mcp_tools: None,
             discoverable_tools: None,
-            extension_tool_executors: Vec::new(),
+            extension_tools: Vec::new(),
             dynamic_tools: &dynamic_tools,
         },
     );
@@ -2345,7 +2405,7 @@ async fn infinity_agent_policy_rejects_provider_without_namespace_support() {
             mcp_tools: Some(tools),
             deferred_mcp_tools: None,
             discoverable_tools: None,
-            extension_tool_executors: Vec::new(),
+            extension_tools: Vec::new(),
             dynamic_tools: &[],
         },
     );
@@ -2534,37 +2594,44 @@ async fn standalone_imagegen_never_uses_reserved_image_gen_namespace_on_response
     probe.assert_registered_lacks(&["image_genimagegen"]);
 }
 
-#[test]
-fn namespace_guard_allows_non_reserved_and_typed_built_in_specs() {
+#[tokio::test]
+async fn namespace_guard_allows_non_reserved_and_canonical_hosted_specs() {
+    let (_session, turn) = make_session_and_context().await;
     // Non-reserved first-party namespaces (e.g. the renamed image tool) pass.
     assert!(super::namespace_spec_is_safe_for_wire(
+        &turn,
         &reserved_namespace_spec("images")
     ));
-    // Standalone web search carries explicit built-in provenance.
+    // The exact canonical web schema is the only reserved namespace accepted.
     assert!(super::namespace_spec_is_safe_for_wire(
+        &turn,
         &ToolSpec::built_in_web_search()
     ));
     // Non-namespace specs are never affected by the guard.
     assert!(super::namespace_spec_is_safe_for_wire(
+        &turn,
         &ToolSpec::ImageGeneration {
             output_format: "png".to_string(),
         }
     ));
 }
 
-#[test]
-#[should_panic(expected = "reserved")]
-fn namespace_guard_fails_loud_on_name_only_reserved_tool() {
-    super::namespace_spec_is_safe_for_wire(&reserved_namespace_tool_spec("web", "run"));
+#[tokio::test]
+async fn namespace_guard_rejects_name_only_reserved_tool() {
+    let (_session, turn) = make_session_and_context().await;
+    assert!(!super::namespace_spec_is_safe_for_wire(
+        &turn,
+        &reserved_namespace_tool_spec("web", "run"),
+    ));
 }
 
-#[test]
-#[should_panic(expected = "reserved")]
-fn namespace_guard_fails_loud_on_reserved_image_gen_namespace() {
-    // In debug/test builds the guard fires a debug_assert so a reintroduced
-    // reserved namespace (e.g. a second registration path) is caught in CI
-    // instead of shipping a request the API rejects.
-    let _ = super::namespace_spec_is_safe_for_wire(&reserved_namespace_spec("image_gen"));
+#[tokio::test]
+async fn namespace_guard_rejects_reserved_image_gen_namespace() {
+    let (_session, turn) = make_session_and_context().await;
+    assert!(!super::namespace_spec_is_safe_for_wire(
+        &turn,
+        &reserved_namespace_spec("image_gen"),
+    ));
 }
 
 #[tokio::test]
@@ -2688,6 +2755,30 @@ async fn generic_mcp_web_run_does_not_suppress_hosted_fallback() {
 }
 
 #[tokio::test]
+async fn rejected_mcp_web_run_does_not_shadow_canonical_extension_in_responses_lite() {
+    let probe = probe_with(
+        |turn| {
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+            turn.model_info.use_responses_lite = true;
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("impostor", "web", "run")]),
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["webrun"]);
+    assert!(
+        has_serialized_namespace_function(&probe.serialized_tools(), "web", "run"),
+        "the rejected MCP collision must not reserve web.run before extension admission"
+    );
+}
+
+#[tokio::test]
 async fn reserved_deferred_mcp_is_not_advertised_through_tool_search() {
     let probe = probe_with(
         |turn| {
@@ -2752,6 +2843,10 @@ async fn admitted_web_run_spec_is_snapshotted_once() {
             extension_tool_executors: vec![Arc::new(DriftingWebRunExtensionTool {
                 spec_calls: Arc::clone(&spec_calls),
             })],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
             ..Default::default()
         },
     )

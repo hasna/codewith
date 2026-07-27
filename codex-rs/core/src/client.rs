@@ -859,11 +859,23 @@ impl ModelClient {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
         for item in &mut input {
-            if let ResponseItem::ToolSearchOutput { tools, .. } = item {
+            if let ResponseItem::ToolSearchOutput {
+                execution, tools, ..
+            } = item
+                && execution == "client"
+            {
                 tools.retain(|tool| !codex_tools::is_forbidden_reserved_namespace_value(tool));
             }
         }
-        let mut tools = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools = if self.state.provider.info().wire_api == WireApi::Chat {
+            prompt
+                .tools
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            create_tools_json_for_responses_api(&prompt.tools)?
+        };
         if !model_info.supports_search_tool {
             tools.retain(|tool| {
                 !matches!(

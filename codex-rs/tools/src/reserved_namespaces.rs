@@ -13,8 +13,8 @@
 //! Because that error rejects the *whole* request, a single mis-namespaced tool
 //! breaks every turn in the session. To prevent this we (1) reject
 //! dynamic/user-supplied tools that try to use a reserved namespace and (2)
-//! fail serialization for any generic first-party or deferred tool under a
-//! reserved namespace. Trusted built-ins use dedicated typed representations.
+//! validate canonical reserved schemas at the Responses request boundary.
+//! Chat transports may safely flatten these names.
 
 use serde_json::Value;
 
@@ -40,6 +40,9 @@ pub const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
     "web",
 ];
 
+/// Reserved namespaces that retain a canonical first-party representation.
+pub const FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES: &[&str] = &["web"];
+
 /// True if `namespace` is reserved by the Responses API for a built-in tool.
 pub fn is_reserved_responses_namespace(namespace: &str) -> bool {
     RESERVED_RESPONSES_NAMESPACES.contains(&namespace)
@@ -50,15 +53,10 @@ pub fn is_reserved_responses_namespace(namespace: &str) -> bool {
 ///
 /// This is the regression guard for the `image_gen.imagegen` 400: a
 /// first-party / extension / code-mode tool must never be assembled under
-/// `image_gen` (or any other reserved namespace). Trusted built-ins use their
-/// own typed `ToolSpec` representation instead of this generic namespace path.
+/// `image_gen` (or any other reserved namespace without a canonical exception).
 pub fn is_forbidden_first_party_namespace(namespace: &str) -> bool {
     is_reserved_responses_namespace(namespace)
-}
-
-/// True if a custom tool is declared under a reserved Responses namespace.
-pub fn is_forbidden_first_party_namespace_tool(namespace: &str, _tool_name: &str) -> bool {
-    is_reserved_responses_namespace(namespace)
+        && !FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES.contains(&namespace)
 }
 
 /// True if a serialized generic namespace declaration uses a reserved name.
@@ -76,19 +74,7 @@ pub fn is_forbidden_reserved_namespace_value(value: &Value) -> bool {
     if !is_reserved_responses_namespace(namespace) {
         return false;
     }
-    let Some(tools) = value.get("tools").and_then(Value::as_array) else {
-        return true;
-    };
-    tools.is_empty()
-        || tools.iter().any(|tool| {
-            tool.get("type").and_then(Value::as_str) != Some("function")
-                || tool
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_none_or(|tool_name| {
-                        is_forbidden_first_party_namespace_tool(namespace, tool_name)
-                    })
-        })
+    namespace != "web" || !crate::is_canonical_web_search_namespace_value(value)
 }
 
 #[cfg(test)]
@@ -102,11 +88,9 @@ mod tests {
     }
 
     #[test]
-    fn web_is_reserved_for_generic_namespace_specs() {
+    fn web_retains_its_canonical_first_party_exception() {
         assert!(is_reserved_responses_namespace("web"));
-        assert!(is_forbidden_first_party_namespace("web"));
-        assert!(is_forbidden_first_party_namespace_tool("web", "run"));
-        assert!(is_forbidden_first_party_namespace_tool("web", "imagegen"));
+        assert!(!is_forbidden_first_party_namespace("web"));
     }
 
     #[test]

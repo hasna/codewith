@@ -33,6 +33,7 @@ url = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 assert_matches = { workspace = true }
+codex-tool-contracts = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }

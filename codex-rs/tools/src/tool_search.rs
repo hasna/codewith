@@ -53,7 +53,6 @@ impl ToolSearchInfo {
             }
             ToolSpec::ToolSearch { .. }
             | ToolSpec::ImageGeneration { .. }
-            | ToolSpec::BuiltInWebSearch(_)
             | ToolSpec::WebSearch { .. }
             | ToolSpec::AnthropicWebSearch { .. }
             | ToolSpec::OpenRouterWebSearch { .. }
@@ -72,6 +71,40 @@ impl ToolSearchInfo {
             source_info,
         })
     }
+
+    pub fn is_valid_projection_for(&self, tool_name: &ToolName, spec: &ToolSpec) -> bool {
+        let identity_matches = match (&self.entry.output, spec) {
+            (LoadableToolSpec::Function(output), ToolSpec::Function(_)) => {
+                tool_name.namespace.is_none() && output.name == tool_name.name
+            }
+            (LoadableToolSpec::Namespace(output), ToolSpec::Namespace(_)) => {
+                let [ResponsesApiNamespaceTool::Function(tool)] = output.tools.as_slice() else {
+                    return false;
+                };
+                tool_name.namespace.as_deref() == Some(output.name.as_str())
+                    && tool.name == tool_name.name
+            }
+            _ => false,
+        };
+        identity_matches && self.projection_size_bytes() <= crate::TOOL_SEARCH_MAX_PROJECTION_BYTES
+    }
+
+    pub fn projection_size_bytes(&self) -> usize {
+        let output_bytes = serde_json::to_vec(&self.entry.output)
+            .map_or(crate::TOOL_SEARCH_MAX_PROJECTION_BYTES + 1, |value| {
+                value.len()
+            });
+        let source_bytes = self.source_info.as_ref().map_or(0, |source| {
+            source.name.len()
+                + source
+                    .description
+                    .as_ref()
+                    .map_or(0, std::string::String::len)
+        });
+        output_bytes
+            .saturating_add(self.entry.search_text.len())
+            .saturating_add(source_bytes)
+    }
 }
 
 pub fn default_tool_search_text(tool_name: &ToolName, spec: &ToolSpec) -> String {
@@ -85,15 +118,6 @@ pub fn default_tool_search_text(tool_name: &ToolName, spec: &ToolSpec) -> String
     match spec {
         ToolSpec::Function(tool) => append_function_search_text(tool, &mut parts),
         ToolSpec::Namespace(namespace) => {
-            push_search_part(&mut parts, namespace.name.clone());
-            push_search_part(&mut parts, namespace.description.clone());
-            for tool in &namespace.tools {
-                let ResponsesApiNamespaceTool::Function(tool) = tool;
-                append_function_search_text(tool, &mut parts);
-            }
-        }
-        ToolSpec::BuiltInWebSearch(web_search) => {
-            let namespace = web_search.namespace();
             push_search_part(&mut parts, namespace.name.clone());
             push_search_part(&mut parts, namespace.description.clone());
             for tool in &namespace.tools {

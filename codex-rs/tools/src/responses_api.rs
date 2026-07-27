@@ -1,17 +1,18 @@
 use crate::JsonSchema;
 use crate::ToolDefinition;
 use crate::ToolName;
+use crate::ToolSpec;
 use crate::parse_dynamic_tool;
 use crate::parse_mcp_tool;
+use crate::parse_tool_input_schema_without_compaction;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_tool_contracts::IMAGE_GENERATION_DESCRIPTION;
+use codex_tool_contracts::IMAGE_GENERATION_SCHEMA_JSON;
+use codex_tool_contracts::WEB_RUN_DESCRIPTION;
+use codex_tool_contracts::WEB_RUN_SCHEMA_JSON;
 use serde::Deserialize;
 use serde::Serialize;
-use serde::Serializer;
-use serde::ser::Error as _;
-use serde::ser::SerializeStruct;
 use serde_json::Value;
-
-const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FreeformTool {
@@ -52,116 +53,63 @@ pub enum LoadableToolSpec {
     Namespace(ResponsesApiNamespace),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiNamespace {
     pub name: String,
     pub description: String,
     pub tools: Vec<ResponsesApiNamespaceTool>,
 }
 
-/// A namespace spec whose wire identity is reserved for the built-in web search
-/// implementation.
-///
-/// The fields are private so generic extension, MCP, deferred, and persisted
-/// namespace specs cannot gain built-in provenance from a matching name alone.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BuiltInWebSearchToolSpec {
-    namespace: ResponsesApiNamespace,
-}
-
-impl BuiltInWebSearchToolSpec {
-    pub(crate) fn new() -> Self {
-        let parameters = crate::parse_tool_input_schema_without_compaction(
-            &codex_api::search_commands_tool_schema(),
-        )
+pub fn canonical_web_search_namespace() -> ResponsesApiNamespace {
+    let schema = serde_json::from_str(WEB_RUN_SCHEMA_JSON)
+        .unwrap_or_else(|err| panic!("canonical web-search schema should deserialize: {err}"));
+    let parameters = parse_tool_input_schema_without_compaction(&schema)
         .unwrap_or_else(|err| panic!("canonical web-search schema should parse: {err}"));
-        Self {
-            namespace: ResponsesApiNamespace {
-                name: "web".to_string(),
-                description: default_namespace_description("web"),
-                tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
-                    name: "run".to_string(),
-                    description: WEB_RUN_DESCRIPTION.to_string(),
-                    strict: false,
-                    defer_loading: None,
-                    parameters,
-                    output_schema: None,
-                })],
-            },
-        }
-    }
-
-    pub fn namespace(&self) -> &ResponsesApiNamespace {
-        &self.namespace
-    }
-
-    pub(crate) fn set_run_description(&mut self, description: String) {
-        let [ResponsesApiNamespaceTool::Function(tool)] = self.namespace.tools.as_mut_slice()
-        else {
-            unreachable!("built-in web search must contain exactly one function");
-        };
-        tool.description = description;
+    ResponsesApiNamespace {
+        name: "web".to_string(),
+        description: default_namespace_description("web"),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "run".to_string(),
+            description: WEB_RUN_DESCRIPTION.to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters,
+            output_schema: None,
+        })],
     }
 }
 
-impl ResponsesApiNamespace {
-    /// Returns the first custom tool under a reserved namespace, or `*` when a
-    /// reserved namespace has no declared tools.
-    pub fn forbidden_reserved_tool_name(&self) -> Option<&str> {
-        self.tools
-            .iter()
-            .find_map(|tool| match tool {
-                ResponsesApiNamespaceTool::Function(tool)
-                    if crate::is_forbidden_first_party_namespace_tool(&self.name, &tool.name) =>
-                {
-                    Some(tool.name.as_str())
-                }
-                ResponsesApiNamespaceTool::Function(_) => None,
-            })
-            .or_else(|| {
-                (self.tools.is_empty() && crate::is_reserved_responses_namespace(&self.name))
-                    .then_some("*")
-            })
+pub fn canonical_image_generation_namespace() -> ResponsesApiNamespace {
+    let schema = serde_json::from_str(IMAGE_GENERATION_SCHEMA_JSON).unwrap_or_else(|err| {
+        panic!("canonical image-generation schema should deserialize: {err}")
+    });
+    let parameters = parse_tool_input_schema_without_compaction(&schema)
+        .unwrap_or_else(|err| panic!("canonical image-generation schema should parse: {err}"));
+    ResponsesApiNamespace {
+        name: "images".to_string(),
+        description: default_namespace_description("images"),
+        tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+            name: "imagegen".to_string(),
+            description: IMAGE_GENERATION_DESCRIPTION.to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters,
+            output_schema: None,
+        })],
     }
 }
 
-impl Serialize for ResponsesApiNamespace {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if let Some(tool_name) = self.forbidden_reserved_tool_name() {
-            return Err(S::Error::custom(format!(
-                "refusing to serialize custom tool under reserved Responses namespace: {}.{tool_name}",
-                self.name
-            )));
-        }
-
-        serialize_namespace(self, serializer)
-    }
+pub fn is_canonical_web_search_namespace(namespace: &ResponsesApiNamespace) -> bool {
+    namespace == &canonical_web_search_namespace()
 }
 
-impl Serialize for BuiltInWebSearchToolSpec {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_namespace(&self.namespace, serializer)
-    }
+pub fn is_canonical_image_generation_namespace(namespace: &ResponsesApiNamespace) -> bool {
+    namespace == &canonical_image_generation_namespace()
 }
 
-fn serialize_namespace<S>(
-    namespace: &ResponsesApiNamespace,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let mut state = serializer.serialize_struct("ResponsesApiNamespace", 3)?;
-    state.serialize_field("name", &namespace.name)?;
-    state.serialize_field("description", &namespace.description)?;
-    state.serialize_field("tools", &namespace.tools)?;
-    state.end()
+pub fn is_canonical_web_search_namespace_value(value: &Value) -> bool {
+    serde_json::to_value(ToolSpec::Namespace(canonical_web_search_namespace()))
+        .is_ok_and(|canonical| canonical == *value)
 }
 
 pub fn default_namespace_description(namespace_name: &str) -> String {

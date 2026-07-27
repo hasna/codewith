@@ -9,6 +9,7 @@ use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::spec_plan::build_tool_router;
+use codex_extension_api::HostToolCapability;
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
@@ -47,8 +48,14 @@ pub(crate) struct ToolRouterParams<'a> {
     pub(crate) mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) deferred_mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) discoverable_tools: Option<Vec<DiscoverableTool>>,
-    pub(crate) extension_tool_executors: Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>>,
+    pub(crate) extension_tools: Vec<ExtensionToolRegistration>,
     pub(crate) dynamic_tools: &'a [DynamicToolSpec],
+}
+
+#[derive(Clone)]
+pub(crate) struct ExtensionToolRegistration {
+    pub(crate) executor: Arc<dyn ToolExecutor<ExtensionToolCall>>,
+    pub(crate) host_capability: Option<HostToolCapability>,
 }
 
 impl ToolRouter {
@@ -331,19 +338,27 @@ fn validate_infinity_agent_arguments(arguments: &str) -> Result<(), FunctionCall
     )
 }
 
-pub(crate) fn extension_tool_executors(
-    session: &Session,
-) -> Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>> {
+pub(crate) fn extension_tool_executors(session: &Session) -> Vec<ExtensionToolRegistration> {
     session
         .services
         .extensions
         .tool_contributors()
         .iter()
         .flat_map(|contributor| {
-            contributor.tools(
-                &session.services.session_extension_data,
-                &session.services.thread_extension_data,
-            )
+            let capability = session
+                .services
+                .extensions
+                .host_tool_capability(contributor);
+            contributor
+                .tools(
+                    &session.services.session_extension_data,
+                    &session.services.thread_extension_data,
+                )
+                .into_iter()
+                .map(move |executor| ExtensionToolRegistration {
+                    host_capability: capability,
+                    executor,
+                })
         })
         .collect()
 }

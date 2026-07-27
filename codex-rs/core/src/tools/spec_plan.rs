@@ -58,8 +58,10 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
+use crate::tools::router::ExtensionToolRegistration;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
@@ -75,7 +77,6 @@ use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
-use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolName;
@@ -162,7 +163,7 @@ struct CoreToolPlanContext<'a> {
     mcp_tools: Option<&'a [ToolInfo]>,
     deferred_mcp_tools: Option<&'a [ToolInfo]>,
     discoverable_tools: Option<&'a [DiscoverableTool]>,
-    extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    extension_tools: &'a [ExtensionToolRegistration],
     dynamic_tools: &'a [DynamicToolSpec],
     default_agent_type_description: &'a str,
     wait_agent_timeouts: WaitAgentTimeoutOptions,
@@ -199,13 +200,13 @@ fn build_infinity_agent_tool_router(
         mcp_tools,
         deferred_mcp_tools,
         discoverable_tools,
-        extension_tool_executors,
+        extension_tools,
         dynamic_tools,
     } = params;
     if discoverable_tools
         .as_ref()
         .is_some_and(|tools| !tools.is_empty())
-        || !extension_tool_executors.is_empty()
+        || !extension_tools.is_empty()
     {
         return Err(
             "Infinity Agent tool planning received a forbidden extension or discoverable source"
@@ -281,7 +282,7 @@ fn build_tool_specs_and_registry(
         mcp_tools,
         deferred_mcp_tools,
         discoverable_tools,
-        extension_tool_executors,
+        extension_tools,
         dynamic_tools,
     } = params;
     let default_agent_type_description =
@@ -291,7 +292,7 @@ fn build_tool_specs_and_registry(
         mcp_tools: mcp_tools.as_deref(),
         deferred_mcp_tools: deferred_mcp_tools.as_deref(),
         discoverable_tools: discoverable_tools.as_deref(),
-        extension_tool_executors: &extension_tool_executors,
+        extension_tools: &extension_tools,
         dynamic_tools,
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
@@ -321,7 +322,7 @@ fn build_model_visible_specs_and_registry(
     } = planned_tools;
     let runtimes = runtimes
         .into_iter()
-        .filter(|runtime| namespace_spec_is_safe_for_runtime(&runtime.spec()))
+        .filter(|runtime| namespace_spec_is_safe_for_runtime(turn_context, &runtime.spec()))
         .collect::<Vec<_>>();
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
@@ -347,7 +348,7 @@ fn build_model_visible_specs_and_registry(
     let model_visible_specs = merge_into_namespaces(specs)
         .into_iter()
         .filter(|spec| namespace_tools_enabled(turn_context) || !spec.is_namespace())
-        .filter(namespace_spec_is_safe_for_wire)
+        .filter(|spec| namespace_spec_is_safe_for_wire(turn_context, spec))
         .collect();
 
     (model_visible_specs, registry)
@@ -645,7 +646,7 @@ fn build_code_mode_executors(
         }
 
         let spec = executor.spec();
-        if !namespace_spec_is_safe_for_runtime(&spec) {
+        if !namespace_spec_is_safe_for_runtime(turn_context, &spec) {
             continue;
         }
 
@@ -1046,7 +1047,15 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
     if let Some(mcp_tools) = context.mcp_tools {
         for tool in mcp_tools {
             match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add(handler),
+                Ok(handler)
+                    if namespace_spec_is_safe_for_runtime(
+                        context.turn_context,
+                        &handler.spec(),
+                    ) =>
+                {
+                    planned_tools.add(handler);
+                }
+                Ok(_) => {}
                 Err(err) => warn!(
                     "Skipping MCP tool `{}`: failed to build tool spec: {err}",
                     tool.canonical_tool_name()
@@ -1058,7 +1067,15 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
     if let Some(deferred_mcp_tools) = context.deferred_mcp_tools {
         for tool in deferred_mcp_tools {
             match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add_with_exposure(handler, ToolExposure::Deferred),
+                Ok(handler)
+                    if namespace_spec_is_safe_for_runtime(
+                        context.turn_context,
+                        &handler.spec(),
+                    ) =>
+                {
+                    planned_tools.add_with_exposure(handler, ToolExposure::Deferred);
+                }
+                Ok(_) => {}
                 Err(err) => warn!(
                     "Skipping deferred MCP tool `{}`: failed to build tool spec: {err}",
                     tool.canonical_tool_name()
@@ -1085,11 +1102,7 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
 fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     // Extension ToolContributor implementations are resolved into executors
     // before planning. Core only adapts those executors into its runtime set.
-    append_extension_tool_executors(
-        context.turn_context,
-        context.extension_tool_executors,
-        planned_tools,
-    );
+    append_extension_tool_executors(context.turn_context, context.extension_tools, planned_tools);
 }
 
 fn append_tool_search_executor(
@@ -1105,7 +1118,7 @@ fn append_tool_search_executor(
         .runtimes()
         .iter()
         .filter(|executor| executor.exposure() == ToolExposure::Deferred)
-        .filter(|executor| namespace_spec_is_safe_for_runtime(&executor.spec()))
+        .filter(|executor| namespace_spec_is_safe_for_runtime(turn_context, &executor.spec()))
         .filter_map(|executor| executor.search_info())
         .collect::<Vec<_>>();
     if search_infos.is_empty() {
@@ -1126,10 +1139,10 @@ fn prepend_code_mode_executors(
 
 fn append_extension_tool_executors(
     turn_context: &TurnContext,
-    executors: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
+    registrations: &[ExtensionToolRegistration],
     planned_tools: &mut PlannedTools,
 ) {
-    if executors.is_empty() {
+    if registrations.is_empty() {
         return;
     }
 
@@ -1158,8 +1171,15 @@ fn append_extension_tool_executors(
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
 
-    for executor in executors.iter().cloned() {
-        let adapter = ExtensionToolAdapter::new(executor);
+    for registration in registrations {
+        let adapter = ExtensionToolAdapter::new(Arc::clone(&registration.executor));
+        let host_capability = registration
+            .host_capability
+            .filter(|capability| host_capability_matches_tool(*capability, &adapter.tool_name()));
+        let adapter = match host_capability {
+            Some(capability) => adapter.with_host_spec(host_tool_spec(capability)),
+            None => adapter,
+        };
         let tool_name = adapter.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
             && (!standalone_web_search_enabled || !web_search_mode_on)
@@ -1172,22 +1192,41 @@ fn append_extension_tool_executors(
         {
             continue;
         }
-        if !extension_spec_is_accepted(&adapter.spec(), &tool_name) {
+        if !extension_spec_is_accepted(turn_context, &adapter.spec(), &tool_name) {
             continue;
         }
         if !reserved_tool_names.insert(tool_name.clone()) {
             warn!("Skipping extension tool `{tool_name}`: tool already registered");
             continue;
         }
-        for replacement in [
-            HostedToolReplacement::WebSearch,
-            HostedToolReplacement::ImageGeneration,
-        ] {
-            if tool_name == replacement.tool_name() && replacement.matches_spec(&adapter.spec()) {
-                planned_tools.note_extension_hosted_replacement(replacement);
-            }
+        if let Some(capability) = host_capability {
+            planned_tools.note_extension_hosted_replacement(
+                HostedToolReplacement::from_host_capability(capability),
+            );
         }
         planned_tools.add(adapter);
+    }
+}
+
+fn host_capability_matches_tool(capability: HostToolCapability, tool_name: &ToolName) -> bool {
+    match capability {
+        HostToolCapability::WebSearch => tool_name == &ToolName::namespaced("web", "run"),
+        HostToolCapability::ImageGeneration => {
+            tool_name == &ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
+        }
+        _ => false,
+    }
+}
+
+fn host_tool_spec(capability: HostToolCapability) -> ToolSpec {
+    match capability {
+        HostToolCapability::WebSearch => {
+            ToolSpec::Namespace(codex_tools::canonical_web_search_namespace())
+        }
+        HostToolCapability::ImageGeneration => {
+            ToolSpec::Namespace(codex_tools::canonical_image_generation_namespace())
+        }
+        _ => unreachable!("unknown host tool capability"),
     }
 }
 

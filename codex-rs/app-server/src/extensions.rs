@@ -18,6 +18,7 @@ use codex_extension_api::AgentSpawner;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalService;
 use codex_login::AuthManager;
@@ -87,8 +88,14 @@ where
     codex_guardian::install(&mut builder, guardian_agent_spawner);
     codex_memories_extension::install(&mut builder, codex_otel::global());
     codex_skills_extension::install(&mut builder);
-    codex_web_search_extension::install(&mut builder, auth_manager.clone());
-    codex_image_generation_extension::install(&mut builder, auth_manager);
+    let web_search =
+        codex_web_search_extension::install_with_handle(&mut builder, auth_manager.clone());
+    assert!(builder.assign_host_tool_capability(&web_search, HostToolCapability::WebSearch));
+    let image_generation =
+        codex_image_generation_extension::install_with_handle(&mut builder, auth_manager);
+    assert!(
+        builder.assign_host_tool_capability(&image_generation, HostToolCapability::ImageGeneration)
+    );
     codex_workflows_extension::install(&mut builder, workflow_state_db, |config: &Config| {
         config.features.enabled(codex_features::Feature::Workflows)
     });

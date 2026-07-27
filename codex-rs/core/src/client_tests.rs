@@ -75,6 +75,26 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
     test_model_client_with_parent(session_source, /*parent_thread_id*/ None)
 }
 
+fn test_chat_model_client(session_source: SessionSource) -> ModelClient {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    let thread_id = ThreadId::new();
+    ModelClient::new(
+        /*auth_manager*/ None,
+        thread_id.into(),
+        thread_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider.name.clone(),
+        provider,
+        session_source,
+        /*parent_thread_id*/ None,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*attestation_provider*/ None,
+    )
+}
+
 fn test_model_client_with_parent(
     session_source: SessionSource,
     parent_thread_id: Option<ThreadId>,
@@ -473,7 +493,36 @@ fn responses_request_rejects_reserved_namespace_tool_before_provider_request() {
 }
 
 #[test]
-fn responses_request_hides_reserved_namespace_tools_from_persisted_tool_search_output() {
+fn chat_request_keeps_reserved_namespace_until_transport_flattening() {
+    let client = test_chat_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "web".to_string(),
+            description: "Chat tools.".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(test_function_tool(
+                "lookup",
+            ))],
+        })],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://example.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("chat transport should flatten web.lookup after request construction");
+
+    assert_eq!(request.tools[0]["name"], "web");
+    assert_eq!(request.tools[0]["tools"][0]["name"], "lookup");
+}
+
+#[test]
+fn responses_request_sanitizes_only_client_tool_search_output_and_preserves_canonical_web() {
     let client = test_model_client(SessionSource::Cli);
     let valid_tool = json!({
         "type": "namespace",
@@ -481,25 +530,39 @@ fn responses_request_hides_reserved_namespace_tools_from_persisted_tool_search_o
         "description": "Image tools.",
         "tools": [{"type": "function", "name": "imagegen"}],
     });
+    let canonical_web = serde_json::to_value(ToolSpec::built_in_web_search())
+        .expect("canonical web.run should serialize");
+    let server_tools = vec![
+        json!({
+            "type": "namespace",
+            "name": "image_gen",
+            "tools": [{"type": "function", "name": "imagegen"}],
+        }),
+        canonical_web.clone(),
+    ];
     let prompt = crate::Prompt {
-        input: vec![ResponseItem::ToolSearchOutput {
-            call_id: Some("search-1".to_string()),
-            status: "completed".to_string(),
-            execution: "client".to_string(),
-            tools: vec![
-                json!({
-                    "type": "namespace",
-                    "name": "image_gen",
-                    "tools": [{"type": "function", "name": "imagegen"}],
-                }),
-                json!({
-                    "type": "namespace",
-                    "name": "web",
-                    "tools": [{"type": "function", "name": "run"}],
-                }),
-                valid_tool.clone(),
-            ],
-        }],
+        input: vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-client".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![
+                    json!({
+                        "type": "namespace",
+                        "name": "image_gen",
+                        "tools": [{"type": "function", "name": "imagegen"}],
+                    }),
+                    canonical_web.clone(),
+                    valid_tool.clone(),
+                ],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+        ],
         ..Default::default()
     };
 
@@ -516,12 +579,20 @@ fn responses_request_hides_reserved_namespace_tools_from_persisted_tool_search_o
 
     assert_eq!(
         request.input,
-        vec![ResponseItem::ToolSearchOutput {
-            call_id: Some("search-1".to_string()),
-            status: "completed".to_string(),
-            execution: "client".to_string(),
-            tools: vec![valid_tool],
-        }]
+        vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-client".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![canonical_web, valid_tool],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("search-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools,
+            },
+        ]
     );
 }
 

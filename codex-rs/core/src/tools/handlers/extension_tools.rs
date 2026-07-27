@@ -37,15 +37,9 @@ impl ExtensionToolAdapter {
         let spec = executor.spec();
         let exposure = executor.exposure();
         let search_info = if exposure == crate::tools::registry::ToolExposure::Deferred {
-            executor.search_info().and_then(|search_info| {
-                let ToolSearchInfo { entry, source_info } = search_info;
-                ToolSearchInfo::from_tool_spec(&tool_name, spec.clone(), source_info).map(
-                    |mut snapshotted| {
-                        snapshotted.entry.search_text = entry.search_text;
-                        snapshotted
-                    },
-                )
-            })
+            executor
+                .search_info()
+                .filter(|search_info| search_info.is_valid_projection_for(&tool_name, &spec))
         } else {
             None
         };
@@ -57,6 +51,11 @@ impl ExtensionToolAdapter {
             supports_parallel_tool_calls: executor.supports_parallel_tool_calls(),
             executor,
         }
+    }
+
+    pub(crate) fn with_host_spec(mut self, host_spec: ToolSpec) -> Self {
+        self.spec = host_spec;
+        self
     }
 }
 
@@ -278,7 +277,14 @@ mod tests {
 
         fn spec(&self) -> codex_tools::ToolSpec {
             self.metadata_reads.spec.fetch_add(1, Ordering::SeqCst);
-            codex_tools::ToolExecutor::spec(&StubExtensionExecutor)
+            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+                name: "extension_echo".to_string(),
+                description: "x".repeat(50_000),
+                strict: false,
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+                defer_loading: None,
+            })
         }
 
         fn exposure(&self) -> codex_tools::ToolExposure {
@@ -295,8 +301,8 @@ mod tests {
                     search_text: "custom extension search text".to_string(),
                     output: codex_tools::LoadableToolSpec::Function(
                         codex_tools::ResponsesApiTool {
-                            name: "drifted_output".to_string(),
-                            description: "Must not replace the admitted snapshot.".to_string(),
+                            name: "extension_echo".to_string(),
+                            description: "Compact search projection.".to_string(),
                             strict: false,
                             parameters: codex_tools::JsonSchema::default(),
                             output_schema: None,
@@ -350,7 +356,14 @@ mod tests {
             panic!("expected snapshotted function output");
         };
         assert_eq!(output.name, "extension_echo");
+        assert_eq!(output.description, "Compact search projection.");
         assert_eq!(output.defer_loading, Some(true));
+        assert!(
+            serde_json::to_vec(&output)
+                .expect("search projection should serialize")
+                .len()
+                <= 10_000
+        );
         assert_eq!(
             metadata_reads.snapshot(),
             MetadataReadSnapshot {
@@ -426,6 +439,60 @@ mod tests {
             ExtensionToolAdapter::new(Arc::new(DeferredWithoutSearchInfoExtensionExecutor));
 
         assert!(crate::tools::registry::ToolExecutor::search_info(&handler).is_none());
+    }
+
+    struct DefaultSearchInfoMetadataDrift {
+        tool_name_reads: AtomicUsize,
+        spec_reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::ToolExecutor<codex_tools::ToolCall> for DefaultSearchInfoMetadataDrift {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            match self.tool_name_reads.fetch_add(1, Ordering::SeqCst) {
+                0 => codex_tools::ToolName::plain("extension_echo"),
+                _ => codex_tools::ToolName::plain("drifted_echo"),
+            }
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            let name = match self.spec_reads.fetch_add(1, Ordering::SeqCst) {
+                0 => "extension_echo",
+                _ => "drifted_echo",
+            };
+            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+                name: name.to_string(),
+                description: "Mutable metadata.".to_string(),
+                strict: false,
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+                defer_loading: None,
+            })
+        }
+
+        fn exposure(&self) -> codex_tools::ToolExposure {
+            codex_tools::ToolExposure::Deferred
+        }
+
+        async fn handle(
+            &self,
+            _call: codex_tools::ToolCall,
+        ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
+            panic!("metadata drift test must not execute extension tools")
+        }
+    }
+
+    #[test]
+    fn default_search_info_metadata_drift_is_rejected() {
+        let handler = ExtensionToolAdapter::new(Arc::new(DefaultSearchInfoMetadataDrift {
+            tool_name_reads: AtomicUsize::new(0),
+            spec_reads: AtomicUsize::new(0),
+        }));
+
+        assert!(
+            crate::tools::registry::ToolExecutor::search_info(&handler).is_none(),
+            "search metadata must match the admitted name/spec snapshot"
+        );
     }
 
     struct CapturingExtensionExecutor {

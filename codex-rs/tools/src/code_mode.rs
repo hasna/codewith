@@ -29,19 +29,6 @@ pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
             augment_namespace_for_code_mode(&mut namespace);
             ToolSpec::Namespace(namespace)
         }
-        ToolSpec::BuiltInWebSearch(mut web_search) => {
-            let mut definitions = code_mode_definitions_for_namespace(web_search.namespace());
-            let Some(definition) = definitions.pop() else {
-                unreachable!("built-in web search must contain exactly one function");
-            };
-            if !definitions.is_empty() {
-                unreachable!("built-in web search must contain exactly one function");
-            }
-            web_search.set_run_description(
-                codex_code_mode::augment_tool_definition(definition).description,
-            );
-            ToolSpec::BuiltInWebSearch(web_search)
-        }
         other => other,
     }
 }
@@ -135,9 +122,6 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
             }]
         }
         ToolSpec::Namespace(namespace) => code_mode_definitions_for_namespace(namespace),
-        ToolSpec::BuiltInWebSearch(web_search) => {
-            code_mode_definitions_for_namespace(web_search.namespace())
-        }
         ToolSpec::ImageGeneration { .. }
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::WebSearch { .. }
