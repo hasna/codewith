@@ -1206,10 +1206,9 @@ pub(crate) fn build_prompt(
     turn_context: &TurnContext,
     base_instructions: BaseInstructions,
 ) -> Prompt {
-    let tools = router.model_visible_specs();
     Prompt {
         input,
-        tools,
+        tools: router.model_visible_specs(),
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         personality: turn_context.personality,
@@ -1224,11 +1223,8 @@ pub(crate) fn build_prompt(
 async fn with_auth_profile_usage_prompt_nudge(
     sess: &Session,
     base_instructions: BaseInstructions,
-    tools: &[ToolSpec],
+    router: &ToolRouter,
 ) -> BaseInstructions {
-    if !auth_profile_usage_tools_visible(tools) {
-        return base_instructions;
-    }
     let (rate_limits, auto_switch_config) = {
         let state = sess.state.lock().await;
         let config = &state.session_configuration.original_config_do_not_use;
@@ -1240,7 +1236,9 @@ async fn with_auth_profile_usage_prompt_nudge(
     let Some(rate_limits) = rate_limits else {
         return base_instructions;
     };
-    if !auth_profile_usage_is_low(&rate_limits, &auto_switch_config) {
+    if !auth_profile_usage_is_low(&rate_limits, &auto_switch_config)
+        || !auth_profile_usage_tools_visible(&router.model_visible_specs())
+    {
         return base_instructions;
     }
     append_auth_profile_usage_prompt_nudge(base_instructions)
@@ -1310,12 +1308,9 @@ async fn run_sampling_request(
     let router = built_tools(sess.as_ref(), turn_context.as_ref(), &cancellation_token).await?;
 
     let base_instructions = sess.get_base_instructions().await;
-    let base_instructions = with_auth_profile_usage_prompt_nudge(
-        sess.as_ref(),
-        base_instructions,
-        &router.model_visible_specs(),
-    )
-    .await;
+    let base_instructions =
+        with_auth_profile_usage_prompt_nudge(sess.as_ref(), base_instructions, router.as_ref())
+            .await;
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),

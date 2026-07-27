@@ -20,7 +20,7 @@ pub fn create_get_usage_tool() -> ToolSpec {
                     json!("both"),
                 ],
                 Some(
-                    "Required. Use session for current conversation token usage, account for the selected auth profile's Codex account usage, all_accounts for every saved auth profile plus the default root account, and both for session plus selected account."
+                    "Required. Use session for current conversation token usage, account for the selected auth profile's Codex account usage, all_accounts for every saved auth profile plus the default root account, and both for session plus selected account. Non-ChatGPT profiles are identified by provider and reported as unavailable for Codex usage."
                         .to_string(),
                 ),
             ),

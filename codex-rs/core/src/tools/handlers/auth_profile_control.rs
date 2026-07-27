@@ -57,8 +57,6 @@ struct AuthProfileSummary {
     display_name: String,
     subscription_provider: AuthProfileSubscriptionProvider,
     auth_mode: Option<AuthMode>,
-    email: Option<String>,
-    account_id: Option<String>,
     plan: Option<String>,
     current: bool,
 }
@@ -192,8 +190,6 @@ fn summarize_profiles(
         display_name: "Default".to_string(),
         subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
         auth_mode: None,
-        email: None,
-        account_id: None,
         plan: None,
         current: current_profile.is_none(),
     }];
@@ -204,8 +200,6 @@ fn summarize_profiles(
         display_name: profile.name,
         subscription_provider: profile.subscription_provider,
         auth_mode: profile.auth_mode,
-        email: profile.email,
-        account_id: profile.account_id,
         plan: profile.plan,
     }));
 
@@ -256,8 +250,8 @@ mod tests {
                 name: "claude-work".to_string(),
                 subscription_provider: AuthProfileSubscriptionProvider::ClaudeAi,
                 auth_mode: None,
-                email: None,
-                account_id: None,
+                email: Some("private@example.com".to_string()),
+                account_id: Some("account-private-123".to_string()),
                 plan: None,
                 active: false,
             }],
@@ -273,8 +267,6 @@ mod tests {
                     "displayName": "Default",
                     "subscriptionProvider": "chat-gpt",
                     "authMode": null,
-                    "email": null,
-                    "accountId": null,
                     "plan": null,
                     "current": false
                 },
@@ -283,13 +275,14 @@ mod tests {
                     "displayName": "claude-work",
                     "subscriptionProvider": "claude-ai",
                     "authMode": null,
-                    "email": null,
-                    "accountId": null,
                     "plan": null,
                     "current": true
                 }
             ])
         );
+        let serialized = response.to_string();
+        assert!(!serialized.contains("private@example.com"));
+        assert!(!serialized.contains("account-private-123"));
     }
 
     #[test]
