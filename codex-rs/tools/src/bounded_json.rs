@@ -27,7 +27,7 @@ enum Frame<'a> {
 }
 
 fn spend_json_string(value: &str, budget: &mut ByteBudget) -> bool {
-    if !budget.spend(2) {
+    if !budget.spend(/*bytes*/ 2) {
         return false;
     }
     for character in value.chars() {
@@ -58,7 +58,7 @@ pub fn bounded_json_serialized_len(value: &Value, max_bytes: usize) -> Option<us
         match frame {
             Frame::Value(_, depth) if depth > MAX_JSON_NESTING_DEPTH => return None,
             Frame::Value(Value::Null, _) => {
-                if !budget.spend(4) {
+                if !budget.spend(/*bytes*/ 4) {
                     return None;
                 }
             }
