@@ -21,6 +21,10 @@ use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
+use std::collections::HashMap;
+
+const TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS: usize = 64;
+const TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES: usize = TOOL_SEARCH_MAX_PROJECTION_BYTES;
 
 pub struct ToolSearchHandler {
     entries: Vec<ToolSearchEntry>,
@@ -32,12 +36,39 @@ impl ToolSearchHandler {
     pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
         let mut entries = Vec::with_capacity(search_infos.len());
         let mut search_source_infos = Vec::new();
+        let mut source_indices = HashMap::new();
+        let mut source_info_bytes = 0usize;
         for search_info in search_infos {
             if search_info.projection_size_bytes() > TOOL_SEARCH_MAX_PROJECTION_BYTES {
                 continue;
             }
             entries.push(search_info.entry);
             if let Some(source_info) = search_info.source_info {
+                if let Some(&index) = source_indices.get(&source_info.name) {
+                    let existing: &mut ToolSearchSourceInfo = &mut search_source_infos[index];
+                    if existing.description.is_none()
+                        && let Some(description) = source_info.description
+                        && source_info_bytes.saturating_add(description.len())
+                            <= TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES
+                    {
+                        source_info_bytes += description.len();
+                        existing.description = Some(description);
+                    }
+                    continue;
+                }
+                let candidate_bytes = source_info.name.len()
+                    + source_info
+                        .description
+                        .as_ref()
+                        .map_or(0, std::string::String::len);
+                if search_source_infos.len() >= TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS
+                    || source_info_bytes.saturating_add(candidate_bytes)
+                        > TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES
+                {
+                    continue;
+                }
+                source_info_bytes += candidate_bytes;
+                source_indices.insert(source_info.name.clone(), search_source_infos.len());
                 search_source_infos.push(source_info);
             }
         }
@@ -312,6 +343,98 @@ mod tests {
     }
 
     #[test]
+    fn initial_declaration_bounds_unique_source_count() {
+        let handler = ToolSearchHandler::new(
+            (0..128)
+                .map(|index| search_info_with_source(index, 8))
+                .collect(),
+        );
+
+        assert!(
+            handler.search_source_infos.len() <= TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS,
+            "tool_search advertised too many unique sources: {}",
+            handler.search_source_infos.len()
+        );
+    }
+
+    #[test]
+    fn initial_declaration_bounds_aggregate_source_bytes() {
+        let handler = ToolSearchHandler::new(
+            (0..64)
+                .map(|index| search_info_with_source(index, 1_000))
+                .collect(),
+        );
+        let aggregate_bytes = handler
+            .search_source_infos
+            .iter()
+            .map(|source| {
+                source.name.len()
+                    + source
+                        .description
+                        .as_ref()
+                        .map_or(0, std::string::String::len)
+            })
+            .sum::<usize>();
+
+        assert!(
+            aggregate_bytes <= TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES,
+            "tool_search source descriptions exceeded the aggregate declaration budget: \
+             {aggregate_bytes}"
+        );
+    }
+
+    #[test]
+    fn initial_declaration_deduplicates_sources_before_budgeting() {
+        let mut search_infos = (0..128)
+            .map(|index| search_info_with_source(index, 8))
+            .collect::<Vec<_>>();
+        for search_info in &mut search_infos {
+            let source_info = search_info
+                .source_info
+                .as_mut()
+                .expect("test search info should have a source");
+            source_info.name = "shared-source".to_string();
+        }
+
+        let handler = ToolSearchHandler::new(search_infos);
+
+        assert_eq!(
+            handler.search_source_infos,
+            vec![ToolSearchSourceInfo {
+                name: "shared-source".to_string(),
+                description: Some("x".repeat(8)),
+            }]
+        );
+        assert_eq!(handler.entries.len(), 128);
+    }
+
+    #[test]
+    fn initial_declaration_retains_later_source_description() {
+        let mut without_description = search_info_with_source(0, 8);
+        without_description
+            .source_info
+            .as_mut()
+            .expect("test search info should have a source")
+            .description = None;
+        let mut with_description = search_info_with_source(1, 8);
+        with_description
+            .source_info
+            .as_mut()
+            .expect("test search info should have a source")
+            .name = "source-0".to_string();
+
+        let handler = ToolSearchHandler::new(vec![without_description, with_description]);
+
+        assert_eq!(
+            handler.search_source_infos,
+            vec![ToolSearchSourceInfo {
+                name: "source-0".to_string(),
+                description: Some("x".repeat(8)),
+            }]
+        );
+    }
+
+    #[test]
     fn search_rejects_limit_above_maximum() {
         let entry = ToolSearchEntry {
             search_text: "bounded tool".to_string(),
@@ -355,6 +478,26 @@ mod tests {
             connector_id: None,
             connector_name: None,
             plugin_display_names: Vec::new(),
+        }
+    }
+
+    fn search_info_with_source(index: usize, description_bytes: usize) -> ToolSearchInfo {
+        ToolSearchInfo {
+            entry: ToolSearchEntry {
+                search_text: format!("source tool {index}"),
+                output: LoadableToolSpec::Function(ResponsesApiTool {
+                    name: format!("source_tool_{index}"),
+                    description: "Source test tool.".to_string(),
+                    strict: false,
+                    defer_loading: Some(true),
+                    parameters: codex_tools::JsonSchema::default(),
+                    output_schema: None,
+                }),
+            },
+            source_info: Some(ToolSearchSourceInfo {
+                name: format!("source-{index}"),
+                description: Some("x".repeat(description_bytes)),
+            }),
         }
     }
 }

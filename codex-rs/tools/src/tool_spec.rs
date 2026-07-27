@@ -8,8 +8,7 @@ use crate::ResponsesApiNamespace;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
 use crate::canonical_web_search_namespace;
-use crate::is_canonical_web_search_namespace;
-use crate::is_reserved_responses_namespace;
+use crate::is_forbidden_reserved_namespace_spec;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -155,9 +154,7 @@ fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_jso
         ToolSpec::Function(tool) => validate_responses_api_tool(tool),
         ToolSpec::Namespace(namespace) => {
             validate_namespace_tools(namespace)?;
-            if is_reserved_responses_namespace(&namespace.name)
-                && !is_canonical_web_search_namespace(namespace)
-            {
+            if is_forbidden_reserved_namespace_spec(tool) {
                 return Err(reserved_namespace_error(namespace));
             }
             Ok(())

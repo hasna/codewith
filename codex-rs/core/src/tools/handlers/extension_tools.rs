@@ -403,6 +403,66 @@ mod tests {
         );
     }
 
+    struct DefaultSearchInfoExtensionExecutor {
+        metadata_reads: Arc<MetadataReadCounts>,
+    }
+
+    #[async_trait::async_trait]
+    impl codex_extension_api::ToolExecutor<codex_tools::ToolCall>
+        for DefaultSearchInfoExtensionExecutor
+    {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            self.metadata_reads.tool_name.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolName::plain("extension_echo")
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            self.metadata_reads.spec.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolExecutor::spec(&StubExtensionExecutor)
+        }
+
+        fn exposure(&self) -> codex_tools::ToolExposure {
+            self.metadata_reads.exposure.fetch_add(1, Ordering::SeqCst);
+            codex_tools::ToolExposure::Deferred
+        }
+
+        fn supports_parallel_tool_calls(&self) -> bool {
+            self.metadata_reads
+                .supports_parallel_tool_calls
+                .fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        async fn handle(
+            &self,
+            _call: codex_tools::ToolCall,
+        ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
+            panic!("metadata snapshot test must not execute extension tools")
+        }
+    }
+
+    #[test]
+    fn default_search_info_remains_compatible_with_the_adapter_snapshot() {
+        let metadata_reads = Arc::new(MetadataReadCounts::default());
+        let handler = ExtensionToolAdapter::new(Arc::new(DefaultSearchInfoExtensionExecutor {
+            metadata_reads: Arc::clone(&metadata_reads),
+        }));
+
+        assert!(crate::tools::registry::ToolExecutor::search_info(&handler).is_some());
+        assert_eq!(
+            metadata_reads.snapshot(),
+            MetadataReadSnapshot {
+                // The public default derives search metadata through these methods.
+                // The adapter validates that result against its first snapshot.
+                tool_name: 2,
+                spec: 2,
+                exposure: 1,
+                search_info: 0,
+                supports_parallel_tool_calls: 1,
+            }
+        );
+    }
+
     struct DeferredWithoutSearchInfoExtensionExecutor;
 
     #[async_trait::async_trait]

@@ -6,6 +6,7 @@ use anyhow::Result;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
@@ -1785,6 +1786,60 @@ async fn remote_compact_v2_accepts_additional_output_items_before_compaction() -
     assert!(
         !follow_up_body.contains("IGNORED_COMPACT_REPLY"),
         "expected follow-up request to ignore unrelated output items from the compaction stream"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_provider_remote_compact_applies_responses_namespace_policy() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config.model_provider.wire_api = WireApi::Chat;
+        });
+    let mut test = builder.build(&server).await?;
+    let new_thread = test
+        .thread_manager
+        .start_thread_with_tools(
+            test.config.clone(),
+            vec![DynamicToolSpec {
+                namespace: Some("image_gen".to_string()),
+                name: "imagegen".to_string(),
+                description: "Chat-only namespace collision.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+            }],
+        )
+        .await?;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
+    test.codex
+        .inject_response_items(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "compact chat-provider history".to_string(),
+            }],
+            phase: None,
+        }])
+        .await?;
+    let compact_mock = responses::mount_compact_json_once(&server, json!({ "output": [] })).await;
+
+    test.codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&test.codex).await;
+
+    let compact_body = compact_mock.single_request().body_json();
+    assert!(
+        namespace_child_tool_names(&compact_body, "image_gen").is_empty(),
+        "Responses compact must not use Chat sampling namespace policy: {compact_body}"
     );
 
     Ok(())

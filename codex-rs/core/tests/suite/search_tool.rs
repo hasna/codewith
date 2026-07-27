@@ -11,6 +11,7 @@ use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
@@ -180,6 +181,117 @@ async fn server_tool_search_output_history_is_preserved_across_turns() -> Result
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0]["execution"], "server");
     assert_eq!(outputs[0]["tools"], json!(server_tools));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_client_tool_search_history_has_one_cumulative_request_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resumed-tool-search"),
+            ev_assistant_message("msg-resumed-tool-search", "done"),
+            ev_completed("resp-resumed-tool-search"),
+        ]),
+    )
+    .await;
+    let legacy_tool = |marker: &str| {
+        json!({
+            "type": "function",
+            "name": marker,
+            "description": "x".repeat(20_000),
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            },
+        })
+    };
+    let server_tools = vec![legacy_tool("server-history")];
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    test.codex
+        .inject_response_items(vec![
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("parallel-oldest".to_string()),
+                status: Some("completed".to_string()),
+                execution: "client".to_string(),
+                arguments: json!({"query": "oldest"}),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("parallel-oldest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("oldest")],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+            ResponseItem::ToolSearchCall {
+                id: None,
+                call_id: Some("parallel-newest".to_string()),
+                status: Some("completed".to_string()),
+                execution: "client".to_string(),
+                arguments: json!({"query": "newest"}),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("parallel-newest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("newest")],
+            },
+        ])
+        .await?;
+
+    test.submit_turn("Resume with bounded tool search history")
+        .await?;
+
+    let request = response_mock.single_request();
+    let outputs = request.inputs_of_type("tool_search_output");
+    let client_outputs = outputs
+        .iter()
+        .filter(|output| output.get("execution").and_then(Value::as_str) == Some("client"))
+        .collect::<Vec<_>>();
+    let client_tools = client_outputs
+        .iter()
+        .flat_map(|output| {
+            output
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let aggregate_bytes = client_tools
+        .iter()
+        .map(|tool| {
+            serde_json::to_vec(tool)
+                .expect("tool should serialize")
+                .len()
+        })
+        .sum::<usize>();
+    assert!(client_tools.len() <= codex_tools::TOOL_SEARCH_MAX_RESULTS);
+    assert!(aggregate_bytes <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES);
+    assert!(
+        client_tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(Value::as_str) == Some("newest")),
+        "the newest parallel result should survive cumulative sanitization"
+    );
+    let server_output = outputs
+        .iter()
+        .find(|output| output.get("execution").and_then(Value::as_str) == Some("server"))
+        .expect("server-owned output should remain in history");
+    assert_eq!(server_output["tools"], json!(server_tools));
 
     Ok(())
 }

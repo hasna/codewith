@@ -6,6 +6,7 @@
         "properties": {
           "id": {
             "description": "Numbered link id to open.",
+            "minimum": 0,
             "type": "integer"
           },
           "ref_id": {
@@ -76,6 +77,7 @@
           },
           "recency": {
             "description": "Whether to filter by recency, as a number of recent days.",
+            "minimum": 0,
             "type": "integer"
           }
         },
@@ -90,6 +92,7 @@
         "properties": {
           "lineno": {
             "description": "Line number to position the page at.",
+            "minimum": 0,
             "type": "integer"
           },
           "ref_id": {
@@ -113,6 +116,7 @@
         "properties": {
           "pageno": {
             "description": "Zero-indexed PDF page number.",
+            "minimum": 0,
             "type": "integer"
           },
           "ref_id": {
@@ -142,6 +146,7 @@
           },
           "recency": {
             "description": "Whether to filter by recency, as a number of recent days.",
+            "minimum": 0,
             "type": "integer"
           }
         },
@@ -178,6 +183,7 @@
           },
           "num_games": {
             "description": "Number of games to return.",
+            "minimum": 0,
             "type": "integer"
           },
           "opponent": {
@@ -219,6 +225,7 @@
         "properties": {
           "duration": {
             "description": "Number of days to return. Defaults to 7.",
+            "minimum": 0,
             "type": "integer"
           },
           "location": {

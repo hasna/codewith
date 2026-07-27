@@ -333,7 +333,6 @@ mod tests {
         match value {
             Value::Object(map) => {
                 map.remove("format");
-                map.remove("minimum");
                 remove_null_union_variant(map.get_mut("anyOf"));
                 remove_null_union_variant(map.get_mut("oneOf"));
                 if let Some(type_value) = map.get_mut("type") {
@@ -352,6 +351,23 @@ mod tests {
                 }
             }
             _ => {}
+        }
+    }
+
+    #[test]
+    fn search_commands_reject_negative_unsigned_numeric_values() {
+        for commands in [
+            serde_json::json!({"search_query": [{"q": "query", "recency": -1}]}),
+            serde_json::json!({"open": [{"ref_id": "result", "lineno": -1}]}),
+            serde_json::json!({"click": [{"ref_id": "result", "id": -1}]}),
+            serde_json::json!({"screenshot": [{"ref_id": "result", "pageno": -1}]}),
+            serde_json::json!({"weather": [{"location": "Bucharest", "duration": -1}]}),
+            serde_json::json!({"sports": [{"fn": "schedule", "league": "nba", "num_games": -1}]}),
+        ] {
+            assert!(
+                serde_json::from_value::<SearchCommands>(commands.clone()).is_err(),
+                "parser accepted a value forbidden by the unsigned contract: {commands}"
+            );
         }
     }
 

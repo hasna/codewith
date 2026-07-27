@@ -16,6 +16,7 @@
 //! validate canonical reserved schemas at the Responses request boundary.
 //! Chat transports may safely flatten these names.
 
+use crate::ToolSpec;
 use serde_json::Value;
 
 /// Namespaces reserved by the OpenAI Responses API for its built-in tools.
@@ -57,6 +58,15 @@ pub fn is_reserved_responses_namespace(namespace: &str) -> bool {
 pub fn is_forbidden_first_party_namespace(namespace: &str) -> bool {
     is_reserved_responses_namespace(namespace)
         && !FIRST_PARTY_ALLOWED_RESERVED_NAMESPACES.contains(&namespace)
+}
+
+/// True if a typed tool declaration cannot cross a Responses API boundary.
+pub fn is_forbidden_reserved_namespace_spec(spec: &ToolSpec) -> bool {
+    let ToolSpec::Namespace(namespace) = spec else {
+        return false;
+    };
+    is_reserved_responses_namespace(&namespace.name)
+        && !crate::is_canonical_web_search_namespace(namespace)
 }
 
 /// True if a serialized generic namespace declaration uses a reserved name.

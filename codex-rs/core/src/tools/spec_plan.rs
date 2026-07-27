@@ -100,7 +100,7 @@ mod extension_admission;
 
 use extension_admission::HostedToolReplacement;
 use extension_admission::extension_spec_is_accepted;
-use extension_admission::namespace_spec_is_safe_for_runtime;
+use extension_admission::namespace_spec_is_safe_for_untrusted_runtime;
 use extension_admission::namespace_spec_is_safe_for_wire;
 use extension_admission::runtime_replaces_hosted_tool;
 
@@ -322,7 +322,7 @@ fn build_model_visible_specs_and_registry(
     } = planned_tools;
     let runtimes = runtimes
         .into_iter()
-        .filter(|runtime| namespace_spec_is_safe_for_runtime(turn_context, &runtime.spec()))
+        .filter(|runtime| namespace_spec_is_safe_for_wire(turn_context, &runtime.spec()))
         .collect::<Vec<_>>();
     let mut specs = Vec::new();
     let mut seen_tool_names = HashSet::new();
@@ -365,6 +365,11 @@ fn spec_for_model_request(
         ToolMode::CodeMode | ToolMode::CodeModeOnly
     ) && exposure != ToolExposure::DirectModelOnly
         && !is_excluded_from_code_mode(turn_context, tool_name)
+        && !matches!(
+            &spec,
+            ToolSpec::Namespace(namespace)
+                if codex_tools::is_canonical_web_search_namespace(namespace)
+        )
         && codex_code_mode::is_code_mode_nested_tool(spec.name())
     {
         codex_tools::augment_tool_spec_for_code_mode(spec)
@@ -646,7 +651,7 @@ fn build_code_mode_executors(
         }
 
         let spec = executor.spec();
-        if !namespace_spec_is_safe_for_runtime(turn_context, &spec) {
+        if !namespace_spec_is_safe_for_wire(turn_context, &spec) {
             continue;
         }
 
@@ -1048,7 +1053,7 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
         for tool in mcp_tools {
             match McpHandler::new(tool.clone()) {
                 Ok(handler)
-                    if namespace_spec_is_safe_for_runtime(
+                    if namespace_spec_is_safe_for_untrusted_runtime(
                         context.turn_context,
                         &handler.spec(),
                     ) =>
@@ -1068,7 +1073,7 @@ fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut 
         for tool in deferred_mcp_tools {
             match McpHandler::new(tool.clone()) {
                 Ok(handler)
-                    if namespace_spec_is_safe_for_runtime(
+                    if namespace_spec_is_safe_for_untrusted_runtime(
                         context.turn_context,
                         &handler.spec(),
                     ) =>
@@ -1094,6 +1099,18 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
             );
             continue;
         };
+        if !namespace_spec_is_safe_for_untrusted_runtime(context.turn_context, &handler.spec()) {
+            continue;
+        }
+        let tool_name = handler.tool_name();
+        if planned_tools
+            .runtimes()
+            .iter()
+            .any(|runtime| runtime.tool_name() == tool_name)
+        {
+            warn!("Skipping dynamic tool `{tool_name}`: tool already registered");
+            continue;
+        }
 
         planned_tools.add(handler);
     }
@@ -1118,7 +1135,7 @@ fn append_tool_search_executor(
         .runtimes()
         .iter()
         .filter(|executor| executor.exposure() == ToolExposure::Deferred)
-        .filter(|executor| namespace_spec_is_safe_for_runtime(turn_context, &executor.spec()))
+        .filter(|executor| namespace_spec_is_safe_for_wire(turn_context, &executor.spec()))
         .filter_map(|executor| executor.search_info())
         .collect::<Vec<_>>();
     if search_infos.is_empty() {
@@ -1170,6 +1187,7 @@ fn append_extension_tool_executors(
 
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
+    let mut trusted_tool_names = HashSet::new();
 
     for registration in registrations {
         let adapter = ExtensionToolAdapter::new(Arc::clone(&registration.executor));
@@ -1182,7 +1200,9 @@ fn append_extension_tool_executors(
         };
         let tool_name = adapter.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
-            && (!standalone_web_search_enabled || !web_search_mode_on)
+            && (host_capability != Some(HostToolCapability::WebSearch)
+                || !standalone_web_search_enabled
+                || !web_search_mode_on)
         {
             continue;
         }
@@ -1194,6 +1214,16 @@ fn append_extension_tool_executors(
         }
         if !extension_spec_is_accepted(turn_context, &adapter.spec(), &tool_name) {
             continue;
+        }
+        if host_capability.is_some() {
+            if !trusted_tool_names.insert(tool_name.clone()) {
+                warn!("Skipping extension tool `{tool_name}`: host capability already claimed");
+                continue;
+            }
+            planned_tools
+                .runtimes
+                .retain(|runtime| runtime.tool_name() != tool_name);
+            reserved_tool_names.remove(&tool_name);
         }
         if !reserved_tool_names.insert(tool_name.clone()) {
             warn!("Skipping extension tool `{tool_name}`: tool already registered");

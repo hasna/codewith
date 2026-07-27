@@ -43,6 +43,53 @@ fn uses_non_reserved_images_namespace() {
 }
 
 #[test]
+fn imagegen_parser_matches_the_canonical_model_schema() {
+    let ToolSpec::Namespace(spec) = imagegen_tool_spec() else {
+        panic!("imagegen should advertise a namespace tool");
+    };
+    let [ResponsesApiNamespaceTool::Function(function)] = spec.tools.as_slice() else {
+        panic!("imagegen should advertise one function");
+    };
+    assert_eq!(
+        serde_json::to_value(&function.parameters).expect("image schema should serialize"),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["generate", "edit"],
+                },
+                "prompt": {
+                    "type": "string",
+                },
+            },
+            "required": ["prompt", "action"],
+            "additionalProperties": false,
+        })
+    );
+    for action in ["generate", "edit"] {
+        assert!(
+            serde_json::from_value::<ImagegenArgs>(serde_json::json!({
+                "action": action,
+                "prompt": "draw a test image",
+            }))
+            .is_ok()
+        );
+    }
+    for invalid in [
+        serde_json::json!({"action": "generate"}),
+        serde_json::json!({"action": "other", "prompt": "test"}),
+        serde_json::json!({"action": "generate", "prompt": 1}),
+        serde_json::json!({"action": "generate", "prompt": "test", "extra": true}),
+    ] {
+        assert!(
+            serde_json::from_value::<ImagegenArgs>(invalid.clone()).is_err(),
+            "image parser accepted a value outside the canonical schema: {invalid}"
+        );
+    }
+}
+
+#[test]
 fn generate_uses_fixed_request_defaults() {
     assert_eq!(
         request_for_action(&args(ImagegenAction::Generate, "paint a moonlit lake"), &[])

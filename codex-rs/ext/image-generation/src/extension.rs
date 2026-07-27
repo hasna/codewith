@@ -4,6 +4,7 @@ use codex_core::config::Config;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
@@ -91,7 +92,11 @@ impl ToolContributor for ImageGenerationExtension {
 
 /// Installs the standalone image-generation extension contributors.
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
-    install_with_handle(registry, auth_manager);
+    let contributor = install_with_handle(registry, auth_manager);
+    assert!(
+        registry.assign_host_tool_capability(&contributor, HostToolCapability::ImageGeneration,),
+        "the installed image-generation contributor must be registered"
+    );
 }
 
 /// Installs image generation and returns the contributor handle for host policy.
@@ -105,4 +110,36 @@ pub fn install_with_handle(
     let contributor: Arc<dyn ToolContributor> = extension;
     registry.tool_contributor(Arc::clone(&contributor));
     contributor
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_extension_api::ExtensionRegistryBuilder;
+    use codex_extension_api::HostToolCapability;
+    use codex_login::CodexAuth;
+    use pretty_assertions::assert_eq;
+
+    use super::AuthManager;
+    use super::Config;
+    use super::install;
+
+    #[test]
+    fn legacy_install_preserves_image_generation_host_capability() {
+        let mut builder = ExtensionRegistryBuilder::<Config>::new();
+        install(
+            &mut builder,
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        );
+        let registry = builder.build();
+        let contributor = registry
+            .tool_contributors()
+            .first()
+            .expect("legacy install should register its tool contributor");
+
+        assert_eq!(
+            registry.host_tool_capability(contributor),
+            Some(HostToolCapability::ImageGeneration),
+            "legacy install must preserve hosted replacement behavior"
+        );
+    }
 }

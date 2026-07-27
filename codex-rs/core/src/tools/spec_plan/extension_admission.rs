@@ -85,11 +85,17 @@ pub(super) fn namespace_spec_is_safe_for_wire(turn_context: &TurnContext, spec: 
     true
 }
 
-pub(super) fn namespace_spec_is_safe_for_runtime(
+pub(super) fn namespace_spec_is_safe_for_untrusted_runtime(
     turn_context: &TurnContext,
     spec: &ToolSpec,
 ) -> bool {
-    namespace_spec_is_safe_for_wire(turn_context, spec)
+    if turn_context.provider.info().wire_api == WireApi::Chat {
+        return true;
+    }
+    let ToolSpec::Namespace(namespace) = spec else {
+        return true;
+    };
+    !codex_tools::is_reserved_responses_namespace(&namespace.name)
 }
 
 pub(super) fn extension_spec_matches_tool_name(spec: &ToolSpec, tool_name: &ToolName) -> bool {
@@ -120,7 +126,7 @@ pub(super) fn extension_spec_is_accepted(
     spec: &ToolSpec,
     tool_name: &ToolName,
 ) -> bool {
-    if !namespace_spec_is_safe_for_runtime(turn_context, spec) {
+    if !namespace_spec_is_safe_for_wire(turn_context, spec) {
         return false;
     }
 

@@ -7,7 +7,6 @@ use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
-use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -18,7 +17,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
-use codex_web_search_extension::install_with_handle as install_web_search_extension;
+use codex_web_search_extension::install as install_web_search_extension;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::AppsTestToolLoading;
 use core_test_support::apps_test_server::DIRECT_CALENDAR_APP_ONLY_TOOL;
@@ -239,7 +238,7 @@ async fn code_mode_can_call_standalone_web_search() -> Result<()> {
         .mount(&server)
         .await;
 
-    responses::mount_sse_once(
+    let initial_mock = responses::mount_sse_once(
         &server,
         sse(vec![
             ev_response_created("resp-1"),
@@ -269,10 +268,7 @@ text(result);
     let auth = CodexAuth::from_api_key("dummy");
     let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
     let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
-    let web_search = install_web_search_extension(&mut extension_builder, auth_manager);
-    assert!(
-        extension_builder.assign_host_tool_capability(&web_search, HostToolCapability::WebSearch)
-    );
+    install_web_search_extension(&mut extension_builder, auth_manager);
     let mut builder = test_codex()
         .with_auth(auth)
         .with_extensions(Arc::new(extension_builder.build()))
@@ -294,6 +290,22 @@ text(result);
     let test = builder.build(&server).await?;
 
     test.submit_turn("Search the web from code mode").await?;
+
+    let initial_request = initial_mock.single_request();
+    assert!(
+        initial_request.tool_by_name("web", "run").is_some(),
+        "hybrid Code Mode should retain direct web.run alongside nested access"
+    );
+    assert!(
+        !initial_request
+            .body_json()
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools
+                .iter()
+                .any(|tool| { tool.get("type").and_then(Value::as_str) == Some("web_search") })),
+        "legacy install should retain hosted replacement behavior"
+    );
 
     let search_request = server
         .received_requests()

@@ -10,6 +10,7 @@ use codex_core::config::Config;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
@@ -126,7 +127,11 @@ impl ToolContributor for WebSearchExtension {
 }
 
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
-    install_with_handle(registry, auth_manager);
+    let contributor = install_with_handle(registry, auth_manager);
+    assert!(
+        registry.assign_host_tool_capability(&contributor, HostToolCapability::WebSearch),
+        "the installed web-search contributor must be registered"
+    );
 }
 
 /// Installs web search and returns the exact contributor handle for host policy.
@@ -146,6 +151,7 @@ pub fn install_with_handle(
 mod tests {
     use codex_extension_api::ExtensionData;
     use codex_extension_api::ExtensionRegistryBuilder;
+    use codex_extension_api::HostToolCapability;
     use codex_extension_api::ToolName;
     use codex_login::CodexAuth;
     use codex_model_provider_info::ModelProviderInfo;
@@ -166,6 +172,15 @@ mod tests {
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
         );
         let registry = builder.build();
+        let contributor = registry
+            .tool_contributors()
+            .first()
+            .expect("legacy install should register its tool contributor");
+        assert_eq!(
+            registry.host_tool_capability(contributor),
+            Some(HostToolCapability::WebSearch),
+            "legacy install must preserve hosted replacement behavior"
+        );
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
         thread_store.insert(WebSearchExtensionConfig {

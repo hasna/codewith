@@ -597,6 +597,157 @@ fn responses_request_sanitizes_only_client_tool_search_output_and_preserves_cano
 }
 
 #[test]
+fn responses_request_bounds_cumulative_client_tool_search_history() {
+    let client = test_model_client(SessionSource::Cli);
+    let legacy_tool = |marker: &str| {
+        json!({
+            "type": "function",
+            "name": marker,
+            "description": "x".repeat(20_000),
+            "strict": false,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            },
+        })
+    };
+    let server_tools = vec![legacy_tool("server-history")];
+    let prompt = crate::Prompt {
+        input: vec![
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-oldest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("oldest")],
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-server".to_string()),
+                status: "completed".to_string(),
+                execution: "server".to_string(),
+                tools: server_tools.clone(),
+            },
+            ResponseItem::ToolSearchOutput {
+                call_id: Some("legacy-newest".to_string()),
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![legacy_tool("newest")],
+            },
+        ],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+
+    let client_outputs = request
+        .input
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::ToolSearchOutput {
+                execution, tools, ..
+            } if execution == "client" => Some(tools),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let aggregate_count = client_outputs
+        .iter()
+        .map(|tools| tools.len())
+        .sum::<usize>();
+    let aggregate_bytes = client_outputs
+        .iter()
+        .flat_map(|tools| tools.iter())
+        .map(|tool| {
+            serde_json::to_vec(tool)
+                .expect("tool should serialize")
+                .len()
+        })
+        .sum::<usize>();
+    assert!(
+        aggregate_count <= codex_tools::TOOL_SEARCH_MAX_RESULTS,
+        "resumed client history exceeded the aggregate result count: {aggregate_count}"
+    );
+    assert!(
+        aggregate_bytes <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES,
+        "resumed client history exceeded the aggregate byte budget: {aggregate_bytes}"
+    );
+    assert!(
+        client_outputs
+            .iter()
+            .flat_map(|tools| tools.iter())
+            .any(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some("newest")),
+        "sanitization should retain the newest valid client search result"
+    );
+    assert_eq!(
+        request.input[1],
+        ResponseItem::ToolSearchOutput {
+            call_id: Some("legacy-server".to_string()),
+            status: "completed".to_string(),
+            execution: "server".to_string(),
+            tools: server_tools,
+        },
+        "server-owned history must remain byte-for-byte intact"
+    );
+}
+
+#[test]
+fn responses_request_bounds_oversized_legacy_tool_search_output() {
+    let client = test_model_client(SessionSource::Cli);
+    let prompt = crate::Prompt {
+        input: vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("legacy-oversized".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: (0..32)
+                .map(|index| {
+                    json!({
+                        "type": "function",
+                        "name": format!("legacy_{index}"),
+                        "description": "x".repeat(1_000),
+                    })
+                })
+                .collect(),
+        }],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://api.openai.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("request should build");
+    let [
+        ResponseItem::ToolSearchOutput {
+            execution, tools, ..
+        },
+    ] = request.input.as_slice()
+    else {
+        panic!("expected one tool_search_output");
+    };
+    assert_eq!(execution, "client");
+    assert!(tools.len() <= codex_tools::TOOL_SEARCH_MAX_RESULTS);
+    assert!(
+        serde_json::to_vec(tools)
+            .expect("tools should serialize")
+            .len()
+            <= codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES
+    );
+}
+
+#[test]
 fn responses_request_omits_hosted_web_search_for_models_without_search_support() {
     let client = test_model_client(SessionSource::Cli);
     let function_tool = test_function_tool("exec_command");

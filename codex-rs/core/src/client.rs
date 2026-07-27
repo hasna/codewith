@@ -87,6 +87,8 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES;
+use codex_tools::TOOL_SEARCH_MAX_RESULTS;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -575,13 +577,14 @@ impl ModelClient {
                     RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
                     self.state.auth_env_telemetry.clone(),
                 ));
-        let request = self.build_responses_request(
+        let request = self.build_responses_request_for_wire(
             &client_setup.api_provider,
             prompt,
             model_info,
             settings.effort,
             settings.summary,
             settings.service_tier,
+            WireApi::Responses,
         )?;
         let ResponsesApiRequest {
             model,
@@ -856,25 +859,47 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
     ) -> Result<ResponsesApiRequest> {
+        self.build_responses_request_for_wire(
+            provider,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            self.state.provider.info().wire_api,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_responses_request_for_wire(
+        &self,
+        provider: &codex_api::Provider,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        wire_api: WireApi,
+    ) -> Result<ResponsesApiRequest> {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
-        for item in &mut input {
-            if let ResponseItem::ToolSearchOutput {
-                execution, tools, ..
-            } = item
-                && execution == "client"
-            {
-                tools.retain(|tool| !codex_tools::is_forbidden_reserved_namespace_value(tool));
-            }
-        }
-        let mut tools = if self.state.provider.info().wire_api == WireApi::Chat {
-            prompt
+        sanitize_client_tool_search_history(&mut input);
+        let mut tools = match wire_api {
+            WireApi::Chat => prompt
                 .tools
                 .iter()
                 .map(serde_json::to_value)
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            create_tools_json_for_responses_api(&prompt.tools)?
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            WireApi::Responses if self.state.provider.info().wire_api == WireApi::Chat => {
+                let tools = prompt
+                    .tools
+                    .iter()
+                    .filter(|spec| !codex_tools::is_forbidden_reserved_namespace_spec(spec))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                create_tools_json_for_responses_api(&tools)?
+            }
+            WireApi::Responses => create_tools_json_for_responses_api(&prompt.tools)?,
         };
         if !model_info.supports_search_tool {
             tools.retain(|tool| {
@@ -1109,6 +1134,46 @@ impl ModelClient {
             );
         }
         headers
+    }
+}
+
+fn sanitize_client_tool_search_history(input: &mut [ResponseItem]) {
+    let mut retained_count = 0usize;
+    // Account for the brackets in the serialized aggregate list.
+    let mut retained_bytes = 2usize;
+    for item in input.iter_mut().rev() {
+        let ResponseItem::ToolSearchOutput {
+            execution, tools, ..
+        } = item
+        else {
+            continue;
+        };
+        if execution != "client" {
+            continue;
+        }
+
+        let mut retained = Vec::new();
+        for tool in std::mem::take(tools) {
+            if codex_tools::is_forbidden_reserved_namespace_value(&tool)
+                || retained_count >= TOOL_SEARCH_MAX_RESULTS
+            {
+                continue;
+            }
+            let Ok(serialized) = serde_json::to_vec(&tool) else {
+                continue;
+            };
+            let separator_bytes = usize::from(retained_count > 0);
+            let candidate_bytes = retained_bytes
+                .saturating_add(separator_bytes)
+                .saturating_add(serialized.len());
+            if candidate_bytes > TOOL_SEARCH_MAX_HISTORY_BYTES {
+                continue;
+            }
+            retained.push(tool);
+            retained_count += 1;
+            retained_bytes = candidate_bytes;
+        }
+        *tools = retained;
     }
 }
 

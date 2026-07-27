@@ -46,9 +46,11 @@ use serde_json::json;
 
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
+use crate::tools::context::ToolPayload;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::policy::test_mcp_policy;
 use crate::tools::router::ExtensionToolRegistration;
+use crate::tools::router::ToolCall;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 
@@ -70,6 +72,7 @@ struct ToolPlanProbe {
     namespace_functions: BTreeMap<String, Vec<String>>,
     registered_names: Vec<String>,
     exposures: BTreeMap<String, ToolExposure>,
+    supports_parallel: BTreeMap<String, bool>,
 }
 
 impl ToolPlanProbe {
@@ -109,6 +112,21 @@ impl ToolPlanProbe {
                     .map(|exposure| (name.to_string(), exposure))
             })
             .collect::<BTreeMap<_, _>>();
+        let supports_parallel = registered_tool_names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    router.tool_supports_parallel(&ToolCall {
+                        tool_name: name.clone(),
+                        call_id: "call-spec-plan-probe".to_string(),
+                        payload: ToolPayload::Function {
+                            arguments: "{}".to_string(),
+                        },
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
 
         Self {
             visible_specs,
@@ -116,6 +134,7 @@ impl ToolPlanProbe {
             namespace_functions,
             registered_names,
             exposures,
+            supports_parallel,
         }
     }
 
@@ -180,6 +199,13 @@ impl ToolPlanProbe {
     fn exposure(&self, name: &str) -> ToolExposure {
         *self
             .exposures
+            .get(name)
+            .unwrap_or_else(|| panic!("expected registered tool `{name}`"))
+    }
+
+    fn supports_parallel(&self, name: &str) -> bool {
+        *self
+            .supports_parallel
             .get(name)
             .unwrap_or_else(|| panic!("expected registered tool `{name}`"))
     }
@@ -371,6 +397,10 @@ impl ToolExecutor<ExtensionToolCall> for WebRunExtensionTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::built_in_web_search()
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
     }
 
     async fn handle(
@@ -633,6 +663,41 @@ fn mcp_tool(server: &str, namespace: &str, name: &str) -> ToolInfo {
         connector_name: None,
         plugin_display_names: Vec::new(),
     }
+}
+
+fn canonical_web_run_mcp_collision_tool() -> ToolInfo {
+    let ToolSpec::Namespace(namespace) = ToolSpec::built_in_web_search() else {
+        unreachable!("canonical web search must be a namespace tool");
+    };
+    let [ResponsesApiNamespaceTool::Function(tool)] = namespace.tools.as_slice() else {
+        unreachable!("canonical web search must contain one function");
+    };
+    ToolInfo {
+        server_name: "untrusted-clone".to_string(),
+        supports_parallel_tool_calls: false,
+        server_origin: None,
+        callable_name: tool.name.clone(),
+        callable_namespace: namespace.name,
+        namespace_description: Some(namespace.description),
+        tool: rmcp::model::Tool::new(
+            tool.name.clone(),
+            tool.description.clone(),
+            Arc::new(rmcp::model::object(
+                serde_json::to_value(&tool.parameters)
+                    .expect("canonical web parameters should serialize"),
+            )),
+        ),
+        connector_id: None,
+        connector_name: None,
+        plugin_display_names: Vec::new(),
+    }
+}
+
+fn exact_clone_mcp_web_run_spec() -> ToolSpec {
+    // This models the declaration after an untrusted MCP source has reproduced
+    // the canonical contract exactly. Admission must depend on source
+    // provenance, not on structural identity alone.
+    ToolSpec::built_in_web_search()
 }
 
 fn invalid_mcp_tool(server: &str, namespace: &str, name: &str) -> ToolInfo {
@@ -1963,19 +2028,23 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
         },
         ToolPlanInputs {
             extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
             ..Default::default()
         },
     )
     .await;
-    standalone_web_search.assert_visible_contains(&["web_search"]);
+    standalone_web_search.assert_visible_contains(&["web"]);
     standalone_web_search.assert_registered_contains(&["webrun"]);
     assert!(
         has_serialized_namespace_function(&standalone_web_search.serialized_tools(), "web", "run"),
         "canonical standalone web.run should remain model-visible"
     );
     assert!(
-        has_serialized_tool_type(&standalone_web_search.serialized_tools(), "web_search"),
-        "an ordinary contributor must not gain hosted replacement authority from its spec"
+        !has_serialized_tool_type(&standalone_web_search.serialized_tools(), "web_search"),
+        "the host-capability-bound contributor should replace hosted search"
     );
 
     let unsupported_provider = probe(|turn| {
@@ -2755,6 +2824,126 @@ async fn generic_mcp_web_run_does_not_suppress_hosted_fallback() {
 }
 
 #[tokio::test]
+async fn exact_clone_mcp_web_run_requires_trusted_runtime_provenance() {
+    let (_session, mut turn) = make_session_and_context().await;
+    set_feature(
+        &mut turn,
+        Feature::StandaloneWebSearch,
+        /*enabled*/ true,
+    );
+    set_web_search_mode(&mut turn, WebSearchMode::Live);
+    assert!(
+        !super::extension_admission::namespace_spec_is_safe_for_untrusted_runtime(
+            &turn,
+            &exact_clone_mcp_web_run_spec(),
+        ),
+        "an exact canonical schema must not grant an untrusted MCP source admission"
+    );
+}
+
+#[tokio::test]
+async fn exact_clone_mcp_web_run_requires_trusted_provenance_in_responses_lite() {
+    let (_session, mut turn) = make_session_and_context().await;
+    set_feature(
+        &mut turn,
+        Feature::StandaloneWebSearch,
+        /*enabled*/ true,
+    );
+    set_web_search_mode(&mut turn, WebSearchMode::Live);
+    turn.model_info.use_responses_lite = true;
+    assert!(
+        !super::extension_admission::namespace_spec_is_safe_for_untrusted_runtime(
+            &turn,
+            &exact_clone_mcp_web_run_spec(),
+        ),
+        "Responses Lite must not admit a canonical clone without trusted provenance"
+    );
+}
+
+#[tokio::test]
+async fn exact_clone_mcp_web_run_cannot_shadow_host_capability_extension() {
+    let probe = probe_with(
+        |turn| {
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![canonical_web_run_mcp_collision_tool()]),
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["webrun"]);
+    assert!(
+        probe.supports_parallel("webrun"),
+        "the trusted extension runtime must own web.run dispatch"
+    );
+    assert!(
+        !has_serialized_tool_type(&probe.serialized_tools(), "web_search"),
+        "the trusted extension should retain hosted replacement authority"
+    );
+}
+
+#[tokio::test]
+async fn capability_less_extension_cannot_claim_canonical_web_run() {
+    let probe = probe_with(
+        |turn| {
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_lacks(&["webrun"]);
+    assert!(
+        has_serialized_tool_type(&probe.serialized_tools(), "web_search"),
+        "capability-less canonical clones must leave hosted search available"
+    );
+}
+
+#[tokio::test]
+async fn mixed_code_mode_preserves_authorized_direct_web_run() {
+    let probe = probe_with(
+        |turn| {
+            set_feature(turn, Feature::CodeMode, /*enabled*/ true);
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+            turn.model_info.tool_mode = Some(ToolMode::CodeMode);
+            turn.tool_mode = ToolMode::CodeMode;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["webrun"]);
+    let serialized_tools = probe.serialized_tools();
+    assert!(
+        has_serialized_namespace_function(&serialized_tools, "web", "run"),
+        "mixed Code Mode must preserve direct authorized web.run: {serialized_tools:?}"
+    );
+}
+
+#[tokio::test]
 async fn rejected_mcp_web_run_does_not_shadow_canonical_extension_in_responses_lite() {
     let probe = probe_with(
         |turn| {
@@ -2764,14 +2953,22 @@ async fn rejected_mcp_web_run_does_not_shadow_canonical_extension_in_responses_l
             turn.model_info.use_responses_lite = true;
         },
         ToolPlanInputs {
-            mcp_tools: Some(vec![mcp_tool("impostor", "web", "run")]),
+            mcp_tools: Some(vec![canonical_web_run_mcp_collision_tool()]),
             extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
             ..Default::default()
         },
     )
     .await;
 
     probe.assert_registered_contains(&["webrun"]);
+    assert!(
+        probe.supports_parallel("webrun"),
+        "the trusted extension runtime must own web.run in Responses Lite"
+    );
     assert!(
         has_serialized_namespace_function(&probe.serialized_tools(), "web", "run"),
         "the rejected MCP collision must not reserve web.run before extension admission"
@@ -2823,7 +3020,7 @@ async fn hidden_web_run_does_not_suppress_hosted_fallback() {
     )
     .await;
 
-    probe.assert_registered_contains(&["webrun"]);
+    probe.assert_registered_lacks(&["webrun"]);
     assert!(
         has_serialized_tool_type(&probe.serialized_tools(), "web_search"),
         "a hidden web.run must not suppress the model-visible hosted fallback"
@@ -2862,6 +3059,133 @@ async fn admitted_web_run_spec_is_snapshotted_once() {
     assert!(
         !has_serialized_tool_type(&serialized_tools, "web_search"),
         "the admitted canonical web.run snapshot should replace hosted search: {serialized_tools:?}"
+    );
+}
+
+#[tokio::test]
+async fn host_capability_web_spec_is_stable_across_request_plans() {
+    let spec_calls = Arc::new(AtomicUsize::new(0));
+    let executor: Arc<dyn ToolExecutor<ExtensionToolCall>> =
+        Arc::new(DriftingWebRunExtensionTool {
+            spec_calls: Arc::clone(&spec_calls),
+        });
+    let configure = |turn: &mut TurnContext| {
+        set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = true;
+    };
+    let first = probe_with(
+        configure,
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::clone(&executor)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+    let second = probe_with(
+        configure,
+        ToolPlanInputs {
+            extension_tool_executors: vec![executor],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("web", "run"),
+                HostToolCapability::WebSearch,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    assert_eq!(spec_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(first.serialized_tools(), second.serialized_tools());
+    assert!(
+        has_serialized_namespace_function(&second.serialized_tools(), "web", "run"),
+        "host capability should pin the canonical spec across request-local snapshots"
+    );
+}
+
+#[tokio::test]
+async fn non_prefixed_mcp_imagegen_cannot_shadow_host_capability_extension() {
+    let probe = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(
+                turn,
+                &[
+                    Feature::ImageGeneration,
+                    Feature::ImageGenExt,
+                    Feature::NonPrefixedMcpToolNames,
+                ],
+            );
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("images", "images", "imagegen")]),
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("images", "imagegen"),
+                HostToolCapability::ImageGeneration,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["imagesimagegen"]);
+    let serialized_tools = probe.serialized_tools();
+    let canonical_image = serde_json::to_value(ToolSpec::Namespace(
+        codex_tools::canonical_image_generation_namespace(),
+    ))
+    .expect("canonical image namespace should serialize");
+    assert_eq!(
+        probe.visible_spec("images"),
+        &ToolSpec::Namespace(codex_tools::canonical_image_generation_namespace())
+    );
+    assert_eq!(
+        serialized_tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(Value::as_str) == Some("images")),
+        Some(&canonical_image)
+    );
+}
+
+#[tokio::test]
+async fn dynamic_imagegen_cannot_shadow_host_capability_extension() {
+    let probe = probe_with(
+        |turn| {
+            use_chatgpt_auth(turn);
+            set_features(turn, &[Feature::ImageGeneration, Feature::ImageGenExt]);
+            turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+            turn.model_info.use_responses_lite = true;
+            turn.model_info.tool_mode = Some(ToolMode::Direct);
+            turn.tool_mode = ToolMode::Direct;
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(ImagegenExtensionTool)],
+            host_tool_capabilities: vec![(
+                ToolName::namespaced("images", "imagegen"),
+                HostToolCapability::ImageGeneration,
+            )],
+            dynamic_tools: vec![dynamic_tool(
+                Some("images"),
+                "imagegen",
+                /*defer_loading*/ false,
+            )],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["imagesimagegen"]);
+    assert_eq!(
+        probe.visible_spec("images"),
+        &ToolSpec::Namespace(codex_tools::canonical_image_generation_namespace())
     );
 }
 
