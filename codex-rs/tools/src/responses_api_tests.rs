@@ -193,16 +193,15 @@ fn canonical_generic_web_run_serializes_for_chat_and_responses() {
 #[test]
 fn canonical_web_run_schema_is_deep_pinned() {
     let namespace = super::canonical_web_search_namespace();
-    let [ResponsesApiNamespaceTool::Function(tool)] = namespace.tools.as_slice() else {
-        panic!("canonical web namespace should contain exactly one function");
-    };
     let expected: serde_json::Value =
         serde_json::from_str(codex_tool_contracts::WEB_RUN_SCHEMA_JSON)
             .expect("valid pinned schema");
+    let serialized = serde_json::to_value(namespace).expect("serialize canonical web namespace");
 
     assert_eq!(
-        serde_json::to_value(&tool.parameters).expect("serialize canonical schema"),
-        expected
+        serialized.pointer("/tools/0/parameters"),
+        Some(&expected),
+        "the authoritative numeric constraints must survive on the model-visible wire"
     );
 }
 

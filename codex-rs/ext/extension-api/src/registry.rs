@@ -128,7 +128,7 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
     /// Assigns hosted replacement authority to a registered contributor.
     ///
     /// Returns `false` when the supplied contributor instance was not
-    /// registered with this builder.
+    /// registered with this builder or already has the same capability.
     pub fn assign_host_tool_capability(
         &mut self,
         contributor: &Arc<dyn ToolContributor>,
@@ -138,6 +138,12 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
             .tool_contributors
             .iter()
             .any(|registered| Arc::ptr_eq(registered, contributor))
+            || self
+                .host_tool_capabilities
+                .iter()
+                .any(|(registered, assigned)| {
+                    Arc::ptr_eq(registered, contributor) && *assigned == capability
+                })
         {
             return false;
         }
@@ -262,6 +268,19 @@ impl<C: Sync> ExtensionRegistry<C> {
             .find_map(|(registered, capability)| {
                 Arc::ptr_eq(registered, contributor).then_some(*capability)
             })
+    }
+
+    /// Returns every host authority assigned to this exact contributor.
+    pub fn host_tool_capabilities(
+        &self,
+        contributor: &Arc<dyn ToolContributor>,
+    ) -> Vec<HostToolCapability> {
+        self.host_tool_capabilities
+            .iter()
+            .filter_map(|(registered, capability)| {
+                Arc::ptr_eq(registered, contributor).then_some(*capability)
+            })
+            .collect()
     }
 
     /// Returns the registered tool-lifecycle contributors.

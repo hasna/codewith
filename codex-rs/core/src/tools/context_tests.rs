@@ -372,7 +372,7 @@ fn tool_search_payloads_roundtrip_as_tool_search_outputs() {
 }
 
 #[test]
-fn tool_search_outputs_hide_namespace_tools_rejected_at_serialization_boundary() {
+fn tool_search_outputs_preserve_namespaces_for_transport_specific_filtering() {
     let payload = ToolPayload::ToolSearch {
         arguments: SearchToolCallParams {
             query: "images".to_string(),
@@ -415,22 +415,27 @@ fn tool_search_outputs_hide_namespace_tools_rejected_at_serialization_boundary()
             call_id: "search-2".to_string(),
             status: "completed".to_string(),
             execution: "client".to_string(),
-            tools: vec![json!({
-                "type": "namespace",
-                "name": "images",
-                "description": "Tools in the images namespace.",
-                "tools": [{
-                    "type": "function",
-                    "name": "imagegen",
-                    "description": "Generate an image.",
-                    "strict": false,
-                    "defer_loading": true,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                    },
-                }],
-            })],
+            tools: ["image_gen", "web", "images"]
+                .into_iter()
+                .map(|name| {
+                    json!({
+                        "type": "namespace",
+                        "name": name,
+                        "description": format!("Tools in the {name} namespace."),
+                        "tools": [{
+                            "type": "function",
+                            "name": if name == "web" { "run" } else { "imagegen" },
+                            "description": "Generate an image.",
+                            "strict": false,
+                            "defer_loading": true,
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                            },
+                        }],
+                    })
+                })
+                .collect(),
         }
     );
 }

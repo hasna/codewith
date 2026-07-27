@@ -177,14 +177,11 @@ impl ToolOutput for ToolSearchOutput {
                 .tools
                 .iter()
                 .filter_map(|tool| match serde_json::to_value(tool) {
-                    Ok(tool) if !codex_tools::is_forbidden_reserved_namespace_value(&tool) => {
-                        Some(tool)
-                    }
-                    Ok(_) => None,
+                    Ok(tool) => Some(tool),
                     Err(err) => {
                         warn!(
                             error = %err,
-                            "hiding deferred tool rejected by the Responses serialization boundary",
+                            "hiding deferred tool that failed to serialize",
                         );
                         None
                     }

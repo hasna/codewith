@@ -65,6 +65,7 @@ use codex_extension_api::HostToolCapability;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -1192,14 +1193,17 @@ fn append_extension_tool_executors(
     for registration in registrations {
         let adapter = ExtensionToolAdapter::new(Arc::clone(&registration.executor));
         let host_capability = registration
-            .host_capability
-            .filter(|capability| host_capability_matches_tool(*capability, &adapter.tool_name()));
+            .host_capabilities
+            .iter()
+            .copied()
+            .find(|capability| host_capability_matches_tool(*capability, &adapter.tool_name()));
         let adapter = match host_capability {
             Some(capability) => adapter.with_host_spec(host_tool_spec(capability)),
             None => adapter,
         };
         let tool_name = adapter.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
+            && turn_context.provider.info().wire_api != WireApi::Chat
             && (host_capability != Some(HostToolCapability::WebSearch)
                 || !standalone_web_search_enabled
                 || !web_search_mode_on)

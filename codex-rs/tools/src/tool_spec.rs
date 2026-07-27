@@ -141,12 +141,42 @@ pub fn create_tools_json_for_responses_api(
     let mut tools_json = Vec::new();
 
     for tool in tools {
-        validate_tool_spec_for_responses_api(tool)?;
-        let json = serde_json::to_value(tool)?;
-        tools_json.push(json);
+        tools_json.push(tool_spec_to_responses_api_value(tool)?);
     }
 
     Ok(tools_json)
+}
+
+/// Serializes one tool exactly as it will be shown to a Responses model.
+pub fn tool_spec_to_responses_api_value(tool: &ToolSpec) -> Result<Value, serde_json::Error> {
+    validate_tool_spec_for_responses_api(tool)?;
+    let mut value = serde_json::to_value(tool)?;
+    add_tool_search_limit_constraints(tool, &mut value);
+    Ok(value)
+}
+
+/// Serializes one tool as it will be handed to the Chat transport.
+///
+/// Chat accepts namespaces that Responses reserves, but shares the same
+/// client-executed `tool_search` parser and therefore needs the same bounds.
+pub fn tool_spec_to_chat_api_value(tool: &ToolSpec) -> Result<Value, serde_json::Error> {
+    let mut value = serde_json::to_value(tool)?;
+    add_tool_search_limit_constraints(tool, &mut value);
+    Ok(value)
+}
+
+fn add_tool_search_limit_constraints(tool: &ToolSpec, value: &mut Value) {
+    if matches!(tool, ToolSpec::ToolSearch { .. })
+        && let Some(limit) = value.pointer_mut("/parameters/properties/limit")
+        && let Some(limit) = limit.as_object_mut()
+    {
+        limit.insert("type".to_string(), Value::String("integer".to_string()));
+        limit.insert("minimum".to_string(), Value::from(1));
+        limit.insert(
+            "maximum".to_string(),
+            Value::from(crate::TOOL_SEARCH_MAX_RESULTS),
+        );
+    }
 }
 
 fn validate_tool_spec_for_responses_api(tool: &ToolSpec) -> Result<(), serde_json::Error> {

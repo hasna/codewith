@@ -3,17 +3,23 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::tool_search_spec::bounded_source_infos;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::tool_search_history::ReservedNamespacePolicy;
+use crate::tools::tool_search_history::ToolSearchHistoryBudget;
 use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
+use codex_model_provider_info::WireApi;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
+use codex_tools::TOOL_SEARCH_MAX_DECLARATION_BYTES;
 use codex_tools::TOOL_SEARCH_MAX_PROJECTION_BYTES;
 use codex_tools::TOOL_SEARCH_MAX_RESULTS;
+use codex_tools::TOOL_SEARCH_MAX_SEARCH_TEXT_BYTES;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
@@ -21,57 +27,53 @@ use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
-use std::collections::HashMap;
-
-const TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS: usize = 64;
-const TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES: usize = TOOL_SEARCH_MAX_PROJECTION_BYTES;
+use codex_utils_string::take_bytes_at_char_boundary;
+use std::collections::BTreeMap;
+use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 
 pub struct ToolSearchHandler {
     entries: Vec<ToolSearchEntry>,
     search_source_infos: Vec<ToolSearchSourceInfo>,
     search_engine: SearchEngine<usize>,
+    history_budget: OnceCell<Mutex<ToolSearchHistoryBudget>>,
 }
 
 impl ToolSearchHandler {
     pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
         let mut entries = Vec::with_capacity(search_infos.len());
-        let mut search_source_infos = Vec::new();
-        let mut source_indices = HashMap::new();
-        let mut source_info_bytes = 0usize;
-        for search_info in search_infos {
+        let mut source_infos = BTreeMap::<String, Option<String>>::new();
+        for mut search_info in search_infos {
             if search_info.projection_size_bytes() > TOOL_SEARCH_MAX_PROJECTION_BYTES {
                 continue;
             }
+            search_info.entry.search_text = take_bytes_at_char_boundary(
+                &search_info.entry.search_text,
+                TOOL_SEARCH_MAX_SEARCH_TEXT_BYTES,
+            )
+            .to_string();
             entries.push(search_info.entry);
             if let Some(source_info) = search_info.source_info {
-                if let Some(&index) = source_indices.get(&source_info.name) {
-                    let existing: &mut ToolSearchSourceInfo = &mut search_source_infos[index];
-                    if existing.description.is_none()
-                        && let Some(description) = source_info.description
-                        && source_info_bytes.saturating_add(description.len())
-                            <= TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES
-                    {
-                        source_info_bytes += description.len();
-                        existing.description = Some(description);
-                    }
+                if source_info.name.len() > TOOL_SEARCH_MAX_DECLARATION_BYTES {
                     continue;
                 }
-                let candidate_bytes = source_info.name.len()
-                    + source_info
-                        .description
-                        .as_ref()
-                        .map_or(0, std::string::String::len);
-                if search_source_infos.len() >= TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS
-                    || source_info_bytes.saturating_add(candidate_bytes)
-                        > TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES
-                {
-                    continue;
-                }
-                source_info_bytes += candidate_bytes;
-                source_indices.insert(source_info.name.clone(), search_source_infos.len());
-                search_source_infos.push(source_info);
+                let description = source_info.description.map(|description| {
+                    take_bytes_at_char_boundary(&description, TOOL_SEARCH_MAX_DECLARATION_BYTES)
+                        .to_string()
+                });
+                source_infos
+                    .entry(source_info.name)
+                    .and_modify(|existing| match (existing.as_ref(), description.as_ref()) {
+                        (None, Some(_)) => *existing = description.clone(),
+                        (Some(current), Some(candidate)) if candidate < current => {
+                            *existing = description.clone();
+                        }
+                        (None, None) | (Some(_), None) | (Some(_), Some(_)) => {}
+                    })
+                    .or_insert(description);
             }
         }
+        let search_source_infos = bounded_source_infos(source_infos);
         let documents: Vec<Document<usize>> = entries
             .iter()
             .map(|entry| entry.search_text.clone())
@@ -85,6 +87,7 @@ impl ToolSearchHandler {
             entries,
             search_source_infos,
             search_engine,
+            history_budget: OnceCell::new(),
         }
     }
 }
@@ -107,7 +110,12 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation { payload, .. } = invocation;
+        let ToolInvocation {
+            payload,
+            session,
+            turn,
+            ..
+        } = invocation;
 
         let args = match payload {
             ToolPayload::ToolSearch { arguments } => arguments,
@@ -137,6 +145,24 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
         }
 
         let tools = self.search(query, limit)?;
+        let reserved_namespace_policy = match turn.provider.info().wire_api {
+            WireApi::Chat => ReservedNamespacePolicy::Allow,
+            WireApi::Responses => ReservedNamespacePolicy::Reject,
+        };
+        let history_budget = self
+            .history_budget
+            .get_or_init(|| async {
+                let history = session.clone_history().await;
+                Mutex::new(ToolSearchHistoryBudget::from_history(
+                    history.raw_items(),
+                    reserved_namespace_policy,
+                ))
+            })
+            .await;
+        let tools = history_budget
+            .lock()
+            .await
+            .retain_loadable_tools(tools, reserved_namespace_policy);
 
         Ok(boxed_tool_output(ToolSearchOutput { tools }))
     }
@@ -196,6 +222,7 @@ mod tests {
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
+    use codex_tools::tool_spec_to_responses_api_value;
     use pretty_assertions::assert_eq;
     use rmcp::model::Tool;
     use std::sync::Arc;
@@ -351,9 +378,40 @@ mod tests {
         );
 
         assert!(
-            handler.search_source_infos.len() <= TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS,
+            handler.search_source_infos.len()
+                <= crate::tools::handlers::tool_search_spec::TOOL_SEARCH_MAX_INITIAL_SOURCE_INFOS,
             "tool_search advertised too many unique sources: {}",
             handler.search_source_infos.len()
+        );
+    }
+
+    #[test]
+    fn initial_declaration_source_cap_is_independent_of_input_order() {
+        let ascending = (0..128)
+            .map(|index| search_info_with_source(index, 8))
+            .collect::<Vec<_>>();
+        let descending = ascending.iter().cloned().rev().collect::<Vec<_>>();
+
+        assert_eq!(
+            ToolSearchHandler::new(ascending).search_source_infos,
+            ToolSearchHandler::new(descending).search_source_infos,
+        );
+    }
+
+    #[test]
+    fn valid_projection_is_not_dropped_for_large_local_search_metadata() {
+        let mut search_info = search_info_with_source(0, 20_000);
+        search_info.entry.search_text = format!("needle {}", "x".repeat(20_000));
+
+        let handler = ToolSearchHandler::new(vec![search_info]);
+
+        assert_eq!(handler.entries.len(), 1);
+        assert_eq!(
+            handler
+                .search("needle", 1)
+                .expect("valid projection should remain searchable")
+                .len(),
+            1
         );
     }
 
@@ -364,21 +422,15 @@ mod tests {
                 .map(|index| search_info_with_source(index, 1_000))
                 .collect(),
         );
-        let aggregate_bytes = handler
-            .search_source_infos
-            .iter()
-            .map(|source| {
-                source.name.len()
-                    + source
-                        .description
-                        .as_ref()
-                        .map_or(0, std::string::String::len)
-            })
-            .sum::<usize>();
+        let declaration = tool_spec_to_responses_api_value(&handler.spec())
+            .expect("tool_search declaration should serialize");
+        let aggregate_bytes = serde_json::to_vec(&declaration)
+            .expect("tool_search declaration should serialize")
+            .len();
 
         assert!(
-            aggregate_bytes <= TOOL_SEARCH_MAX_INITIAL_SOURCE_BYTES,
-            "tool_search source descriptions exceeded the aggregate declaration budget: \
+            aggregate_bytes <= TOOL_SEARCH_MAX_DECLARATION_BYTES,
+            "tool_search declaration exceeded its complete model-visible budget: \
              {aggregate_bytes}"
         );
     }

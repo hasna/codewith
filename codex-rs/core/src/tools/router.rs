@@ -55,7 +55,7 @@ pub(crate) struct ToolRouterParams<'a> {
 #[derive(Clone)]
 pub(crate) struct ExtensionToolRegistration {
     pub(crate) executor: Arc<dyn ToolExecutor<ExtensionToolCall>>,
-    pub(crate) host_capability: Option<HostToolCapability>,
+    pub(crate) host_capabilities: Vec<HostToolCapability>,
 }
 
 impl ToolRouter {
@@ -218,6 +218,14 @@ impl ToolRouter {
                             "failed to parse tool_search arguments: {err}"
                         ))
                     })?;
+                if arguments.limit.is_some_and(|limit| {
+                    !(1..=codex_tools::TOOL_SEARCH_MAX_RESULTS).contains(&limit)
+                }) {
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "tool_search limit must be an integer from 1 through {}",
+                        codex_tools::TOOL_SEARCH_MAX_RESULTS
+                    )));
+                }
                 Ok(Some(ToolCall {
                     tool_name: ToolName::plain("tool_search"),
                     call_id,
@@ -345,10 +353,10 @@ pub(crate) fn extension_tool_executors(session: &Session) -> Vec<ExtensionToolRe
         .tool_contributors()
         .iter()
         .flat_map(|contributor| {
-            let capability = session
+            let capabilities = session
                 .services
                 .extensions
-                .host_tool_capability(contributor);
+                .host_tool_capabilities(contributor);
             contributor
                 .tools(
                     &session.services.session_extension_data,
@@ -356,7 +364,7 @@ pub(crate) fn extension_tool_executors(session: &Session) -> Vec<ExtensionToolRe
                 )
                 .into_iter()
                 .map(move |executor| ExtensionToolRegistration {
-                    host_capability: capability,
+                    host_capabilities: capabilities.clone(),
                     executor,
                 })
         })

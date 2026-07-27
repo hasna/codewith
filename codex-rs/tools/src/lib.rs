@@ -1,6 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod bounded_json;
 mod code_mode;
 mod dynamic_tool;
 mod function_call_error;
@@ -21,6 +22,7 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
+pub use bounded_json::bounded_json_serialized_len;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
@@ -100,9 +102,12 @@ pub use tool_discovery::ListAvailablePluginsToInstallResult;
 pub use tool_discovery::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 pub use tool_discovery::RequestPluginInstallEntry;
 pub use tool_discovery::TOOL_SEARCH_DEFAULT_LIMIT;
+pub use tool_discovery::TOOL_SEARCH_MAX_DECLARATION_BYTES;
 pub use tool_discovery::TOOL_SEARCH_MAX_HISTORY_BYTES;
+pub use tool_discovery::TOOL_SEARCH_MAX_HISTORY_RESULTS;
 pub use tool_discovery::TOOL_SEARCH_MAX_PROJECTION_BYTES;
 pub use tool_discovery::TOOL_SEARCH_MAX_RESULTS;
+pub use tool_discovery::TOOL_SEARCH_MAX_SEARCH_TEXT_BYTES;
 pub use tool_discovery::TOOL_SEARCH_TOOL_NAME;
 pub use tool_discovery::ToolSearchSourceInfo;
 pub use tool_discovery::collect_request_plugin_install_entries;
@@ -120,3 +125,5 @@ pub use tool_spec::ResponsesApiWebSearchUserLocation;
 pub use tool_spec::ToolSpec;
 pub use tool_spec::ZaiWebSearchConfig;
 pub use tool_spec::create_tools_json_for_responses_api;
+pub use tool_spec::tool_spec_to_chat_api_value;
+pub use tool_spec::tool_spec_to_responses_api_value;

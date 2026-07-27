@@ -87,8 +87,6 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
-use codex_tools::TOOL_SEARCH_MAX_HISTORY_BYTES;
-use codex_tools::TOOL_SEARCH_MAX_RESULTS;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -883,12 +881,21 @@ impl ModelClient {
     ) -> Result<ResponsesApiRequest> {
         let mut instructions = prompt.base_instructions.text.clone();
         let mut input = prompt.get_formatted_input();
-        sanitize_client_tool_search_history(&mut input);
+        let reserved_namespace_policy = match wire_api {
+            WireApi::Chat => crate::tools::tool_search_history::ReservedNamespacePolicy::Allow,
+            WireApi::Responses => {
+                crate::tools::tool_search_history::ReservedNamespacePolicy::Reject
+            }
+        };
+        crate::tools::tool_search_history::sanitize_client_tool_search_history(
+            &mut input,
+            reserved_namespace_policy,
+        );
         let mut tools = match wire_api {
             WireApi::Chat => prompt
                 .tools
                 .iter()
-                .map(serde_json::to_value)
+                .map(codex_tools::tool_spec_to_chat_api_value)
                 .collect::<std::result::Result<Vec<_>, _>>()?,
             WireApi::Responses if self.state.provider.info().wire_api == WireApi::Chat => {
                 let tools = prompt
@@ -1134,46 +1141,6 @@ impl ModelClient {
             );
         }
         headers
-    }
-}
-
-fn sanitize_client_tool_search_history(input: &mut [ResponseItem]) {
-    let mut retained_count = 0usize;
-    // Account for the brackets in the serialized aggregate list.
-    let mut retained_bytes = 2usize;
-    for item in input.iter_mut().rev() {
-        let ResponseItem::ToolSearchOutput {
-            execution, tools, ..
-        } = item
-        else {
-            continue;
-        };
-        if execution != "client" {
-            continue;
-        }
-
-        let mut retained = Vec::new();
-        for tool in std::mem::take(tools) {
-            if codex_tools::is_forbidden_reserved_namespace_value(&tool)
-                || retained_count >= TOOL_SEARCH_MAX_RESULTS
-            {
-                continue;
-            }
-            let Ok(serialized) = serde_json::to_vec(&tool) else {
-                continue;
-            };
-            let separator_bytes = usize::from(retained_count > 0);
-            let candidate_bytes = retained_bytes
-                .saturating_add(separator_bytes)
-                .saturating_add(serialized.len());
-            if candidate_bytes > TOOL_SEARCH_MAX_HISTORY_BYTES {
-                continue;
-            }
-            retained.push(tool);
-            retained_count += 1;
-            retained_bytes = candidate_bytes;
-        }
-        *tools = retained;
     }
 }
 

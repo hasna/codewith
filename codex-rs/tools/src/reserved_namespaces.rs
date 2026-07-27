@@ -17,6 +17,8 @@
 //! Chat transports may safely flatten these names.
 
 use crate::ToolSpec;
+use codex_tool_contracts::WEB_RUN_DESCRIPTION;
+use codex_tool_contracts::WEB_RUN_SCHEMA_JSON;
 use serde_json::Value;
 
 /// Namespaces reserved by the OpenAI Responses API for its built-in tools.
@@ -84,7 +86,16 @@ pub fn is_forbidden_reserved_namespace_value(value: &Value) -> bool {
     if !is_reserved_responses_namespace(namespace) {
         return false;
     }
-    namespace != "web" || !crate::is_canonical_web_search_namespace_value(value)
+    namespace != "web"
+        || !is_bounded_canonical_web_candidate(value)
+        || !crate::is_canonical_web_search_namespace_value(value)
+}
+
+const MAX_CANONICAL_WEB_VALUE_WORK_BYTES: usize =
+    WEB_RUN_SCHEMA_JSON.len() + WEB_RUN_DESCRIPTION.len() + 4_096;
+
+fn is_bounded_canonical_web_candidate(value: &Value) -> bool {
+    crate::bounded_json_serialized_len(value, MAX_CANONICAL_WEB_VALUE_WORK_BYTES).is_some()
 }
 
 #[cfg(test)]
@@ -127,6 +138,10 @@ mod tests {
 
     #[test]
     fn serialized_guard_rejects_reserved_namespace_tools() {
+        let canonical_web = serde_json::to_value(ToolSpec::built_in_web_search())
+            .expect("canonical web.run should serialize");
+        assert!(!is_forbidden_reserved_namespace_value(&canonical_web));
+
         for value in [
             serde_json::json!({"type": "namespace", "name": "image_gen", "tools": []}),
             serde_json::json!({
@@ -171,5 +186,37 @@ mod tests {
         ] {
             assert!(!is_forbidden_reserved_namespace_value(&value), "{value}");
         }
+    }
+
+    #[test]
+    fn serialized_guard_bounds_malformed_web_history_before_canonical_comparison() {
+        let value = serde_json::json!({
+            "type": "namespace",
+            "name": "web",
+            "padding": "x".repeat(MAX_CANONICAL_WEB_VALUE_WORK_BYTES),
+        });
+
+        assert!(is_forbidden_reserved_namespace_value(&value));
+    }
+
+    #[test]
+    fn serialized_guard_rejects_deep_and_wide_malformed_web_history() {
+        let mut deep = Value::Null;
+        for _ in 0..=64 {
+            deep = Value::Array(vec![deep]);
+        }
+        let deep = serde_json::json!({
+            "type": "namespace",
+            "name": "web",
+            "padding": deep,
+        });
+        let wide = serde_json::json!({
+            "type": "namespace",
+            "name": "web",
+            "padding": vec![Value::Null; MAX_CANONICAL_WEB_VALUE_WORK_BYTES],
+        });
+
+        assert!(is_forbidden_reserved_namespace_value(&deep));
+        assert!(is_forbidden_reserved_namespace_value(&wide));
     }
 }

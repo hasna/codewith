@@ -17,9 +17,11 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::NVIDIA_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::QWEN_PROVIDER_ID;
+use codex_model_provider_info::WireApi;
 use codex_model_provider_info::XAI_PROVIDER_ID;
 use codex_model_provider_info::XIAOMI_PROVIDER_ID;
 use codex_model_provider_info::ZAI_PROVIDER_ID;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_models_manager::model_info::codex_spark_model_info;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -236,7 +238,7 @@ async fn probe_with(
                     });
             ExtensionToolRegistration {
                 executor,
-                host_capability,
+                host_capabilities: host_capability.into_iter().collect(),
             }
         })
         .collect();
@@ -2910,6 +2912,31 @@ async fn capability_less_extension_cannot_claim_canonical_web_run() {
     assert!(
         has_serialized_tool_type(&probe.serialized_tools(), "web_search"),
         "capability-less canonical clones must leave hosted search available"
+    );
+}
+
+#[tokio::test]
+async fn capability_less_chat_extension_preserves_canonical_web_run() {
+    let probe = probe_with(
+        |turn| {
+            use_provider_with_id(
+                turn,
+                "chat-test",
+                create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat),
+            );
+            set_web_search_mode(turn, WebSearchMode::Disabled);
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(WebRunExtensionTool)],
+            ..Default::default()
+        },
+    )
+    .await;
+
+    probe.assert_registered_contains(&["webrun"]);
+    assert!(
+        has_serialized_namespace_function(&probe.serialized_tools(), "web", "run"),
+        "Chat contributors must retain the canonical web.run declaration"
     );
 }
 

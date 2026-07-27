@@ -597,6 +597,46 @@ fn responses_request_sanitizes_only_client_tool_search_output_and_preserves_cano
 }
 
 #[test]
+fn chat_request_preserves_deferred_namespaces_reserved_only_by_responses() {
+    let client = test_chat_model_client(SessionSource::Cli);
+    let reserved_tool = json!({
+        "type": "namespace",
+        "name": "image_gen",
+        "tools": [{"type": "function", "name": "imagegen"}],
+    });
+    let prompt = crate::Prompt {
+        input: vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-chat".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![reserved_tool.clone()],
+        }],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &api_provider("test", "https://example.com/v1"),
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            ReasoningSummary::Auto,
+            /*service_tier*/ None,
+        )
+        .expect("Chat request should preserve its valid deferred namespace");
+
+    assert_eq!(
+        request.input,
+        vec![ResponseItem::ToolSearchOutput {
+            call_id: Some("search-chat".to_string()),
+            status: "completed".to_string(),
+            execution: "client".to_string(),
+            tools: vec![reserved_tool],
+        }]
+    );
+}
+
+#[test]
 fn responses_request_bounds_cumulative_client_tool_search_history() {
     let client = test_model_client(SessionSource::Cli);
     let legacy_tool = |marker: &str| {
@@ -672,7 +712,7 @@ fn responses_request_bounds_cumulative_client_tool_search_history() {
         })
         .sum::<usize>();
     assert!(
-        aggregate_count <= codex_tools::TOOL_SEARCH_MAX_RESULTS,
+        aggregate_count <= codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS,
         "resumed client history exceeded the aggregate result count: {aggregate_count}"
     );
     assert!(
@@ -683,8 +723,8 @@ fn responses_request_bounds_cumulative_client_tool_search_history() {
         client_outputs
             .iter()
             .flat_map(|tools| tools.iter())
-            .any(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some("newest")),
-        "sanitization should retain the newest valid client search result"
+            .any(|tool| tool.get("name").and_then(serde_json::Value::as_str) == Some("oldest")),
+        "legacy sanitization must retain the previously sent request prefix"
     );
     assert_eq!(
         request.input[1],
@@ -738,7 +778,7 @@ fn responses_request_bounds_oversized_legacy_tool_search_output() {
         panic!("expected one tool_search_output");
     };
     assert_eq!(execution, "client");
-    assert!(tools.len() <= codex_tools::TOOL_SEARCH_MAX_RESULTS);
+    assert!(tools.len() <= codex_tools::TOOL_SEARCH_MAX_HISTORY_RESULTS);
     assert!(
         serde_json::to_vec(tools)
             .expect("tools should serialize")

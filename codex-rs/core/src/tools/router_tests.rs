@@ -18,14 +18,23 @@ use codex_config::ToolPolicy;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::HostToolCapability;
 use codex_extension_api::ResponsesApiTool;
 use codex_extension_api::ToolCall as ExtensionToolCall;
 use codex_extension_api::ToolExecutor;
+use codex_features::Feature;
+use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_model_provider::create_model_provider;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
@@ -39,6 +48,7 @@ use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
 
+use super::ExtensionToolRegistration;
 use super::MAX_INFINITY_AGENT_ARGUMENT_BYTES;
 use super::ToolCall;
 use super::ToolCallSource;
@@ -47,6 +57,7 @@ use super::ToolRouterParams;
 use super::extension_tool_executors;
 
 struct ExtensionEchoContributor;
+struct HostedToolsContributor;
 
 struct CountingHandler {
     tool_name: ToolName,
@@ -99,6 +110,56 @@ impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
     }
 }
 
+impl codex_extension_api::ToolContributor for HostedToolsContributor {
+    fn tools(
+        &self,
+        _session_store: &ExtensionData,
+        _thread_store: &ExtensionData,
+    ) -> Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>> {
+        vec![
+            Arc::new(HostedMarkerExecutor {
+                tool_name: ToolName::namespaced("web", "run"),
+                marker: "extension-web",
+            }),
+            Arc::new(HostedMarkerExecutor {
+                tool_name: ToolName::namespaced("images", "imagegen"),
+                marker: "extension-image",
+            }),
+        ]
+    }
+}
+
+struct HostedMarkerExecutor {
+    tool_name: ToolName,
+    marker: &'static str,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ExtensionToolCall> for HostedMarkerExecutor {
+    fn tool_name(&self) -> ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> ToolSpec {
+        match self.marker {
+            "extension-web" => ToolSpec::built_in_web_search(),
+            "extension-image" => {
+                ToolSpec::Namespace(codex_tools::canonical_image_generation_namespace())
+            }
+            marker => panic!("unexpected hosted marker {marker}"),
+        }
+    }
+
+    async fn handle(
+        &self,
+        _call: ExtensionToolCall,
+    ) -> Result<Box<dyn ToolOutput>, codex_tools::FunctionCallError> {
+        Ok(Box::new(codex_tools::JsonToolOutput::new(json!({
+            "executor": self.marker,
+        }))))
+    }
+}
+
 struct ExtensionEchoExecutor;
 
 #[async_trait::async_trait]
@@ -148,6 +209,16 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
 fn extension_tool_test_registry() -> Arc<ExtensionRegistry<Config>> {
     let mut builder = ExtensionRegistryBuilder::new();
     builder.tool_contributor(Arc::new(ExtensionEchoContributor));
+    Arc::new(builder.build())
+}
+
+fn hosted_tool_test_registry() -> Arc<ExtensionRegistry<Config>> {
+    let contributor: Arc<dyn codex_extension_api::ToolContributor> =
+        Arc::new(HostedToolsContributor);
+    let mut builder = ExtensionRegistryBuilder::new();
+    builder.tool_contributor(Arc::clone(&contributor));
+    assert!(builder.assign_host_tool_capability(&contributor, HostToolCapability::WebSearch));
+    assert!(builder.assign_host_tool_capability(&contributor, HostToolCapability::ImageGeneration));
     Arc::new(builder.build())
 }
 
@@ -254,6 +325,52 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
     );
 
     Ok(())
+}
+
+#[test]
+fn tool_search_limit_wire_schema_and_call_parser_have_exact_parity() {
+    let spec = crate::tools::handlers::tool_search_spec::create_tool_search_tool(
+        &[],
+        codex_tools::TOOL_SEARCH_DEFAULT_LIMIT,
+    );
+    let [wire_spec] = codex_tools::create_tools_json_for_responses_api(&[spec])
+        .expect("tool_search declaration should serialize")
+        .try_into()
+        .expect("one tool declaration");
+    assert_eq!(
+        wire_spec.pointer("/parameters/properties/limit"),
+        Some(&json!({
+            "type": "integer",
+            "description": "Maximum number of tools to return. Defaults to 8.",
+            "minimum": 1,
+            "maximum": 8,
+        }))
+    );
+
+    for limit in [json!(1), json!(8)] {
+        let call = ToolRouter::build_tool_call(ResponseItem::ToolSearchCall {
+            id: None,
+            call_id: Some("call-search".to_string()),
+            status: Some("completed".to_string()),
+            execution: "client".to_string(),
+            arguments: json!({"query": "calendar", "limit": limit}),
+        })
+        .expect("declared bounds should parse")
+        .expect("client tool_search should create a call");
+        assert_eq!(call.tool_name, ToolName::plain("tool_search"));
+    }
+
+    for limit in [json!(1.5), json!(0), json!(9)] {
+        let error = ToolRouter::build_tool_call(ResponseItem::ToolSearchCall {
+            id: None,
+            call_id: Some("call-search".to_string()),
+            status: Some("completed".to_string()),
+            execution: "client".to_string(),
+            arguments: json!({"query": "calendar", "limit": limit}),
+        })
+        .expect_err("values outside the declared schema must be rejected");
+        assert!(error.to_string().contains("tool_search"), "{error}");
+    }
 }
 
 #[tokio::test]
@@ -749,6 +866,168 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
             );
         }
         other => panic!("expected function call output, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn capability_less_chat_web_extension_is_visible_and_dispatchable() -> anyhow::Result<()> {
+    let (session, mut turn) = make_session_and_context().await;
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    turn.provider = create_model_provider(provider, turn.auth_manager.clone());
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: None,
+            discoverable_tools: None,
+            extension_tools: vec![ExtensionToolRegistration {
+                executor: Arc::new(HostedMarkerExecutor {
+                    tool_name: ToolName::namespaced("web", "run"),
+                    marker: "extension-web",
+                }),
+                host_capabilities: Vec::new(),
+            }],
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+    );
+
+    assert_eq!(
+        namespace_function_names(&router.model_visible_specs(), "web"),
+        vec!["run".to_string()]
+    );
+    let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "run".to_string(),
+        namespace: Some("web".to_string()),
+        arguments: "{}".to_string(),
+        call_id: "call-chat-web".to_string(),
+    })?
+    .expect("function_call should create a tool call");
+    let result = router
+        .dispatch_tool_call_with_code_mode_result(
+            Arc::new(session),
+            Arc::new(turn),
+            CancellationToken::new(),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call,
+            ToolCallSource::Direct,
+        )
+        .await?;
+    let ResponseInputItem::FunctionCallOutput { output, .. } = result.into_response() else {
+        panic!("expected function call output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("expected text function call output");
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text)?,
+        json!({"executor": "extension-web"})
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_capabilities_route_each_executor_and_extension_shadows_mcp_dispatch()
+-> anyhow::Result<()> {
+    let (mut session, mut turn) = make_session_and_context().await;
+    session.services.extensions = hosted_tool_test_registry();
+    for feature in [
+        Feature::StandaloneWebSearch,
+        Feature::ImageGeneration,
+        Feature::ImageGenExt,
+    ] {
+        turn.features
+            .enable(feature)
+            .expect("test feature should be enableable");
+    }
+    let mut config = (*turn.config).clone();
+    for feature in [
+        Feature::StandaloneWebSearch,
+        Feature::ImageGeneration,
+        Feature::ImageGenExt,
+    ] {
+        config
+            .features
+            .enable(feature)
+            .expect("test feature should be enableable in config");
+    }
+    config
+        .web_search_mode
+        .set(WebSearchMode::Live)
+        .expect("live web search should be accepted");
+    turn.config = Arc::new(config);
+    turn.auth_manager = Some(AuthManager::from_auth_for_testing(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn.provider = create_model_provider(
+        turn.config.model_provider.clone(),
+        turn.auth_manager.clone(),
+    );
+    turn.model_info.supports_search_tool = true;
+    turn.model_info.input_modalities = vec![InputModality::Text, InputModality::Image];
+    turn.model_info.use_responses_lite = true;
+
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: Some(vec![mcp_tool_info(
+                "untrusted-images",
+                /*supports_parallel_tool_calls*/ false,
+                "images",
+                "imagegen",
+            )]),
+            discoverable_tools: None,
+            extension_tools: extension_tool_executors(&session),
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+    );
+    assert_eq!(
+        namespace_function_names(&router.model_visible_specs(), "images"),
+        vec!["imagegen".to_string()]
+    );
+    assert_eq!(
+        namespace_function_names(&router.model_visible_specs(), "web"),
+        vec!["run".to_string()]
+    );
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    for (namespace, name, marker) in [
+        ("web", "run", "extension-web"),
+        ("images", "imagegen", "extension-image"),
+    ] {
+        let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+            id: None,
+            name: name.to_string(),
+            namespace: Some(namespace.to_string()),
+            arguments: "{}".to_string(),
+            call_id: format!("call-{marker}"),
+        })?
+        .expect("function_call should create a tool call");
+        let result = router
+            .dispatch_tool_call_with_code_mode_result(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                CancellationToken::new(),
+                Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+                call,
+                ToolCallSource::Direct,
+            )
+            .await?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = result.into_response() else {
+            panic!("expected function call output");
+        };
+        let FunctionCallOutputBody::Text(text) = output.body else {
+            panic!("expected text function call output");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text)?,
+            json!({"executor": marker})
+        );
     }
 
     Ok(())

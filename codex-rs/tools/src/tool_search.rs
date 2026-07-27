@@ -73,37 +73,41 @@ impl ToolSearchInfo {
     }
 
     pub fn is_valid_projection_for(&self, tool_name: &ToolName, spec: &ToolSpec) -> bool {
-        let identity_matches = match (&self.entry.output, spec) {
-            (LoadableToolSpec::Function(output), ToolSpec::Function(_)) => {
-                tool_name.namespace.is_none() && output.name == tool_name.name
+        let contract_matches = match (&self.entry.output, spec) {
+            (LoadableToolSpec::Function(output), ToolSpec::Function(admitted)) => {
+                tool_name.namespace.is_none()
+                    && output.name == tool_name.name
+                    && output.name == admitted.name
+                    && output.strict == admitted.strict
+                    && output.parameters == admitted.parameters
             }
-            (LoadableToolSpec::Namespace(output), ToolSpec::Namespace(_)) => {
-                let [ResponsesApiNamespaceTool::Function(tool)] = output.tools.as_slice() else {
+            (LoadableToolSpec::Namespace(output), ToolSpec::Namespace(admitted)) => {
+                let [ResponsesApiNamespaceTool::Function(output_tool)] = output.tools.as_slice()
+                else {
+                    return false;
+                };
+                let [ResponsesApiNamespaceTool::Function(admitted_tool)] =
+                    admitted.tools.as_slice()
+                else {
                     return false;
                 };
                 tool_name.namespace.as_deref() == Some(output.name.as_str())
-                    && tool.name == tool_name.name
+                    && output.name == admitted.name
+                    && output_tool.name == tool_name.name
+                    && output_tool.name == admitted_tool.name
+                    && output_tool.strict == admitted_tool.strict
+                    && output_tool.parameters == admitted_tool.parameters
             }
             _ => false,
         };
-        identity_matches && self.projection_size_bytes() <= crate::TOOL_SEARCH_MAX_PROJECTION_BYTES
+        contract_matches && self.projection_size_bytes() <= crate::TOOL_SEARCH_MAX_PROJECTION_BYTES
     }
 
     pub fn projection_size_bytes(&self) -> usize {
-        let output_bytes = serde_json::to_vec(&self.entry.output)
+        serde_json::to_vec(&self.entry.output)
             .map_or(crate::TOOL_SEARCH_MAX_PROJECTION_BYTES + 1, |value| {
                 value.len()
-            });
-        let source_bytes = self.source_info.as_ref().map_or(0, |source| {
-            source.name.len()
-                + source
-                    .description
-                    .as_ref()
-                    .map_or(0, std::string::String::len)
-        });
-        output_bytes
-            .saturating_add(self.entry.search_text.len())
-            .saturating_add(source_bytes)
+            })
     }
 }
 

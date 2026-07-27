@@ -31,11 +31,24 @@ fn host_capability_is_bound_to_the_exact_registered_contributor() {
     );
     builder.tool_contributor(Arc::clone(&registered));
     assert!(builder.assign_host_tool_capability(&registered, HostToolCapability::WebSearch));
+    assert!(
+        !builder.assign_host_tool_capability(&registered, HostToolCapability::WebSearch),
+        "the same authority assignment must not report success twice"
+    );
+    assert!(builder.assign_host_tool_capability(&registered, HostToolCapability::ImageGeneration));
 
     let registry = builder.build();
     assert_eq!(
         registry.host_tool_capability(&registered),
         Some(HostToolCapability::WebSearch)
     );
+    assert_eq!(
+        registry.host_tool_capabilities(&registered),
+        vec![
+            HostToolCapability::WebSearch,
+            HostToolCapability::ImageGeneration,
+        ]
+    );
     assert_eq!(registry.host_tool_capability(&lookalike), None);
+    assert!(registry.host_tool_capabilities(&lookalike).is_empty());
 }
