@@ -37,6 +37,9 @@ pub enum AuthProfileUsageHealth {
 pub struct AuthProfileUsageRecommendation {
     /// Recommended profile name. `None` means the default/root auth profile.
     pub profile: Option<String>,
+    /// Whether `profile` identifies a real target. This distinguishes the default/root profile
+    /// from the absence of any available profile.
+    pub target_available: bool,
     /// Stable short reason suitable for model-visible JSON.
     pub reason: AuthProfileUsageRecommendationReason,
 }
@@ -220,12 +223,14 @@ pub fn recommend_auth_profile(
         Some(AuthProfileUsageHealth::Healthy { .. }) => {
             return AuthProfileUsageRecommendation {
                 profile: current_profile.map(str::to_string),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileHealthy,
             };
         }
         Some(AuthProfileUsageHealth::Unknown) => {
             return AuthProfileUsageRecommendation {
                 profile: current_profile.map(str::to_string),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileUnknown,
             };
         }
@@ -233,6 +238,7 @@ pub fn recommend_auth_profile(
         None => {
             return AuthProfileUsageRecommendation {
                 profile: current_profile.map(str::to_string),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileUnavailable,
             };
         }
@@ -251,6 +257,7 @@ pub fn recommend_auth_profile(
                     Some(AuthProfileUsageHealth::Healthy { .. }) => {
                         return AuthProfileUsageRecommendation {
                             profile: (*candidate).clone(),
+                            target_available: true,
                             reason: AuthProfileUsageRecommendationReason::SelectedOrderedHealthy,
                         };
                     }
@@ -288,6 +295,7 @@ pub fn recommend_auth_profile(
             if let Some((profile, _remaining_percent)) = best {
                 return AuthProfileUsageRecommendation {
                     profile,
+                    target_available: true,
                     reason: AuthProfileUsageRecommendationReason::SelectedHighestRemaining,
                 };
             }
@@ -297,12 +305,14 @@ pub fn recommend_auth_profile(
     if let Some(profile) = first_unknown {
         return AuthProfileUsageRecommendation {
             profile,
+            target_available: true,
             reason: AuthProfileUsageRecommendationReason::SelectedUnknownFallback,
         };
     }
 
     AuthProfileUsageRecommendation {
         profile: None,
+        target_available: false,
         reason: AuthProfileUsageRecommendationReason::NoAvailableProfiles,
     }
 }
@@ -587,6 +597,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("work".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileHealthy,
             },
             recommend_auth_profile(
@@ -629,6 +640,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("third".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::SelectedHighestRemaining,
             },
             recommend_auth_profile(
@@ -641,6 +653,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("second".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::SelectedOrderedHealthy,
             },
             recommend_auth_profile(
@@ -665,6 +678,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("second".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::SelectedUnknownFallback,
             },
             recommend_auth_profile(
@@ -696,6 +710,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("third".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::SelectedOrderedHealthy,
             },
             recommend_auth_profile(
@@ -727,6 +742,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("work".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileUnknown,
             },
             recommend_auth_profile(
@@ -751,6 +767,7 @@ mod tests {
         assert_eq!(
             AuthProfileUsageRecommendation {
                 profile: Some("work".to_string()),
+                target_available: true,
                 reason: AuthProfileUsageRecommendationReason::CurrentProfileUnavailable,
             },
             recommend_auth_profile(

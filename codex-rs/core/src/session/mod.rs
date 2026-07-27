@@ -1603,6 +1603,7 @@ impl Session {
     ) {
         {
             let mut state = self.state.lock().await;
+            state.clear_rate_limits();
             let info = state.token_info().unwrap_or(TokenUsageInfo {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
@@ -3557,14 +3558,23 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
-        self.record_rate_limits_info(new_rate_limits).await;
+        self.record_rate_limits_info(turn_context, new_rate_limits)
+            .await;
         self.send_token_count_event(turn_context).await;
     }
 
-    pub(crate) async fn record_rate_limits_info(&self, new_rate_limits: RateLimitSnapshot) {
+    pub(crate) async fn record_rate_limits_info(
+        &self,
+        turn_context: &TurnContext,
+        new_rate_limits: RateLimitSnapshot,
+    ) {
         {
             let mut state = self.state.lock().await;
-            state.set_rate_limits(new_rate_limits);
+            state.set_rate_limits_for_profile(
+                new_rate_limits,
+                turn_context.config.selected_auth_profile.clone(),
+                Utc::now().timestamp(),
+            );
         }
     }
 

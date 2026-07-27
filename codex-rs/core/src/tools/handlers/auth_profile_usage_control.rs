@@ -109,6 +109,7 @@ struct AccountUsageResponse {
 struct AccountUsageRecommendationResponse {
     profile_name: Option<String>,
     display_name: String,
+    target_available: bool,
     current: bool,
     reason: AuthProfileUsageRecommendationReason,
 }
@@ -618,10 +619,16 @@ fn account_usage_recommendation(
         ordered_profiles,
         &health_by_profile,
     );
+    let target_available = recommendation.target_available;
     let profile_name = recommendation.profile;
     AccountUsageRecommendationResponse {
-        display_name: display_name_for_profile(profile_name.as_deref()),
-        current: profile_name.as_deref() == current_profile,
+        display_name: if target_available {
+            display_name_for_profile(profile_name.as_deref())
+        } else {
+            "No available profile".to_string()
+        },
+        target_available,
+        current: target_available && profile_name.as_deref() == current_profile,
         profile_name,
         reason: recommendation.reason,
     }
@@ -1056,6 +1063,7 @@ mod tests {
             serde_json::json!({
                 "profileName": "spare",
                 "displayName": "spare",
+                "targetAvailable": true,
                 "current": false,
                 "reason": "selected_highest_remaining"
             })
@@ -1115,8 +1123,72 @@ mod tests {
             serde_json::json!({
                 "profileName": "configured",
                 "displayName": "configured",
+                "targetAvailable": true,
                 "current": false,
                 "reason": "selected_highest_remaining"
+            })
+        );
+    }
+
+    #[test]
+    fn account_usage_recommendation_does_not_label_no_target_as_default() {
+        let accounts = vec![account_usage(
+            Some("work"),
+            true,
+            AuthProfileUsageSummary {
+                status: AuthProfileUsageStatus::Exhausted,
+                remaining_percent: Some(0.0),
+                resets_at: Some(100),
+                captured_at: Some(123),
+                stale: false,
+                reason: None,
+            },
+        )];
+
+        let recommendation = account_usage_recommendation(
+            &accounts,
+            Some("work"),
+            &config(),
+            &[Some("work".to_string())],
+        );
+
+        assert_eq!(
+            serde_json::to_value(recommendation).expect("serialize recommendation"),
+            serde_json::json!({
+                "profileName": null,
+                "displayName": "No available profile",
+                "targetAvailable": false,
+                "current": false,
+                "reason": "no_available_profiles"
+            })
+        );
+    }
+
+    #[test]
+    fn account_usage_recommendation_preserves_actual_default_target() {
+        let accounts = vec![account_usage(
+            None,
+            true,
+            AuthProfileUsageSummary {
+                status: AuthProfileUsageStatus::Healthy,
+                remaining_percent: Some(80.0),
+                resets_at: Some(100),
+                captured_at: Some(123),
+                stale: false,
+                reason: None,
+            },
+        )];
+
+        let recommendation = account_usage_recommendation(&accounts, None, &config(), &[]);
+
+        assert_eq!(
+            serde_json::to_value(recommendation).expect("serialize recommendation"),
+            serde_json::json!({
+                "profileName": null,
+                "displayName": "Default",
+                "targetAvailable": true,
+                "current": true,
+                "reason": "current_profile_healthy"
             })
         );
     }

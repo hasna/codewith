@@ -1228,9 +1228,14 @@ async fn with_auth_profile_usage_prompt_nudge(
     let (rate_limits, auto_switch_config) = {
         let state = sess.state.lock().await;
         let config = &state.session_configuration.original_config_do_not_use;
+        let auto_switch_config = config.auth_profile_auto_switch.clone();
         (
-            state.latest_rate_limits.clone(),
-            config.auth_profile_auto_switch.clone(),
+            state.latest_rate_limits_for_profile(
+                config.selected_auth_profile.as_deref(),
+                chrono::Utc::now().timestamp(),
+                auto_switch_config.heartbeat_freshness_secs,
+            ),
+            auto_switch_config,
         )
     };
     let Some(rate_limits) = rate_limits else {
@@ -2390,7 +2395,7 @@ async fn try_run_sampling_request(
             ResponseEvent::RateLimits(snapshot) => {
                 // Update internal state with latest rate limits, but defer sending until
                 // token usage is available to avoid duplicate TokenCount events.
-                sess.record_rate_limits_info(snapshot).await;
+                sess.record_rate_limits_info(&turn_context, snapshot).await;
                 should_emit_token_count = true;
             }
             ResponseEvent::ModelsEtag(etag) => {
