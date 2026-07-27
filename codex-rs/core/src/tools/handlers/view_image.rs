@@ -23,6 +23,7 @@ use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::handlers::view_image_spec::create_view_image_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
@@ -204,7 +205,11 @@ impl ToolExecutor<ToolInvocation> for ViewImageHandler {
     }
 }
 
-impl CoreToolRuntime for ViewImageHandler {}
+impl CoreToolRuntime for ViewImageHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 pub struct ViewImageOutput {
     image_url: String,

@@ -15,6 +15,7 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolTelemetryTags;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_mcp::ToolInfo;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -187,6 +188,19 @@ impl CoreToolRuntime for McpHandler {
             }
             tags
         })
+    }
+
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        match self
+            .tool_info
+            .tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+        {
+            Some(true) => ToolWorktreeMutationSignal::NoWorktreeMutation,
+            Some(false) | None => ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+        }
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {

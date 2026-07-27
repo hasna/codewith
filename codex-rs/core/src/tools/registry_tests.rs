@@ -36,6 +36,7 @@ enum LifecycleTestResult {
 struct LifecycleTestHandler {
     tool_name: codex_tools::ToolName,
     result: LifecycleTestResult,
+    worktree_mutation_signal: codex_extension_api::ToolWorktreeMutationSignal,
 }
 
 #[async_trait::async_trait]
@@ -66,7 +67,14 @@ impl ToolExecutor<ToolInvocation> for LifecycleTestHandler {
     }
 }
 
-impl CoreToolRuntime for LifecycleTestHandler {}
+impl CoreToolRuntime for LifecycleTestHandler {
+    fn worktree_mutation_signal(
+        &self,
+        _invocation: &ToolInvocation,
+    ) -> codex_extension_api::ToolWorktreeMutationSignal {
+        self.worktree_mutation_signal
+    }
+}
 
 fn test_spec(tool_name: &codex_tools::ToolName) -> codex_tools::ToolSpec {
     codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
@@ -89,6 +97,7 @@ enum RecordedToolLifecycle {
         call_id: String,
         tool_name: codex_tools::ToolName,
         outcome: codex_extension_api::ToolCallOutcome,
+        worktree_mutation_signal: codex_extension_api::ToolWorktreeMutationSignal,
     },
 }
 
@@ -123,6 +132,7 @@ impl codex_extension_api::ToolLifecycleContributor for ToolLifecycleRecorder {
             call_id: input.call_id.to_string(),
             tool_name: input.tool_name.clone(),
             outcome: input.outcome,
+            worktree_mutation_signal: input.worktree_mutation_signal,
         };
         Box::pin(async move {
             records
@@ -365,6 +375,25 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
 }
 
 #[tokio::test]
+async fn first_party_read_only_handler_reports_no_worktree_mutation() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let handler = crate::tools::handlers::ViewImageHandler::default();
+    let invocation = test_invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "view-image-call",
+        handler.tool_name(),
+    );
+
+    assert_eq!(
+        handler.worktree_mutation_signal(&invocation),
+        codex_extension_api::ToolWorktreeMutationSignal::NoWorktreeMutation
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -379,10 +408,14 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
     let ok_handler = Arc::new(LifecycleTestHandler {
         tool_name: ok_tool.clone(),
         result: LifecycleTestResult::Ok { success: false },
+        worktree_mutation_signal:
+            codex_extension_api::ToolWorktreeMutationSignal::NoWorktreeMutation,
     }) as Arc<dyn CoreToolRuntime>;
     let failing_handler = Arc::new(LifecycleTestHandler {
         tool_name: failing_tool.clone(),
         result: LifecycleTestResult::Err,
+        worktree_mutation_signal:
+            codex_extension_api::ToolWorktreeMutationSignal::MaybeMutatesWorktree,
     }) as Arc<dyn CoreToolRuntime>;
     let registry = ToolRegistry::new(HashMap::from([
         (ok_tool.clone(), ok_handler),
@@ -428,6 +461,8 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
             call_id: "ok-call".to_string(),
             tool_name: ok_tool,
             outcome: codex_extension_api::ToolCallOutcome::Completed { success: false },
+            worktree_mutation_signal:
+                codex_extension_api::ToolWorktreeMutationSignal::NoWorktreeMutation,
         },
         RecordedToolLifecycle::Start {
             call_id: "failing-call".to_string(),
@@ -439,6 +474,8 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
             outcome: codex_extension_api::ToolCallOutcome::Failed {
                 handler_executed: true,
             },
+            worktree_mutation_signal:
+                codex_extension_api::ToolWorktreeMutationSignal::MaybeMutatesWorktree,
         },
     ];
     let actual = records

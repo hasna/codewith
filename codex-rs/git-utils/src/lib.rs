@@ -58,3 +58,4 @@ pub use worktree_snapshot::GitWorktreeLineChangeStats;
 pub use worktree_snapshot::GitWorktreeSnapshot;
 pub use worktree_snapshot::capture_git_worktree_snapshot;
 pub use worktree_snapshot::diff_git_worktree_snapshots;
+pub use worktree_snapshot::resolve_git_worktree_root;

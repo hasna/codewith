@@ -294,6 +294,113 @@ async fn stats_since_baseline_counts_changes_committed_during_turn() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+
+    let goal_a = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000a1",
+        "goal-a",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state_a = GoalAccountingState::default();
+    state_a.start_turn(
+        "turn-a",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_a.mark_turn_goal_active("turn-a", goal_a.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state_a, &goal_a).await;
+
+    let goal_b = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000b2",
+        "goal-b",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state_b = GoalAccountingState::default();
+    state_b.start_turn(
+        "turn-b",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_b.mark_turn_goal_active("turn-b", goal_b.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state_b, &goal_b).await;
+    assert_eq!(
+        None,
+        state_b
+            .progress_snapshot("turn-b")
+            .and_then(|snapshot| snapshot.line_changes)
+    );
+
+    write_file(repo, "src/lib.rs", "fn base() {}\nfn first_goal() {}\n")?;
+    {
+        let snapshot_a = state_a
+            .progress_snapshot("turn-a")
+            .expect("first owner should keep the worktree baseline");
+        let line_changes = snapshot_a
+            .line_changes
+            .expect("first owner snapshot should include line changes");
+        assert_eq!(
+            Some(ThreadGoalLineChangeStats {
+                lines_added: 1,
+                lines_deleted: 0,
+            }),
+            line_changes::stats_since_baseline(
+                line_changes.cwd.as_path(),
+                &line_changes.baseline,
+                line_changes.last_accounted_stats,
+            )
+            .await
+        );
+    }
+    state_a.finish_turn("turn-a");
+    state_b.finish_turn("turn-b");
+
+    state_b.start_turn(
+        "turn-b-2",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_b.mark_turn_goal_active("turn-b-2", goal_b.goal_id.clone());
+    // Production does not retry the same active turn after an overlap loser is
+    // suppressed. This explicit establish call represents a later fresh turn.
+    line_changes::establish_current_turn_baseline(&state_b, &goal_b).await;
+    write_file(
+        repo,
+        "src/lib.rs",
+        "fn base() {}\nfn first_goal() {}\nfn second_goal() {}\n",
+    )?;
+    let snapshot_b = state_b
+        .progress_snapshot("turn-b-2")
+        .expect("second owner should acquire a fresh baseline after release");
+    let line_changes = snapshot_b
+        .line_changes
+        .expect("second owner snapshot should include line changes");
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 1,
+            lines_deleted: 0,
+        }),
+        line_changes::stats_since_baseline(
+            line_changes.cwd.as_path(),
+            &line_changes.baseline,
+            line_changes.last_accounted_stats,
+        )
+        .await
+    );
+    Ok(())
+}
+
 async fn init_repo(repo: &Path) -> Result<()> {
     run_git(repo, &["init"]).await
 }
@@ -342,10 +449,24 @@ fn write_file(repo: &Path, path: &str, contents: &str) -> Result<()> {
 }
 
 fn test_goal(lines_added: i64, lines_deleted: i64) -> Result<codex_state::ThreadGoal> {
+    test_goal_with_owner(
+        "00000000-0000-4000-8000-000000000001",
+        "goal-1",
+        lines_added,
+        lines_deleted,
+    )
+}
+
+fn test_goal_with_owner(
+    thread_id: &str,
+    goal_id: &str,
+    lines_added: i64,
+    lines_deleted: i64,
+) -> Result<codex_state::ThreadGoal> {
     let now = Utc::now();
     Ok(codex_state::ThreadGoal {
-        thread_id: ThreadId::from_string("00000000-0000-4000-8000-000000000001")?,
-        goal_id: "goal-1".to_string(),
+        thread_id: ThreadId::from_string(thread_id)?,
+        goal_id: goal_id.to_string(),
         objective: "Track line changes".to_string(),
         title: None,
         status: ThreadGoalStatus::Active,

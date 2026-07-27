@@ -14,6 +14,7 @@ use chrono::DateTime;
 use chrono::Duration as ChronoDuration;
 use chrono::Utc;
 use chrono_tz::Tz;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_protocol::ThreadId;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -177,7 +178,11 @@ impl ToolExecutor<ToolInvocation> for ManageLoopHandler {
     }
 }
 
-impl CoreToolRuntime for ManageLoopHandler {}
+impl CoreToolRuntime for ManageLoopHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 async fn manage_loop(
     state_db: Arc<codex_state::StateRuntime>,

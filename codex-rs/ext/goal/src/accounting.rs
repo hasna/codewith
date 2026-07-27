@@ -67,6 +67,12 @@ pub(crate) struct IdleGoalProgressSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineChangeAccounting {
+    Capture,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BudgetLimitedGoalDisposition {
     KeepActive,
     ClearActive,

@@ -7,6 +7,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::mcp_resource_spec::create_list_mcp_resources_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::McpInvocation;
 use codex_tools::ToolName;
@@ -164,4 +165,8 @@ impl ToolExecutor<ToolInvocation> for ListMcpResourcesHandler {
     }
 }
 
-impl CoreToolRuntime for ListMcpResourcesHandler {}
+impl CoreToolRuntime for ListMcpResourcesHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}

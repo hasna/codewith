@@ -51,6 +51,15 @@ pub async fn capture_git_worktree_snapshot(path: &Path) -> anyhow::Result<GitWor
     task::spawn_blocking(move || capture_git_worktree_snapshot_sync(path.as_path())).await?
 }
 
+/// Resolves the root of the Git worktree containing `path`.
+pub async fn resolve_git_worktree_root(path: &Path) -> anyhow::Result<PathBuf> {
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || {
+        resolve_repository_root(path.as_path()).context("resolve worktree repository root")
+    })
+    .await?
+}
+
 /// Returns aggregate text line changes between two snapshots of the same repository.
 pub async fn diff_git_worktree_snapshots(
     before: &GitWorktreeSnapshot,

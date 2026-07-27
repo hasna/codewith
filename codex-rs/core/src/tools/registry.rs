@@ -26,6 +26,7 @@ use crate::tools::smart_suggest::maybe_record_pre_tool_guidance;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
@@ -63,6 +64,12 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         _invocation: &'a ToolInvocation,
     ) -> BoxFuture<'a, ToolTelemetryTags> {
         Box::pin(async { Vec::new() })
+    }
+
+    /// Returns a conservative host-owned signal describing whether this
+    /// invocation may mutate current repository worktree state.
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::MaybeMutatesWorktree
     }
 
     fn post_tool_use_payload(
@@ -317,6 +324,10 @@ impl CoreToolRuntime for ExposureOverride {
         self.handler.telemetry_tags(invocation)
     }
 
+    fn worktree_mutation_signal(&self, invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        self.handler.worktree_mutation_signal(invocation)
+    }
+
     fn create_diff_consumer(&self) -> Option<Box<dyn ToolArgumentDiffConsumer>> {
         self.handler.create_diff_consumer()
     }
@@ -502,6 +513,7 @@ impl ToolRegistry {
                         &invocation,
                         terminal_outcome_reached.as_deref(),
                         ToolCallOutcome::Blocked,
+                        ToolWorktreeMutationSignal::MaybeMutatesWorktree,
                     )
                     .await;
                     return Err(err);
@@ -520,6 +532,7 @@ impl ToolRegistry {
                             ToolCallOutcome::Failed {
                                 handler_executed: false,
                             },
+                            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
                         )
                         .await;
                         return Err(err);
@@ -544,6 +557,7 @@ impl ToolRegistry {
         let response_cell = tokio::sync::Mutex::new(None);
         let invocation_for_tool = invocation.clone();
         let log_payload = invocation.payload.log_payload();
+        let worktree_mutation_signal = tool.worktree_mutation_signal(&invocation);
 
         let result = otel
             .log_tool_result_with_tags(
@@ -653,6 +667,7 @@ impl ToolRegistry {
             &invocation,
             terminal_outcome_reached.as_deref(),
             lifecycle_outcome,
+            worktree_mutation_signal,
         )
         .await;
 
@@ -682,12 +697,13 @@ async fn notify_tool_finish_if_unclaimed(
     invocation: &ToolInvocation,
     terminal_outcome_reached: Option<&AtomicBool>,
     outcome: ToolCallOutcome,
+    worktree_mutation_signal: ToolWorktreeMutationSignal,
 ) -> bool {
     if terminal_outcome_reached.is_some_and(|reached| reached.swap(true, Ordering::AcqRel)) {
         return false;
     }
 
-    notify_tool_finish(invocation, outcome).await;
+    notify_tool_finish(invocation, outcome, worktree_mutation_signal).await;
     true
 }
 

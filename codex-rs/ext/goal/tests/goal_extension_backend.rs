@@ -19,6 +19,7 @@ use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
@@ -2148,6 +2149,91 @@ async fn tool_finish_accounts_active_goal_progress_and_emits_event() -> anyhow::
         }],
         harness.sink.goal_events()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_only_tool_finish_defers_line_change_scan_until_mutating_completion()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    run_test_git(harness.cwd.path(), &["init"]).await?;
+    std::fs::write(harness.cwd.path().join("tracked.txt"), "baseline\n")?;
+    run_test_git(harness.cwd.path(), &["add", "."]).await?;
+    run_test_git(
+        harness.cwd.path(),
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+    std::fs::write(
+        harness.cwd.path().join("tracked.txt"),
+        "baseline\npending edit\n",
+    )?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+
+    harness
+        .notify_tool_finish_with_signal(
+            "turn-1",
+            "call-read-only",
+            "read_only_tool",
+            ToolWorktreeMutationSignal::NoWorktreeMutation,
+        )
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(23, goal.tokens_used);
+    assert_eq!(0, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
+
+    harness
+        .notify_tool_finish_with_signal(
+            "turn-1",
+            "call-mutating",
+            "shell",
+            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+        )
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(23, goal.tokens_used);
+    assert_eq!(1, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
     Ok(())
 }
 
@@ -5071,6 +5157,22 @@ impl GoalExtensionHarness {
     }
 
     async fn notify_tool_finish(&self, turn_id: &str, call_id: &str, tool_name: &str) {
+        self.notify_tool_finish_with_signal(
+            turn_id,
+            call_id,
+            tool_name,
+            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+        )
+        .await;
+    }
+
+    async fn notify_tool_finish_with_signal(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        worktree_mutation_signal: ToolWorktreeMutationSignal,
+    ) {
         let turn_store = ExtensionData::new(turn_id);
         let tool_name = codex_extension_api::ToolName::plain(tool_name);
         for contributor in self.registry.tool_lifecycle_contributors() {
@@ -5084,6 +5186,7 @@ impl GoalExtensionHarness {
                     tool_name: &tool_name,
                     source: ToolCallSource::Direct,
                     outcome: ToolCallOutcome::Completed { success: true },
+                    worktree_mutation_signal,
                 })
                 .await;
         }

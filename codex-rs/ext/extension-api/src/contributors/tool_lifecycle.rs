@@ -43,6 +43,17 @@ pub enum ToolCallOutcome {
     Aborted,
 }
 
+/// Host-owned current-worktree mutation signal for a completed tool invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolWorktreeMutationSignal {
+    /// The tool runtime knows this invocation cannot mutate the current
+    /// repository worktree state visible to line-change accounting.
+    NoWorktreeMutation,
+    /// The tool may have mutated the current repository worktree, or the host
+    /// cannot prove otherwise. This is the conservative default.
+    MaybeMutatesWorktree,
+}
+
 /// Input supplied when the host starts executing one tool call.
 pub struct ToolStartInput<'a> {
     /// Store scoped to the host session runtime.
@@ -79,4 +90,7 @@ pub struct ToolFinishInput<'a> {
     pub source: ToolCallSource,
     /// Host-observed result of the tool call.
     pub outcome: ToolCallOutcome,
+    /// Host/tool-owned signal describing whether this invocation may have
+    /// changed current repository worktree state.
+    pub worktree_mutation_signal: ToolWorktreeMutationSignal,
 }
