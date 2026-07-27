@@ -60,6 +60,21 @@ pub async fn resolve_git_worktree_root(path: &Path) -> anyhow::Result<PathBuf> {
     .await?
 }
 
+/// Resolves the private Git directory for the linked worktree containing `path`.
+pub async fn resolve_git_worktree_private_git_dir(path: &Path) -> anyhow::Result<PathBuf> {
+    let path = path.to_path_buf();
+    task::spawn_blocking(move || {
+        let git_dir = run_git_for_stdout(
+            path.as_path(),
+            ["rev-parse", "--absolute-git-dir"],
+            /*env*/ None,
+        )
+        .context("resolve worktree private git directory")?;
+        Ok(PathBuf::from(git_dir))
+    })
+    .await?
+}
+
 /// Returns aggregate text line changes between two snapshots of the same repository.
 pub async fn diff_git_worktree_snapshots(
     before: &GitWorktreeSnapshot,

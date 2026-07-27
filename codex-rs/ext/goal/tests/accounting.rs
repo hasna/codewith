@@ -17,6 +17,11 @@ use codex_state::ThreadGoalStatus;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+
+const LINE_CHANGE_LEASE_HELPER_REPO_ENV: &str = "CODEWITH_LINE_CHANGE_LEASE_HELPER_REPO";
+const LINE_CHANGE_LEASE_HELPER_EXPECT_ENV: &str = "CODEWITH_LINE_CHANGE_LEASE_HELPER_EXPECT";
+const LINE_CHANGE_LEASE_HELPER_TEST: &str = "subprocess_shared_cwd_line_change_lease_helper";
 
 #[test]
 fn goal_accounting_uses_turn_start_baseline_for_exact_deltas() {
@@ -397,6 +402,91 @@ async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Resu
             line_changes.last_accounted_stats,
         )
         .await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_cwd_line_change_lease_is_exclusive_across_processes() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+
+    let goal = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000d4",
+        "parent-goal",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state = GoalAccountingState::default();
+    state.start_turn(
+        "turn-parent",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state.mark_turn_goal_active("turn-parent", goal.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state, &goal).await;
+    assert!(
+        state
+            .progress_snapshot("turn-parent")
+            .and_then(|snapshot| snapshot.line_changes)
+            .is_some(),
+        "parent process should acquire the shared worktree lease"
+    );
+
+    run_line_change_lease_helper(repo, "denied").await?;
+    state.finish_turn("turn-parent");
+    run_line_change_lease_helper(repo, "acquired").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn subprocess_shared_cwd_line_change_lease_helper() -> Result<()> {
+    let Some(repo) = std::env::var_os(LINE_CHANGE_LEASE_HELPER_REPO_ENV) else {
+        return Ok(());
+    };
+    let repo = PathBuf::from(repo);
+    let expectation = std::env::var(LINE_CHANGE_LEASE_HELPER_EXPECT_ENV)?;
+    let baseline = line_changes::capture_baseline(
+        repo.as_path(),
+        &test_goal_with_owner(
+            "00000000-0000-4000-8000-0000000000e5",
+            "child-goal",
+            /*lines_added*/ 0,
+            /*lines_deleted*/ 0,
+        )?,
+    )
+    .await;
+
+    match expectation.as_str() {
+        "denied" => assert_eq!(None, baseline),
+        "acquired" => assert!(
+            baseline.is_some(),
+            "child process should acquire the shared worktree lease"
+        ),
+        other => anyhow::bail!("unknown lease helper expectation {other:?}"),
+    }
+    Ok(())
+}
+
+async fn run_line_change_lease_helper(repo: &Path, expectation: &str) -> Result<()> {
+    let output = tokio::process::Command::new(std::env::current_exe()?)
+        .arg(LINE_CHANGE_LEASE_HELPER_TEST)
+        .arg("--exact")
+        .arg("--nocapture")
+        .env(LINE_CHANGE_LEASE_HELPER_REPO_ENV, repo.as_os_str())
+        .env(LINE_CHANGE_LEASE_HELPER_EXPECT_ENV, expectation)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "line-change lease helper expected {expectation:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
     Ok(())
 }

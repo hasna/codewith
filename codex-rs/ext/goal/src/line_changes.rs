@@ -1,9 +1,11 @@
 use codex_git_utils::GitWorktreeSnapshot;
 use codex_git_utils::capture_git_worktree_snapshot;
 use codex_git_utils::diff_git_worktree_snapshots;
-use codex_git_utils::resolve_git_worktree_root;
+use codex_git_utils::resolve_git_worktree_private_git_dir;
 use codex_state::ThreadGoalLineChangeStats;
 use std::collections::HashMap;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ struct GoalLineChangeOwner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoalWorktreeLineChangeLease {
-    worktree_root: PathBuf,
+    private_git_dir: PathBuf,
     owner: GoalLineChangeOwner,
 }
 
@@ -36,6 +38,7 @@ struct GoalWorktreeLineChangeLease {
 struct GoalWorktreeLineChangeLeaseEntry {
     owner: GoalLineChangeOwner,
     ref_count: usize,
+    _lock_file: File,
 }
 
 static WORKTREE_LINE_CHANGE_LEASES: LazyLock<
@@ -83,25 +86,27 @@ impl GoalLineChangeBaseline {
 
 impl GoalWorktreeLineChangeLease {
     async fn acquire(cwd: &Path, owner: GoalLineChangeOwner) -> Option<Self> {
-        let worktree_root = resolve_git_worktree_root(cwd).await.ok()?;
+        let private_git_dir = resolve_git_worktree_private_git_dir(cwd).await.ok()?;
         let mut leases = worktree_line_change_leases();
-        match leases.get_mut(worktree_root.as_path()) {
+        match leases.get_mut(private_git_dir.as_path()) {
             Some(entry) if entry.owner == owner => {
                 entry.ref_count = entry.ref_count.saturating_add(1);
             }
             Some(_) => return None,
             None => {
+                let lock_file = try_open_line_change_lock(private_git_dir.as_path())?;
                 leases.insert(
-                    worktree_root.clone(),
+                    private_git_dir.clone(),
                     GoalWorktreeLineChangeLeaseEntry {
                         owner: owner.clone(),
                         ref_count: 1,
+                        _lock_file: lock_file,
                     },
                 );
             }
         }
         Some(Self {
-            worktree_root,
+            private_git_dir,
             owner,
         })
     }
@@ -110,7 +115,7 @@ impl GoalWorktreeLineChangeLease {
 impl Drop for GoalWorktreeLineChangeLease {
     fn drop(&mut self) {
         let mut leases = worktree_line_change_leases();
-        let Some(entry) = leases.get_mut(self.worktree_root.as_path()) else {
+        let Some(entry) = leases.get_mut(self.private_git_dir.as_path()) else {
             return;
         };
         if entry.owner != self.owner {
@@ -119,8 +124,23 @@ impl Drop for GoalWorktreeLineChangeLease {
         if entry.ref_count > 1 {
             entry.ref_count -= 1;
         } else {
-            leases.remove(self.worktree_root.as_path());
+            leases.remove(self.private_git_dir.as_path());
         }
+    }
+}
+
+fn try_open_line_change_lock(private_git_dir: &Path) -> Option<File> {
+    // Keep the file in place after release; dropping the handle releases the
+    // OS lock, and a stable inode avoids replacement races between processes.
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(private_git_dir.join("codewith-line-change-accounting.lock"))
+        .ok()?;
+    match lock_file.try_lock() {
+        Ok(()) => Some(lock_file),
+        Err(_) => None,
     }
 }
 
