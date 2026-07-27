@@ -81,6 +81,76 @@ fn user_input_text(text: &str) -> ResponseItem {
     }
 }
 
+fn auth_profile_usage_snapshot(used_percent: f64) -> RateLimitSnapshot {
+    RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        primary: Some(codex_protocol::protocol::RateLimitWindow {
+            used_percent,
+            window_minutes: Some(5 * 60),
+            resets_at: Some(123),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }
+}
+
+#[test]
+fn auth_profile_usage_prompt_nudge_requires_both_visible_tools() {
+    let usage_tool =
+        crate::tools::handlers::auth_profile_usage_control_spec::create_get_usage_tool();
+    let profile_tool =
+        crate::tools::handlers::auth_profile_control_spec::create_manage_auth_profiles_tool();
+
+    assert!(!auth_profile_usage_tools_visible(&[]));
+    assert!(!auth_profile_usage_tools_visible(std::slice::from_ref(
+        &usage_tool
+    )));
+    assert!(!auth_profile_usage_tools_visible(std::slice::from_ref(
+        &profile_tool
+    )));
+    assert!(auth_profile_usage_tools_visible(&[
+        usage_tool,
+        profile_tool
+    ]));
+}
+
+#[test]
+fn auth_profile_usage_prompt_nudge_only_fires_when_remaining_capacity_is_low() {
+    let config = AuthProfileAutoSwitchConfig::default();
+
+    assert!(!auth_profile_usage_is_low(
+        &auth_profile_usage_snapshot(/*used_percent*/ 10.0),
+        &config
+    ));
+    assert!(auth_profile_usage_is_low(
+        &auth_profile_usage_snapshot(/*used_percent*/ 90.0),
+        &config
+    ));
+    assert!(auth_profile_usage_is_low(
+        &auth_profile_usage_snapshot(/*used_percent*/ 100.0),
+        &config
+    ));
+}
+
+#[test]
+fn auth_profile_usage_prompt_nudge_is_appended_once() {
+    let base = BaseInstructions {
+        text: "base instructions".to_string(),
+    };
+
+    let nudged = append_auth_profile_usage_prompt_nudge(base);
+    assert!(nudged.text.starts_with("base instructions\n\n"));
+    assert!(nudged.text.contains("scope: \"all_accounts\""));
+    assert!(nudged.text.contains("action: \"set_auto_switch\""));
+
+    let duplicate = append_auth_profile_usage_prompt_nudge(nudged.clone());
+    assert_eq!(duplicate.text, nudged.text);
+}
+
 #[tokio::test]
 async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;

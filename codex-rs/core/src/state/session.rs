@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::auth_profile_usage::usage_capture_is_stale;
 use crate::context_manager::ContextManager;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
@@ -25,6 +26,7 @@ pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
+    latest_rate_limits_context: Option<RateLimitCaptureContext>,
     pub(crate) server_reasoning_included: bool,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
     pub(crate) additional_context: AdditionalContextStore,
@@ -42,6 +44,12 @@ pub(crate) struct SessionState {
     next_turn_is_first: bool,
 }
 
+#[derive(Clone)]
+struct RateLimitCaptureContext {
+    auth_profile: Option<String>,
+    captured_at: i64,
+}
+
 impl SessionState {
     /// Create a new session state mirroring previous `State::default()` semantics.
     pub(crate) fn new(session_configuration: SessionConfiguration) -> Self {
@@ -50,6 +58,7 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
+            latest_rate_limits_context: None,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             additional_context: AdditionalContextStore::default(),
@@ -152,11 +161,49 @@ impl SessionState {
         self.history.token_info()
     }
 
+    pub(crate) fn set_rate_limits_for_profile(
+        &mut self,
+        snapshot: RateLimitSnapshot,
+        auth_profile: Option<String>,
+        captured_at: i64,
+    ) {
+        let previous = self
+            .latest_rate_limits_context
+            .as_ref()
+            .filter(|context| context.auth_profile == auth_profile)
+            .and(self.latest_rate_limits.as_ref());
+        self.latest_rate_limits = Some(merge_rate_limit_fields(previous, snapshot));
+        self.latest_rate_limits_context = Some(RateLimitCaptureContext {
+            auth_profile,
+            captured_at,
+        });
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_rate_limits(&mut self, snapshot: RateLimitSnapshot) {
-        self.latest_rate_limits = Some(merge_rate_limit_fields(
-            self.latest_rate_limits.as_ref(),
-            snapshot,
-        ));
+        self.set_rate_limits_for_profile(
+            snapshot, /*auth_profile*/ None, /*captured_at*/ 0,
+        );
+    }
+
+    pub(crate) fn latest_rate_limits_for_profile(
+        &self,
+        auth_profile: Option<&str>,
+        now: i64,
+        freshness_secs: u64,
+    ) -> Option<RateLimitSnapshot> {
+        let context = self.latest_rate_limits_context.as_ref()?;
+        if context.auth_profile.as_deref() != auth_profile
+            || usage_capture_is_stale(context.captured_at, now, freshness_secs)
+        {
+            return None;
+        }
+        self.latest_rate_limits.clone()
+    }
+
+    pub(crate) fn clear_rate_limits(&mut self) {
+        self.latest_rate_limits = None;
+        self.latest_rate_limits_context = None;
     }
 
     pub(crate) fn token_info_and_rate_limits(

@@ -1,7 +1,11 @@
 use crate::auth_profile_usage::AuthProfileUsageHealth;
+use crate::auth_profile_usage::AuthProfileUsageRecommendationReason;
 use crate::auth_profile_usage::TokenUsageProfileResponse;
+use crate::auth_profile_usage::ordered_chatgpt_auth_profiles;
+use crate::auth_profile_usage::recommend_auth_profile;
 use crate::auth_profile_usage::usage_capture_is_stale;
 use crate::auth_profile_usage::usage_health_for_snapshots;
+use crate::config::AuthProfileAutoSwitchConfig;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -16,21 +20,27 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
+use codex_login::AuthProfileSubscriptionProvider;
 use codex_login::CodexAuth;
 use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use futures::StreamExt;
+use futures::TryStreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
+use std::future::Future;
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 const AUTH_PROFILE_USAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONCURRENT_ACCOUNT_USAGE_FETCHES: usize = 4;
 static AUTH_PROFILE_USAGE_CACHE: LazyLock<
     Mutex<BTreeMap<AuthProfileUsageCacheKey, AuthProfileUsageCacheEntry>>,
 > = LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -42,6 +52,7 @@ pub struct GetUsageHandler;
 enum GetUsageScope {
     Session,
     Account,
+    AllAccounts,
     Both,
 }
 
@@ -63,6 +74,10 @@ struct GetUsageResponse {
     session: Option<SessionUsageResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<AccountUsageResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accounts: Option<Vec<AccountUsageResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommendation: Option<AccountUsageRecommendationResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +91,7 @@ struct SessionUsageResponse {
 #[serde(rename_all = "camelCase")]
 struct AccountUsageResponse {
     target: AccountUsageTarget,
+    current: bool,
     include_token_profile: bool,
     spend_status: UsageSpendSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,11 +106,28 @@ struct AccountUsageResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AccountUsageRecommendationResponse {
+    profile_name: Option<String>,
+    display_name: String,
+    target_available: bool,
+    current: bool,
+    reason: AuthProfileUsageRecommendationReason,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AccountUsageTarget {
     profile_name: Option<String>,
+    subscription_provider: AuthProfileSubscriptionProvider,
     auth_mode: Option<AuthMode>,
     plan: Option<String>,
     redacted_account_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct AccountUsageLookupTarget {
+    profile_name: Option<String>,
+    subscription_provider: AuthProfileSubscriptionProvider,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,11 +248,11 @@ impl ToolExecutor<ToolInvocation> for GetUsageHandler {
         };
 
         let args: GetUsageArgs = parse_arguments(&arguments)?;
-        let target_profile = normalize_requested_profile(
-            args.auth_profile.clone(),
-            session.selected_auth_profile().await,
-        )?;
-        let response = get_usage_response(&session, &turn, args, target_profile).await?;
+        let current_profile = session.selected_auth_profile().await;
+        let target_profile =
+            normalize_requested_profile(args.auth_profile.clone(), current_profile.clone())?;
+        let response =
+            get_usage_response(&session, &turn, args, current_profile, target_profile).await?;
         let response = serde_json::to_string_pretty(&response)
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         Ok(boxed_tool_output(FunctionToolOutput::from_text(
@@ -235,10 +268,12 @@ async fn get_usage_response(
     session: &Session,
     turn: &TurnContext,
     args: GetUsageArgs,
+    current_profile: Option<String>,
     target_profile: Option<String>,
 ) -> Result<GetUsageResponse, FunctionCallError> {
     let include_session = matches!(args.scope, GetUsageScope::Session | GetUsageScope::Both);
     let include_account = matches!(args.scope, GetUsageScope::Account | GetUsageScope::Both);
+    let include_accounts = matches!(args.scope, GetUsageScope::AllAccounts);
     let session_usage = if include_session {
         Some(SessionUsageResponse {
             token_usage: session.token_usage_info().await,
@@ -248,14 +283,43 @@ async fn get_usage_response(
         None
     };
     let account_usage = if include_account {
-        Some(fetch_account_usage(session, turn, target_profile, args.include_token_profile).await?)
+        Some(
+            fetch_account_usage(
+                session,
+                turn,
+                target_profile,
+                current_profile.as_deref(),
+                args.include_token_profile,
+            )
+            .await?,
+        )
     } else {
         None
+    };
+    let (accounts_usage, recommendation) = if include_accounts {
+        let (accounts, ordered_profiles) = fetch_all_account_usages(
+            session,
+            turn,
+            current_profile.as_deref(),
+            args.include_token_profile,
+        )
+        .await?;
+        let recommendation = Some(account_usage_recommendation(
+            &accounts,
+            current_profile.as_deref(),
+            &turn.config.auth_profile_auto_switch,
+            &ordered_profiles,
+        ));
+        (Some(accounts), recommendation)
+    } else {
+        (None, None)
     };
     Ok(GetUsageResponse {
         scope: args.scope,
         session: session_usage,
         account: account_usage,
+        accounts: accounts_usage,
+        recommendation,
     })
 }
 
@@ -279,9 +343,41 @@ async fn fetch_account_usage(
     session: &Session,
     turn: &TurnContext,
     target_profile: Option<String>,
+    current_profile: Option<&str>,
     include_token_profile: bool,
 ) -> Result<AccountUsageResponse, FunctionCallError> {
-    validate_target_profile(turn, target_profile.as_deref())?;
+    let target = resolve_account_usage_target(turn, target_profile)?;
+    fetch_account_usage_unvalidated(
+        session,
+        turn,
+        target,
+        current_profile,
+        include_token_profile,
+    )
+    .await
+}
+
+async fn fetch_account_usage_unvalidated(
+    session: &Session,
+    turn: &TurnContext,
+    target: AccountUsageLookupTarget,
+    current_profile: Option<&str>,
+    include_token_profile: bool,
+) -> Result<AccountUsageResponse, FunctionCallError> {
+    let AccountUsageLookupTarget {
+        profile_name: target_profile,
+        subscription_provider,
+    } = target;
+    let current = target_profile.as_deref() == current_profile;
+    if subscription_provider != AuthProfileSubscriptionProvider::ChatGpt {
+        return Ok(account_unavailable_response(
+            target_profile,
+            subscription_provider,
+            current,
+            include_token_profile,
+            AuthProfileUsageStatusReason::NotCodexBackend,
+        ));
+    }
     let scoped_auth_manager = session
         .services
         .auth_manager
@@ -290,14 +386,18 @@ async fn fetch_account_usage(
     let Some(auth) = scoped_auth_manager.auth().await else {
         return Ok(account_unavailable_response(
             target_profile,
+            subscription_provider,
+            current,
             include_token_profile,
             AuthProfileUsageStatusReason::NoAuth,
         ));
     };
-    let target = AccountUsageTarget::from_auth(target_profile.clone(), &auth);
+    let target =
+        AccountUsageTarget::from_auth(target_profile.clone(), subscription_provider, &auth);
     if !auth.uses_codex_backend() {
         return Ok(AccountUsageResponse {
             target,
+            current,
             include_token_profile,
             spend_status: UsageSpendSummary::account_without_backend_credits(),
             rate_limits: None,
@@ -313,6 +413,7 @@ async fn fetch_account_usage(
         Err(_) => {
             return Ok(AccountUsageResponse {
                 target,
+                current,
                 include_token_profile,
                 spend_status: UsageSpendSummary::account_without_backend_credits(),
                 rate_limits: None,
@@ -372,6 +473,7 @@ async fn fetch_account_usage(
 
     Ok(AccountUsageResponse {
         target,
+        current,
         include_token_profile,
         spend_status,
         rate_limits,
@@ -381,42 +483,49 @@ async fn fetch_account_usage(
     })
 }
 
-fn validate_target_profile(
+fn resolve_account_usage_target(
     turn: &TurnContext,
-    target_profile: Option<&str>,
-) -> Result<(), FunctionCallError> {
+    target_profile: Option<String>,
+) -> Result<AccountUsageLookupTarget, FunctionCallError> {
     let Some(profile_name) = target_profile else {
-        return Ok(());
+        return Ok(AccountUsageLookupTarget {
+            profile_name: None,
+            subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+        });
     };
     let profiles = codex_login::list_auth_profiles(
         &turn.config.codex_home,
         turn.config.cli_auth_credentials_store_mode,
     )
     .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
-    if profiles
+    let profile = profiles
         .iter()
-        .any(|profile| profile.name.as_str() == profile_name)
-    {
-        Ok(())
-    } else {
-        Err(FunctionCallError::RespondToModel(format!(
-            "unknown auth profile `{profile_name}`"
-        )))
-    }
+        .find(|profile| profile.name == profile_name)
+        .ok_or_else(|| {
+            FunctionCallError::RespondToModel(format!("unknown auth profile `{profile_name}`"))
+        })?;
+    Ok(AccountUsageLookupTarget {
+        profile_name: Some(profile.name.clone()),
+        subscription_provider: profile.subscription_provider,
+    })
 }
 
 fn account_unavailable_response(
     target_profile: Option<String>,
+    subscription_provider: AuthProfileSubscriptionProvider,
+    current: bool,
     include_token_profile: bool,
     reason: AuthProfileUsageStatusReason,
 ) -> AccountUsageResponse {
     AccountUsageResponse {
         target: AccountUsageTarget {
             profile_name: target_profile,
+            subscription_provider,
             auth_mode: None,
             plan: None,
             redacted_account_id: None,
         },
+        current,
         include_token_profile,
         spend_status: UsageSpendSummary::account_without_backend_credits(),
         rate_limits: None,
@@ -424,6 +533,129 @@ fn account_unavailable_response(
         token_profile_error: None,
         error: Some(AccountUsageError { reason }),
     }
+}
+
+async fn fetch_all_account_usages(
+    session: &Session,
+    turn: &TurnContext,
+    current_profile: Option<&str>,
+    include_token_profile: bool,
+) -> Result<(Vec<AccountUsageResponse>, Vec<Option<String>>), FunctionCallError> {
+    let saved_profiles = codex_login::list_auth_profiles(
+        &turn.config.codex_home,
+        turn.config.cli_auth_credentials_store_mode,
+    )
+    .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+    let ordered_profiles = ordered_chatgpt_auth_profiles(
+        &turn.config.auth_profile_auto_switch.profiles,
+        &saved_profiles,
+    )
+    .into_iter()
+    .map(Some)
+    .collect::<Vec<_>>();
+    let mut targets = vec![AccountUsageLookupTarget {
+        profile_name: None,
+        subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+    }];
+    let mut seen = HashSet::from([None]);
+    for profile in saved_profiles {
+        let profile_name = Some(profile.name);
+        if seen.insert(profile_name.clone()) {
+            targets.push(AccountUsageLookupTarget {
+                profile_name,
+                subscription_provider: profile.subscription_provider,
+            });
+        }
+    }
+
+    // Bounded fan-out: `all_accounts` can cover every saved profile, and each target is a
+    // separate backend round trip. `buffered` keeps the response ordered while capping how many
+    // usage requests are in flight, so listing profiles never turns into a burst against the
+    // backend.
+    let usages = collect_bounded_account_usages(targets.into_iter().map(|target| {
+        fetch_account_usage_unvalidated(
+            session,
+            turn,
+            target,
+            current_profile,
+            include_token_profile,
+        )
+    }))
+    .await?;
+    Ok((usages, ordered_profiles))
+}
+
+async fn collect_bounded_account_usages<F>(
+    futures: impl IntoIterator<Item = F>,
+) -> Result<Vec<AccountUsageResponse>, FunctionCallError>
+where
+    F: Future<Output = Result<AccountUsageResponse, FunctionCallError>>,
+{
+    futures::stream::iter(futures)
+        .buffered(MAX_CONCURRENT_ACCOUNT_USAGE_FETCHES)
+        .try_collect()
+        .await
+}
+
+fn account_usage_recommendation(
+    accounts: &[AccountUsageResponse],
+    current_profile: Option<&str>,
+    config: &AuthProfileAutoSwitchConfig,
+    ordered_profiles: &[Option<String>],
+) -> AccountUsageRecommendationResponse {
+    let health_by_profile = accounts
+        .iter()
+        .filter_map(|account| {
+            let limits = account.rate_limits.as_ref()?;
+            Some((
+                account.target.profile_name.clone(),
+                auth_profile_usage_health_from_summary(&limits.health),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let recommendation = recommend_auth_profile(
+        current_profile,
+        config.strategy,
+        ordered_profiles,
+        &health_by_profile,
+    );
+    let target_available = recommendation.target_available;
+    let profile_name = recommendation.profile;
+    AccountUsageRecommendationResponse {
+        display_name: if target_available {
+            display_name_for_profile(profile_name.as_deref())
+        } else {
+            "No available profile".to_string()
+        },
+        target_available,
+        current: target_available && profile_name.as_deref() == current_profile,
+        profile_name,
+        reason: recommendation.reason,
+    }
+}
+
+fn auth_profile_usage_health_from_summary(
+    summary: &AuthProfileUsageSummary,
+) -> AuthProfileUsageHealth {
+    if summary.stale {
+        return AuthProfileUsageHealth::Unknown;
+    }
+    match summary.status {
+        AuthProfileUsageStatus::Healthy => AuthProfileUsageHealth::Healthy {
+            remaining_percent: summary.remaining_percent.unwrap_or(0.0),
+            resets_at: summary.resets_at,
+        },
+        AuthProfileUsageStatus::Exhausted => AuthProfileUsageHealth::Exhausted {
+            retry_at: summary.resets_at,
+        },
+        AuthProfileUsageStatus::Unknown => AuthProfileUsageHealth::Unknown,
+        #[cfg(test)]
+        AuthProfileUsageStatus::Unavailable => AuthProfileUsageHealth::Unknown,
+    }
+}
+
+fn display_name_for_profile(profile_name: Option<&str>) -> String {
+    profile_name.unwrap_or("Default").to_string()
 }
 
 async fn fetch_rate_limit_snapshots(
@@ -504,9 +736,14 @@ async fn fetch_token_usage_profile(
 }
 
 impl AccountUsageTarget {
-    fn from_auth(profile_name: Option<String>, auth: &CodexAuth) -> Self {
+    fn from_auth(
+        profile_name: Option<String>,
+        subscription_provider: AuthProfileSubscriptionProvider,
+        auth: &CodexAuth,
+    ) -> Self {
         Self {
             profile_name,
+            subscription_provider,
             auth_mode: Some(auth.api_auth_mode()),
             plan: auth.account_plan_type().map(account_plan_type_label),
             redacted_account_id: auth.get_account_id().as_deref().map(redact_identifier),
@@ -753,6 +990,305 @@ mod tests {
                 "capturedAt": captured_at,
                 "stale": false
             })
+        );
+    }
+
+    fn account_usage(
+        profile_name: Option<&str>,
+        current: bool,
+        health: AuthProfileUsageSummary,
+    ) -> AccountUsageResponse {
+        AccountUsageResponse {
+            target: AccountUsageTarget {
+                profile_name: profile_name.map(str::to_string),
+                subscription_provider: AuthProfileSubscriptionProvider::ChatGpt,
+                auth_mode: None,
+                plan: None,
+                redacted_account_id: None,
+            },
+            current,
+            include_token_profile: false,
+            spend_status: UsageSpendSummary::account_without_backend_credits(),
+            rate_limits: Some(AccountRateLimitUsage {
+                captured_at: 123,
+                stale_after_secs: 120,
+                health,
+                snapshots: Vec::new(),
+            }),
+            token_profile: None,
+            token_profile_error: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn account_usage_recommendation_serializes_shared_reason_codes() {
+        let accounts = vec![
+            account_usage(
+                Some("work"),
+                true,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Exhausted,
+                    remaining_percent: Some(0.0),
+                    resets_at: Some(100),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+            account_usage(
+                Some("spare"),
+                false,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Healthy,
+                    remaining_percent: Some(80.0),
+                    resets_at: Some(200),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+        ];
+
+        let recommendation = account_usage_recommendation(
+            &accounts,
+            Some("work"),
+            &config(),
+            &[Some("spare".to_string()), Some("work".to_string())],
+        );
+        let response = serde_json::to_value(recommendation).expect("serialize recommendation");
+
+        assert_eq!(
+            response,
+            serde_json::json!({
+                "profileName": "spare",
+                "displayName": "spare",
+                "targetAvailable": true,
+                "current": false,
+                "reason": "selected_highest_remaining"
+            })
+        );
+    }
+
+    #[test]
+    fn account_usage_recommendation_respects_auto_switch_candidate_order() {
+        let accounts = vec![
+            account_usage(
+                Some("work"),
+                true,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Exhausted,
+                    remaining_percent: Some(0.0),
+                    resets_at: Some(100),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+            account_usage(
+                Some("excluded"),
+                false,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Healthy,
+                    remaining_percent: Some(99.0),
+                    resets_at: Some(200),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+            account_usage(
+                Some("configured"),
+                false,
+                AuthProfileUsageSummary {
+                    status: AuthProfileUsageStatus::Healthy,
+                    remaining_percent: Some(40.0),
+                    resets_at: Some(200),
+                    captured_at: Some(123),
+                    stale: false,
+                    reason: None,
+                },
+            ),
+        ];
+
+        let recommendation = account_usage_recommendation(
+            &accounts,
+            Some("work"),
+            &config(),
+            &[Some("configured".to_string()), Some("work".to_string())],
+        );
+
+        assert_eq!(
+            serde_json::to_value(recommendation).expect("serialize recommendation"),
+            serde_json::json!({
+                "profileName": "configured",
+                "displayName": "configured",
+                "targetAvailable": true,
+                "current": false,
+                "reason": "selected_highest_remaining"
+            })
+        );
+    }
+
+    #[test]
+    fn account_usage_recommendation_does_not_label_no_target_as_default() {
+        let accounts = vec![account_usage(
+            Some("work"),
+            true,
+            AuthProfileUsageSummary {
+                status: AuthProfileUsageStatus::Exhausted,
+                remaining_percent: Some(0.0),
+                resets_at: Some(100),
+                captured_at: Some(123),
+                stale: false,
+                reason: None,
+            },
+        )];
+
+        let recommendation = account_usage_recommendation(
+            &accounts,
+            Some("work"),
+            &config(),
+            &[Some("work".to_string())],
+        );
+
+        assert_eq!(
+            serde_json::to_value(recommendation).expect("serialize recommendation"),
+            serde_json::json!({
+                "profileName": null,
+                "displayName": "No available profile",
+                "targetAvailable": false,
+                "current": false,
+                "reason": "no_available_profiles"
+            })
+        );
+    }
+
+    #[test]
+    fn account_usage_recommendation_preserves_actual_default_target() {
+        let accounts = vec![account_usage(
+            None,
+            true,
+            AuthProfileUsageSummary {
+                status: AuthProfileUsageStatus::Healthy,
+                remaining_percent: Some(80.0),
+                resets_at: Some(100),
+                captured_at: Some(123),
+                stale: false,
+                reason: None,
+            },
+        )];
+
+        let recommendation = account_usage_recommendation(&accounts, None, &config(), &[]);
+
+        assert_eq!(
+            serde_json::to_value(recommendation).expect("serialize recommendation"),
+            serde_json::json!({
+                "profileName": null,
+                "displayName": "Default",
+                "targetAvailable": true,
+                "current": true,
+                "reason": "current_profile_healthy"
+            })
+        );
+    }
+
+    #[test]
+    fn non_chatgpt_usage_is_provider_accurate_and_does_not_expose_account_details() {
+        let response = account_unavailable_response(
+            Some("claude-work".to_string()),
+            AuthProfileSubscriptionProvider::ClaudeAi,
+            /*current*/ true,
+            /*include_token_profile*/ false,
+            AuthProfileUsageStatusReason::NotCodexBackend,
+        );
+
+        assert_eq!(
+            serde_json::to_value(response).expect("serialize unavailable account"),
+            serde_json::json!({
+                "target": {
+                    "profileName": "claude-work",
+                    "subscriptionProvider": "claude-ai",
+                    "authMode": null,
+                    "plan": null,
+                    "redactedAccountId": null
+                },
+                "current": true,
+                "includeTokenProfile": false,
+                "spendStatus": {
+                    "dollarSpend": {
+                        "status": "unavailable",
+                        "reason": "no_backend_dollar_spend_endpoint"
+                    },
+                    "backendCredits": {
+                        "status": "unavailable",
+                        "reason": "no_backend_credit_or_spend_control_status"
+                    }
+                },
+                "error": {
+                    "reason": "not_codex_backend"
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_account_usage_collection_preserves_order_and_caps_fanout() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        use tokio::sync::Semaphore;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let future_count = MAX_CONCURRENT_ACCOUNT_USAGE_FETCHES + 2;
+        let release_after_full_batch = {
+            let active = Arc::clone(&active);
+            let release = Arc::clone(&release);
+            tokio::spawn(async move {
+                while active.load(Ordering::SeqCst) < MAX_CONCURRENT_ACCOUNT_USAGE_FETCHES {
+                    tokio::task::yield_now().await;
+                }
+                release.add_permits(future_count);
+            })
+        };
+        let futures = (0..future_count).map(|index| {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let release = Arc::clone(&release);
+            async move {
+                let current_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current_active, Ordering::SeqCst);
+                let permit = release.acquire().await.expect("release semaphore");
+                permit.forget();
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(account_usage(
+                    Some(&format!("profile-{index}")),
+                    /*current*/ false,
+                    AuthProfileUsageSummary::unavailable(AuthProfileUsageStatusReason::FetchFailed),
+                ))
+            }
+        });
+
+        let accounts = collect_bounded_account_usages(futures)
+            .await
+            .expect("collect account usage");
+        release_after_full_batch
+            .await
+            .expect("release task should finish");
+
+        let profile_names = accounts
+            .into_iter()
+            .map(|account| account.target.profile_name)
+            .collect::<Vec<_>>();
+        let expected_profile_names = (0..future_count)
+            .map(|index| Some(format!("profile-{index}")))
+            .collect::<Vec<_>>();
+        assert_eq!(profile_names, expected_profile_names);
+        assert_eq!(
+            max_active.load(Ordering::SeqCst),
+            MAX_CONCURRENT_ACCOUNT_USAGE_FETCHES
         );
     }
 

@@ -5830,6 +5830,63 @@ async fn user_input_auth_profile_override_switches_auth_manager() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn profile_switch_context_refresh_clears_previous_rate_limits() -> anyhow::Result<()> {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    codex_login::save_auth_profile(
+        codex_home.path(),
+        codex_login::AuthCredentialsStoreMode::File,
+        "work",
+        &api_key_auth_dot_json_for_tests("work-key"),
+    )?;
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("root-key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    session
+        .record_rate_limits_info(
+            &turn_context,
+            RateLimitSnapshot {
+                limit_id: Some("codex".to_string()),
+                limit_name: None,
+                primary: Some(RateLimitWindow {
+                    used_percent: 100.0,
+                    window_minutes: Some(5 * 60),
+                    resets_at: Some(123),
+                }),
+                secondary: None,
+                credits: None,
+                individual_limit: None,
+                plan_type: None,
+                rate_limit_reached_type: None,
+            },
+        )
+        .await;
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            auth_profile: Some(Some("work".to_string())),
+            ..Default::default()
+        })
+        .await?;
+    let switched_turn = session
+        .new_default_turn_with_sub_id(turn_context.sub_id.clone())
+        .await;
+    session
+        .refresh_token_context_window_for_profile_switch(&switched_turn)
+        .await;
+
+    assert_eq!(
+        session.selected_auth_profile().await.as_deref(),
+        Some("work")
+    );
+    assert_eq!(session.state.lock().await.latest_rate_limits, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn user_input_external_subscription_profile_override_updates_selection_without_openai_auth()
 -> anyhow::Result<()> {
     let codex_home = tempfile::tempdir().expect("create temp dir");

@@ -65,6 +65,56 @@ async fn set_rate_limits_defaults_limit_id_to_codex_when_missing() {
 }
 
 #[tokio::test]
+async fn rate_limit_capture_is_profile_scoped_and_freshness_bounded() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let mut state = SessionState::new(session_configuration);
+    let snapshot = RateLimitSnapshot {
+        limit_id: Some("codex".to_string()),
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 100.0,
+            window_minutes: Some(5 * 60),
+            resets_at: Some(123),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    };
+    state.set_rate_limits_for_profile(
+        snapshot.clone(),
+        Some("profile-a".to_string()),
+        /*captured_at*/ 100,
+    );
+
+    assert_eq!(
+        state.latest_rate_limits_for_profile(
+            Some("profile-a"),
+            /*now*/ 150,
+            /*freshness_secs*/ 60,
+        ),
+        Some(snapshot)
+    );
+    assert_eq!(
+        state.latest_rate_limits_for_profile(
+            Some("profile-b"),
+            /*now*/ 150,
+            /*freshness_secs*/ 60,
+        ),
+        None
+    );
+    assert_eq!(
+        state.latest_rate_limits_for_profile(
+            Some("profile-a"),
+            /*now*/ 161,
+            /*freshness_secs*/ 60,
+        ),
+        None
+    );
+}
+
+#[tokio::test]
 async fn replace_history_clears_auto_compact_window_prefill_without_advancing() {
     let session_configuration = make_session_configuration_for_tests().await;
     let mut state = SessionState::new(session_configuration);

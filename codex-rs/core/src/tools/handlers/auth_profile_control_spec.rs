@@ -13,25 +13,49 @@ pub fn create_manage_auth_profiles_tool() -> ToolSpec {
         (
             "action".to_string(),
             JsonSchema::string_enum(
-                vec![json!("list"), json!("current"), json!("switch")],
+                vec![
+                    json!("list"),
+                    json!("current"),
+                    json!("switch"),
+                    json!("set_auto_switch"),
+                ],
                 Some(
-                    "Required. Use list to inspect available auth profiles, current to inspect the active auth profile, and switch to request a profile switch through the session settings path."
+                    "Required. Use list to inspect available auth profiles, current to inspect the active auth profile, switch to request a profile switch through the session settings path, and set_auto_switch to toggle session-local auth-profile auto-switching."
                         .to_string(),
                 ),
             ),
         ),
         (
             "profile".to_string(),
-            JsonSchema::string(Some(
-                "Profile name for switch. Omit or pass null to switch back to the default root auth profile."
-                    .to_string(),
-            )),
+            JsonSchema::any_of(
+                vec![
+                    JsonSchema::string(/*description*/ None),
+                    JsonSchema::null(/*description*/ None),
+                ],
+                Some(
+                    "Profile name for switch. Omit or pass null to switch back to the default root auth profile."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "auto_switch_enabled".to_string(),
+            JsonSchema::any_of(
+                vec![
+                    JsonSchema::boolean(/*description*/ None),
+                    JsonSchema::null(/*description*/ None),
+                ],
+                Some(
+                    "Required when action is set_auto_switch. Enables or disables auth-profile auto-switching for this session."
+                        .to_string(),
+                ),
+            ),
         ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: MANAGE_AUTH_PROFILES_TOOL_NAME.to_string(),
-        description: "List Codewith auth profiles, inspect the current auth profile, or request a safe auth profile switch for the current session. Profile switches use the same session settings path as the /profile picker."
+        description: "List Codewith auth profiles, inspect the current auth profile, request a safe auth profile switch, or toggle auth-profile auto-switching for the current session. Profile switches use the same session settings path as the /profile picker."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -60,7 +84,8 @@ mod tests {
             tool.parameters
                 .properties
                 .as_ref()
-                .is_some_and(|properties| properties.contains_key("profile"))
+                .is_some_and(|properties| properties.contains_key("profile")
+                    && properties.contains_key("auto_switch_enabled"))
         );
         let action = tool
             .parameters
@@ -70,7 +95,12 @@ mod tests {
             .expect("action property");
         assert_eq!(
             action.enum_values.as_ref(),
-            Some(&vec![json!("list"), json!("current"), json!("switch")])
+            Some(&vec![
+                json!("list"),
+                json!("current"),
+                json!("switch"),
+                json!("set_auto_switch")
+            ])
         );
     }
 }
