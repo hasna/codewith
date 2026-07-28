@@ -32,6 +32,7 @@ const STDERR_LOG_TAIL_BYTES: u64 = 4096;
 /// not accumulate, yet long enough that a quick relaunch or resume reconnects to
 /// the still-warm daemon instead of paying a cold start. Only the plain default
 /// daemon opts in; remote-control and update-loop daemons must outlive any TUI.
+#[cfg(unix)]
 const PER_SESSION_IDLE_SHUTDOWN_GRACE_MS: &str = "30000";
 
 #[derive(Debug)]
