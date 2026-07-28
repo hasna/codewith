@@ -657,7 +657,7 @@ mod tests {
             provider("https://generativelanguage.googleapis.com/v1beta/openai"),
             Arc::new(DummyAuth),
         )
-        .with_client_version_query(false);
+        .with_client_version_query(/*enabled*/ false);
 
         client
             .list_models("0.99.0", HeaderMap::new())

@@ -2436,7 +2436,7 @@ async fn infinity_agent_policy_rejects_dynamic_runtime_with_valid_mcp_manifest()
     let dynamic_tools = vec![dynamic_tool(
         Some("infinity_cli"),
         "infinity_run_get",
-        false,
+        /*defer_loading*/ false,
     )];
     let (_session, mut turn) = make_session_and_context().await;
     set_infinity_agent_policy(&mut turn, policy);

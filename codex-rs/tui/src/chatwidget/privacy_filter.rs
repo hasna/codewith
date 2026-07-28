@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn report_states_local_only_and_not_installed() {
-        let message = render_privacy_filter_message(false, &sample_report());
+        let message = render_privacy_filter_message(/*enabled*/ false, &sample_report());
         insta::assert_snapshot!(
             message,
             @r###"
@@ -302,6 +302,6 @@ Controls
     #[test]
     fn format_bytes_uses_binary_units() {
         assert_eq!(format_bytes(4 * 1024 * 1024 * 1024), "4.0 GiB");
-        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(/*bytes*/ 512), "512 B");
     }
 }

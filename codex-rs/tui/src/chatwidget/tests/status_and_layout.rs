@@ -3711,7 +3711,7 @@ async fn active_agent_status_line_renders_label_and_omits_when_absent() {
     assert_eq!(status_line_text(&chat), Some("Main [default]".to_string()));
 
     // Single-agent session: no label, so the segment (and the whole line) is omitted.
-    chat.set_active_agent_label(None);
+    chat.set_active_agent_label(/*active_agent_label*/ None);
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::ActiveAgent),
         None

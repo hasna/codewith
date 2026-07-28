@@ -610,7 +610,7 @@ async fn infinity_agent_dispatch_rejections_never_invoke_handlers() {
     .await;
 
     let (_, mut missing_policy_turn) = make_session_and_context().await;
-    set_turn_infinity_policy(&mut missing_policy_turn, None);
+    set_turn_infinity_policy(&mut missing_policy_turn, /*policy*/ None);
     let invocations = Arc::new(AtomicUsize::new(0));
     let router = counting_infinity_router(
         Arc::clone(&valid_policy),
@@ -766,9 +766,11 @@ async fn infinity_agent_rejected_arguments_are_redacted_before_history() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let output = crate::stream_events_utils::handle_output_item_done(&mut ctx, item, None)
-        .await
-        .expect("ambiguous arguments should be answered without executing");
+    let output = crate::stream_events_utils::handle_output_item_done(
+        &mut ctx, item, /*previously_active_item*/ None,
+    )
+    .await
+    .expect("ambiguous arguments should be answered without executing");
 
     assert!(output.needs_follow_up);
     assert!(output.tool_future.is_none());

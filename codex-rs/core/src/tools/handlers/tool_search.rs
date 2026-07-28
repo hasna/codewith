@@ -378,7 +378,7 @@ mod tests {
     fn initial_declaration_bounds_unique_source_count() {
         let handler = ToolSearchHandler::new(
             (0..128)
-                .map(|index| search_info_with_source(index, 8))
+                .map(|index| search_info_with_source(index, /*description_bytes*/ 8))
                 .collect(),
         );
 
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn initial_declaration_source_cap_is_independent_of_input_order() {
         let ascending = (0..128)
-            .map(|index| search_info_with_source(index, 8))
+            .map(|index| search_info_with_source(index, /*description_bytes*/ 8))
             .collect::<Vec<_>>();
         let descending = ascending.iter().cloned().rev().collect::<Vec<_>>();
 
@@ -405,7 +405,8 @@ mod tests {
 
     #[test]
     fn valid_projection_is_not_dropped_for_large_local_search_metadata() {
-        let mut search_info = search_info_with_source(0, 20_000);
+        let mut search_info =
+            search_info_with_source(/*index*/ 0, /*description_bytes*/ 20_000);
         search_info.entry.search_text = format!("needle {}", "x".repeat(20_000));
 
         let handler = ToolSearchHandler::new(vec![search_info]);
@@ -413,7 +414,7 @@ mod tests {
         assert_eq!(handler.entries.len(), 1);
         assert_eq!(
             handler
-                .search("needle", 1)
+                .search("needle", /*limit*/ 1)
                 .expect("valid projection should remain searchable")
                 .len(),
             1
@@ -424,7 +425,7 @@ mod tests {
     fn initial_declaration_bounds_aggregate_source_bytes() {
         let handler = ToolSearchHandler::new(
             (0..64)
-                .map(|index| search_info_with_source(index, 1_000))
+                .map(|index| search_info_with_source(index, /*description_bytes*/ 1_000))
                 .collect(),
         );
         let declaration = tool_spec_to_responses_api_value(&handler.spec())
@@ -443,7 +444,7 @@ mod tests {
     #[test]
     fn initial_declaration_deduplicates_sources_before_budgeting() {
         let mut search_infos = (0..128)
-            .map(|index| search_info_with_source(index, 8))
+            .map(|index| search_info_with_source(index, /*description_bytes*/ 8))
             .collect::<Vec<_>>();
         for search_info in &mut search_infos {
             let source_info = search_info
@@ -467,13 +468,15 @@ mod tests {
 
     #[test]
     fn initial_declaration_retains_later_source_description() {
-        let mut without_description = search_info_with_source(0, 8);
+        let mut without_description =
+            search_info_with_source(/*index*/ 0, /*description_bytes*/ 8);
         without_description
             .source_info
             .as_mut()
             .expect("test search info should have a source")
             .description = None;
-        let mut with_description = search_info_with_source(1, 8);
+        let mut with_description =
+            search_info_with_source(/*index*/ 1, /*description_bytes*/ 8);
         with_description
             .source_info
             .as_mut()
@@ -510,7 +513,7 @@ mod tests {
         }]);
 
         let error = handler
-            .search("bounded", 9)
+            .search("bounded", /*limit*/ 9)
             .expect_err("tool_search must reject a limit above the protocol maximum");
         assert!(error.to_string().contains("limit"));
     }

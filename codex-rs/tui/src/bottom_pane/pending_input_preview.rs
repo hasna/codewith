@@ -382,7 +382,7 @@ mod tests {
         let mut queue = PendingInputPreview::new();
         queue.queued_messages.push("Please continue.".to_string());
         queue.set_flush_binding(Some(key_hint::plain(KeyCode::F(12))));
-        queue.set_flush_available(true);
+        queue.set_flush_available(/*available*/ true);
         let width = 48;
         let height = queue.desired_height(width);
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -401,7 +401,7 @@ mod tests {
         let width = 48;
         let without_hint = queue.desired_height(width);
 
-        queue.set_flush_available(true);
+        queue.set_flush_available(/*available*/ true);
 
         assert_eq!(
             queue.desired_height(width),

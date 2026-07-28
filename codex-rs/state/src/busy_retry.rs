@@ -169,18 +169,18 @@ mod tests {
     fn jittered_delay_stays_within_half_to_full_base() {
         let base = Duration::from_millis(100);
         assert_eq!(
-            BusyRetryPolicy::jittered(base, 0.0),
+            BusyRetryPolicy::jittered(base, /*fraction*/ 0.0),
             Duration::from_millis(50)
         );
         assert_eq!(
-            BusyRetryPolicy::jittered(base, 1.0),
+            BusyRetryPolicy::jittered(base, /*fraction*/ 1.0),
             Duration::from_millis(100)
         );
-        let mid = BusyRetryPolicy::jittered(base, 0.5);
+        let mid = BusyRetryPolicy::jittered(base, /*fraction*/ 0.5);
         assert!(mid >= Duration::from_millis(50) && mid <= Duration::from_millis(100));
         // Out-of-range fractions are clamped rather than exceeding the base.
         assert_eq!(
-            BusyRetryPolicy::jittered(base, 7.0),
+            BusyRetryPolicy::jittered(base, /*fraction*/ 7.0),
             Duration::from_millis(100)
         );
     }

@@ -5121,7 +5121,11 @@ fn infinity_agent_rejects_cross_profile_inheritance() {
     );
 
     assert!(
-        reject_infinity_agent_auth_profile_inheritance(ToolPolicy::InfinityAgent, None).is_ok()
+        reject_infinity_agent_auth_profile_inheritance(
+            ToolPolicy::InfinityAgent,
+            /*selected_auth_profile*/ None
+        )
+        .is_ok()
     );
     assert!(reject_infinity_agent_auth_profile_inheritance(ToolPolicy::Full, Some("work")).is_ok());
 }
@@ -5618,7 +5622,7 @@ async fn config_active_auth_profile_marker_does_not_suppress_env_auth() -> anyho
     let _api_key_guard = EnvVarGuard::set(codex_login::CODEX_API_KEY_ENV_VAR, "sk-env");
 
     let codex_home = TempDir::new()?;
-    save_root_login_as_active_profile(codex_home.path(), "work", None)?;
+    save_root_login_as_active_profile(codex_home.path(), "work", /*metadata*/ None)?;
 
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
@@ -5679,7 +5683,7 @@ async fn config_load_tolerates_corrupt_active_auth_profile_marker() -> anyhow::R
 
     // (b) `.active` names a real profile whose metadata is malformed.
     let malformed_home = TempDir::new()?;
-    save_root_login_as_active_profile(malformed_home.path(), "work", None)?;
+    save_root_login_as_active_profile(malformed_home.path(), "work", /*metadata*/ None)?;
     std::fs::write(
         malformed_home
             .path()

@@ -544,7 +544,7 @@ mod tests {
     fn note_turn_completed_and_error_transition_status() {
         let (mut state, _, first_agent_id, second_agent_id) = populated_state();
 
-        state.note_turn_started(first_agent_id, None);
+        state.note_turn_started(first_agent_id, /*task_message*/ None);
         state.note_turn_completed(first_agent_id, CollabAgentStatus::Completed);
         assert_eq!(
             state
@@ -567,9 +567,9 @@ mod tests {
         let (mut state, _, first_agent_id, second_agent_id) = populated_state();
 
         state.note_status(first_agent_id, CollabAgentStatus::Shutdown);
-        state.note_token_usage(first_agent_id, 69_742);
+        state.note_token_usage(first_agent_id, /*token_total*/ 69_742);
         // Negative totals are clamped so a bad report never renders a negative token count.
-        state.note_token_usage(second_agent_id, -5);
+        state.note_token_usage(second_agent_id, /*token_total*/ -5);
 
         let metrics = state.metrics(&first_agent_id).expect("metrics recorded");
         assert_eq!(metrics.status, CollabAgentStatus::Shutdown);
@@ -586,7 +586,7 @@ mod tests {
     fn metrics_survive_metadata_upsert() {
         let (mut state, _, first_agent_id, _) = populated_state();
         state.note_turn_started(first_agent_id, Some("task".to_string()));
-        state.note_token_usage(first_agent_id, 1_234);
+        state.note_token_usage(first_agent_id, /*token_total*/ 1_234);
 
         // A picker-liveness refresh re-`upsert`s metadata; live telemetry must not be reset.
         state.upsert(
@@ -605,8 +605,8 @@ mod tests {
     #[test]
     fn remove_and_clear_drop_metrics() {
         let (mut state, main_thread_id, first_agent_id, _) = populated_state();
-        state.note_token_usage(first_agent_id, 10);
-        state.note_token_usage(main_thread_id, 20);
+        state.note_token_usage(first_agent_id, /*token_total*/ 10);
+        state.note_token_usage(main_thread_id, /*token_total*/ 20);
 
         state.remove(first_agent_id);
         assert_eq!(state.metrics(&first_agent_id), None);

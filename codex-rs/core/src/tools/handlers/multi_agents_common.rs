@@ -752,7 +752,8 @@ mod auth_profile_tests {
         let (_home, mut config) = test_config().await;
         config.selected_auth_profile = None;
 
-        apply_spawn_agent_auth_profile(&mut config, None).expect("no-op");
+        apply_spawn_agent_auth_profile(&mut config, /*requested_auth_profile*/ None)
+            .expect("no-op");
         assert_eq!(config.selected_auth_profile, None);
 
         // Whitespace-only requests are treated as "not provided".
@@ -856,8 +857,10 @@ mod auth_profile_tests {
     fn non_forked_spawn_allows_auth_profile_validation_to_continue() {
         reject_forked_spawn_auth_profile(Some("account001"), /*forked*/ false)
             .expect("non-forked auth-profile spawn should be allowed");
-        reject_forked_spawn_auth_profile(None, /*forked*/ true)
-            .expect("forking without auth_profile should be allowed");
+        reject_forked_spawn_auth_profile(
+            /*requested_auth_profile*/ None, /*forked*/ true,
+        )
+        .expect("forking without auth_profile should be allowed");
         reject_forked_spawn_auth_profile(Some("   "), /*forked*/ true)
             .expect("blank auth_profile is treated as omitted");
     }

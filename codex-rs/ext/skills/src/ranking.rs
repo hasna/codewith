@@ -291,10 +291,14 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        let ranked = rank_catalog(&catalog, "please use rust-review for Rust review", 5)
-            .into_iter()
-            .map(|entry| entry.name.as_str())
-            .collect::<Vec<_>>();
+        let ranked = rank_catalog(
+            &catalog,
+            "please use rust-review for Rust review",
+            /*limit*/ 5,
+        )
+        .into_iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<Vec<_>>();
 
         assert_eq!(ranked, vec!["rust-review", "alpha-review", "zeta-review"]);
     }
@@ -313,13 +317,13 @@ mod tests {
         };
 
         assert_eq!(
-            rank_catalog(&catalog, "Blacksmith sandbox", 5)
+            rank_catalog(&catalog, "Blacksmith sandbox", /*limit*/ 5)
                 .into_iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["target-skill"]
         );
-        assert!(rank_catalog(&catalog, "completely unmatched", 5).is_empty());
+        assert!(rank_catalog(&catalog, "completely unmatched", /*limit*/ 5).is_empty());
     }
 
     #[test]
@@ -333,14 +337,14 @@ mod tests {
         };
 
         assert_eq!(
-            rank_catalog(&catalog, "build some charts", 5)
+            rank_catalog(&catalog, "build some charts", /*limit*/ 5)
                 .into_iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["chart-builder"]
         );
         assert_eq!(
-            rank_catalog(&catalog, "run my queries", 5)
+            rank_catalog(&catalog, "run my queries", /*limit*/ 5)
                 .into_iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
@@ -365,11 +369,16 @@ mod tests {
         };
 
         assert!(
-            rank_catalog(&catalog, "help me visualize these results", 5).is_empty(),
+            rank_catalog(
+                &catalog,
+                "help me visualize these results",
+                /*limit*/ 5
+            )
+            .is_empty(),
             "synonym recall is not implemented; update this test when it is"
         );
         assert_eq!(
-            rank_catalog(&catalog, "draw me a graph", 5)
+            rank_catalog(&catalog, "draw me a graph", /*limit*/ 5)
                 .into_iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),

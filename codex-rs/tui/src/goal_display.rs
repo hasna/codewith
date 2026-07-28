@@ -137,8 +137,17 @@ mod tests {
 
     #[test]
     fn format_goal_line_changes_shows_added_and_deleted_lines() {
-        assert_eq!(format_goal_line_changes(12, 3), "+12 -3 LOC");
-        assert_eq!(format_goal_line_changes(12_345, 1_234), "+12.3K -1.23K LOC");
-        assert_eq!(format_goal_line_changes(0, 0), "0 LOC");
+        assert_eq!(
+            format_goal_line_changes(/*lines_added*/ 12, /*lines_deleted*/ 3),
+            "+12 -3 LOC"
+        );
+        assert_eq!(
+            format_goal_line_changes(/*lines_added*/ 12_345, /*lines_deleted*/ 1_234),
+            "+12.3K -1.23K LOC"
+        );
+        assert_eq!(
+            format_goal_line_changes(/*lines_added*/ 0, /*lines_deleted*/ 0),
+            "0 LOC"
+        );
     }
 }

@@ -371,7 +371,10 @@ mod tests {
     fn paused_goal_status_without_plan_node_stays_plain() {
         // No plan at all falls back to the plain paused indicator.
         assert_eq!(
-            goal_status_indicator_with_goal_plan(GoalStatusIndicator::Paused, None),
+            goal_status_indicator_with_goal_plan(
+                GoalStatusIndicator::Paused,
+                /*goal_plan*/ None
+            ),
             GoalStatusIndicator::Paused,
         );
         // A plan with no paused node (e.g. every node still pending) also falls

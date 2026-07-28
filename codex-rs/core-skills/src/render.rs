@@ -1659,7 +1659,7 @@ mod tests {
 
     #[test]
     fn outcome_rendering_keeps_a_stable_five_skill_starter_at_large_catalog_scale() {
-        let outcome = scale_outcome(2_105);
+        let outcome = scale_outcome(/*count*/ 2_105);
 
         let rendered = build_available_skills(
             &outcome,
@@ -1740,7 +1740,7 @@ mod tests {
 
     #[test]
     fn a_complete_list_does_not_claim_to_be_a_subset_or_advertise_a_missing_tool() {
-        let outcome = scale_outcome(12);
+        let outcome = scale_outcome(/*count*/ 12);
 
         let rendered = build_available_skills(
             &outcome,
@@ -1793,7 +1793,7 @@ mod tests {
     fn starter_cap_does_not_fire_when_the_whole_catalog_fits_the_budget() {
         // A dozen skills on a 200k context window fit inside the 2% budget with
         // room to spare, so nothing may be hidden behind `skills.list`.
-        let outcome = scale_outcome(12);
+        let outcome = scale_outcome(/*count*/ 12);
 
         let rendered = build_available_skills(
             &outcome,
@@ -1815,7 +1815,7 @@ mod tests {
         // Same oversized catalog as the scale test, but this embedder installed
         // no `skills.list`. Hiding entries would make them unreachable, so the
         // budget machinery has to do the trimming instead.
-        let outcome = scale_outcome(2_105);
+        let outcome = scale_outcome(/*count*/ 2_105);
 
         let rendered = build_available_skills(
             &outcome,

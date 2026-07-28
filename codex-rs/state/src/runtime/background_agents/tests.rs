@@ -214,9 +214,19 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() ->
         admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
     assert!(!created);
     assert_eq!(retry.id, first.id);
-    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    assert_eq!(
+        runtime
+            .list_background_agent_runs(/*limit*/ None)
+            .await?
+            .len(),
+        1
+    );
     let events = runtime
-        .list_background_agent_events_after(first.id.as_str(), None, None)
+        .list_background_agent_events_after(
+            first.id.as_str(),
+            /*after_seq*/ None,
+            /*limit*/ None,
+        )
         .await?;
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].event_type, "agent.admitted");
@@ -333,14 +343,14 @@ async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> a
     admit_run(
         runtime.as_ref(),
         &admission_params("admitted-1", "admission-key", "profile-a"),
-        2,
+        /*max_active_runs*/ 2,
     )
     .await?;
 
     let error = admit_run(
         runtime.as_ref(),
         &admission_params("admitted-2", "admission-key", "profile-b"),
-        2,
+        /*max_active_runs*/ 2,
     )
     .await
     .expect_err("profile mismatch must not adopt the existing run");
@@ -350,7 +360,13 @@ async fn background_agent_admission_rejects_idempotency_identity_mismatch() -> a
             .to_string()
             .contains("background_agent_admission_identity_mismatch")
     );
-    assert_eq!(runtime.list_background_agent_runs(None).await?.len(), 1);
+    assert_eq!(
+        runtime
+            .list_background_agent_runs(/*limit*/ None)
+            .await?
+            .len(),
+        1
+    );
     Ok(())
 }
 
@@ -773,7 +789,7 @@ async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> an
     let (first, _) = admit_run(
         runtime.as_ref(),
         &admission_params("admitted-1", "admission-key-1", "profile-a"),
-        1,
+        /*max_active_runs*/ 1,
     )
     .await?;
     let generation = runtime
@@ -794,7 +810,7 @@ async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> an
     let error = admit_run(
         runtime.as_ref(),
         &admission_params("admitted-2", "admission-key-2", "profile-a"),
-        1,
+        /*max_active_runs*/ 1,
     )
     .await
     .expect_err("claimed stopping run must consume capacity");
@@ -817,7 +833,7 @@ async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> an
     let (_, created) = admit_run(
         runtime.as_ref(),
         &admission_params("admitted-2", "admission-key-2", "profile-a"),
-        1,
+        /*max_active_runs*/ 1,
     )
     .await?;
     assert!(created);
@@ -832,7 +848,7 @@ async fn background_agent_admission_counts_only_live_or_recoverable_runs() -> an
     let error = admit_run(
         runtime.as_ref(),
         &admission_params("admitted-3", "admission-key-3", "profile-a"),
-        1,
+        /*max_active_runs*/ 1,
     )
     .await
     .expect_err("recoverable orphan must consume capacity");
@@ -1132,7 +1148,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.testReceipt",
             "test-receipt",
-            1,
+            /*generation*/ 1,
             Some(1),
             &diagnostics,
         )
@@ -1142,7 +1158,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.testReceipt",
             "test-receipt",
-            1,
+            /*generation*/ 1,
             Some(2),
             &diagnostics,
         )
@@ -1158,7 +1174,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.testReceipt",
             "test-receipt",
-            1,
+            /*generation*/ 1,
             Some(1),
             &json!({
                 "apiKey": "sk-different-secret-value",
@@ -1177,7 +1193,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.testReceipt",
             "test-receipt",
-            1,
+            /*generation*/ 1,
             Some(1),
             &diagnostics,
         )
@@ -1206,7 +1222,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.testReceipt",
             "test-receipt",
-            1,
+            /*generation*/ 1,
             Some(1),
             &diagnostics,
         )
@@ -1219,7 +1235,7 @@ async fn background_agent_lifecycle_receipts_dedupe_redact_and_bound_diagnostics
             run.id.as_str(),
             "agent.oversizedReceipt",
             oversized_receipt_key.as_str(),
-            1,
+            /*generation*/ 1,
             Some(1),
             &json!({}),
         )
@@ -1250,7 +1266,11 @@ async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> 
             .await?
     );
     let first_stop_events = runtime
-        .list_background_agent_events_after(run.id.as_str(), None, None)
+        .list_background_agent_events_after(
+            run.id.as_str(),
+            /*after_seq*/ None,
+            /*limit*/ None,
+        )
         .await?;
     assert!(
         runtime
@@ -1265,7 +1285,11 @@ async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> 
     );
     assert_eq!(
         runtime
-            .list_background_agent_events_after(run.id.as_str(), None, None)
+            .list_background_agent_events_after(
+                run.id.as_str(),
+                /*after_seq*/ None,
+                /*limit*/ None
+            )
             .await?,
         first_stop_events
     );
@@ -1300,7 +1324,11 @@ async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> 
             .await?
     );
     let first_delete_events = runtime
-        .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+        .list_background_agent_events_after(
+            delete_run.id.as_str(),
+            /*after_seq*/ None,
+            /*limit*/ None,
+        )
         .await?;
     assert!(
         runtime
@@ -1309,7 +1337,11 @@ async fn stop_and_delete_retries_replay_exact_lifecycle_operation_identity() -> 
     );
     assert_eq!(
         runtime
-            .list_background_agent_events_after(delete_run.id.as_str(), None, None)
+            .list_background_agent_events_after(
+                delete_run.id.as_str(),
+                /*after_seq*/ None,
+                /*limit*/ None
+            )
             .await?,
         first_delete_events
     );
