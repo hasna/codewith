@@ -1700,6 +1700,15 @@ impl ThreadRequestProcessor {
         {
             Ok(thread) => {
                 if thread.archived_at.is_none() {
+                    if let Some(rollout_path) = thread.rollout_path.as_deref()
+                        && codex_rollout::existing_rollout_path(rollout_path)
+                            .await
+                            .is_none()
+                    {
+                        return Err(invalid_request(format!(
+                            "no rollout found for thread id {thread_id}"
+                        )));
+                    }
                     archive_thread_ids.push(thread_id);
                 }
             }
@@ -1717,6 +1726,17 @@ impl ThreadRequestProcessor {
             {
                 Ok(thread) => {
                     if thread.archived_at.is_none() {
+                        if let Some(rollout_path) = thread.rollout_path.as_deref()
+                            && codex_rollout::existing_rollout_path(rollout_path)
+                                .await
+                                .is_none()
+                        {
+                            warn!(
+                                "skipping unmaterialized spawned descendant thread \
+                                 {descendant_thread_id} while archiving {thread_id}"
+                            );
+                            continue;
+                        }
                         archive_thread_ids.push(descendant_thread_id);
                     }
                 }

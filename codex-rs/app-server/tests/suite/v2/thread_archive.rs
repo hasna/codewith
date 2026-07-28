@@ -68,6 +68,13 @@ async fn thread_archive_requires_materialized_rollout() -> Result<()> {
             .is_none(),
         "thread id should not be discoverable before rollout materialization"
     );
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let stored_thread = state_db
+        .get_thread(ThreadId::from_string(&thread.id)?)
+        .await?
+        .expect("local active-session heartbeat should persist thread metadata");
+    assert_eq!(stored_thread.rollout_path, rollout_path);
 
     // Archive should fail before the rollout is materialized.
     let archive_id = mcp
