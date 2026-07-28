@@ -144,7 +144,7 @@ async fn real_turn_dispatches_mutation_signals_and_persists_final_line_changes()
         vec![
             sse(vec![
                 ev_response_created("resp-read"),
-                ev_shell_command_call("call-read", "cat tracked.txt"),
+                ev_shell_command_call("call-read", "echo read-only"),
                 ev_completed("resp-read"),
             ]),
             sse(vec![

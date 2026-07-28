@@ -1357,7 +1357,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-1",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("first blocker should persist");
@@ -1433,7 +1433,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-2",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("blocker should restart after manual pause");
@@ -1494,7 +1494,7 @@ ORDER BY turn_id
             goal_id.as_str(),
             "turn-contended",
             "codex_err:test_blocker",
-            3,
+            /*required_consecutive_turns*/ 3,
         ));
         assert!(
             tokio::time::timeout(Duration::from_millis(75), observation.as_mut())
@@ -1556,7 +1556,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     turn_id,
                     "codex_err:test_blocker",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("pre-threshold blocker observation should persist");
@@ -1579,7 +1579,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-3",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("third blocker observation should persist");
@@ -1622,7 +1622,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     "turn-1",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("first blocker observation should persist");
@@ -1633,7 +1633,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     "turn-2",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("second blocker observation should persist");
@@ -1662,7 +1662,7 @@ ORDER BY turn_id
                     goal_id.as_str(),
                     "turn-1",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("delayed replay should be idempotent");
@@ -1686,7 +1686,7 @@ ORDER BY turn_id
                     goal_id.as_str(),
                     "turn-3",
                     "codex_err:blocker_b",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("new blocker fingerprint should start a fresh streak");
@@ -1714,7 +1714,7 @@ ORDER BY turn_id
                 goal_id.as_str(),
                 "turn-1",
                 "codex_err:blocker_b",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("an id outside the current streak should count normally");
@@ -1772,7 +1772,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     format!("turn-{index}").as_str(),
                     "codex_err:test_blocker",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("blocker audit should persist");
