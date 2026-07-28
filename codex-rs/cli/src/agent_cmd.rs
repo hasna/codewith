@@ -1575,6 +1575,65 @@ mod tests {
         );
     }
 
+    fn materialized_permission_paths(permission_profile: &Value) -> Vec<PathBuf> {
+        permission_profile
+            .pointer("/file_system/entries")
+            .and_then(Value::as_array)
+            .expect("managed permission profile entries")
+            .iter()
+            .filter_map(|entry| entry.get("path"))
+            .filter_map(|path| {
+                let field = match path.get("type").and_then(Value::as_str) {
+                    Some("path") => "path",
+                    Some("glob_pattern") => "pattern",
+                    _ => return None,
+                };
+                Some(PathBuf::from(
+                    path.get(field)
+                        .and_then(Value::as_str)
+                        .expect("materialized path value"),
+                ))
+            })
+            .collect()
+    }
+
+    fn path_is_equal_or_descendant_after_normalization(path: &Path, root: &Path) -> bool {
+        path.ancestors()
+            .any(|ancestor| paths_match_after_normalization(ancestor, root))
+    }
+
+    #[test]
+    fn materialized_permission_paths_detect_normalized_launcher_descendants() {
+        let launcher = tempfile::TempDir::new().expect("create launcher cwd");
+        let leaked_path = launcher.path().join(".git").join("config");
+        let leaked_pattern = launcher.path().join(".codewith").join("**").join("*.toml");
+        let permission_profile = json!({
+            "file_system": {
+                "entries": [
+                    {"path": {"type": "path", "path": leaked_path}},
+                    {"path": {"type": "glob_pattern", "pattern": leaked_pattern}},
+                ]
+            }
+        });
+        let materialized_paths = materialized_permission_paths(&permission_profile);
+
+        assert_eq!(
+            materialized_paths
+                .iter()
+                .map(|path| paths_match_after_normalization(path, launcher.path()))
+                .collect::<Vec<_>>(),
+            vec![false, false],
+            "exact path equality does not detect descendant leaks",
+        );
+        assert_eq!(
+            materialized_paths
+                .iter()
+                .map(|path| path_is_equal_or_descendant_after_normalization(path, launcher.path()))
+                .collect::<Vec<_>>(),
+            vec![true, true],
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_context_from_config_keeps_workspace_permissions_symbolic_for_cwd_snapshot()
     -> anyhow::Result<()> {
@@ -1600,33 +1659,30 @@ mod tests {
             /*explicit_cwd*/ true,
         )?
         .expect("permission profile should be snapshotted");
-        let explicit_paths = permission_profile
-            .pointer("/file_system/entries")
-            .and_then(Value::as_array)
-            .expect("managed permission profile entries")
-            .iter()
-            .filter_map(|entry| entry.get("path"))
-            .filter(|path| path.get("type").and_then(Value::as_str) == Some("path"))
-            .filter_map(|path| path.get("path").and_then(Value::as_str))
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
+        let materialized_paths = materialized_permission_paths(&permission_profile);
 
         assert!(
-            explicit_paths
+            materialized_paths
                 .iter()
                 .any(|path| paths_match_after_normalization(path, target.path())),
             "expected target cwd in background agent permission profile: {permission_profile}",
         );
         assert!(
-            explicit_paths
+            materialized_paths
                 .iter()
-                .all(|path| !paths_match_after_normalization(path, launcher.path())),
+                .all(|path| !path_is_equal_or_descendant_after_normalization(
+                    path,
+                    launcher.path()
+                )),
             "launcher cwd leaked into background agent permission profile: {permission_profile}",
         );
         assert!(
-            explicit_paths
+            materialized_paths
                 .iter()
-                .all(|path| !paths_match_after_normalization(path, launcher_extra.path())),
+                .all(|path| !path_is_equal_or_descendant_after_normalization(
+                    path,
+                    launcher_extra.path()
+                )),
             "launcher extra root leaked into background agent permission profile: {permission_profile}",
         );
         Ok(())
