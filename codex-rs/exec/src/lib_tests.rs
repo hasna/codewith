@@ -612,7 +612,7 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
         &config,
         "thread-id".to_string(),
         &ResumeOverrideSelection::default(),
-        None,
+        /*config_overrides*/ None,
     );
     let explicit_resume_params = thread_resume_params_from_config(
         &config,
@@ -621,7 +621,7 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
             permissions: true,
             ..Default::default()
         },
-        None,
+        /*config_overrides*/ None,
     );
 
     assert_eq!(config.permissions.active_permission_profile(), None);
@@ -690,8 +690,8 @@ async fn resumed_turn_start_params_omit_ambient_sticky_overrides() {
         &config,
         "thread-id".to_string(),
         Vec::new(),
-        None,
-        false,
+        /*output_schema*/ None,
+        /*resumed_existing_thread*/ false,
         &ResumeOverrideSelection::default(),
     );
     assert_eq!(fresh_turn.cwd, Some(config.cwd.to_path_buf()));
@@ -710,8 +710,8 @@ async fn resumed_turn_start_params_omit_ambient_sticky_overrides() {
         &config,
         "thread-id".to_string(),
         Vec::new(),
-        None,
-        true,
+        /*output_schema*/ None,
+        /*resumed_existing_thread*/ true,
         &ResumeOverrideSelection::default(),
     );
     assert_eq!(resumed_turn.cwd, None);
@@ -725,8 +725,8 @@ async fn resumed_turn_start_params_omit_ambient_sticky_overrides() {
         &config,
         "thread-id".to_string(),
         Vec::new(),
-        None,
-        true,
+        /*output_schema*/ None,
+        /*resumed_existing_thread*/ true,
         &ResumeOverrideSelection {
             cwd: true,
             runtime_workspace_roots: true,
@@ -791,8 +791,8 @@ async fn resumed_turn_start_params_forward_explicit_reasoning_effort_override() 
         &config,
         "thread-id".to_string(),
         Vec::new(),
-        None,
-        true,
+        /*output_schema*/ None,
+        /*resumed_existing_thread*/ true,
         &ResumeOverrideSelection {
             reasoning_effort: true,
             ..Default::default()

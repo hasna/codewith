@@ -2220,20 +2220,20 @@ mod tests {
     #[test]
     fn auth_profile_env_decision_routes_missing_profile_to_chooser() {
         assert_eq!(
-            auth_profile_env_decision(None, false),
+            auth_profile_env_decision(/*auth_profile*/ None, /*exists*/ false),
             AuthProfileEnvOutcome::NotRequested
         );
         assert_eq!(
-            auth_profile_env_decision(Some("work"), true),
+            auth_profile_env_decision(Some("work"), /*exists*/ true),
             AuthProfileEnvOutcome::Scoped
         );
         // A requested-but-missing profile must not scope (which would dead-end in
         // a login screen); it routes to the provider chooser instead.
-        let missing = auth_profile_env_decision(Some("work"), false);
+        let missing = auth_profile_env_decision(Some("work"), /*exists*/ false);
         assert_eq!(missing, AuthProfileEnvOutcome::Missing("work".to_string()));
         assert_eq!(missing.missing_profile(), Some("work"));
         assert_eq!(
-            auth_profile_env_decision(Some("work"), true).missing_profile(),
+            auth_profile_env_decision(Some("work"), /*exists*/ true).missing_profile(),
             None
         );
     }

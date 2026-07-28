@@ -289,7 +289,7 @@ mod tests {
         };
 
         assert_eq!(
-            available_reset_credits(&summary, 10)
+            available_reset_credits(&summary, /*now*/ 10)
                 .into_iter()
                 .map(|credit| credit.id.as_str())
                 .collect::<Vec<_>>(),
@@ -303,18 +303,26 @@ mod tests {
             available_count: 4,
             credits: None,
         };
-        assert!(available_reset_credits(&count_only, 0).is_empty());
+        assert!(available_reset_credits(&count_only, /*now*/ 0).is_empty());
 
         let mut credits = vec![
-            reset_credit("unknown", None, RateLimitResetCreditStatus::Unknown),
-            reset_credit("redeeming", None, RateLimitResetCreditStatus::Redeeming),
+            reset_credit(
+                "unknown",
+                /*expires_at*/ None,
+                RateLimitResetCreditStatus::Unknown,
+            ),
+            reset_credit(
+                "redeeming",
+                /*expires_at*/ None,
+                RateLimitResetCreditStatus::Redeeming,
+            ),
         ];
         credits[0].reset_type = RateLimitResetType::Unknown;
         let summary = RateLimitResetCreditsSummary {
             available_count: 2,
             credits: Some(credits),
         };
-        assert!(available_reset_credits(&summary, 0).is_empty());
+        assert!(available_reset_credits(&summary, /*now*/ 0).is_empty());
     }
 
     fn reset_credit(
@@ -360,7 +368,7 @@ mod tests {
         // No description: the expiry sentence stands alone.
         assert_eq!(
             reset_credit_description(
-                &described_credit(Some(now + 5 * 3_600 + 12 * 60), None),
+                &described_credit(Some(now + 5 * 3_600 + 12 * 60), /*description*/ None),
                 now
             )
             .as_deref(),
@@ -369,7 +377,11 @@ mod tests {
 
         // Sub-hour windows fall back to minutes.
         assert_eq!(
-            reset_credit_description(&described_credit(Some(now + 30 * 60), None), now).as_deref(),
+            reset_credit_description(
+                &described_credit(Some(now + 30 * 60), /*description*/ None),
+                now
+            )
+            .as_deref(),
             Some("Expires in 30m."),
         );
     }
@@ -387,20 +399,26 @@ mod tests {
 
         // No expiry, but a description: description is preserved unchanged.
         assert_eq!(
-            reset_credit_description(&described_credit(None, Some("Earned reset credit.")), now)
-                .as_deref(),
+            reset_credit_description(
+                &described_credit(/*expires_at*/ None, Some("Earned reset credit.")),
+                now
+            )
+            .as_deref(),
             Some("Earned reset credit."),
         );
 
         // No expiry and no description: nothing to show.
         assert_eq!(
-            reset_credit_description(&described_credit(None, None), now),
+            reset_credit_description(
+                &described_credit(/*expires_at*/ None, /*description*/ None),
+                now
+            ),
             None,
         );
 
         // A far-future sentinel does not overflow the countdown math.
         assert!(
-            reset_credit_description(&described_credit(Some(i64::MAX), None), now)
+            reset_credit_description(&described_credit(Some(i64::MAX), /*description*/ None), now)
                 .as_deref()
                 .is_some_and(|text| text.starts_with("Expires in "))
         );

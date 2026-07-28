@@ -1376,7 +1376,8 @@ mod tests {
             client_metadata: None,
         };
 
-        let parts = chat_request_from_responses(request, false).expect("request should map");
+        let parts = chat_request_from_responses(request, /*map_none_reasoning_to_low*/ false)
+            .expect("request should map");
 
         assert_eq!(
             parts.body["messages"],
@@ -1441,7 +1442,8 @@ mod tests {
             client_metadata: None,
         };
 
-        let parts = chat_request_from_responses(request, false).expect("request should map");
+        let parts = chat_request_from_responses(request, /*map_none_reasoning_to_low*/ false)
+            .expect("request should map");
         let messages = parts.body["messages"]
             .as_array()
             .expect("messages should be an array");
@@ -1484,7 +1486,8 @@ mod tests {
             client_metadata: None,
         };
 
-        let parts = chat_request_from_responses(request, false).expect("request should map");
+        let parts = chat_request_from_responses(request, /*map_none_reasoning_to_low*/ false)
+            .expect("request should map");
         let messages = parts.body["messages"]
             .as_array()
             .expect("messages should be an array");
@@ -1508,7 +1511,10 @@ mod tests {
     fn chat_reasoning_effort_keeps_none_by_default() {
         // OpenAI/OpenRouter tolerate `reasoning_effort: "none"`.
         assert_eq!(
-            chat_reasoning_effort(Some(&reasoning(ReasoningEffort::None)), false),
+            chat_reasoning_effort(
+                Some(&reasoning(ReasoningEffort::None)),
+                /*map_none_reasoning_to_low*/ false
+            ),
             Some("none".to_string())
         );
     }
@@ -1518,7 +1524,10 @@ mod tests {
         // Cerebras / NVIDIA vLLM reject "none"; it must be rewritten to "low"
         // so tool calling keeps working.
         assert_eq!(
-            chat_reasoning_effort(Some(&reasoning(ReasoningEffort::None)), true),
+            chat_reasoning_effort(
+                Some(&reasoning(ReasoningEffort::None)),
+                /*map_none_reasoning_to_low*/ true
+            ),
             Some("low".to_string())
         );
     }
@@ -1533,8 +1542,14 @@ mod tests {
             ReasoningEffort::XHigh,
         ] {
             assert_eq!(
-                chat_reasoning_effort(Some(&reasoning(effort.clone())), false),
-                chat_reasoning_effort(Some(&reasoning(effort)), true),
+                chat_reasoning_effort(
+                    Some(&reasoning(effort.clone())),
+                    /*map_none_reasoning_to_low*/ false
+                ),
+                chat_reasoning_effort(
+                    Some(&reasoning(effort)),
+                    /*map_none_reasoning_to_low*/ true
+                ),
             );
         }
     }
@@ -1565,10 +1580,14 @@ mod tests {
             client_metadata: None,
         };
 
-        let gated = chat_request_from_responses(request.clone(), true).expect("request should map");
+        let gated =
+            chat_request_from_responses(request.clone(), /*map_none_reasoning_to_low*/ true)
+                .expect("request should map");
         assert_eq!(gated.body["reasoning_effort"], "low");
 
-        let ungated = chat_request_from_responses(request, false).expect("request should map");
+        let ungated =
+            chat_request_from_responses(request, /*map_none_reasoning_to_low*/ false)
+                .expect("request should map");
         assert_eq!(ungated.body["reasoning_effort"], "none");
     }
 
@@ -2124,7 +2143,7 @@ mod tests {
         let messages = chat_messages_from_responses(
             "",
             &[
-                reasoning_item("private cot", None),
+                reasoning_item("private cot", /*signature*/ None),
                 ResponseItem::Message {
                     id: None,
                     role: "assistant".to_string(),

@@ -3232,7 +3232,7 @@ mod tests {
                 thread_id,
                 "Already finished.",
                 crate::ThreadGoalStatus::Complete,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("terminal goal should be created");
@@ -3496,7 +3496,7 @@ mod tests {
                 thread_id,
                 "Finish the standalone current goal.",
                 crate::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("active goal should be created");
@@ -5083,7 +5083,7 @@ mod tests {
         // Resume the deferred node with no explicit id; it is auto-selected.
         let resumed = runtime
             .thread_goals()
-            .resume_deferred_goal_plan_node(thread_id, None)
+            .resume_deferred_goal_plan_node(thread_id, /*node_id*/ None)
             .await
             .expect("resume should succeed")
             .expect("deferred node should resume");
@@ -5261,7 +5261,7 @@ mod tests {
         assert!(
             runtime
                 .thread_goals()
-                .resume_deferred_goal_plan_node(thread_id, None)
+                .resume_deferred_goal_plan_node(thread_id, /*node_id*/ None)
                 .await
                 .expect("resume call should succeed")
                 .is_none()
@@ -5404,7 +5404,7 @@ mod tests {
         // Resume the deferred root without appending nodes to the maxed-out plan.
         let resumed = runtime
             .thread_goals()
-            .resume_deferred_goal_plan_node(thread_id, None)
+            .resume_deferred_goal_plan_node(thread_id, /*node_id*/ None)
             .await
             .expect("resume should succeed")
             .expect("root node should resume");

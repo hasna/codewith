@@ -19,7 +19,7 @@ fn returns_exact_length_only_within_budget() {
 fn rejects_huge_strings_at_the_byte_budget() {
     let value = Value::String("x".repeat(100_000));
 
-    assert_eq!(bounded_json_serialized_len(&value, 128), None);
+    assert_eq!(bounded_json_serialized_len(&value, /*max_bytes*/ 128), None);
 }
 
 #[test]
@@ -36,5 +36,5 @@ fn rejects_excessive_nesting_even_with_a_large_byte_budget() {
 fn rejects_wide_values_before_visiting_every_child() {
     let value = Value::Array(vec![Value::Null; 100_000]);
 
-    assert_eq!(bounded_json_serialized_len(&value, 128), None);
+    assert_eq!(bounded_json_serialized_len(&value, /*max_bytes*/ 128), None);
 }

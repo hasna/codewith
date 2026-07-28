@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn catalog_from_outcome_deduplicates_by_identity() {
-        let skill = scale_skill(0);
+        let skill = scale_skill(/*index*/ 0);
         let mut outcome = SkillLoadOutcome::default();
         outcome.skills = vec![skill.clone(), skill];
 

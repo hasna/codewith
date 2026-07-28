@@ -955,7 +955,9 @@ mod tests {
     fn usage_summary_maps_snapshots_to_health() {
         let captured_at = chrono::Utc::now().timestamp();
         let response = AuthProfileUsageSummary::from_snapshots(
-            &[snapshot(10.0, 80.0)],
+            &[snapshot(
+                /*primary_used*/ 10.0, /*secondary_used*/ 80.0,
+            )],
             &config(),
             captured_at,
         );
@@ -976,7 +978,7 @@ mod tests {
     #[test]
     fn usage_summary_ignores_empty_credits_when_codex_windows_are_healthy() {
         let captured_at = chrono::Utc::now().timestamp();
-        let mut snapshot = snapshot(4.0, 39.0);
+        let mut snapshot = snapshot(/*primary_used*/ 4.0, /*secondary_used*/ 39.0);
         snapshot.credits = Some(CreditsSnapshot {
             has_credits: false,
             unlimited: false,
@@ -1031,7 +1033,7 @@ mod tests {
         let accounts = vec![
             account_usage(
                 Some("work"),
-                true,
+                /*current*/ true,
                 AuthProfileUsageSummary {
                     status: AuthProfileUsageStatus::Exhausted,
                     remaining_percent: Some(0.0),
@@ -1043,7 +1045,7 @@ mod tests {
             ),
             account_usage(
                 Some("spare"),
-                false,
+                /*current*/ false,
                 AuthProfileUsageSummary {
                     status: AuthProfileUsageStatus::Healthy,
                     remaining_percent: Some(80.0),
@@ -1080,7 +1082,7 @@ mod tests {
         let accounts = vec![
             account_usage(
                 Some("work"),
-                true,
+                /*current*/ true,
                 AuthProfileUsageSummary {
                     status: AuthProfileUsageStatus::Exhausted,
                     remaining_percent: Some(0.0),
@@ -1092,7 +1094,7 @@ mod tests {
             ),
             account_usage(
                 Some("excluded"),
-                false,
+                /*current*/ false,
                 AuthProfileUsageSummary {
                     status: AuthProfileUsageStatus::Healthy,
                     remaining_percent: Some(99.0),
@@ -1104,7 +1106,7 @@ mod tests {
             ),
             account_usage(
                 Some("configured"),
-                false,
+                /*current*/ false,
                 AuthProfileUsageSummary {
                     status: AuthProfileUsageStatus::Healthy,
                     remaining_percent: Some(40.0),
@@ -1139,7 +1141,7 @@ mod tests {
     fn account_usage_recommendation_does_not_label_no_target_as_default() {
         let accounts = vec![account_usage(
             Some("work"),
-            true,
+            /*current*/ true,
             AuthProfileUsageSummary {
                 status: AuthProfileUsageStatus::Exhausted,
                 remaining_percent: Some(0.0),
@@ -1172,8 +1174,8 @@ mod tests {
     #[test]
     fn account_usage_recommendation_preserves_actual_default_target() {
         let accounts = vec![account_usage(
-            None,
-            true,
+            /*profile_name*/ None,
+            /*current*/ true,
             AuthProfileUsageSummary {
                 status: AuthProfileUsageStatus::Healthy,
                 remaining_percent: Some(80.0),
@@ -1184,7 +1186,8 @@ mod tests {
             },
         )];
 
-        let recommendation = account_usage_recommendation(&accounts, None, &config(), &[]);
+        let recommendation =
+            account_usage_recommendation(&accounts, /*current_profile*/ None, &config(), &[]);
 
         assert_eq!(
             serde_json::to_value(recommendation).expect("serialize recommendation"),
@@ -1310,20 +1313,26 @@ mod tests {
             key.clone(),
             AuthProfileUsageCacheEntry {
                 captured_at: chrono::Utc::now().timestamp(),
-                snapshots: vec![snapshot(10.0, 20.0)],
+                snapshots: vec![snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 20.0,
+                )],
             },
         );
 
         assert_eq!(
             cached_rate_limit_snapshots(&key, &config()).await,
-            Some(vec![snapshot(10.0, 20.0)])
+            Some(vec![snapshot(
+                /*primary_used*/ 10.0, /*secondary_used*/ 20.0
+            )])
         );
 
         AUTH_PROFILE_USAGE_CACHE.lock().await.insert(
             key.clone(),
             AuthProfileUsageCacheEntry {
                 captured_at: 1,
-                snapshots: vec![snapshot(10.0, 20.0)],
+                snapshots: vec![snapshot(
+                    /*primary_used*/ 10.0, /*secondary_used*/ 20.0,
+                )],
             },
         );
         assert!(cached_rate_limit_snapshots(&key, &config()).await.is_none());

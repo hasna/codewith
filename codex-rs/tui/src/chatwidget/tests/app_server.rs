@@ -856,7 +856,7 @@ async fn live_app_server_collab_wait_updates_and_restores_top_status() {
         "Waiting for approval".to_string(),
         Some("Reviewing command".to_string()),
         StatusDetailsCapitalization::Preserve,
-        1,
+        /*details_max_lines*/ 1,
     );
     assert_eq!(
         chat.status_state.current_status.header,

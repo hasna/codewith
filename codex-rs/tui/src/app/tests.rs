@@ -1474,7 +1474,11 @@ fn spawn_completed_notification(
     sender_thread_id: ThreadId,
     child_thread_id: ThreadId,
 ) -> ServerNotification {
-    spawn_completed_notification_with_agent_path(sender_thread_id, child_thread_id, None)
+    spawn_completed_notification_with_agent_path(
+        sender_thread_id,
+        child_thread_id,
+        /*agent_path*/ None,
+    )
 }
 
 /// Like [`spawn_completed_notification`], but stamps the child's authoritative agent path onto the
@@ -2282,7 +2286,7 @@ default_permissions = "locked-down"
     )?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.selected_auth_profile = None;
-    app.chat_widget.set_auth_profile(None);
+    app.chat_widget.set_auth_profile(/*auth_profile*/ None);
     app.loader_overrides.user_config_path = Some(selected_config.abs());
     app.harness_overrides.sandbox_mode = Some(SandboxMode::WorkspaceWrite);
     app.harness_overrides.permission_profile = Some(PermissionProfile::workspace_write());
@@ -5695,7 +5699,7 @@ async fn stale_reset_generation_never_applies_credits_or_snapshots() {
     );
     while app_event_rx.try_recv().is_ok() {}
     app.chat_widget
-        .finish_usage_limit_auto_reset_check(1, Ok(()));
+        .finish_usage_limit_auto_reset_check(/*generation*/ 1, Ok(()));
 
     while let Ok(event) = app_event_rx.try_recv() {
         assert!(

@@ -1194,11 +1194,11 @@ mod tests {
     fn agent_picker_row_status_prefers_live_status_but_respects_closed() {
         // No telemetry yet: pending when open, stopped when the picker marked it closed.
         assert_eq!(
-            agent_picker_row_status(/*is_closed*/ false, None),
+            agent_picker_row_status(/*is_closed*/ false, /*live_status*/ None),
             CollabAgentStatus::PendingInit
         );
         assert_eq!(
-            agent_picker_row_status(/*is_closed*/ true, None),
+            agent_picker_row_status(/*is_closed*/ true, /*live_status*/ None),
             CollabAgentStatus::Shutdown
         );
         // A live running thread the picker has since marked closed downgrades to stopped.
@@ -1219,27 +1219,33 @@ mod tests {
 
     #[test]
     fn agent_picker_status_dot_spans_encode_status_shape_and_color() {
-        let running_active = agent_picker_status_dot_spans(CollabAgentStatus::Running, true);
+        let running_active =
+            agent_picker_status_dot_spans(CollabAgentStatus::Running, /*is_active*/ true);
         assert_eq!(running_active[0].content.as_ref(), "●");
         assert_eq!(running_active[0].style.fg, Some(Color::Green));
 
-        let running_idle = agent_picker_status_dot_spans(CollabAgentStatus::Running, false);
+        let running_idle =
+            agent_picker_status_dot_spans(CollabAgentStatus::Running, /*is_active*/ false);
         assert_eq!(running_idle[0].content.as_ref(), "○");
         assert_eq!(running_idle[0].style.fg, Some(Color::Green));
 
-        let completed = agent_picker_status_dot_spans(CollabAgentStatus::Completed, false);
+        let completed =
+            agent_picker_status_dot_spans(CollabAgentStatus::Completed, /*is_active*/ false);
         assert_eq!(completed[0].content.as_ref(), "✓");
         assert_eq!(completed[0].style.fg, Some(Color::Green));
 
-        let interrupted = agent_picker_status_dot_spans(CollabAgentStatus::Interrupted, false);
+        let interrupted =
+            agent_picker_status_dot_spans(CollabAgentStatus::Interrupted, /*is_active*/ false);
         assert_eq!(interrupted[0].content.as_ref(), "✓");
         assert_eq!(interrupted[0].style.fg, Some(Color::Yellow));
 
-        let errored = agent_picker_status_dot_spans(CollabAgentStatus::Errored, false);
+        let errored =
+            agent_picker_status_dot_spans(CollabAgentStatus::Errored, /*is_active*/ false);
         assert_eq!(errored[0].content.as_ref(), "✗");
         assert_eq!(errored[0].style.fg, Some(Color::Red));
 
-        let shutdown = agent_picker_status_dot_spans(CollabAgentStatus::Shutdown, false);
+        let shutdown =
+            agent_picker_status_dot_spans(CollabAgentStatus::Shutdown, /*is_active*/ false);
         assert_eq!(shutdown[0].content.as_ref(), "■");
         assert!(shutdown[0].style.add_modifier.contains(Modifier::DIM));
     }
@@ -1247,19 +1253,29 @@ mod tests {
     #[test]
     fn format_agent_picker_metrics_composes_task_elapsed_and_tokens() {
         assert_eq!(
-            format_agent_picker_metrics(Some("audit the backend"), Some(125), 69_742),
+            format_agent_picker_metrics(
+                Some("audit the backend"),
+                Some(125),
+                /*token_total*/ 69_742
+            ),
             Some("audit the backend   2m 05s · ↓ 69.7K tokens".to_string())
         );
         assert_eq!(
-            format_agent_picker_metrics(None, Some(5), 0),
+            format_agent_picker_metrics(/*task*/ None, Some(5), /*token_total*/ 0),
             Some("5s".to_string())
         );
         assert_eq!(
-            format_agent_picker_metrics(Some("just a task"), None, 0),
+            format_agent_picker_metrics(
+                Some("just a task"),
+                /*elapsed_secs*/ None,
+                /*token_total*/ 0
+            ),
             Some("just a task".to_string())
         );
         assert_eq!(
-            format_agent_picker_metrics(None, None, 0),
+            format_agent_picker_metrics(
+                /*task*/ None, /*elapsed_secs*/ None, /*token_total*/ 0
+            ),
             None,
             "an empty row should have no description"
         );
@@ -1274,19 +1290,31 @@ mod tests {
                 CollabAgentStatus::Running,
                 /*is_active*/ true,
                 "Main [default]",
-                format_agent_picker_metrics(Some("triage the failing suite"), Some(125), 69_742),
+                format_agent_picker_metrics(
+                    Some("triage the failing suite"),
+                    Some(125),
+                    /*token_total*/ 69_742,
+                ),
             ),
             (
                 CollabAgentStatus::Completed,
                 /*is_active*/ false,
                 "Robie [explorer]",
-                format_agent_picker_metrics(Some("map the crate graph"), Some(42), 12_800),
+                format_agent_picker_metrics(
+                    Some("map the crate graph"),
+                    Some(42),
+                    /*token_total*/ 12_800,
+                ),
             ),
             (
                 CollabAgentStatus::Errored,
                 /*is_active*/ false,
                 "Bob [worker]",
-                format_agent_picker_metrics(Some("run migrations"), Some(9), 1_024),
+                format_agent_picker_metrics(
+                    Some("run migrations"),
+                    Some(9),
+                    /*token_total*/ 1_024,
+                ),
             ),
         ];
 

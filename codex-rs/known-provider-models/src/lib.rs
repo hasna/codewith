@@ -687,8 +687,8 @@ mod tests {
         // The dedicated coding model is text-only with a 256K context.
         let code = metadata_for_openai_compatible_response(
             Some(KIMI_PROVIDER_ID),
-            None,
-            None,
+            /*provider_name*/ None,
+            /*provider_base_url*/ None,
             "kimi-k2.7-code",
         )
         .expect("kimi-k2.7-code metadata should exist");
@@ -858,8 +858,8 @@ mod tests {
         assert_eq!(
             metadata_for_openai_compatible_response(
                 Some(OPENROUTER_PROVIDER_ID),
-                None,
-                None,
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
                 "anthropic/claude-sonnet-5",
             ),
             expected
@@ -891,8 +891,8 @@ mod tests {
         assert_eq!(
             metadata_for_openai_compatible_response(
                 Some(OPENROUTER_PROVIDER_ID),
-                None,
-                None,
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
                 "z-ai/glm-5.2-20260616",
             ),
             expected_metadata
@@ -903,13 +903,13 @@ mod tests {
         )));
         assert!(openai_compatible_provider_supports_reasoning_effort(
             Some(OPENROUTER_PROVIDER_ID),
-            None
+            /*provider_base_url*/ None
         ));
 
         let (default_reasoning, presets) = reasoning_levels_for_openai_compatible_response(
             Some(OPENROUTER_PROVIDER_ID),
-            None,
-            None,
+            /*provider_name*/ None,
+            /*provider_base_url*/ None,
             "z-ai/glm-5.2",
         );
         assert_eq!(default_reasoning, Some(ReasoningEffort::High));
@@ -1008,7 +1008,12 @@ mod tests {
             ))
         );
         assert_eq!(
-            metadata_for_openai_compatible_response(Some(XAI_PROVIDER_ID), None, None, "grok-4.5"),
+            metadata_for_openai_compatible_response(
+                Some(XAI_PROVIDER_ID),
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
+                "grok-4.5"
+            ),
             metadata_for_local_fallback(Some(XAI_PROVIDER_ID), "grok-4.5"),
         );
 
@@ -1029,7 +1034,7 @@ mod tests {
         assert!(provider_supports_reasoning_effort(Some(XAI_PROVIDER_ID)));
         assert!(openai_compatible_provider_supports_reasoning_effort(
             Some(XAI_PROVIDER_ID),
-            None
+            /*provider_base_url*/ None
         ));
 
         // xAI documents `low`/`medium`/`high` for grok-4.5, defaulting to `high`, and reasoning
@@ -1045,8 +1050,8 @@ mod tests {
         assert_eq!(
             reasoning_levels_for_openai_compatible_response(
                 Some(XAI_PROVIDER_ID),
-                None,
-                None,
+                /*provider_name*/ None,
+                /*provider_base_url*/ None,
                 "grok-4.5",
             ),
             expected
@@ -1068,8 +1073,8 @@ mod tests {
             assert_eq!(
                 reasoning_levels_for_openai_compatible_response(
                     Some(XAI_PROVIDER_ID),
-                    None,
-                    None,
+                    /*provider_name*/ None,
+                    /*provider_base_url*/ None,
                     slug,
                 ),
                 no_reasoning_levels(),
@@ -1209,17 +1214,32 @@ mod tests {
             (GOOGLE_PROVIDER_ID, GOOGLE_BASE_URL),
         ] {
             assert!(
-                provider_matches(Some(provider_id), None, provider_id, base_url),
+                provider_matches(
+                    Some(provider_id),
+                    /*provider_base_url*/ None,
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match by provider id"
             );
             let uppercased = provider_id.to_ascii_uppercase();
             assert!(
-                provider_matches(Some(&uppercased), None, provider_id, base_url),
+                provider_matches(
+                    Some(&uppercased),
+                    /*provider_base_url*/ None,
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match case-insensitively by provider id"
             );
             let with_trailing_slash = format!("{base_url}/");
             assert!(
-                provider_matches(None, Some(&with_trailing_slash), provider_id, base_url),
+                provider_matches(
+                    /*provider_id*/ None,
+                    Some(&with_trailing_slash),
+                    provider_id,
+                    base_url
+                ),
                 "{provider_id} should match by base url ignoring a trailing slash"
             );
             assert!(
@@ -1249,7 +1269,10 @@ mod tests {
             expected
         );
         // Unqualified (no provider id) resolves the same first-party metadata.
-        assert_eq!(metadata_for_local_fallback(None, "gpt-4.1"), expected);
+        assert_eq!(
+            metadata_for_local_fallback(/*provider_id*/ None, "gpt-4.1"),
+            expected
+        );
 
         for slug in ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"] {
             let metadata = metadata_for_local_fallback(Some(openai::OPENAI_PROVIDER_ID), slug)
@@ -1321,7 +1344,7 @@ mod tests {
     #[test]
     fn unqualified_gpt_oss_still_resolves_to_cerebras_catalog() {
         assert_eq!(
-            metadata_for_local_fallback(None, "gpt-oss-120b"),
+            metadata_for_local_fallback(/*provider_id*/ None, "gpt-oss-120b"),
             metadata_for_local_fallback(Some(CEREBRAS_PROVIDER_ID), "gpt-oss-120b")
         );
     }

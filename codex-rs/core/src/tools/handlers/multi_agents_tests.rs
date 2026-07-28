@@ -4983,7 +4983,8 @@ async fn build_agent_resume_config_clears_base_instructions() {
 #[test]
 fn full_fork_ignored_overrides_notice_is_none_when_no_overrides_supplied() {
     let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
-        None, None, None, None,
+        /*agent_type*/ None, /*model*/ None, /*provider*/ None,
+        /*reasoning_effort*/ None,
     );
     assert_eq!(notice, None);
 }
@@ -5008,10 +5009,10 @@ fn full_fork_ignored_overrides_notice_names_each_supplied_override() {
 #[test]
 fn full_fork_ignored_overrides_notice_reports_only_supplied_fields() {
     let notice = crate::tools::handlers::multi_agents_common::full_fork_ignored_overrides_notice(
-        None,
+        /*agent_type*/ None,
         Some("gpt-5-child-override"),
-        None,
-        None,
+        /*provider*/ None,
+        /*reasoning_effort*/ None,
     )
     .expect("supplied model override should produce a notice");
     assert!(notice.contains("model"), "notice: {notice}");

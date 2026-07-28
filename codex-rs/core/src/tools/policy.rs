@@ -39,12 +39,17 @@ const BINDINGS_SCHEMA_VERSION: &str = "codewith.launch-bindings/v2";
 const POLICY_AUDIENCE: &str = "infinity-auth-capsule";
 const INFINITY_MCP_SOURCE_ID: &str = "infinity";
 const INFINITY_MCP_NAMESPACE: &str = "mcp__infinity";
+#[cfg(unix)]
 const BINDINGS_FD: i32 = 3;
+#[cfg(unix)]
 const POLICY_FD: i32 = 4;
 const POLICY_SIGNATURE_CONTEXT: &[u8] = b"hasna.infinity.codewith-tool-policy-signature/v1\0";
+#[cfg(unix)]
 const MAX_POLICY_BYTES: usize = 1024 * 1024;
+#[cfg(unix)]
 const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
 const MAX_KEY_BYTES: usize = 4096;
+#[cfg(unix)]
 const MAX_BINDINGS_BYTES: usize = 16 * 1024;
 const MAX_ENTRIES: usize = 256;
 const MAX_IDENTIFIER_BYTES: usize = 256;
@@ -986,10 +991,13 @@ fn current_executable_sha256() -> Result<String, PolicyError> {
 #[derive(Clone, Copy)]
 enum SecureFileKind {
     RootTrustKey,
+    #[cfg(unix)]
     RootRequirements,
+    #[cfg(unix)]
     ServiceEnvelope,
 }
 
+#[cfg(unix)]
 pub(crate) fn read_secure_system_requirements(path: &Path) -> Result<Vec<u8>, PolicyError> {
     read_secure_regular_file(
         path,
@@ -1127,25 +1135,18 @@ fn validate_secure_directory(directory: &File, path: &Path) -> Result<(), Policy
     Ok(())
 }
 
+#[cfg(unix)]
 fn validate_root_owned_nonwritable_file(file: &File, label: &str) -> Result<(), PolicyError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = file
-            .metadata()
-            .map_err(|error| PolicyError::Io(format!("cannot inspect {label}: {error}")))?;
-        if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o222 != 0 {
-            return Err(invalid(format!(
-                "the {label} must be a root-owned non-writable regular file"
-            )));
-        }
-        Ok(())
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file
+        .metadata()
+        .map_err(|error| PolicyError::Io(format!("cannot inspect {label}: {error}")))?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o222 != 0 {
+        return Err(invalid(format!(
+            "the {label} must be a root-owned non-writable regular file"
+        )));
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (file, label);
-        Err(invalid("executable ownership validation requires Unix"))
-    }
+    Ok(())
 }
 
 fn validate_secure_file_metadata(file: &File, kind: SecureFileKind) -> Result<(), PolicyError> {
@@ -1287,6 +1288,7 @@ fn validate_read_only_fd(file: &File, label: &str) -> Result<(), PolicyError> {
     Ok(())
 }
 
+#[cfg(any(unix, test))]
 fn parse_launch_bindings(bytes: &[u8]) -> Result<ExpectedLaunchBindings, PolicyError> {
     let record: LaunchBindingsRecord = parse_json_no_duplicates(bytes, "launch bindings")?;
     record.try_into()

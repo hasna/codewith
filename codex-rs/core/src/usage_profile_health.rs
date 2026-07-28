@@ -496,12 +496,16 @@ mod tests {
             }),
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(35.0, MINUTES_PER_5_HOURS, Some(100))),
-                    None,
+                    Some(window(
+                        /*used_percent*/ 35.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(100)
+                    )),
+                    /*secondary*/ None,
                 )],
                 &config(),
                 Some(FIVE_HOUR_LIMIT_LABEL),
-                true,
+                /*is_fresh*/ true,
             )
         );
     }
@@ -514,12 +518,16 @@ mod tests {
             },
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(100.0, MINUTES_PER_5_HOURS, Some(500))),
-                    None,
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(500)
+                    )),
+                    /*secondary*/ None,
                 )],
                 &config(),
                 Some(FIVE_HOUR_LIMIT_LABEL),
-                true,
+                /*is_fresh*/ true,
             )
         );
     }
@@ -528,7 +536,12 @@ mod tests {
     fn usage_health_unknown_for_missing_snapshot() {
         assert_eq!(
             UsageProfileHealth::Unknown,
-            usage_health_for_snapshots(&[], &config(), Some(FIVE_HOUR_LIMIT_LABEL), true)
+            usage_health_for_snapshots(
+                &[],
+                &config(),
+                Some(FIVE_HOUR_LIMIT_LABEL),
+                /*is_fresh*/ true
+            )
         );
     }
 
@@ -544,12 +557,20 @@ mod tests {
             }),
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(100.0, MINUTES_PER_WEEK, Some(900))),
-                    Some(window(25.0, MINUTES_PER_5_HOURS, Some(100))),
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_WEEK,
+                        Some(900)
+                    )),
+                    Some(window(
+                        /*used_percent*/ 25.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(100)
+                    )),
                 )],
                 &config,
                 Some(FIVE_HOUR_LIMIT_LABEL),
-                true,
+                /*is_fresh*/ true,
             )
         );
     }
@@ -566,12 +587,20 @@ mod tests {
             }),
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(45.0, MINUTES_PER_WEEK, Some(900))),
-                    Some(window(100.0, MINUTES_PER_5_HOURS, Some(100))),
+                    Some(window(
+                        /*used_percent*/ 45.0,
+                        MINUTES_PER_WEEK,
+                        Some(900)
+                    )),
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(100)
+                    )),
                 )],
                 &config,
                 Some(WEEKLY_LIMIT_LABEL),
-                true,
+                /*is_fresh*/ true,
             )
         );
     }
@@ -585,12 +614,20 @@ mod tests {
             }),
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(65.0, MINUTES_PER_WEEK, Some(900))),
-                    Some(window(20.0, MINUTES_PER_5_HOURS, Some(100))),
+                    Some(window(
+                        /*used_percent*/ 65.0,
+                        MINUTES_PER_WEEK,
+                        Some(900)
+                    )),
+                    Some(window(
+                        /*used_percent*/ 20.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(100)
+                    )),
                 )],
                 &config(),
                 Some(FIVE_HOUR_LIMIT_LABEL),
-                true,
+                /*is_fresh*/ true,
             )
         );
     }
@@ -601,12 +638,16 @@ mod tests {
             UsageProfileHealth::Unknown,
             usage_health_for_snapshots(
                 &[snapshot(
-                    Some(window(35.0, MINUTES_PER_5_HOURS, Some(100))),
-                    None,
+                    Some(window(
+                        /*used_percent*/ 35.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(100)
+                    )),
+                    /*secondary*/ None,
                 )],
                 &config(),
                 Some(FIVE_HOUR_LIMIT_LABEL),
-                false,
+                /*is_fresh*/ false,
             )
         );
     }
@@ -616,13 +657,22 @@ mod tests {
         let snapshot = UsageProfileRateLimitSnapshot {
             limit_id: Some("not-codex"),
             limit_name: None,
-            primary: Some(window(100.0, MINUTES_PER_5_HOURS, Some(500))),
+            primary: Some(window(
+                /*used_percent*/ 100.0,
+                MINUTES_PER_5_HOURS,
+                Some(500),
+            )),
             secondary: None,
         };
 
         assert_eq!(
             UsageProfileHealth::Unknown,
-            usage_health_for_snapshots(&[snapshot], &config(), Some(FIVE_HOUR_LIMIT_LABEL), true,)
+            usage_health_for_snapshots(
+                &[snapshot],
+                &config(),
+                Some(FIVE_HOUR_LIMIT_LABEL),
+                /*is_fresh*/ true,
+            )
         );
     }
 
@@ -631,7 +681,11 @@ mod tests {
         let snapshot = UsageProfileRateLimitSnapshot {
             limit_id: Some("codex"),
             limit_name: Some("gpt-5.4-codex"),
-            primary: Some(window(35.0, MINUTES_PER_5_HOURS, Some(100))),
+            primary: Some(window(
+                /*used_percent*/ 35.0,
+                MINUTES_PER_5_HOURS,
+                Some(100),
+            )),
             secondary: None,
         };
 
@@ -640,7 +694,12 @@ mod tests {
                 trigger_remaining_percent: 65.0,
                 limiting_remaining_percent: 65.0,
             }),
-            usage_health_for_snapshots(&[snapshot], &config(), Some(FIVE_HOUR_LIMIT_LABEL), true,)
+            usage_health_for_snapshots(
+                &[snapshot],
+                &config(),
+                Some(FIVE_HOUR_LIMIT_LABEL),
+                /*is_fresh*/ true,
+            )
         );
     }
 
@@ -649,13 +708,22 @@ mod tests {
         let snapshot = UsageProfileRateLimitSnapshot {
             limit_id: Some("codex_model"),
             limit_name: Some("codex"),
-            primary: Some(window(35.0, MINUTES_PER_5_HOURS, Some(100))),
+            primary: Some(window(
+                /*used_percent*/ 35.0,
+                MINUTES_PER_5_HOURS,
+                Some(100),
+            )),
             secondary: None,
         };
 
         assert_eq!(
             UsageProfileHealth::Unknown,
-            usage_health_for_snapshots(&[snapshot], &config(), Some(FIVE_HOUR_LIMIT_LABEL), true,)
+            usage_health_for_snapshots(
+                &[snapshot],
+                &config(),
+                Some(FIVE_HOUR_LIMIT_LABEL),
+                /*is_fresh*/ true,
+            )
         );
     }
 
@@ -783,10 +851,18 @@ mod tests {
             Some(1_000),
             earliest_exhausted_reset_at(
                 &snapshot(
-                    Some(window(100.0, MINUTES_PER_5_HOURS, Some(1_000))),
-                    Some(window(100.0, MINUTES_PER_WEEK, Some(2_000))),
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(1_000)
+                    )),
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_WEEK,
+                        Some(2_000)
+                    )),
                 ),
-                500,
+                /*now_unix_secs*/ 500,
             )
         );
     }
@@ -797,24 +873,45 @@ mod tests {
         assert_eq!(
             None,
             earliest_exhausted_reset_at(
-                &snapshot(Some(window(80.0, MINUTES_PER_5_HOURS, Some(1_000))), None),
-                500,
+                &snapshot(
+                    Some(window(
+                        /*used_percent*/ 80.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(1_000)
+                    )),
+                    /*secondary*/ None
+                ),
+                /*now_unix_secs*/ 500,
             )
         );
         // Exhausted but reset already elapsed -> None (fall back to normal interval).
         assert_eq!(
             None,
             earliest_exhausted_reset_at(
-                &snapshot(Some(window(100.0, MINUTES_PER_5_HOURS, Some(400))), None),
-                500,
+                &snapshot(
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_5_HOURS,
+                        Some(400)
+                    )),
+                    /*secondary*/ None
+                ),
+                /*now_unix_secs*/ 500,
             )
         );
         // Exhausted but reset unknown -> None.
         assert_eq!(
             None,
             earliest_exhausted_reset_at(
-                &snapshot(Some(window(100.0, MINUTES_PER_5_HOURS, None)), None),
-                500,
+                &snapshot(
+                    Some(window(
+                        /*used_percent*/ 100.0,
+                        MINUTES_PER_5_HOURS,
+                        /*resets_at*/ None
+                    )),
+                    /*secondary*/ None
+                ),
+                /*now_unix_secs*/ 500,
             )
         );
     }
@@ -824,11 +921,18 @@ mod tests {
         let snapshot = UsageProfileRateLimitSnapshot {
             limit_id: Some("not-codex"),
             limit_name: None,
-            primary: Some(window(100.0, MINUTES_PER_5_HOURS, Some(1_000))),
+            primary: Some(window(
+                /*used_percent*/ 100.0,
+                MINUTES_PER_5_HOURS,
+                Some(1_000),
+            )),
             secondary: None,
         };
 
-        assert_eq!(None, earliest_exhausted_reset_at(&snapshot, 500));
+        assert_eq!(
+            None,
+            earliest_exhausted_reset_at(&snapshot, /*now_unix_secs*/ 500)
+        );
     }
 
     /// Health derived from a single primary 5h window at `used_percent`, resetting at `resets_at`.
@@ -836,7 +940,7 @@ mod tests {
         usage_health_for_snapshots(
             &[snapshot(
                 Some(window(used_percent, MINUTES_PER_5_HOURS, resets_at)),
-                None,
+                /*secondary*/ None,
             )],
             &config(),
             Some(FIVE_HOUR_LIMIT_LABEL),
@@ -849,9 +953,18 @@ mod tests {
         // `dead` is exhausted (must be skipped), `low` has 20% headroom, `high` has 70%.
         // HighestAvailable must select `high` even though `low`/`dead` come first in order.
         let health_by_profile = BTreeMap::from([
-            ("dead".to_string(), health_from_5h(100.0, Some(900))),
-            ("low".to_string(), health_from_5h(80.0, Some(100))),
-            ("high".to_string(), health_from_5h(30.0, Some(200))),
+            (
+                "dead".to_string(),
+                health_from_5h(/*used_percent*/ 100.0, Some(900)),
+            ),
+            (
+                "low".to_string(),
+                health_from_5h(/*used_percent*/ 80.0, Some(100)),
+            ),
+            (
+                "high".to_string(),
+                health_from_5h(/*used_percent*/ 30.0, Some(200)),
+            ),
         ]);
 
         let selection = choose_profile_for_auto_switch(
@@ -873,8 +986,14 @@ mod tests {
         // (900, earlier than 2_000) is surfaced so the caller can tell the user when a
         // profile becomes usable again.
         let health_by_profile = BTreeMap::from([
-            ("later".to_string(), health_from_5h(100.0, Some(2_000))),
-            ("soonest".to_string(), health_from_5h(100.0, Some(900))),
+            (
+                "later".to_string(),
+                health_from_5h(/*used_percent*/ 100.0, Some(2_000)),
+            ),
+            (
+                "soonest".to_string(),
+                health_from_5h(/*used_percent*/ 100.0, Some(900)),
+            ),
         ]);
 
         let selection = choose_profile_for_auto_switch(

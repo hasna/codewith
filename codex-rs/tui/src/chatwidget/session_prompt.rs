@@ -149,7 +149,7 @@ mod tests {
             Some("be terse".to_string())
         );
         assert_eq!(normalize_session_prompt(Some("   ".to_string())), None);
-        assert_eq!(normalize_session_prompt(None), None);
+        assert_eq!(normalize_session_prompt(/*prompt*/ None), None);
     }
 
     #[test]

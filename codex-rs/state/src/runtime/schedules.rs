@@ -1854,7 +1854,14 @@ mod tests {
         prompt: &str,
         next_run_at: Option<DateTime<Utc>>,
     ) -> crate::ThreadSchedule {
-        create_interval_schedule_minutes(runtime, thread_id, prompt, 5, next_run_at).await
+        create_interval_schedule_minutes(
+            runtime,
+            thread_id,
+            prompt,
+            /*minutes*/ 5,
+            next_run_at,
+        )
+        .await
     }
 
     async fn create_interval_schedule_minutes(
@@ -2041,9 +2048,14 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 16);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
-        let parent =
-            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
-                .await;
+        let parent = create_interval_schedule_minutes(
+            &runtime,
+            thread_id,
+            "parent loop",
+            /*minutes*/ 1,
+            Some(now),
+        )
+        .await;
 
         let child = runtime
             .thread_schedules()
@@ -2202,8 +2214,14 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 24);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
-        let root =
-            create_interval_schedule_minutes(&runtime, thread_id, "root loop", 1, Some(now)).await;
+        let root = create_interval_schedule_minutes(
+            &runtime,
+            thread_id,
+            "root loop",
+            /*minutes*/ 1,
+            Some(now),
+        )
+        .await;
         let child = runtime
             .thread_schedules()
             .create_nested_thread_schedule(
@@ -2273,9 +2291,14 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 17);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
-        let parent =
-            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
-                .await;
+        let parent = create_interval_schedule_minutes(
+            &runtime,
+            thread_id,
+            "parent loop",
+            /*minutes*/ 1,
+            Some(now),
+        )
+        .await;
 
         let err = runtime
             .thread_schedules()
@@ -2350,9 +2373,14 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let interval_parent =
-            create_interval_schedule_minutes(&runtime, thread_id, "interval parent", 5, Some(now))
-                .await;
+        let interval_parent = create_interval_schedule_minutes(
+            &runtime,
+            thread_id,
+            "interval parent",
+            /*minutes*/ 5,
+            Some(now),
+        )
+        .await;
         let err = runtime
             .thread_schedules()
             .create_nested_thread_schedule(
@@ -2385,9 +2413,14 @@ mod tests {
         let thread_id = test_thread_id(/*id*/ 19);
         upsert_test_thread(&runtime, thread_id).await;
         let now = at(/*seconds*/ 1_700_000_000);
-        let parent =
-            create_interval_schedule_minutes(&runtime, thread_id, "parent loop", 1, Some(now))
-                .await;
+        let parent = create_interval_schedule_minutes(
+            &runtime,
+            thread_id,
+            "parent loop",
+            /*minutes*/ 1,
+            Some(now),
+        )
+        .await;
         let child = runtime
             .thread_schedules()
             .create_nested_thread_schedule(

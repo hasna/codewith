@@ -1577,7 +1577,9 @@ async fn remote_compact_v1_over_window_history_trims_request_and_succeeds() -> R
     // tool-output rewriting the compact request cannot fit and drop-oldest must trim it.
     let item_count = 50usize;
     codex
-        .inject_response_items(big_injected_history(item_count, 6_000))
+        .inject_response_items(big_injected_history(
+            item_count, /*filler_chars*/ 6_000,
+        ))
         .await?;
 
     let compact_mock = responses::mount_compact_user_history_with_summary_once(
@@ -1641,7 +1643,9 @@ async fn remote_compact_v2_over_window_history_trims_request_and_succeeds() -> R
 
     let item_count = 50usize;
     codex
-        .inject_response_items(big_injected_history(item_count, 6_000))
+        .inject_response_items(big_injected_history(
+            item_count, /*filler_chars*/ 6_000,
+        ))
         .await?;
 
     let responses_mock = responses::mount_sse_sequence(

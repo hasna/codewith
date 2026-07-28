@@ -153,6 +153,7 @@ use crate::tools::policy::InfinityAgentSafetyAttestation;
 use crate::tools::policy::PolicyMode;
 use crate::tools::policy::VerifiedToolPolicy;
 use crate::tools::policy::load_process_policy;
+#[cfg(unix)]
 use crate::tools::policy::read_secure_system_requirements;
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::RequirementSource;

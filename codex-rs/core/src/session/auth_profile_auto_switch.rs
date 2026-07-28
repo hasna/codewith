@@ -399,7 +399,7 @@ mod tests {
                     retry_at: Some(123),
                 },
             ),
-            ("account003".to_string(), health(70.0)),
+            ("account003".to_string(), health(/*remaining_percent*/ 70.0)),
         ]);
 
         assert_eq!(
