@@ -2,11 +2,26 @@
 
 #[path = "../src/accounting.rs"]
 mod accounting;
+#[path = "../src/line_changes.rs"]
+mod line_changes;
 
+use accounting::BudgetLimitedGoalDisposition;
 use accounting::GoalAccountingState;
+use anyhow::Result;
+use chrono::Utc;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::protocol::TokenUsage;
+use codex_state::ThreadGoalLineChangeStats;
+use codex_state::ThreadGoalStatus;
 use pretty_assertions::assert_eq;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+
+const LINE_CHANGE_LEASE_HELPER_REPO_ENV: &str = "CODEWITH_LINE_CHANGE_LEASE_HELPER_REPO";
+const LINE_CHANGE_LEASE_HELPER_EXPECT_ENV: &str = "CODEWITH_LINE_CHANGE_LEASE_HELPER_EXPECT";
+const LINE_CHANGE_LEASE_HELPER_TEST: &str = "subprocess_shared_cwd_line_change_lease_helper";
 
 #[test]
 fn goal_accounting_uses_turn_start_baseline_for_exact_deltas() {
@@ -18,6 +33,7 @@ fn goal_accounting_uses_turn_start_baseline_for_exact_deltas() {
             /*input_tokens*/ 100, /*cached_input_tokens*/ 10, /*output_tokens*/ 30,
             /*reasoning_output_tokens*/ 5, /*total_tokens*/ 135,
         ),
+        /*local_cwd*/ None,
     );
 
     let recorded = state
@@ -38,7 +54,12 @@ fn goal_accounting_uses_turn_start_baseline_for_exact_deltas() {
 #[test]
 fn goal_accounting_ignores_plan_mode_turns() {
     let state = GoalAccountingState::default();
-    state.start_turn("turn-1", ModeKind::Plan, &TokenUsage::default());
+    state.start_turn(
+        "turn-1",
+        ModeKind::Plan,
+        &TokenUsage::default(),
+        /*local_cwd*/ None,
+    );
 
     let recorded = state.record_token_usage(
         "turn-1",
@@ -49,6 +70,504 @@ fn goal_accounting_ignores_plan_mode_turns() {
     );
 
     assert_eq!(None, recorded);
+}
+
+#[tokio::test]
+async fn goal_accounting_remembers_persisted_line_change_totals() -> anyhow::Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    run_git(repo, &["init"]).await?;
+    std::fs::write(repo.join("tracked.txt"), "baseline\n")?;
+    run_git(repo, &["add", "."]).await?;
+    run_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+
+    let state = GoalAccountingState::default();
+    state.start_turn(
+        "turn-1",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    let now = Utc::now();
+    let goal = codex_state::ThreadGoal {
+        thread_id: ThreadId::from_string("00000000-0000-4000-8000-000000000001")?,
+        goal_id: "goal-1".to_string(),
+        objective: "Track changes".to_string(),
+        title: None,
+        status: ThreadGoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        lines_added: 3,
+        lines_deleted: 1,
+        created_at: now,
+        updated_at: now,
+    };
+    state.mark_turn_goal_active("turn-1", goal.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state, &goal).await;
+
+    let first = state
+        .progress_snapshot("turn-1")
+        .expect("line-change baseline should produce a snapshot");
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 3,
+            lines_deleted: 1,
+        }),
+        first
+            .line_changes
+            .as_ref()
+            .map(|changes| changes.last_accounted_stats)
+    );
+    let persisted = ThreadGoalLineChangeStats {
+        lines_added: 8,
+        lines_deleted: 2,
+    };
+    state.mark_progress_accounted_for_status(
+        "turn-1",
+        &first,
+        Some(persisted),
+        ThreadGoalStatus::Active,
+        BudgetLimitedGoalDisposition::KeepActive,
+    );
+    let second = state
+        .progress_snapshot("turn-1")
+        .expect("active baseline should remain available");
+    assert_eq!(
+        Some(persisted),
+        second
+            .line_changes
+            .map(|changes| changes.last_accounted_stats)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_since_baseline_counts_only_changes_after_baseline() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+
+    write_file(repo, "src/lib.rs", "fn base() {}\nfn before_goal() {}\n")?;
+    write_file(repo, "src/before.rs", "fn before_untracked() {}\n")?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 3, /*lines_deleted*/ 1)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    write_file(
+        repo,
+        "src/lib.rs",
+        "fn base() {}\nfn before_goal() {}\nfn after_goal() {}\n",
+    )?;
+    write_file(repo, "src/before.rs", "fn before_untracked() {}\n")?;
+    write_file(
+        repo,
+        "src/after.rs",
+        "fn after_untracked() {}\nfn more_after() {}\n",
+    )?;
+
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 6,
+            lines_deleted: 1,
+        }),
+        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(
+        repo,
+        "src/lib.rs",
+        "fn one() {}\nfn two() {}\nfn three() {}\n",
+    )?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 0, /*lines_deleted*/ 0)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    write_file(repo, "src/lib.rs", "fn one() {}\nfn three() {}\n")?;
+
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 0,
+            lines_deleted: 1,
+        }),
+        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_since_baseline_reports_nothing_when_worktree_is_untouched() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 9, /*lines_deleted*/ 2)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    assert_eq!(
+        None,
+        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_since_baseline_counts_same_file_replacements_once() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn one() {}\nfn before() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    write_file(repo, "src/lib.rs", "fn one() {}\nfn after() {}\n")?;
+    let expected = ThreadGoalLineChangeStats {
+        lines_added: 5,
+        lines_deleted: 3,
+    };
+    assert_eq!(
+        Some(expected),
+        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+    assert_eq!(
+        None,
+        line_changes::stats_since_baseline(repo, &baseline, expected).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stats_since_baseline_counts_changes_committed_during_turn() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 7, /*lines_deleted*/ 1)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    write_file(repo, "src/lib.rs", "fn base() {}\nfn committed() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "goal change").await?;
+
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 8,
+            lines_deleted: 1,
+        }),
+        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+
+    let goal_a = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000a1",
+        "goal-a",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state_a = GoalAccountingState::default();
+    state_a.start_turn(
+        "turn-a",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_a.mark_turn_goal_active("turn-a", goal_a.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state_a, &goal_a).await;
+
+    let goal_b = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000b2",
+        "goal-b",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state_b = GoalAccountingState::default();
+    state_b.start_turn(
+        "turn-b",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_b.mark_turn_goal_active("turn-b", goal_b.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state_b, &goal_b).await;
+    assert_eq!(
+        None,
+        state_b
+            .progress_snapshot("turn-b")
+            .and_then(|snapshot| snapshot.line_changes)
+    );
+
+    write_file(repo, "src/lib.rs", "fn base() {}\nfn first_goal() {}\n")?;
+    {
+        let snapshot_a = state_a
+            .progress_snapshot("turn-a")
+            .expect("first owner should keep the worktree baseline");
+        let line_changes = snapshot_a
+            .line_changes
+            .expect("first owner snapshot should include line changes");
+        assert_eq!(
+            Some(ThreadGoalLineChangeStats {
+                lines_added: 1,
+                lines_deleted: 0,
+            }),
+            line_changes::stats_since_baseline(
+                line_changes.cwd.as_path(),
+                &line_changes.baseline,
+                line_changes.last_accounted_stats,
+            )
+            .await
+        );
+    }
+    state_a.finish_turn("turn-a");
+    state_b.finish_turn("turn-b");
+
+    state_b.start_turn(
+        "turn-b-2",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state_b.mark_turn_goal_active("turn-b-2", goal_b.goal_id.clone());
+    // Production does not retry the same active turn after an overlap loser is
+    // suppressed. This explicit establish call represents a later fresh turn.
+    line_changes::establish_current_turn_baseline(&state_b, &goal_b).await;
+    write_file(
+        repo,
+        "src/lib.rs",
+        "fn base() {}\nfn first_goal() {}\nfn second_goal() {}\n",
+    )?;
+    let snapshot_b = state_b
+        .progress_snapshot("turn-b-2")
+        .expect("second owner should acquire a fresh baseline after release");
+    let line_changes = snapshot_b
+        .line_changes
+        .expect("second owner snapshot should include line changes");
+    assert_eq!(
+        Some(ThreadGoalLineChangeStats {
+            lines_added: 1,
+            lines_deleted: 0,
+        }),
+        line_changes::stats_since_baseline(
+            line_changes.cwd.as_path(),
+            &line_changes.baseline,
+            line_changes.last_accounted_stats,
+        )
+        .await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_cwd_line_change_lease_is_exclusive_across_processes() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    write_file(repo, "src/lib.rs", "fn base() {}\n")?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+
+    let goal = test_goal_with_owner(
+        "00000000-0000-4000-8000-0000000000d4",
+        "parent-goal",
+        /*lines_added*/ 0,
+        /*lines_deleted*/ 0,
+    )?;
+    let state = GoalAccountingState::default();
+    state.start_turn(
+        "turn-parent",
+        ModeKind::Default,
+        &TokenUsage::default(),
+        Some(repo.to_path_buf()),
+    );
+    state.mark_turn_goal_active("turn-parent", goal.goal_id.clone());
+    line_changes::establish_current_turn_baseline(&state, &goal).await;
+    assert!(
+        state
+            .progress_snapshot("turn-parent")
+            .and_then(|snapshot| snapshot.line_changes)
+            .is_some(),
+        "parent process should acquire the shared worktree lease"
+    );
+
+    run_line_change_lease_helper(repo, "denied").await?;
+    state.finish_turn("turn-parent");
+    run_line_change_lease_helper(repo, "acquired").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn subprocess_shared_cwd_line_change_lease_helper() -> Result<()> {
+    let Some(repo) = std::env::var_os(LINE_CHANGE_LEASE_HELPER_REPO_ENV) else {
+        return Ok(());
+    };
+    let repo = PathBuf::from(repo);
+    let expectation = std::env::var(LINE_CHANGE_LEASE_HELPER_EXPECT_ENV)?;
+    let baseline = line_changes::capture_baseline(
+        repo.as_path(),
+        &test_goal_with_owner(
+            "00000000-0000-4000-8000-0000000000e5",
+            "child-goal",
+            /*lines_added*/ 0,
+            /*lines_deleted*/ 0,
+        )?,
+    )
+    .await;
+
+    match expectation.as_str() {
+        "denied" => assert_eq!(None, baseline),
+        "acquired" => assert!(
+            baseline.is_some(),
+            "child process should acquire the shared worktree lease"
+        ),
+        other => anyhow::bail!("unknown lease helper expectation {other:?}"),
+    }
+    Ok(())
+}
+
+async fn run_line_change_lease_helper(repo: &Path, expectation: &str) -> Result<()> {
+    let output = tokio::process::Command::new(std::env::current_exe()?)
+        .arg(LINE_CHANGE_LEASE_HELPER_TEST)
+        .arg("--exact")
+        .arg("--nocapture")
+        .env(LINE_CHANGE_LEASE_HELPER_REPO_ENV, repo.as_os_str())
+        .env(LINE_CHANGE_LEASE_HELPER_EXPECT_ENV, expectation)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "line-change lease helper expected {expectation:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
+}
+
+async fn init_repo(repo: &Path) -> Result<()> {
+    run_git(repo, &["init"]).await
+}
+
+async fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
+    let output = tokio::process::Command::new("git")
+        .current_dir(repo)
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .args(args)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+async fn commit(repo: &Path, message: &str) -> Result<()> {
+    run_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            message,
+        ],
+    )
+    .await
+}
+
+fn write_file(repo: &Path, path: &str, contents: &str) -> Result<()> {
+    let path = repo.join(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)?;
+    Ok(())
+}
+
+fn test_goal(lines_added: i64, lines_deleted: i64) -> Result<codex_state::ThreadGoal> {
+    test_goal_with_owner(
+        "00000000-0000-4000-8000-000000000001",
+        "goal-1",
+        lines_added,
+        lines_deleted,
+    )
+}
+
+fn test_goal_with_owner(
+    thread_id: &str,
+    goal_id: &str,
+    lines_added: i64,
+    lines_deleted: i64,
+) -> Result<codex_state::ThreadGoal> {
+    let now = Utc::now();
+    Ok(codex_state::ThreadGoal {
+        thread_id: ThreadId::from_string(thread_id)?,
+        goal_id: goal_id.to_string(),
+        objective: "Track line changes".to_string(),
+        title: None,
+        status: ThreadGoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        lines_added,
+        lines_deleted,
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 fn token_usage(

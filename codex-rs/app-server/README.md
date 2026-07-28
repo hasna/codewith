@@ -149,7 +149,7 @@ Example with notification opt-out:
 - `memory/reset` — experimental; clear the current `CODEWITH_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread, including an optional compact `title` for status surfaces; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
-- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`; plan nodes also expose parent linkage and 1-based nesting depth. Each plan includes aggregate token/time usage, ready-node counts, and node status counts computed from its nodes.
+- `thread/goal/list` — page through the current goal plus durable goal plans and their goal nodes for a materialized thread. Goals and plan nodes expose an optional compact `title`; plan nodes also expose parent linkage and 1-based nesting depth. Each plan includes aggregate token/time/LOC usage, ready-node counts, and node status counts computed from its nodes.
 - `thread/goalPlan/activateNode` — manually activate a ready pending node in a durable goal plan; returns the activated current goal, using the node title when present, and refreshed plan snapshot.
 - `thread/goalPlan/addGoal` — queue a new goal into the active goal plan, creating one from the current goal when needed. The runtime chooses append dependencies so existing terminal nodes remain prerequisites.
 - `thread/goalPlan/updateNode` — edit a pending or active goal-plan node's key, objective/prompt, title, priority, token budget, or dependencies. Completed nodes are immutable until marked pending again.
@@ -967,6 +967,8 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "tokenBudget": 200000,
     "tokensUsed": 0,
     "timeUsedSeconds": 0,
+    "linesAdded": 0,
+    "linesDeleted": 0,
     "createdAt": 1776272400,
     "updatedAt": 1776272400
 } } }
@@ -979,6 +981,8 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "tokenBudget": 200000,
     "tokensUsed": 0,
     "timeUsedSeconds": 0,
+    "linesAdded": 0,
+    "linesDeleted": 0,
     "createdAt": 1776272400,
     "updatedAt": 1776272400
 } } }
@@ -998,6 +1002,8 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
     "tokenBudget": 200000,
     "tokensUsed": 10000,
     "timeUsedSeconds": 60,
+    "linesAdded": 120,
+    "linesDeleted": 18,
     "createdAt": 1776272400,
     "updatedAt": 1776272460
 } } }
@@ -1010,7 +1016,7 @@ Use `thread/goal/get` to read the current goal without changing it.
 { "id": 29, "result": { "goal": null } }
 ```
 
-Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `parentNodeId: null` marks a top-level goal, and `nestingDepth` is 1-based. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
+Use `thread/goal/list` to read the current goal together with durable goal plans. The plan list is paginated with optional `cursor` and `limit`; pass the returned `nextCursor` to fetch the next page. Plan aggregate usage fields are computed from the nodes, including line additions and deletions as `totalLinesAdded` and `totalLinesDeleted`. `readyNodeCount` and each node's `ready` flag are scoped to the requested thread and indicate assigned pending nodes whose dependencies are complete and whose plan still has token budget. In plan nodes, `threadId` is the primary owner and `assignedThreadId` is the executor. `parentNodeId: null` marks a top-level goal, and `nestingDepth` is 1-based. `tokenBudget: null` means the node is unlimited, and `title: null` means clients should derive a compact display label from the objective. The `aiDirected` auto-execute value currently activates the highest-priority ready node assigned to the executing thread; use `thread/goalPlan/activateNode` when a client or user should choose among ready nodes explicitly.
 
 ```json
 { "method": "thread/goal/list", "id": 30, "params": { "threadId": "thr_123", "limit": 20 } }
@@ -1024,6 +1030,8 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
         "maxTokens": null,
         "totalTokensUsed": 0,
         "totalTimeUsedSeconds": 0,
+        "totalLinesAdded": 0,
+        "totalLinesDeleted": 0,
         "remainingTokens": null,
         "nodeCount": 1,
         "completedNodeCount": 0,
@@ -1054,6 +1062,8 @@ Use `thread/goal/list` to read the current goal together with durable goal plans
             "tokenBudget": null,
             "tokensUsed": 0,
             "timeUsedSeconds": 0,
+            "linesAdded": 0,
+            "linesDeleted": 0,
             "projectedGoalId": null,
             "dependsOn": [],
             "createdAt": 1776272400,
@@ -1081,6 +1091,8 @@ Use `thread/goalPlan/activateNode` to start one ready pending node manually when
         "tokenBudget": null,
         "tokensUsed": 0,
         "timeUsedSeconds": 0,
+        "linesAdded": 0,
+        "linesDeleted": 0,
         "createdAt": 1776272400,
         "updatedAt": 1776272400
     },

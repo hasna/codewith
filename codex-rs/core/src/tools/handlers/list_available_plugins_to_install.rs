@@ -12,6 +12,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::list_available_plugins_to_install_spec::create_list_available_plugins_to_install_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_extension_api::ToolWorktreeMutationSignal;
 
 const MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS: usize = 240;
 
@@ -95,7 +96,11 @@ impl ToolExecutor<ToolInvocation> for ListAvailablePluginsToInstallHandler {
     }
 }
 
-impl CoreToolRuntime for ListAvailablePluginsToInstallHandler {}
+impl CoreToolRuntime for ListAvailablePluginsToInstallHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 fn truncate_to_char_boundary(value: &str, max_chars: usize) -> &str {
     match value.char_indices().nth(max_chars) {

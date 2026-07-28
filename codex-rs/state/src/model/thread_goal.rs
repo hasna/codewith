@@ -72,8 +72,16 @@ pub struct ThreadGoal {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadGoalLineChangeStats {
+    pub lines_added: i64,
+    pub lines_deleted: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +277,8 @@ pub struct ThreadGoalPlanNode {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
     pub projected_goal_id: Option<String>,
     pub depends_on: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -296,6 +306,8 @@ pub struct ThreadGoalPlanUsageSummary {
     pub cancelled_node_count: i64,
     pub total_tokens_used: i64,
     pub total_time_used_seconds: i64,
+    pub total_lines_added: i64,
+    pub total_lines_deleted: i64,
     pub remaining_tokens: Option<i64>,
 }
 
@@ -461,6 +473,8 @@ impl ThreadGoalPlanSnapshot {
             cancelled_node_count: 0,
             total_tokens_used: 0,
             total_time_used_seconds: 0,
+            total_lines_added: 0,
+            total_lines_deleted: 0,
             remaining_tokens: None,
         };
 
@@ -468,6 +482,12 @@ impl ThreadGoalPlanSnapshot {
             summary.node_count += 1;
             summary.total_tokens_used += node.tokens_used.max(0);
             summary.total_time_used_seconds += node.time_used_seconds.max(0);
+            summary.total_lines_added = summary
+                .total_lines_added
+                .saturating_add(node.lines_added.max(0));
+            summary.total_lines_deleted = summary
+                .total_lines_deleted
+                .saturating_add(node.lines_deleted.max(0));
             match node.status {
                 ThreadGoalPlanNodeStatus::Pending => summary.pending_node_count += 1,
                 ThreadGoalPlanNodeStatus::Active => summary.active_node_count += 1,
@@ -498,6 +518,8 @@ pub(crate) struct ThreadGoalRow {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -528,6 +550,8 @@ pub(crate) struct ThreadGoalPlanNodeRow {
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
     pub time_used_seconds: i64,
+    pub lines_added: i64,
+    pub lines_deleted: i64,
     pub projected_goal_id: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -544,6 +568,8 @@ impl ThreadGoalRow {
             token_budget: row.try_get("token_budget")?,
             tokens_used: row.try_get("tokens_used")?,
             time_used_seconds: row.try_get("time_used_seconds")?,
+            lines_added: row.try_get("lines_added")?,
+            lines_deleted: row.try_get("lines_deleted")?,
             created_at_ms: row.try_get("created_at_ms")?,
             updated_at_ms: row.try_get("updated_at_ms")?,
         })
@@ -582,6 +608,8 @@ impl ThreadGoalPlanNodeRow {
             token_budget: row.try_get("token_budget")?,
             tokens_used: row.try_get("tokens_used")?,
             time_used_seconds: row.try_get("time_used_seconds")?,
+            lines_added: row.try_get("lines_added")?,
+            lines_deleted: row.try_get("lines_deleted")?,
             projected_goal_id: row.try_get("projected_goal_id")?,
             created_at_ms: row.try_get("created_at_ms")?,
             updated_at_ms: row.try_get("updated_at_ms")?,
@@ -602,6 +630,8 @@ impl TryFrom<ThreadGoalRow> for ThreadGoal {
             token_budget: row.token_budget,
             tokens_used: row.tokens_used,
             time_used_seconds: row.time_used_seconds,
+            lines_added: row.lines_added,
+            lines_deleted: row.lines_deleted,
             created_at: epoch_millis_to_datetime(row.created_at_ms)?,
             updated_at: epoch_millis_to_datetime(row.updated_at_ms)?,
         })
@@ -651,6 +681,8 @@ impl ThreadGoalPlanNode {
             token_budget: row.token_budget,
             tokens_used: row.tokens_used,
             time_used_seconds: row.time_used_seconds,
+            lines_added: row.lines_added,
+            lines_deleted: row.lines_deleted,
             projected_goal_id: row.projected_goal_id,
             depends_on,
             created_at: epoch_millis_to_datetime(row.created_at_ms)?,

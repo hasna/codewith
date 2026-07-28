@@ -9,6 +9,16 @@
         "goalId": {
           "type": "string"
         },
+        "linesAdded": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
+        "linesDeleted": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "objective": {
           "type": "string"
         },

@@ -18,6 +18,7 @@ use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
@@ -33,6 +34,7 @@ use codex_protocol::protocol::TokenUsageInfo;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
+use crate::accounting::LineChangeAccounting;
 use crate::api::GoalService;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
@@ -278,6 +280,7 @@ where
             input.turn_id,
             input.collaboration_mode.mode,
             input.token_usage_at_turn_start,
+            input.local_cwd.map(std::path::Path::to_path_buf),
         );
         if matches!(
             input.collaboration_mode.mode,
@@ -301,7 +304,8 @@ where
                     | codex_state::ThreadGoalStatus::BudgetLimited
             )
         {
-            accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
+            accounting.mark_turn_goal_active(input.turn_id, goal.goal_id.clone());
+            crate::line_changes::establish_current_turn_baseline(accounting.as_ref(), &goal).await;
         }
     }
 
@@ -338,6 +342,7 @@ where
             .account_active_goal_progress(
                 turn_id,
                 &format!("{turn_id}:turn-stop"),
+                LineChangeAccounting::Capture,
                 codex_state::GoalAccountingMode::ActiveOnly,
                 BudgetLimitedGoalDisposition::ClearActive,
             )
@@ -381,6 +386,7 @@ where
             .account_active_goal_progress(
                 turn_id,
                 &format!("{turn_id}:turn-abort"),
+                LineChangeAccounting::Capture,
                 codex_state::GoalAccountingMode::ActiveOnly,
                 BudgetLimitedGoalDisposition::ClearActive,
             )
@@ -468,6 +474,7 @@ where
                 .account_active_goal_progress(
                     turn_id,
                     input.call_id,
+                    line_change_accounting_for_tool(input.worktree_mutation_signal),
                     codex_state::GoalAccountingMode::ActiveOnly,
                     BudgetLimitedGoalDisposition::KeepActive,
                 )
@@ -697,5 +704,14 @@ fn tool_attempt_counts_for_goal_progress(outcome: ToolCallOutcome) -> bool {
             handler_executed: false,
         }
         | ToolCallOutcome::Aborted => false,
+    }
+}
+
+fn line_change_accounting_for_tool(
+    worktree_mutation_signal: ToolWorktreeMutationSignal,
+) -> LineChangeAccounting {
+    match worktree_mutation_signal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation => LineChangeAccounting::Skip,
+        ToolWorktreeMutationSignal::MaybeMutatesWorktree => LineChangeAccounting::Capture,
     }
 }

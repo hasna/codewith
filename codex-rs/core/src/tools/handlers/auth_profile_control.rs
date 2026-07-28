@@ -12,6 +12,7 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_app_server_protocol::AuthMode;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_login::AuthProfile;
 use codex_login::AuthProfileSubscriptionProvider;
 use codex_tools::ToolName;
@@ -164,7 +165,11 @@ impl ToolExecutor<ToolInvocation> for ManageAuthProfilesHandler {
     }
 }
 
-impl CoreToolRuntime for ManageAuthProfilesHandler {}
+impl CoreToolRuntime for ManageAuthProfilesHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 fn normalize_requested_profile(
     profile: Option<String>,

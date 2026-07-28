@@ -281,6 +281,8 @@ mod tests {
                     token_budget: None,
                     tokens_used: 0,
                     time_used_seconds: 0,
+                    lines_added: 0,
+                    lines_deleted: 0,
                     created_at: 1,
                     updated_at: 1,
                 },

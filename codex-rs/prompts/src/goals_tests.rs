@@ -13,6 +13,8 @@ fn continuation_prompt_allows_complete_and_strict_blocked_updates() {
         token_budget: Some(10_000),
         tokens_used: 1_234,
         time_used_seconds: 56,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     })
@@ -45,6 +47,8 @@ fn budget_limit_prompt_steers_model_to_wrap_up_without_pausing() {
         token_budget: Some(10_000),
         tokens_used: 10_100,
         time_used_seconds: 56,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     })
@@ -71,6 +75,8 @@ fn objective_updated_prompt_supersedes_previous_goal_context() {
         token_budget: Some(10_000),
         tokens_used: 1_234,
         time_used_seconds: 56,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     })
@@ -105,6 +111,8 @@ fn goal_prompts_escape_objective_delimiters() {
         token_budget: None,
         tokens_used: 0,
         time_used_seconds: 0,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     });
@@ -117,6 +125,8 @@ fn goal_prompts_escape_objective_delimiters() {
         token_budget: Some(10_000),
         tokens_used: 10_100,
         time_used_seconds: 56,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     });
@@ -129,6 +139,8 @@ fn goal_prompts_escape_objective_delimiters() {
         token_budget: Some(10_000),
         tokens_used: 1_000,
         time_used_seconds: 56,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 2,
     });

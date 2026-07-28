@@ -393,6 +393,8 @@ fn active_thread_goal() -> codex_app_server_protocol::ThreadGoal {
         token_budget: None,
         tokens_used: 0,
         time_used_seconds: 0,
+        lines_added: 0,
+        lines_deleted: 0,
         created_at: 1,
         updated_at: 1,
     }
@@ -3636,6 +3638,8 @@ async fn active_goal_without_follow_up_suppresses_agent_turn_complete_notificati
                     token_budget: None,
                     tokens_used: 0,
                     time_used_seconds: 0,
+                    lines_added: 0,
+                    lines_deleted: 0,
                     created_at: 1,
                     updated_at: 1,
                 },

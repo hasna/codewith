@@ -8,6 +8,7 @@ use crate::tools::handlers::session_name_spec::RENAME_SESSION_TOOL_NAME;
 use crate::tools::handlers::session_name_spec::create_rename_session_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -74,7 +75,11 @@ impl ToolExecutor<ToolInvocation> for RenameSessionHandler {
     }
 }
 
-impl CoreToolRuntime for RenameSessionHandler {}
+impl CoreToolRuntime for RenameSessionHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 fn format_rename_error(err: anyhow::Error) -> String {
     let mut message = err.to_string();

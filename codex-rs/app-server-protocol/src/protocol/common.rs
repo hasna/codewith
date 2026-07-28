@@ -4984,6 +4984,8 @@ mod tests {
             token_budget: Some(10_000),
             tokens_used: 123,
             time_used_seconds: 45,
+            lines_added: 0,
+            lines_deleted: 0,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_123,
         };
@@ -5003,6 +5005,83 @@ mod tests {
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&cleared),
             None
+        );
+    }
+
+    #[test]
+    fn thread_goal_loc_fields_default_for_legacy_v2_payloads() {
+        let goal: v2::ThreadGoal = serde_json::from_value(serde_json::json!({
+            "threadId": "thr_123",
+            "goalId": "goal_123",
+            "objective": "ship goal mode",
+            "title": null,
+            "status": "active",
+            "tokenBudget": null,
+            "tokensUsed": 12,
+            "timeUsedSeconds": 3,
+            "createdAt": 1_700_000_000,
+            "updatedAt": 1_700_000_123
+        }))
+        .expect("legacy goal payload should deserialize");
+        assert_eq!((0, 0), (goal.lines_added, goal.lines_deleted));
+
+        let node = serde_json::json!({
+            "nodeId": "node_123",
+            "planId": "plan_123",
+            "threadId": "thr_123",
+            "assignedThreadId": "thr_123",
+            "parentNodeId": null,
+            "nestingDepth": 1,
+            "key": "ship",
+            "sequence": 0,
+            "priority": 0,
+            "objective": "ship goal mode",
+            "title": null,
+            "status": "pending",
+            "ready": true,
+            "tokenBudget": null,
+            "tokensUsed": 12,
+            "timeUsedSeconds": 3,
+            "projectedGoalId": null,
+            "dependsOn": [],
+            "createdAt": 1_700_000_000,
+            "updatedAt": 1_700_000_123
+        });
+        let mut plan_payload = serde_json::json!({
+            "planId": "plan_123",
+            "threadId": "thr_123",
+            "status": "active",
+            "autoExecute": "off",
+            "maxTokens": null,
+            "totalTokensUsed": 12,
+            "totalTimeUsedSeconds": 3,
+            "remainingTokens": null,
+            "nodeCount": 1,
+            "completedNodeCount": 0,
+            "readyNodeCount": 1,
+            "activeNodeCount": 0,
+            "pendingNodeCount": 1,
+            "pausedNodeCount": 0,
+            "blockedNodeCount": 0,
+            "usageLimitedNodeCount": 0,
+            "budgetLimitedNodeCount": 0,
+            "deferredNodeCount": 0,
+            "cancelledNodeCount": 0,
+            "createdAt": 1_700_000_000,
+            "updatedAt": 1_700_000_123,
+            "nodes": []
+        });
+        plan_payload["nodes"] = serde_json::Value::Array(vec![node]);
+        let plan: v2::ThreadGoalPlan = serde_json::from_value(plan_payload)
+            .expect("legacy goal-plan payload should deserialize");
+        assert_eq!(
+            (0, 0, 0, 0),
+            (
+                plan.total_lines_added,
+                plan.total_lines_deleted,
+                plan.nodes[0].lines_added,
+                plan.nodes[0].lines_deleted,
+            )
         );
     }
 

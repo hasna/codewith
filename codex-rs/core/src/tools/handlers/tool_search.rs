@@ -13,6 +13,7 @@ use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_model_provider_info::WireApi;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
@@ -168,7 +169,11 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
     }
 }
 
-impl CoreToolRuntime for ToolSearchHandler {}
+impl CoreToolRuntime for ToolSearchHandler {
+    fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
+        ToolWorktreeMutationSignal::NoWorktreeMutation
+    }
+}
 
 impl ToolSearchHandler {
     fn search(

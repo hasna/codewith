@@ -2,6 +2,7 @@ use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolCallSource as ExtensionToolCallSource;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolStartInput;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_tools::ToolName;
 
 use crate::session::session::Session;
@@ -30,7 +31,11 @@ pub(crate) async fn notify_tool_start(invocation: &ToolInvocation) {
     }
 }
 
-pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: ToolCallOutcome) {
+pub(crate) async fn notify_tool_finish(
+    invocation: &ToolInvocation,
+    outcome: ToolCallOutcome,
+    worktree_mutation_signal: ToolWorktreeMutationSignal,
+) {
     notify_tool_finish_parts(
         invocation.session.as_ref(),
         invocation.turn.as_ref(),
@@ -38,6 +43,7 @@ pub(crate) async fn notify_tool_finish(invocation: &ToolInvocation, outcome: Too
         &invocation.tool_name,
         invocation.source.clone(),
         outcome,
+        worktree_mutation_signal,
     )
     .await;
 }
@@ -56,6 +62,7 @@ pub(crate) async fn notify_tool_aborted(
         tool_name,
         source,
         ToolCallOutcome::Aborted,
+        ToolWorktreeMutationSignal::MaybeMutatesWorktree,
     )
     .await;
 }
@@ -67,6 +74,7 @@ async fn notify_tool_finish_parts(
     tool_name: &ToolName,
     source: ToolCallSource,
     outcome: ToolCallOutcome,
+    worktree_mutation_signal: ToolWorktreeMutationSignal,
 ) {
     for contributor in session.services.extensions.tool_lifecycle_contributors() {
         contributor
@@ -79,6 +87,7 @@ async fn notify_tool_finish_parts(
                 tool_name,
                 source: extension_tool_call_source(source.clone()),
                 outcome,
+                worktree_mutation_signal,
             })
             .await;
     }

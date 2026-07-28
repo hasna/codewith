@@ -143,6 +143,8 @@ pub(crate) struct GoalPlanResponse {
     max_tokens: Option<i64>,
     total_tokens_used: i64,
     total_time_used_seconds: i64,
+    total_lines_added: i64,
+    total_lines_deleted: i64,
     remaining_tokens: Option<i64>,
     node_count: i64,
     completed_node_count: i64,
@@ -170,6 +172,8 @@ pub(crate) struct GoalPlanCompletionReport {
     max_tokens: Option<i64>,
     total_tokens_used: i64,
     total_time_used_seconds: i64,
+    total_lines_added: i64,
+    total_lines_deleted: i64,
     remaining_tokens: Option<i64>,
     node_count: i64,
     completed_node_count: i64,
@@ -204,6 +208,8 @@ struct GoalPlanCompletionNodeReport {
     token_budget: Option<i64>,
     tokens_used: i64,
     time_used_seconds: i64,
+    lines_added: i64,
+    lines_deleted: i64,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -227,6 +233,8 @@ struct GoalPlanNodeResponse {
     token_budget: Option<i64>,
     tokens_used: i64,
     time_used_seconds: i64,
+    lines_added: i64,
+    lines_deleted: i64,
     projected_goal_id: Option<String>,
     depends_on: Vec<String>,
     created_at: i64,
@@ -337,6 +345,16 @@ impl GoalToolExecutor {
                 BudgetLimitedGoalDisposition::ClearActive,
             )
             .await?;
+            let existing_goal = self
+                .state_db
+                .thread_goals()
+                .get_thread_goal(self.thread_id)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to read accounted goal before replacement: {err}"
+                    ))
+                })?;
             self.mark_existing_plan_goal_replaced(existing_goal).await?;
             self.state_db
                 .thread_goals()
@@ -690,6 +708,8 @@ impl GoalToolExecutor {
         let turn_id = self
             .accounting_state
             .mark_current_turn_goal_active(goal.goal_id.clone());
+        crate::line_changes::establish_current_turn_baseline(self.accounting_state.as_ref(), &goal)
+            .await;
         if turn_id.is_none() {
             self.accounting_state
                 .mark_idle_goal_active(goal.goal_id.clone());
@@ -1088,6 +1108,8 @@ impl GoalPlanResponse {
             max_tokens: snapshot.plan.max_tokens,
             total_tokens_used: summary.total_tokens_used,
             total_time_used_seconds: summary.total_time_used_seconds,
+            total_lines_added: summary.total_lines_added,
+            total_lines_deleted: summary.total_lines_deleted,
             remaining_tokens: summary.remaining_tokens,
             node_count: summary.node_count,
             completed_node_count: summary.completed_node_count,
@@ -1144,6 +1166,8 @@ impl GoalPlanCompletionReport {
             max_tokens: snapshot.plan.max_tokens,
             total_tokens_used: summary.total_tokens_used,
             total_time_used_seconds: summary.total_time_used_seconds,
+            total_lines_added: summary.total_lines_added,
+            total_lines_deleted: summary.total_lines_deleted,
             remaining_tokens: summary.remaining_tokens,
             node_count: summary.node_count,
             completed_node_count: summary.completed_node_count,
@@ -1175,11 +1199,13 @@ impl GoalPlanCompletionReport {
                         token_budget: node.token_budget,
                         tokens_used: node.tokens_used,
                         time_used_seconds: node.time_used_seconds,
+                        lines_added: node.lines_added,
+                        lines_deleted: node.lines_deleted,
                     }
                 })
                 .collect(),
             summary_instruction:
-                "Summarize the goal chain for the user. Include each goal's outcome, tokens, and elapsed time, then include total tokens and total elapsed time."
+                "Summarize the goal chain for the user. Include each goal's outcome, tokens, elapsed time, and LOC changes, then include total tokens, total elapsed time, and total LOC changes."
                     .to_string(),
         })
     }
@@ -1211,6 +1237,8 @@ impl GoalPlanNodeResponse {
             token_budget: node.token_budget,
             tokens_used: node.tokens_used,
             time_used_seconds: node.time_used_seconds,
+            lines_added: node.lines_added,
+            lines_deleted: node.lines_deleted,
             projected_goal_id: node.projected_goal_id,
             depends_on: node.depends_on,
             created_at: node.created_at.timestamp(),

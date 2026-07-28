@@ -2978,6 +2978,7 @@ dependencies = [
  "chrono",
  "codex-core",
  "codex-extension-api",
+ "codex-git-utils",
  "codex-otel",
  "codex-protocol",
  "codex-state",

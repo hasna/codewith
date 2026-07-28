@@ -27,6 +27,7 @@ pub use tool_lifecycle::ToolCallSource;
 pub use tool_lifecycle::ToolFinishInput;
 pub use tool_lifecycle::ToolLifecycleFuture;
 pub use tool_lifecycle::ToolStartInput;
+pub use tool_lifecycle::ToolWorktreeMutationSignal;
 pub use turn_input::TurnInputContext;
 pub use turn_input::TurnInputEnvironment;
 pub use turn_lifecycle::TurnAbortInput;

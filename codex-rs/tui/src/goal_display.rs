@@ -61,7 +61,24 @@ pub(crate) fn goal_usage_summary(goal: &ThreadGoal) -> String {
             format_tokens_compact(token_budget)
         ));
     }
+    parts.push(format!(
+        "LOC: {}.",
+        format_goal_line_changes(goal.lines_added, goal.lines_deleted)
+    ));
     parts.join(" ")
+}
+
+pub(crate) fn format_goal_line_changes(lines_added: i64, lines_deleted: i64) -> String {
+    let lines_added = lines_added.max(0);
+    let lines_deleted = lines_deleted.max(0);
+    if lines_added == 0 && lines_deleted == 0 {
+        return "0 LOC".to_string();
+    }
+    format!(
+        "+{} -{} LOC",
+        format_tokens_compact(lines_added),
+        format_tokens_compact(lines_deleted)
+    )
 }
 
 #[cfg(test)]
@@ -100,6 +117,8 @@ mod tests {
             token_budget,
             tokens_used,
             time_used_seconds: 120,
+            lines_added: 0,
+            lines_deleted: 0,
             created_at: 0,
             updated_at: 0,
         }
@@ -112,7 +131,14 @@ mod tests {
                 /*token_budget*/ Some(50_000),
                 /*tokens_used*/ 63_876,
             )),
-            "Goal: Complete the task described in Time: 2m. Tokens: 63.9K/50K."
+            "Goal: Complete the task described in Time: 2m. Tokens: 63.9K/50K. LOC: 0 LOC."
         );
+    }
+
+    #[test]
+    fn format_goal_line_changes_shows_added_and_deleted_lines() {
+        assert_eq!(format_goal_line_changes(12, 3), "+12 -3 LOC");
+        assert_eq!(format_goal_line_changes(12_345, 1_234), "+12.3K -1.23K LOC");
+        assert_eq!(format_goal_line_changes(0, 0), "0 LOC");
     }
 }

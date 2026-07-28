@@ -19,6 +19,7 @@ use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
+use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
@@ -81,6 +82,8 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
                 "tokenBudget": 123,
                 "tokensUsed": 0,
                 "timeUsedSeconds": 0,
+                "linesAdded": 0,
+                "linesDeleted": 0,
                 "createdAt": result["goal"]["createdAt"],
                 "updatedAt": result["goal"]["updatedAt"],
             },
@@ -1945,6 +1948,101 @@ async fn installed_goal_tools_replace_existing_goal_when_explicit() -> anyhow::R
 }
 
 #[tokio::test]
+async fn replacing_projected_goal_preserves_progress_flushed_during_replacement()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime.clone(),
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    run_test_git(harness.cwd.path(), &["init"]).await?;
+    std::fs::write(harness.cwd.path().join("tracked.txt"), "baseline\n")?;
+    run_test_git(harness.cwd.path(), &["add", "."]).await?;
+    run_test_git(
+        harness.cwd.path(),
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    tool_by_name(&tools, "create_goal_plan")
+        .handle(tool_call(
+            "create_goal_plan",
+            "call-create-plan",
+            json!({
+                "goals": [{
+                    "key": "active",
+                    "objective": "Track progress before replacement"
+                }]
+            }),
+        ))
+        .await?;
+    std::fs::write(
+        harness.cwd.path().join("tracked.txt"),
+        "baseline\ngoal change\n",
+    )?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-replace-goal",
+            json!({
+                "objective": "Replacement goal",
+                "clear_existing_goal": true,
+            }),
+        ))
+        .await?;
+
+    let plans = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?;
+    let [plan] = plans.as_slice() else {
+        panic!("replaced projected goal should retain one goal plan");
+    };
+    let [node] = plan.nodes.as_slice() else {
+        panic!("replaced projected goal should retain one goal-plan node");
+    };
+    assert_eq!(
+        (codex_state::ThreadGoalPlanNodeStatus::Blocked, 23, 1, 0,),
+        (
+            node.status,
+            node.tokens_used,
+            node.lines_added,
+            node.lines_deleted,
+        )
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_resets_baseline_before_turn_stop_accounting() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -2051,6 +2149,91 @@ async fn tool_finish_accounts_active_goal_progress_and_emits_event() -> anyhow::
         }],
         harness.sink.goal_events()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_only_tool_finish_defers_line_change_scan_until_mutating_completion()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    run_test_git(harness.cwd.path(), &["init"]).await?;
+    std::fs::write(harness.cwd.path().join("tracked.txt"), "baseline\n")?;
+    run_test_git(harness.cwd.path(), &["add", "."]).await?;
+    run_test_git(
+        harness.cwd.path(),
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    tool_by_name(&tools, "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+    std::fs::write(
+        harness.cwd.path().join("tracked.txt"),
+        "baseline\npending edit\n",
+    )?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5, /*output_tokens*/ 8,
+                /*reasoning_output_tokens*/ 2, /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+
+    harness
+        .notify_tool_finish_with_signal(
+            "turn-1",
+            "call-read-only",
+            "read_only_tool",
+            ToolWorktreeMutationSignal::NoWorktreeMutation,
+        )
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(23, goal.tokens_used);
+    assert_eq!(0, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
+
+    harness
+        .notify_tool_finish_with_signal(
+            "turn-1",
+            "call-mutating",
+            "shell",
+            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+        )
+        .await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(23, goal.tokens_used);
+    assert_eq!(1, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
     Ok(())
 }
 
@@ -3352,6 +3535,8 @@ async fn update_goal_can_block_and_accounts_final_progress() -> anyhow::Result<(
                 "status": "blocked",
                 "tokensUsed": 23,
                 "timeUsedSeconds": 0,
+                "linesAdded": 0,
+                "linesDeleted": 0,
                 "createdAt": result["goal"]["createdAt"],
                 "updatedAt": result["goal"]["updatedAt"],
             },
@@ -3426,6 +3611,7 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
             thread_id,
             /*time_delta_seconds*/ 42,
             /*token_delta*/ 17,
+            /*line_changes*/ None,
             codex_state::GoalAccountingMode::ActiveOrStopped,
             /*expected_goal_id*/ None,
         )
@@ -3456,6 +3642,8 @@ async fn resume_goal_reactivates_blocked_goal_and_accounts_future_progress() -> 
                 "tokenBudget": 100,
                 "tokensUsed": 17,
                 "timeUsedSeconds": 42,
+                "linesAdded": 0,
+                "linesDeleted": 0,
                 "createdAt": result["goal"]["createdAt"],
                 "updatedAt": result["goal"]["updatedAt"],
             },
@@ -3535,6 +3723,7 @@ async fn resume_goal_preserves_usage_limited_goal_usage() -> anyhow::Result<()> 
             thread_id,
             /*time_delta_seconds*/ 31,
             /*token_delta*/ 19,
+            /*line_changes*/ None,
             codex_state::GoalAccountingMode::ActiveOnly,
             /*expected_goal_id*/ None,
         )
@@ -3574,6 +3763,8 @@ async fn resume_goal_preserves_usage_limited_goal_usage() -> anyhow::Result<()> 
                 "tokenBudget": 80,
                 "tokensUsed": 19,
                 "timeUsedSeconds": 31,
+                "linesAdded": 0,
+                "linesDeleted": 0,
                 "createdAt": result["goal"]["createdAt"],
                 "updatedAt": result["goal"]["updatedAt"],
             },
@@ -3714,6 +3905,7 @@ async fn pause_goal_pauses_active_goal_and_preserves_progress() -> anyhow::Resul
             thread_id,
             /*time_delta_seconds*/ 30,
             /*token_delta*/ 25,
+            /*line_changes*/ None,
             codex_state::GoalAccountingMode::ActiveOnly,
             /*expected_goal_id*/ None,
         )
@@ -3827,6 +4019,7 @@ async fn pause_then_resume_reactivates_and_preserves_progress() -> anyhow::Resul
             thread_id,
             /*time_delta_seconds*/ 30,
             /*token_delta*/ 25,
+            /*line_changes*/ None,
             codex_state::GoalAccountingMode::ActiveOnly,
             /*expected_goal_id*/ None,
         )
@@ -4794,6 +4987,7 @@ struct GoalExtensionHarness {
     thread_store: ExtensionData,
     goal_service: Arc<GoalService>,
     sink: Arc<RecordingEventSink>,
+    cwd: tempfile::TempDir,
 }
 
 impl GoalExtensionHarness {
@@ -4824,6 +5018,7 @@ impl GoalExtensionHarness {
         let registry = builder.build();
         let session_store = ExtensionData::new("session-1");
         let thread_store = ExtensionData::new(thread_id.to_string());
+        let cwd = tempfile::tempdir()?;
         let session_source = SessionSource::Cli;
         for contributor in registry.thread_lifecycle_contributors() {
             contributor
@@ -4842,6 +5037,7 @@ impl GoalExtensionHarness {
             thread_store,
             goal_service,
             sink,
+            cwd,
         })
     }
 
@@ -4883,6 +5079,7 @@ impl GoalExtensionHarness {
                     turn_id,
                     collaboration_mode: &collaboration_mode,
                     token_usage_at_turn_start: usage,
+                    local_cwd: Some(self.cwd.path()),
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
                     turn_store: &turn_store,
@@ -4960,6 +5157,22 @@ impl GoalExtensionHarness {
     }
 
     async fn notify_tool_finish(&self, turn_id: &str, call_id: &str, tool_name: &str) {
+        self.notify_tool_finish_with_signal(
+            turn_id,
+            call_id,
+            tool_name,
+            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+        )
+        .await;
+    }
+
+    async fn notify_tool_finish_with_signal(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        worktree_mutation_signal: ToolWorktreeMutationSignal,
+    ) {
         let turn_store = ExtensionData::new(turn_id);
         let tool_name = codex_extension_api::ToolName::plain(tool_name);
         for contributor in self.registry.tool_lifecycle_contributors() {
@@ -4973,6 +5186,7 @@ impl GoalExtensionHarness {
                     tool_name: &tool_name,
                     source: ToolCallSource::Direct,
                     outcome: ToolCallOutcome::Completed { success: true },
+                    worktree_mutation_signal,
                 })
                 .await;
         }
@@ -5088,6 +5302,22 @@ async fn resume_goal_in_turn(harness: &GoalExtensionHarness, turn_id: &str) -> a
 async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
     let tempdir = TempDir::new()?;
     codex_state::StateRuntime::init(tempdir.keep(), "test-provider".to_string()).await
+}
+
+async fn run_test_git(repo: &std::path::Path, args: &[&str]) -> anyhow::Result<()> {
+    let output = tokio::process::Command::new("git")
+        .current_dir(repo)
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .args(args)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 async fn pending_interactions_for_kind(
