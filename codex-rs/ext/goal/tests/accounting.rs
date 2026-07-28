@@ -167,10 +167,9 @@ async fn update_since_baseline_counts_only_changes_after_baseline() -> Result<()
 
     write_file(repo, "src/lib.rs", "fn base() {}\nfn before_goal() {}\n")?;
     write_file(repo, "src/before.rs", "fn before_untracked() {}\n")?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 3, /*lines_deleted*/ 1)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 3, /*lines_deleted*/ 1)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     write_file(
         repo,
@@ -206,10 +205,9 @@ async fn update_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
     )?;
     run_git(repo, &["add", "."]).await?;
     commit(repo, "initial").await?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 0, /*lines_deleted*/ 0)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 0, /*lines_deleted*/ 0)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     write_file(repo, "src/lib.rs", "fn one() {}\nfn three() {}\n")?;
 
@@ -231,10 +229,9 @@ async fn update_since_baseline_reports_nothing_when_worktree_is_untouched() -> R
     write_file(repo, "src/lib.rs", "fn base() {}\n")?;
     run_git(repo, &["add", "."]).await?;
     commit(repo, "initial").await?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 9, /*lines_deleted*/ 2)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 9, /*lines_deleted*/ 2)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     assert_eq!(
         None,
@@ -251,10 +248,9 @@ async fn update_since_baseline_counts_same_file_replacements_once() -> Result<()
     write_file(repo, "src/lib.rs", "fn one() {}\nfn before() {}\n")?;
     run_git(repo, &["add", "."]).await?;
     commit(repo, "initial").await?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     write_file(repo, "src/lib.rs", "fn one() {}\nfn after() {}\n")?;
     let expected = ThreadGoalLineChangeStats {
@@ -284,10 +280,9 @@ async fn update_since_baseline_reports_signed_delta_when_change_is_reverted() ->
     write_file(repo, "src/lib.rs", baseline_contents)?;
     run_git(repo, &["add", "."]).await?;
     commit(repo, "initial").await?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     write_file(repo, "src/lib.rs", "fn one() {}\nfn after() {}\n")?;
     let counted = line_change_update(
@@ -318,10 +313,9 @@ async fn update_since_baseline_counts_changes_committed_during_turn() -> Result<
     write_file(repo, "src/lib.rs", "fn base() {}\n")?;
     run_git(repo, &["add", "."]).await?;
     commit(repo, "initial").await?;
-    let baseline =
-        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 7, /*lines_deleted*/ 1)?)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+    let baseline = capture_baseline(repo, &test_goal(/*lines_added*/ 7, /*lines_deleted*/ 1)?)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
 
     write_file(repo, "src/lib.rs", "fn base() {}\nfn committed() {}\n")?;
     run_git(repo, &["add", "."]).await?;
@@ -480,7 +474,7 @@ async fn subprocess_shared_cwd_line_change_lease_helper() -> Result<()> {
     };
     let repo = PathBuf::from(repo);
     let expectation = std::env::var(LINE_CHANGE_LEASE_HELPER_EXPECT_ENV)?;
-    let baseline = line_changes::capture_baseline(
+    let baseline = capture_baseline(
         repo.as_path(),
         &test_goal_with_owner(
             "00000000-0000-4000-8000-0000000000e5",
@@ -597,6 +591,17 @@ fn test_goal_with_owner(
         created_at: now,
         updated_at: now,
     })
+}
+
+async fn capture_baseline(
+    cwd: &Path,
+    goal: &codex_state::ThreadGoal,
+) -> Option<line_changes::GoalLineChangeBaseline> {
+    match line_changes::capture_baseline_outcome(cwd, goal).await {
+        line_changes::BaselineCaptureOutcome::Captured(baseline) => Some(baseline),
+        line_changes::BaselineCaptureOutcome::LeaseUnavailable
+        | line_changes::BaselineCaptureOutcome::SnapshotUnavailable => None,
+    }
 }
 
 fn line_change_update(

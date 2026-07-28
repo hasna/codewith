@@ -28,7 +28,7 @@ pub(crate) struct GoalLineChangeUpdate {
     pub(crate) persistence_delta: ThreadGoalLineChangeStats,
 }
 
-enum BaselineCaptureOutcome {
+pub(crate) enum BaselineCaptureOutcome {
     Captured(GoalLineChangeBaseline),
     LeaseUnavailable,
     SnapshotUnavailable,
@@ -57,21 +57,7 @@ static WORKTREE_LINE_CHANGE_LEASES: LazyLock<
     Mutex<HashMap<PathBuf, GoalWorktreeLineChangeLeaseEntry>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) async fn capture_baseline(
-    cwd: &Path,
-    goal: &codex_state::ThreadGoal,
-) -> Option<GoalLineChangeBaseline> {
-    match capture_baseline_outcome(cwd, goal).await {
-        BaselineCaptureOutcome::Captured(baseline) => Some(baseline),
-        BaselineCaptureOutcome::LeaseUnavailable | BaselineCaptureOutcome::SnapshotUnavailable => {
-            None
-        }
-    }
-}
-
-async fn capture_baseline_outcome(
+pub(crate) async fn capture_baseline_outcome(
     cwd: &Path,
     goal: &codex_state::ThreadGoal,
 ) -> BaselineCaptureOutcome {
@@ -107,10 +93,18 @@ pub(crate) async fn establish_current_turn_baseline(
             accounting.set_turn_line_change_baseline(&turn_id, &goal.goal_id, baseline);
         }
         BaselineCaptureOutcome::LeaseUnavailable => {
-            accounting.set_turn_line_change_baseline_retry_pending(&turn_id, &goal.goal_id, true);
+            accounting.set_turn_line_change_baseline_retry_pending(
+                &turn_id,
+                &goal.goal_id,
+                /*retry_pending*/ true,
+            );
         }
         BaselineCaptureOutcome::SnapshotUnavailable => {
-            accounting.set_turn_line_change_baseline_retry_pending(&turn_id, &goal.goal_id, false);
+            accounting.set_turn_line_change_baseline_retry_pending(
+                &turn_id,
+                &goal.goal_id,
+                /*retry_pending*/ false,
+            );
         }
     }
 }
