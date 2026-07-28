@@ -123,10 +123,8 @@ fn capture_git_worktree_snapshot_sync(path: &Path) -> anyhow::Result<GitWorktree
             alternate_objects,
         ),
     ];
-    let filter_overrides =
-        executable_filter_config_overrides(repository_root.as_path()).context(
-            "enumerate configured Git content filters before capturing worktree snapshot",
-        )?;
+    let filter_overrides = executable_filter_config_overrides(repository_root.as_path())
+        .context("enumerate configured Git content filters before capturing worktree snapshot")?;
     env.push((
         OsString::from("GIT_CONFIG_COUNT"),
         OsString::from(filter_overrides.len().to_string()),
@@ -200,14 +198,8 @@ fn executable_filter_config_overrides(
         .into_iter()
         .flat_map(|driver| {
             [
-                (
-                    OsString::from(format!("{driver}.clean")),
-                    OsString::new(),
-                ),
-                (
-                    OsString::from(format!("{driver}.process")),
-                    OsString::new(),
-                ),
+                (OsString::from(format!("{driver}.clean")), OsString::new()),
+                (OsString::from(format!("{driver}.process")), OsString::new()),
                 (
                     OsString::from(format!("{driver}.required")),
                     OsString::from("false"),
@@ -537,10 +529,7 @@ mod tests {
 
     #[cfg(unix)]
     fn write_marker_helper(path: &Path) -> anyhow::Result<()> {
-        fs::write(
-            path,
-            "#!/bin/sh\nprintf ran > \"${0}.ran\"\nexit 97\n",
-        )?;
+        fs::write(path, "#!/bin/sh\nprintf ran > \"${0}.ran\"\nexit 97\n")?;
         let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions)?;

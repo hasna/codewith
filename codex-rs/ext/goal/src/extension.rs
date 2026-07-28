@@ -456,8 +456,7 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            let Some(goal_id) =
-                accounting.current_turn_line_change_retry_goal_id(input.turn_id)
+            let Some(goal_id) = accounting.current_turn_line_change_retry_goal_id(input.turn_id)
             else {
                 return;
             };

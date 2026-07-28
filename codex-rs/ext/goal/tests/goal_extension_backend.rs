@@ -2155,8 +2155,7 @@ async fn tool_finish_accounts_active_goal_progress_and_emits_event() -> anyhow::
 }
 
 #[tokio::test]
-async fn conservative_tool_finish_defers_line_change_scan_until_turn_stop()
--> anyhow::Result<()> {
+async fn conservative_tool_finish_defers_line_change_scan_until_turn_stop() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -2249,8 +2248,7 @@ async fn conservative_tool_finish_defers_line_change_scan_until_turn_stop()
 }
 
 #[tokio::test]
-async fn later_tool_start_reacquires_released_worktree_lease_in_same_turn()
--> anyhow::Result<()> {
+async fn later_tool_start_reacquires_released_worktree_lease_in_same_turn() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_a = test_thread_id()?;
     let thread_b = ThreadId::from_string("00000000-0000-4000-8000-0000000000b2")?;
@@ -2332,8 +2330,7 @@ async fn later_tool_start_reacquires_released_worktree_lease_in_same_turn()
 }
 
 #[tokio::test]
-async fn linked_worktrees_add_line_changes_to_the_same_goal_concurrently()
--> anyhow::Result<()> {
+async fn linked_worktrees_add_line_changes_to_the_same_goal_concurrently() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;

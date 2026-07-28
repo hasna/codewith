@@ -234,10 +234,7 @@ impl GoalAccountingState {
         Some((turn_id, turn.local_cwd.clone()?))
     }
 
-    pub(crate) fn current_turn_line_change_retry_goal_id(
-        &self,
-        turn_id: &str,
-    ) -> Option<String> {
+    pub(crate) fn current_turn_line_change_retry_goal_id(&self, turn_id: &str) -> Option<String> {
         let inner = self.inner();
         if inner.current_turn_id.as_deref() != Some(turn_id) {
             return None;

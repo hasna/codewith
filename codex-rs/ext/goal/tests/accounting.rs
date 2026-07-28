@@ -186,10 +186,8 @@ async fn update_since_baseline_counts_only_changes_after_baseline() -> Result<()
 
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 6,
-            /*current_lines_deleted*/ 1,
-            /*persistence_lines_added*/ 3,
-            /*persistence_lines_deleted*/ 0,
+            /*current_lines_added*/ 6, /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 3, /*persistence_lines_deleted*/ 0,
         )),
         line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
@@ -217,10 +215,8 @@ async fn update_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
 
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 0,
-            /*current_lines_deleted*/ 1,
-            /*persistence_lines_added*/ 0,
-            /*persistence_lines_deleted*/ 1,
+            /*current_lines_added*/ 0, /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 0, /*persistence_lines_deleted*/ 1,
         )),
         line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
@@ -267,10 +263,8 @@ async fn update_since_baseline_counts_same_file_replacements_once() -> Result<()
     };
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 5,
-            /*current_lines_deleted*/ 3,
-            /*persistence_lines_added*/ 1,
-            /*persistence_lines_deleted*/ 1,
+            /*current_lines_added*/ 5, /*current_lines_deleted*/ 3,
+            /*persistence_lines_added*/ 1, /*persistence_lines_deleted*/ 1,
         )),
         line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
@@ -297,10 +291,8 @@ async fn update_since_baseline_reports_signed_delta_when_change_is_reverted() ->
 
     write_file(repo, "src/lib.rs", "fn one() {}\nfn after() {}\n")?;
     let counted = line_change_update(
-        /*current_lines_added*/ 5,
-        /*current_lines_deleted*/ 3,
-        /*persistence_lines_added*/ 1,
-        /*persistence_lines_deleted*/ 1,
+        /*current_lines_added*/ 5, /*current_lines_deleted*/ 3,
+        /*persistence_lines_added*/ 1, /*persistence_lines_deleted*/ 1,
     );
     assert_eq!(
         Some(counted),
@@ -310,10 +302,8 @@ async fn update_since_baseline_reports_signed_delta_when_change_is_reverted() ->
     write_file(repo, "src/lib.rs", baseline_contents)?;
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 4,
-            /*current_lines_deleted*/ 2,
-            /*persistence_lines_added*/ -1,
-            /*persistence_lines_deleted*/ -1,
+            /*current_lines_added*/ 4, /*current_lines_deleted*/ 2,
+            /*persistence_lines_added*/ -1, /*persistence_lines_deleted*/ -1,
         )),
         line_changes::update_since_baseline(repo, &baseline, counted.current_stats).await
     );
@@ -339,10 +329,8 @@ async fn update_since_baseline_counts_changes_committed_during_turn() -> Result<
 
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 8,
-            /*current_lines_deleted*/ 1,
-            /*persistence_lines_added*/ 1,
-            /*persistence_lines_deleted*/ 0,
+            /*current_lines_added*/ 8, /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 1, /*persistence_lines_deleted*/ 0,
         )),
         line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
@@ -406,10 +394,8 @@ async fn same_cwd_losing_goal_reacquires_lease_during_same_turn() -> Result<()> 
             .expect("first owner snapshot should include line changes");
         assert_eq!(
             Some(line_change_update(
-                /*current_lines_added*/ 1,
-                /*current_lines_deleted*/ 0,
-                /*persistence_lines_added*/ 1,
-                /*persistence_lines_deleted*/ 0,
+                /*current_lines_added*/ 1, /*current_lines_deleted*/ 0,
+                /*persistence_lines_added*/ 1, /*persistence_lines_deleted*/ 0,
             )),
             line_changes::update_since_baseline(
                 line_changes.cwd.as_path(),
@@ -436,10 +422,8 @@ async fn same_cwd_losing_goal_reacquires_lease_during_same_turn() -> Result<()> 
         .expect("second owner snapshot should include line changes");
     assert_eq!(
         Some(line_change_update(
-            /*current_lines_added*/ 1,
-            /*current_lines_deleted*/ 0,
-            /*persistence_lines_added*/ 1,
-            /*persistence_lines_deleted*/ 0,
+            /*current_lines_added*/ 1, /*current_lines_deleted*/ 0,
+            /*persistence_lines_added*/ 1, /*persistence_lines_deleted*/ 0,
         )),
         line_changes::update_since_baseline(
             line_changes.cwd.as_path(),

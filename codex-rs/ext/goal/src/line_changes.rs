@@ -58,6 +58,7 @@ static WORKTREE_LINE_CHANGE_LEASES: LazyLock<
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) async fn capture_baseline(
     cwd: &Path,
     goal: &codex_state::ThreadGoal,
@@ -106,18 +107,10 @@ pub(crate) async fn establish_current_turn_baseline(
             accounting.set_turn_line_change_baseline(&turn_id, &goal.goal_id, baseline);
         }
         BaselineCaptureOutcome::LeaseUnavailable => {
-            accounting.set_turn_line_change_baseline_retry_pending(
-                &turn_id,
-                &goal.goal_id,
-                true,
-            );
+            accounting.set_turn_line_change_baseline_retry_pending(&turn_id, &goal.goal_id, true);
         }
         BaselineCaptureOutcome::SnapshotUnavailable => {
-            accounting.set_turn_line_change_baseline_retry_pending(
-                &turn_id,
-                &goal.goal_id,
-                false,
-            );
+            accounting.set_turn_line_change_baseline_retry_pending(&turn_id, &goal.goal_id, false);
         }
     }
 }

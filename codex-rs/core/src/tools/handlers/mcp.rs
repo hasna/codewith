@@ -555,10 +555,8 @@ mod tests {
             McpHandler::new(read_only_info).expect("MCP tool spec should build");
 
         let mut writable_info = tool_info("foo", "mcp__foo__", "write");
-        writable_info.tool.annotations =
-            Some(rmcp::model::ToolAnnotations::new().read_only(false));
-        let writable_handler =
-            McpHandler::new(writable_info).expect("MCP tool spec should build");
+        writable_info.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(false));
+        let writable_handler = McpHandler::new(writable_info).expect("MCP tool spec should build");
 
         let (session, turn) = make_session_and_context().await;
         let invocation = ToolInvocation {

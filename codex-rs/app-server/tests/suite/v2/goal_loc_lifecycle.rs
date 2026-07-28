@@ -64,8 +64,7 @@ async fn real_turn_dispatches_mutation_signals_and_persists_final_line_changes()
         codex_state::StateRuntime::init(home.path().to_path_buf(), "test-provider".to_string())
             .await?;
     let recorder = Arc::new(RecordingToolSignals::default());
-    let mut extensions =
-        ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+    let mut extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
     extensions.tool_lifecycle_contributor(recorder.clone());
     install_with_backend(
         &mut extensions,
@@ -108,15 +107,12 @@ async fn real_turn_dispatches_mutation_signals_and_persists_final_line_changes()
     .await?;
 
     let thread_id = test.session_configured.thread_id;
-    let rollout_path = test
-        .codex
-        .rollout_path()
-        .unwrap_or_else(|| {
-            test.config
-                .codex_home
-                .join(format!("rollout-{thread_id}.jsonl"))
-                .to_path_buf()
-        });
+    let rollout_path = test.codex.rollout_path().unwrap_or_else(|| {
+        test.config
+            .codex_home
+            .join(format!("rollout-{thread_id}.jsonl"))
+            .to_path_buf()
+    });
     let mut metadata = codex_state::ThreadMetadataBuilder::new(
         thread_id,
         rollout_path,
@@ -137,8 +133,7 @@ async fn real_turn_dispatches_mutation_signals_and_persists_final_line_changes()
         )
         .await?;
 
-    let patch =
-        "*** Begin Patch\n*** Add File: accounted.txt\n+accounted\n*** End Patch";
+    let patch = "*** Begin Patch\n*** Add File: accounted.txt\n+accounted\n*** End Patch";
     mount_sse_sequence(
         &server,
         vec![
@@ -185,7 +180,10 @@ async fn real_turn_dispatches_mutation_signals_and_persists_final_line_changes()
         ],
         recorder.signals()
     );
-    assert_eq!("accounted\n", std::fs::read_to_string(test.workspace_path("accounted.txt"))?);
+    assert_eq!(
+        "accounted\n",
+        std::fs::read_to_string(test.workspace_path("accounted.txt"))?
+    );
     let goal = state_runtime
         .thread_goals()
         .get_thread_goal(thread_id)

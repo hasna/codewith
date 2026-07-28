@@ -1072,9 +1072,8 @@ WHERE thread_id = ?
     ) -> anyhow::Result<GoalAccountingOutcome> {
         let time_delta_seconds = time_delta_seconds.max(0);
         let token_delta = token_delta.max(0);
-        let line_changes = line_changes.filter(|stats| {
-            stats.lines_added != 0 || stats.lines_deleted != 0
-        });
+        let line_changes =
+            line_changes.filter(|stats| stats.lines_added != 0 || stats.lines_deleted != 0);
         if time_delta_seconds == 0 && token_delta == 0 && line_changes.is_none() {
             return Ok(GoalAccountingOutcome::Unchanged(
                 self.get_thread_goal(thread_id).await?,
