@@ -331,6 +331,12 @@ INSERT INTO managed_worktrees (
         );
         assert_eq!(2, hook.attempts.load(Ordering::SeqCst));
         writer.close().await;
+        runtime.pool.close().await;
+        runtime.reader_pool.close().await;
+        runtime.logs_pool.close().await;
+        runtime.logs_reader_pool.close().await;
+        runtime.goals_pool.close().await;
+        runtime.memories_pool.close().await;
         drop(runtime);
         tokio::fs::remove_dir_all(codex_home).await?;
         Ok(())
