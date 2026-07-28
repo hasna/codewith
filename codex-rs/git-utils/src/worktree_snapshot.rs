@@ -300,8 +300,6 @@ mod tests {
         fs::write(repo.join("tracked.txt"), "one\nbefore\nthree\n")?;
         run_git_for_status(repo, ["add", "."], /*env*/ None)?;
         commit(repo, "initial")?;
-        let repository_objects = repo.join(".git").join("objects");
-        let object_count_before = object_file_count(repository_objects.as_path())?;
 
         let before = capture_git_worktree_snapshot(repo).await?;
         fs::write(repo.join("tracked.txt"), "one\nafter\nthree\n")?;
@@ -315,11 +313,13 @@ mod tests {
             },
             diff_git_worktree_snapshots(&before, &after).await?
         );
-        assert_eq!(
-            object_count_before,
-            object_file_count(repository_objects.as_path())?,
-            "snapshot contents must stay out of the repository object database"
-        );
+        // Git may add or remove administrative files under `.git/objects`;
+        // verify the exact snapshot-only tree and blobs instead.
+        let tracked_blob_id = hash_worktree_file(repo, "tracked.txt")?;
+        let untracked_blob_id = hash_worktree_file(repo, "untracked.txt")?;
+        assert_snapshot_only_object(&after, after.tree_id.as_str(), "tree")?;
+        assert_snapshot_only_object(&after, tracked_blob_id.as_str(), "blob")?;
+        assert_snapshot_only_object(&after, untracked_blob_id.as_str(), "blob")?;
         Ok(())
     }
 
@@ -514,17 +514,69 @@ mod tests {
         .context("commit test repository")
     }
 
-    fn object_file_count(path: &Path) -> anyhow::Result<usize> {
-        let mut count = 0;
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                count += object_file_count(entry.path().as_path())?;
-            } else {
-                count += 1;
-            }
-        }
-        Ok(count)
+    fn hash_worktree_file(repo: &Path, path: &str) -> anyhow::Result<String> {
+        run_git_for_stdout(
+            repo,
+            ["hash-object", "--no-filters", "--", path],
+            /*env*/ None,
+        )
+        .with_context(|| format!("hash worktree file {path} without filters"))
+    }
+
+    fn assert_snapshot_only_object(
+        snapshot: &GitWorktreeSnapshot,
+        object_id: &str,
+        expected_type: &str,
+    ) -> anyhow::Result<()> {
+        let (directory, file_name) = object_id.split_at(2);
+        let snapshot_object_path = snapshot
+            .snapshot_objects
+            .objects_path
+            .join(directory)
+            .join(file_name);
+        assert!(
+            snapshot_object_path.is_file(),
+            "snapshot-only {expected_type} {object_id} must be stored in the isolated object \
+             directory at {}",
+            snapshot_object_path.display()
+        );
+
+        let alternate_objects =
+            std::env::join_paths([snapshot.repository_object_directory.as_path()])
+                .context("encode repository object directory")?;
+        let env = [
+            (
+                OsString::from("GIT_OBJECT_DIRECTORY"),
+                snapshot
+                    .snapshot_objects
+                    .objects_path
+                    .as_os_str()
+                    .to_os_string(),
+            ),
+            (
+                OsString::from("GIT_ALTERNATE_OBJECT_DIRECTORIES"),
+                alternate_objects,
+            ),
+        ];
+        assert_eq!(
+            expected_type,
+            run_git_for_stdout(
+                snapshot.repository_root.as_path(),
+                ["cat-file", "-t", object_id],
+                Some(&env),
+            )?
+        );
+        assert!(
+            run_git_for_status(
+                snapshot.repository_root.as_path(),
+                ["cat-file", "-e", object_id],
+                /*env*/ None,
+            )
+            .is_err(),
+            "snapshot-only {expected_type} {object_id} must stay out of the repository object \
+             database"
+        );
+        Ok(())
     }
 
     #[cfg(unix)]
