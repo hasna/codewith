@@ -437,20 +437,6 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
-      - name: Set up remote test env (Docker)
-        id: remote_env
-        if: ${{ runner.os == 'Linux' && inputs.remote_test_filter != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
-          source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
-          {
-            echo "container_name=${CODEX_TEST_REMOTE_ENV}"
-            echo "exec_server_url=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}"
-            echo "codex_path=${CODEX_TEST_REMOTE_CODEX_PATH}"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -472,6 +458,7 @@ jobs:
 
       - name: tests
         id: test
+        if: ${{ inputs.remote_test_filter == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -567,13 +554,19 @@ jobs:
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
 
-      - name: Upload nextest JUnit report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nextest-junit-rust-ci-${{ inputs.artifact_id }}-shard-${{ matrix.shard }}
-          path: codex-rs/target/nextest/default/junit.xml
-          if-no-files-found: warn
+      - name: Set up remote test env (Docker)
+        id: remote_env
+        if: ${{ !cancelled() && runner.os == 'Linux' && inputs.remote_test_filter != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
+          source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
+          {
+            echo "container_name=${CODEX_TEST_REMOTE_ENV}"
+            echo "exec_server_url=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}"
+            echo "codex_path=${CODEX_TEST_REMOTE_CODEX_PATH}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run remote-exec capability tests
         id: remote_test
@@ -593,6 +586,7 @@ jobs:
             --workspace-remap "${workspace_root}"
             --filterset "${REMOTE_TEST_FILTER}"
             --partition "hash:${{ matrix.shard }}/4"
+            --no-tests pass
           )
           if [[ "${{ inputs.test_threads }}" != "0" ]]; then
             remote_nextest_args+=(--test-threads "${{ inputs.test_threads }}")
@@ -612,6 +606,14 @@ jobs:
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
 
+      - name: Upload nextest JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-junit-rust-ci-${{ inputs.artifact_id }}-shard-${{ matrix.shard }}
+          path: codex-rs/target/nextest/default/junit.xml
+          if-no-files-found: warn
+
       - name: Tear down remote test env
         if: ${{ always() && runner.os == 'Linux' && inputs.remote_test_filter != '' }}
         shell: bash
@@ -626,7 +628,7 @@ jobs:
           REMOTE_TEST_OUTCOME: ${{ steps.remote_test.outcome }}
 
       - name: verify tests passed
-        if: steps.test.outcome == 'failure' || steps.remote_test.outcome == 'failure'
+        if: ${{ !cancelled() && (steps.test.outcome == 'failure' || steps.remote_test.outcome == 'failure') }}
         run: |
           echo "Tests failed. See logs for details."
           exit 1

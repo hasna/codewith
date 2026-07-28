@@ -73,14 +73,30 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
         remote_test_step = next(
             step for step in shard_steps if step.get("id") == "remote_test"
         )
+        junit_steps = [
+            step
+            for step in shard_steps
+            if step.get("name") == "Upload nextest JUnit report"
+        ]
+        verify_step = next(
+            step for step in shard_steps if step.get("name") == "verify tests passed"
+        )
 
         self.assertNotIn("remote_env", inputs)
         self.assertEqual("string", inputs["remote_test_filter"]["type"])
         self.assertNotIn("$GITHUB_ENV", setup_step["run"])
         self.assertIn("$GITHUB_OUTPUT", setup_step["run"])
         self.assertNotIn("CODEX_TEST_REMOTE_ENV", ordinary_test_step["run"])
+        self.assertEqual(
+            "${{ inputs.remote_test_filter == '' }}",
+            ordinary_test_step["if"],
+        )
         self.assertLess(
             shard_steps.index(ordinary_test_step),
+            shard_steps.index(setup_step),
+        )
+        self.assertLess(
+            shard_steps.index(setup_step),
             shard_steps.index(remote_test_step),
         )
         expected_remote_env = {
@@ -99,7 +115,20 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
         )
         self.assertIn("--filterset", remote_test_step["run"])
         self.assertIn('"${REMOTE_TEST_FILTER}"', remote_test_step["run"])
+        self.assertIn("--no-tests pass", remote_test_step["run"])
         self.assertNotIn("--skip", remote_test_step["run"])
+        self.assertEqual(1, len(junit_steps))
+        self.assertEqual("always()", junit_steps[0]["if"])
+        self.assertLess(
+            shard_steps.index(remote_test_step),
+            shard_steps.index(junit_steps[0]),
+        )
+        self.assertIn("!cancelled()", setup_step["if"])
+        self.assertEqual(
+            "${{ !cancelled() && (steps.test.outcome == 'failure' || "
+            "steps.remote_test.outcome == 'failure') }}",
+            verify_step["if"],
+        )
 
     def test_user_namespace_setup_is_shard_only(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
