@@ -136,6 +136,7 @@ fn try_open_line_change_lock(private_git_dir: &Path) -> Option<File> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(private_git_dir.join("codewith-line-change-accounting.lock"))
         .ok()?;
     match lock_file.try_lock() {
