@@ -22,6 +22,18 @@ pub(crate) struct GoalLineChangeBaseline {
     _lease: Arc<GoalWorktreeLineChangeLease>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GoalLineChangeUpdate {
+    pub(crate) current_stats: ThreadGoalLineChangeStats,
+    pub(crate) persistence_delta: ThreadGoalLineChangeStats,
+}
+
+enum BaselineCaptureOutcome {
+    Captured(GoalLineChangeBaseline),
+    LeaseUnavailable,
+    SnapshotUnavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoalLineChangeOwner {
     thread_id: String,
@@ -45,17 +57,34 @@ static WORKTREE_LINE_CHANGE_LEASES: LazyLock<
     Mutex<HashMap<PathBuf, GoalWorktreeLineChangeLeaseEntry>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
 pub(crate) async fn capture_baseline(
     cwd: &Path,
     goal: &codex_state::ThreadGoal,
 ) -> Option<GoalLineChangeBaseline> {
+    match capture_baseline_outcome(cwd, goal).await {
+        BaselineCaptureOutcome::Captured(baseline) => Some(baseline),
+        BaselineCaptureOutcome::LeaseUnavailable | BaselineCaptureOutcome::SnapshotUnavailable => {
+            None
+        }
+    }
+}
+
+async fn capture_baseline_outcome(
+    cwd: &Path,
+    goal: &codex_state::ThreadGoal,
+) -> BaselineCaptureOutcome {
     let owner = GoalLineChangeOwner {
         thread_id: goal.thread_id.to_string(),
         goal_id: goal.goal_id.clone(),
     };
-    let lease = GoalWorktreeLineChangeLease::acquire(cwd, owner).await?;
-    let worktree = capture_git_worktree_snapshot(cwd).await.ok()?;
-    Some(GoalLineChangeBaseline {
+    let Some(lease) = GoalWorktreeLineChangeLease::acquire(cwd, owner).await else {
+        return BaselineCaptureOutcome::LeaseUnavailable;
+    };
+    let Ok(worktree) = capture_git_worktree_snapshot(cwd).await else {
+        return BaselineCaptureOutcome::SnapshotUnavailable;
+    };
+    BaselineCaptureOutcome::Captured(GoalLineChangeBaseline {
         worktree,
         persisted_stats: ThreadGoalLineChangeStats {
             lines_added: goal.lines_added,
@@ -72,10 +101,25 @@ pub(crate) async fn establish_current_turn_baseline(
     let Some((turn_id, cwd)) = accounting.current_turn_line_change_context(&goal.goal_id) else {
         return;
     };
-    let Some(baseline) = capture_baseline(cwd.as_path(), goal).await else {
-        return;
-    };
-    accounting.set_turn_line_change_baseline(&turn_id, &goal.goal_id, baseline);
+    match capture_baseline_outcome(cwd.as_path(), goal).await {
+        BaselineCaptureOutcome::Captured(baseline) => {
+            accounting.set_turn_line_change_baseline(&turn_id, &goal.goal_id, baseline);
+        }
+        BaselineCaptureOutcome::LeaseUnavailable => {
+            accounting.set_turn_line_change_baseline_retry_pending(
+                &turn_id,
+                &goal.goal_id,
+                true,
+            );
+        }
+        BaselineCaptureOutcome::SnapshotUnavailable => {
+            accounting.set_turn_line_change_baseline_retry_pending(
+                &turn_id,
+                &goal.goal_id,
+                false,
+            );
+        }
+    }
 }
 
 impl GoalLineChangeBaseline {
@@ -152,21 +196,22 @@ fn worktree_line_change_leases()
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Returns the goal-wide line-change totals implied by the current worktree.
+/// Returns the current local totals and the signed persistence delta implied by
+/// the current worktree.
 ///
 /// The fixed worktree snapshot makes attribution independent of pre-existing
 /// changes and of intermediate accounting flushes. `None` means the snapshot
 /// was unavailable or the totals have already been persisted.
-pub(crate) async fn stats_since_baseline(
+pub(crate) async fn update_since_baseline(
     cwd: &Path,
     baseline: &GoalLineChangeBaseline,
     last_accounted_stats: ThreadGoalLineChangeStats,
-) -> Option<ThreadGoalLineChangeStats> {
+) -> Option<GoalLineChangeUpdate> {
     let current = capture_git_worktree_snapshot(cwd).await.ok()?;
     let delta = diff_git_worktree_snapshots(&baseline.worktree, &current)
         .await
         .ok()?;
-    let stats = ThreadGoalLineChangeStats {
+    let current_stats = ThreadGoalLineChangeStats {
         lines_added: baseline
             .persisted_stats
             .lines_added
@@ -178,5 +223,18 @@ pub(crate) async fn stats_since_baseline(
             .max(0)
             .saturating_add(i64::try_from(delta.lines_deleted).unwrap_or(i64::MAX)),
     };
-    (stats != last_accounted_stats).then_some(stats)
+    let persistence_delta = ThreadGoalLineChangeStats {
+        lines_added: current_stats
+            .lines_added
+            .saturating_sub(last_accounted_stats.lines_added),
+        lines_deleted: current_stats
+            .lines_deleted
+            .saturating_sub(last_accounted_stats.lines_deleted),
+    };
+    (persistence_delta.lines_added != 0 || persistence_delta.lines_deleted != 0).then_some(
+        GoalLineChangeUpdate {
+            current_stats,
+            persistence_delta,
+        },
+    )
 }

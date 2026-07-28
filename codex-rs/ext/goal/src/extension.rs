@@ -18,6 +18,7 @@ use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolStartInput;
 use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
@@ -446,6 +447,35 @@ impl<C> ToolLifecycleContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
+    fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return;
+            };
+            if !runtime.is_enabled() {
+                return;
+            }
+            let accounting = runtime.accounting_state();
+            let Some(goal_id) =
+                accounting.current_turn_line_change_retry_goal_id(input.turn_id)
+            else {
+                return;
+            };
+            let Ok(Some(goal)) = self
+                .state_dbs
+                .thread_goals()
+                .get_thread_goal(runtime.thread_id())
+                .await
+            else {
+                return;
+            };
+            if goal.goal_id == goal_id {
+                crate::line_changes::establish_current_turn_baseline(accounting.as_ref(), &goal)
+                    .await;
+            }
+        })
+    }
+
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
@@ -712,6 +742,7 @@ fn line_change_accounting_for_tool(
 ) -> LineChangeAccounting {
     match worktree_mutation_signal {
         ToolWorktreeMutationSignal::NoWorktreeMutation => LineChangeAccounting::Skip,
-        ToolWorktreeMutationSignal::MaybeMutatesWorktree => LineChangeAccounting::Capture,
+        ToolWorktreeMutationSignal::ConfirmedWorktreeMutation => LineChangeAccounting::Capture,
+        ToolWorktreeMutationSignal::MaybeMutatesWorktree => LineChangeAccounting::Skip,
     }
 }

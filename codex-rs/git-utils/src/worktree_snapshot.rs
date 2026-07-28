@@ -1,4 +1,5 @@
 use anyhow::Context;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
@@ -108,7 +109,7 @@ fn capture_git_worktree_snapshot_sync(path: &Path) -> anyhow::Result<GitWorktree
     fs::create_dir(&objects_path).context("create temporary Git object directory")?;
     let alternate_objects = std::env::join_paths([repository_object_directory.as_path()])
         .context("encode repository object directory")?;
-    let env = [
+    let mut env = vec![
         (
             OsString::from("GIT_INDEX_FILE"),
             index_path.as_os_str().to_os_string(),
@@ -122,6 +123,18 @@ fn capture_git_worktree_snapshot_sync(path: &Path) -> anyhow::Result<GitWorktree
             alternate_objects,
         ),
     ];
+    let filter_overrides =
+        executable_filter_config_overrides(repository_root.as_path()).context(
+            "enumerate configured Git content filters before capturing worktree snapshot",
+        )?;
+    env.push((
+        OsString::from("GIT_CONFIG_COUNT"),
+        OsString::from(filter_overrides.len().to_string()),
+    ));
+    for (index, (key, value)) in filter_overrides.into_iter().enumerate() {
+        env.push((OsString::from(format!("GIT_CONFIG_KEY_{index}")), key));
+        env.push((OsString::from(format!("GIT_CONFIG_VALUE_{index}")), value));
+    }
 
     if resolve_head(repository_root.as_path())
         .context("resolve worktree HEAD")?
@@ -159,6 +172,49 @@ fn capture_git_worktree_snapshot_sync(path: &Path) -> anyhow::Result<GitWorktree
         }),
         tree_id,
     })
+}
+
+fn executable_filter_config_overrides(
+    repository_root: &Path,
+) -> anyhow::Result<Vec<(OsString, OsString)>> {
+    let configured_keys = run_git_for_stdout(
+        repository_root,
+        ["config", "--includes", "--null", "--name-only", "--list"],
+        /*env*/ None,
+    )
+    .context("list effective Git config keys")?;
+    let mut drivers = BTreeSet::new();
+    for key in configured_keys.split('\0').filter(|key| !key.is_empty()) {
+        let normalized = key.to_ascii_lowercase();
+        let suffix_length = if normalized.starts_with("filter.") && normalized.ends_with(".clean") {
+            ".clean".len()
+        } else if normalized.starts_with("filter.") && normalized.ends_with(".process") {
+            ".process".len()
+        } else {
+            continue;
+        };
+        drivers.insert(key[..key.len() - suffix_length].to_string());
+    }
+
+    Ok(drivers
+        .into_iter()
+        .flat_map(|driver| {
+            [
+                (
+                    OsString::from(format!("{driver}.clean")),
+                    OsString::new(),
+                ),
+                (
+                    OsString::from(format!("{driver}.process")),
+                    OsString::new(),
+                ),
+                (
+                    OsString::from(format!("{driver}.required")),
+                    OsString::from("false"),
+                ),
+            ]
+        })
+        .collect())
 }
 
 fn diff_git_worktree_snapshots_sync(
@@ -241,6 +297,8 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[tokio::test]
     async fn snapshots_count_same_file_replacements_and_untracked_files() -> anyhow::Result<()> {
@@ -357,6 +415,90 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn snapshots_do_not_execute_configured_clean_or_process_filters() -> anyhow::Result<()> {
+        let tempdir = tempfile::tempdir()?;
+        let repo = tempdir.path().join("repo");
+        fs::create_dir(&repo)?;
+        init_repo(repo.as_path())?;
+        fs::write(
+            repo.join(".gitattributes"),
+            "clean.txt filter=evil-clean\nprocess.txt filter=evil-process\n",
+        )?;
+        fs::write(repo.join("clean.txt"), "clean before\n")?;
+        fs::write(repo.join("process.txt"), "process before\n")?;
+        run_git_for_status(repo.as_path(), ["add", "."], /*env*/ None)?;
+        commit(repo.as_path(), "initial")?;
+
+        let clean_helper = tempdir.path().join("clean-filter.sh");
+        let process_helper = tempdir.path().join("process-filter.sh");
+        write_marker_helper(clean_helper.as_path())?;
+        write_marker_helper(process_helper.as_path())?;
+        run_git_for_status(
+            repo.as_path(),
+            [
+                "config",
+                "filter.evil-clean.clean",
+                clean_helper.to_str().context("clean helper path")?,
+            ],
+            /*env*/ None,
+        )?;
+        run_git_for_status(
+            repo.as_path(),
+            ["config", "filter.evil-clean.required", "true"],
+            /*env*/ None,
+        )?;
+        let included_config = tempdir.path().join("included.gitconfig");
+        run_git_for_status(
+            repo.as_path(),
+            [
+                "config",
+                "--file",
+                included_config.to_str().context("included config path")?,
+                "filter.evil-process.process",
+                process_helper.to_str().context("process helper path")?,
+            ],
+            /*env*/ None,
+        )?;
+        run_git_for_status(
+            repo.as_path(),
+            [
+                "config",
+                "--file",
+                included_config.to_str().context("included config path")?,
+                "filter.evil-process.required",
+                "true",
+            ],
+            /*env*/ None,
+        )?;
+        run_git_for_status(
+            repo.as_path(),
+            [
+                "config",
+                "include.path",
+                included_config.to_str().context("included config path")?,
+            ],
+            /*env*/ None,
+        )?;
+
+        let before = capture_git_worktree_snapshot(repo.as_path()).await?;
+        fs::write(repo.join("clean.txt"), "clean after\n")?;
+        fs::write(repo.join("process.txt"), "process after\n")?;
+        let after = capture_git_worktree_snapshot(repo.as_path()).await?;
+
+        assert_eq!(
+            GitWorktreeLineChangeStats {
+                lines_added: 2,
+                lines_deleted: 2,
+            },
+            diff_git_worktree_snapshots(&before, &after).await?
+        );
+        assert!(!clean_helper.with_extension("sh.ran").exists());
+        assert!(!process_helper.with_extension("sh.ran").exists());
+        Ok(())
+    }
+
     fn init_repo(repo: &Path) -> anyhow::Result<()> {
         run_git_for_status(repo, ["init"], /*env*/ None).context("initialize test repository")
     }
@@ -391,5 +533,17 @@ mod tests {
             }
         }
         Ok(count)
+    }
+
+    #[cfg(unix)]
+    fn write_marker_helper(path: &Path) -> anyhow::Result<()> {
+        fs::write(
+            path,
+            "#!/bin/sh\nprintf ran > \"${0}.ran\"\nexit 97\n",
+        )?;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+        Ok(())
     }
 }

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -19,6 +20,7 @@ use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
+use codex_extension_api::ToolStartInput;
 use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
@@ -2153,7 +2155,7 @@ async fn tool_finish_accounts_active_goal_progress_and_emits_event() -> anyhow::
 }
 
 #[tokio::test]
-async fn read_only_tool_finish_defers_line_change_scan_until_mutating_completion()
+async fn conservative_tool_finish_defers_line_change_scan_until_turn_stop()
 -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -2232,7 +2234,186 @@ async fn read_only_tool_finish_defers_line_change_scan_until_mutating_completion
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(23, goal.tokens_used);
+    assert_eq!(0, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
+
+    harness.stop_turn("turn-1").await;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(1, goal.lines_added);
+    assert_eq!(0, goal.lines_deleted);
+    Ok(())
+}
+
+#[tokio::test]
+async fn later_tool_start_reacquires_released_worktree_lease_in_same_turn()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_a = test_thread_id()?;
+    let thread_b = ThreadId::from_string("00000000-0000-4000-8000-0000000000b2")?;
+    seed_thread_metadata(runtime.as_ref(), thread_a).await?;
+    seed_thread_metadata(runtime.as_ref(), thread_b).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_a,
+            "first shared worktree owner",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_b,
+            "second shared worktree owner",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    run_test_git(repo, &["init"]).await?;
+    std::fs::write(repo.join("tracked.txt"), "baseline\n")?;
+    run_test_git(repo, &["add", "."]).await?;
+    run_test_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+
+    let mut harness_a = GoalExtensionHarness::new(runtime.clone(), thread_a).await?;
+    let mut harness_b = GoalExtensionHarness::new(runtime.clone(), thread_b).await?;
+    harness_a.set_turn_cwd(repo.to_path_buf());
+    harness_b.set_turn_cwd(repo.to_path_buf());
+    harness_a.start_turn("turn-a", &TokenUsage::default()).await;
+    harness_b.start_turn("turn-b", &TokenUsage::default()).await;
+
+    std::fs::write(repo.join("tracked.txt"), "baseline\nfirst owner\n")?;
+    harness_a.stop_turn("turn-a").await;
+    harness_b
+        .notify_tool_start("turn-b", "call-later", "shell")
+        .await;
+    std::fs::write(
+        repo.join("tracked.txt"),
+        "baseline\nfirst owner\nsecond owner\n",
+    )?;
+    harness_b
+        .notify_tool_finish_with_signal(
+            "turn-b",
+            "call-later",
+            "shell",
+            ToolWorktreeMutationSignal::ConfirmedWorktreeMutation,
+        )
+        .await;
+
+    let goal_b = runtime
+        .thread_goals()
+        .get_thread_goal(thread_b)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("second goal should exist"))?;
+    assert_eq!(1, goal_b.lines_added);
+    assert_eq!(0, goal_b.lines_deleted);
+    Ok(())
+}
+
+#[tokio::test]
+async fn linked_worktrees_add_line_changes_to_the_same_goal_concurrently()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "combine linked worktree changes",
+            codex_state::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await?;
+
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path().join("main");
+    let linked_a = tempdir.path().join("linked-a");
+    let linked_b = tempdir.path().join("linked-b");
+    std::fs::create_dir(&repo)?;
+    run_test_git(repo.as_path(), &["init"]).await?;
+    std::fs::write(repo.join("a.txt"), "baseline a\n")?;
+    std::fs::write(repo.join("b.txt"), "baseline b\n")?;
+    run_test_git(repo.as_path(), &["add", "."]).await?;
+    run_test_git(
+        repo.as_path(),
+        &[
+            "-c",
+            "user.name=Codewith Test",
+            "-c",
+            "user.email=codewith@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    )
+    .await?;
+    let linked_a_string = linked_a.to_string_lossy().into_owned();
+    let linked_b_string = linked_b.to_string_lossy().into_owned();
+    run_test_git(
+        repo.as_path(),
+        &["worktree", "add", "-b", "linked-a", &linked_a_string],
+    )
+    .await?;
+    run_test_git(
+        repo.as_path(),
+        &["worktree", "add", "-b", "linked-b", &linked_b_string],
+    )
+    .await?;
+
+    let mut harness_a = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let mut harness_b = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness_a.set_turn_cwd(linked_a.clone());
+    harness_b.set_turn_cwd(linked_b.clone());
+    harness_a.start_turn("turn-a", &TokenUsage::default()).await;
+    harness_b.start_turn("turn-b", &TokenUsage::default()).await;
+    std::fs::write(linked_a.join("a.txt"), "baseline a\nworktree a\n")?;
+    std::fs::write(linked_b.join("b.txt"), "baseline b\nworktree b\n")?;
+
+    tokio::join!(
+        harness_a.notify_tool_finish_with_signal(
+            "turn-a",
+            "call-a",
+            "apply_patch",
+            ToolWorktreeMutationSignal::ConfirmedWorktreeMutation,
+        ),
+        harness_b.notify_tool_finish_with_signal(
+            "turn-b",
+            "call-b",
+            "apply_patch",
+            ToolWorktreeMutationSignal::ConfirmedWorktreeMutation,
+        ),
+    );
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(2, goal.lines_added);
     assert_eq!(0, goal.lines_deleted);
     Ok(())
 }
@@ -4988,6 +5169,7 @@ struct GoalExtensionHarness {
     goal_service: Arc<GoalService>,
     sink: Arc<RecordingEventSink>,
     cwd: tempfile::TempDir,
+    turn_cwd: PathBuf,
 }
 
 impl GoalExtensionHarness {
@@ -5019,6 +5201,7 @@ impl GoalExtensionHarness {
         let session_store = ExtensionData::new("session-1");
         let thread_store = ExtensionData::new(thread_id.to_string());
         let cwd = tempfile::tempdir()?;
+        let turn_cwd = cwd.path().to_path_buf();
         let session_source = SessionSource::Cli;
         for contributor in registry.thread_lifecycle_contributors() {
             contributor
@@ -5038,7 +5221,12 @@ impl GoalExtensionHarness {
             goal_service,
             sink,
             cwd,
+            turn_cwd,
         })
+    }
+
+    fn set_turn_cwd(&mut self, turn_cwd: PathBuf) {
+        self.turn_cwd = turn_cwd;
     }
 
     fn tools(&self) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
@@ -5079,7 +5267,7 @@ impl GoalExtensionHarness {
                     turn_id,
                     collaboration_mode: &collaboration_mode,
                     token_usage_at_turn_start: usage,
-                    local_cwd: Some(self.cwd.path()),
+                    local_cwd: Some(self.turn_cwd.as_path()),
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
                     turn_store: &turn_store,
@@ -5164,6 +5352,24 @@ impl GoalExtensionHarness {
             ToolWorktreeMutationSignal::MaybeMutatesWorktree,
         )
         .await;
+    }
+
+    async fn notify_tool_start(&self, turn_id: &str, call_id: &str, tool_name: &str) {
+        let turn_store = ExtensionData::new(turn_id);
+        let tool_name = codex_extension_api::ToolName::plain(tool_name);
+        for contributor in self.registry.tool_lifecycle_contributors() {
+            contributor
+                .on_tool_start(ToolStartInput {
+                    session_store: &self.session_store,
+                    thread_store: &self.thread_store,
+                    turn_store: &turn_store,
+                    turn_id,
+                    call_id,
+                    tool_name: &tool_name,
+                    source: ToolCallSource::Direct,
+                })
+                .await;
+        }
     }
 
     async fn notify_tool_finish_with_signal(

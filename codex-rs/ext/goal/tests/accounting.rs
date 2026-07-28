@@ -157,7 +157,7 @@ async fn goal_accounting_remembers_persisted_line_change_totals() -> anyhow::Res
 }
 
 #[tokio::test]
-async fn stats_since_baseline_counts_only_changes_after_baseline() -> Result<()> {
+async fn update_since_baseline_counts_only_changes_after_baseline() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -185,17 +185,19 @@ async fn stats_since_baseline_counts_only_changes_after_baseline() -> Result<()>
     )?;
 
     assert_eq!(
-        Some(ThreadGoalLineChangeStats {
-            lines_added: 6,
-            lines_deleted: 1,
-        }),
-        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+        Some(line_change_update(
+            /*current_lines_added*/ 6,
+            /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 3,
+            /*persistence_lines_deleted*/ 0,
+        )),
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn stats_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
+async fn update_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -214,17 +216,19 @@ async fn stats_since_baseline_counts_deleted_tracked_lines() -> Result<()> {
     write_file(repo, "src/lib.rs", "fn one() {}\nfn three() {}\n")?;
 
     assert_eq!(
-        Some(ThreadGoalLineChangeStats {
-            lines_added: 0,
-            lines_deleted: 1,
-        }),
-        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+        Some(line_change_update(
+            /*current_lines_added*/ 0,
+            /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 0,
+            /*persistence_lines_deleted*/ 1,
+        )),
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn stats_since_baseline_reports_nothing_when_worktree_is_untouched() -> Result<()> {
+async fn update_since_baseline_reports_nothing_when_worktree_is_untouched() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -238,13 +242,13 @@ async fn stats_since_baseline_reports_nothing_when_worktree_is_untouched() -> Re
 
     assert_eq!(
         None,
-        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn stats_since_baseline_counts_same_file_replacements_once() -> Result<()> {
+async fn update_since_baseline_counts_same_file_replacements_once() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -262,18 +266,62 @@ async fn stats_since_baseline_counts_same_file_replacements_once() -> Result<()>
         lines_deleted: 3,
     };
     assert_eq!(
-        Some(expected),
-        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+        Some(line_change_update(
+            /*current_lines_added*/ 5,
+            /*current_lines_deleted*/ 3,
+            /*persistence_lines_added*/ 1,
+            /*persistence_lines_deleted*/ 1,
+        )),
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
     assert_eq!(
         None,
-        line_changes::stats_since_baseline(repo, &baseline, expected).await
+        line_changes::update_since_baseline(repo, &baseline, expected).await
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn stats_since_baseline_counts_changes_committed_during_turn() -> Result<()> {
+async fn update_since_baseline_reports_signed_delta_when_change_is_reverted() -> Result<()> {
+    let tempdir = tempfile::tempdir()?;
+    let repo = tempdir.path();
+    init_repo(repo).await?;
+    let baseline_contents = "fn one() {}\nfn before() {}\n";
+    write_file(repo, "src/lib.rs", baseline_contents)?;
+    run_git(repo, &["add", "."]).await?;
+    commit(repo, "initial").await?;
+    let baseline =
+        line_changes::capture_baseline(repo, &test_goal(/*lines_added*/ 4, /*lines_deleted*/ 2)?)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("baseline should capture"))?;
+
+    write_file(repo, "src/lib.rs", "fn one() {}\nfn after() {}\n")?;
+    let counted = line_change_update(
+        /*current_lines_added*/ 5,
+        /*current_lines_deleted*/ 3,
+        /*persistence_lines_added*/ 1,
+        /*persistence_lines_deleted*/ 1,
+    );
+    assert_eq!(
+        Some(counted),
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+    );
+
+    write_file(repo, "src/lib.rs", baseline_contents)?;
+    assert_eq!(
+        Some(line_change_update(
+            /*current_lines_added*/ 4,
+            /*current_lines_deleted*/ 2,
+            /*persistence_lines_added*/ -1,
+            /*persistence_lines_deleted*/ -1,
+        )),
+        line_changes::update_since_baseline(repo, &baseline, counted.current_stats).await
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_since_baseline_counts_changes_committed_during_turn() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -290,17 +338,19 @@ async fn stats_since_baseline_counts_changes_committed_during_turn() -> Result<(
     commit(repo, "goal change").await?;
 
     assert_eq!(
-        Some(ThreadGoalLineChangeStats {
-            lines_added: 8,
-            lines_deleted: 1,
-        }),
-        line_changes::stats_since_baseline(repo, &baseline, baseline.persisted_stats()).await
+        Some(line_change_update(
+            /*current_lines_added*/ 8,
+            /*current_lines_deleted*/ 1,
+            /*persistence_lines_added*/ 1,
+            /*persistence_lines_deleted*/ 0,
+        )),
+        line_changes::update_since_baseline(repo, &baseline, baseline.persisted_stats()).await
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Result<()> {
+async fn same_cwd_losing_goal_reacquires_lease_during_same_turn() -> Result<()> {
     let tempdir = tempfile::tempdir()?;
     let repo = tempdir.path();
     init_repo(repo).await?;
@@ -355,11 +405,13 @@ async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Resu
             .line_changes
             .expect("first owner snapshot should include line changes");
         assert_eq!(
-            Some(ThreadGoalLineChangeStats {
-                lines_added: 1,
-                lines_deleted: 0,
-            }),
-            line_changes::stats_since_baseline(
+            Some(line_change_update(
+                /*current_lines_added*/ 1,
+                /*current_lines_deleted*/ 0,
+                /*persistence_lines_added*/ 1,
+                /*persistence_lines_deleted*/ 0,
+            )),
+            line_changes::update_since_baseline(
                 line_changes.cwd.as_path(),
                 &line_changes.baseline,
                 line_changes.last_accounted_stats,
@@ -368,17 +420,8 @@ async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Resu
         );
     }
     state_a.finish_turn("turn-a");
-    state_b.finish_turn("turn-b");
-
-    state_b.start_turn(
-        "turn-b-2",
-        ModeKind::Default,
-        &TokenUsage::default(),
-        Some(repo.to_path_buf()),
-    );
-    state_b.mark_turn_goal_active("turn-b-2", goal_b.goal_id.clone());
-    // Production does not retry the same active turn after an overlap loser is
-    // suppressed. This explicit establish call represents a later fresh turn.
+    // A later tool start retries the baseline in the same active turn after
+    // the winner has released the worktree lease.
     line_changes::establish_current_turn_baseline(&state_b, &goal_b).await;
     write_file(
         repo,
@@ -386,17 +429,19 @@ async fn same_cwd_losing_goal_suppresses_line_changes_until_fresh_turn() -> Resu
         "fn base() {}\nfn first_goal() {}\nfn second_goal() {}\n",
     )?;
     let snapshot_b = state_b
-        .progress_snapshot("turn-b-2")
-        .expect("second owner should acquire a fresh baseline after release");
+        .progress_snapshot("turn-b")
+        .expect("second owner should acquire a baseline in the same turn after release");
     let line_changes = snapshot_b
         .line_changes
         .expect("second owner snapshot should include line changes");
     assert_eq!(
-        Some(ThreadGoalLineChangeStats {
-            lines_added: 1,
-            lines_deleted: 0,
-        }),
-        line_changes::stats_since_baseline(
+        Some(line_change_update(
+            /*current_lines_added*/ 1,
+            /*current_lines_deleted*/ 0,
+            /*persistence_lines_added*/ 1,
+            /*persistence_lines_deleted*/ 0,
+        )),
+        line_changes::update_since_baseline(
             line_changes.cwd.as_path(),
             &line_changes.baseline,
             line_changes.last_accounted_stats,
@@ -568,6 +613,24 @@ fn test_goal_with_owner(
         created_at: now,
         updated_at: now,
     })
+}
+
+fn line_change_update(
+    current_lines_added: i64,
+    current_lines_deleted: i64,
+    persistence_lines_added: i64,
+    persistence_lines_deleted: i64,
+) -> line_changes::GoalLineChangeUpdate {
+    line_changes::GoalLineChangeUpdate {
+        current_stats: ThreadGoalLineChangeStats {
+            lines_added: current_lines_added,
+            lines_deleted: current_lines_deleted,
+        },
+        persistence_delta: ThreadGoalLineChangeStats {
+            lines_added: persistence_lines_added,
+            lines_deleted: persistence_lines_deleted,
+        },
+    }
 }
 
 fn token_usage(

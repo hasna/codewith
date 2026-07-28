@@ -43,12 +43,16 @@ pub enum ToolCallOutcome {
     Aborted,
 }
 
-/// Host-owned current-worktree mutation signal for a completed tool invocation.
+/// Host-owned current-worktree mutation classification for a tool invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolWorktreeMutationSignal {
     /// The tool runtime knows this invocation cannot mutate the current
     /// repository worktree state visible to line-change accounting.
     NoWorktreeMutation,
+    /// The tool runtime owns a direct current-worktree mutation path. Once its
+    /// handler executes, line-change accounting should capture immediately,
+    /// including after a failure that may have applied only part of a change.
+    ConfirmedWorktreeMutation,
     /// The tool may have mutated the current repository worktree, or the host
     /// cannot prove otherwise. This is the conservative default.
     MaybeMutatesWorktree,

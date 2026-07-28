@@ -547,6 +547,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mcp_read_only_hint_maps_directly_to_worktree_mutation_signal() {
+        let mut read_only_info = tool_info("foo", "mcp__foo__", "read");
+        read_only_info.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+        let read_only_handler =
+            McpHandler::new(read_only_info).expect("MCP tool spec should build");
+
+        let mut writable_info = tool_info("foo", "mcp__foo__", "write");
+        writable_info.tool.annotations =
+            Some(rmcp::model::ToolAnnotations::new().read_only(false));
+        let writable_handler =
+            McpHandler::new(writable_info).expect("MCP tool spec should build");
+
+        let (session, turn) = make_session_and_context().await;
+        let invocation = ToolInvocation {
+            session: session.into(),
+            turn: turn.into(),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-mcp-signal".to_string(),
+            tool_name: codex_tools::ToolName::namespaced("mcp__foo__", "read"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        assert_eq!(
+            ToolWorktreeMutationSignal::NoWorktreeMutation,
+            read_only_handler.worktree_mutation_signal(&invocation)
+        );
+        assert_eq!(
+            ToolWorktreeMutationSignal::MaybeMutatesWorktree,
+            writable_handler.worktree_mutation_signal(&invocation)
+        );
+    }
+
     #[test]
     fn infinity_agent_policy_forces_mcp_tools_serial_despite_annotations() {
         let mut annotated = tool_info("infinity", "mcp__infinity", "infinity_run_submit");
