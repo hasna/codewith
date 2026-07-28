@@ -35,6 +35,7 @@ struct GoalTurnAccounting {
     error_observed: bool,
     local_cwd: Option<PathBuf>,
     line_change_baseline: Option<GoalLineChangeBaseline>,
+    line_change_baseline_retry_pending: bool,
     last_accounted_line_changes: Option<codex_state::ThreadGoalLineChangeStats>,
 }
 
@@ -185,6 +186,7 @@ impl GoalAccountingState {
         if let Some(turn) = inner.turns.get_mut(turn_id) {
             if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
                 turn.line_change_baseline = None;
+                turn.line_change_baseline_retry_pending = false;
                 turn.last_accounted_line_changes = None;
             }
             turn.active_goal_id = Some(goal_id.clone());
@@ -207,6 +209,7 @@ impl GoalAccountingState {
         let turn = inner.turns.get_mut(turn_id.as_str())?;
         if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
             turn.line_change_baseline = None;
+            turn.line_change_baseline_retry_pending = false;
             turn.last_accounted_line_changes = None;
         }
         turn.active_goal_id = Some(goal_id.clone());
@@ -222,10 +225,42 @@ impl GoalAccountingState {
         let inner = self.inner();
         let turn_id = inner.current_turn_id.clone()?;
         let turn = inner.turns.get(turn_id.as_str())?;
-        if !turn.account_tokens || turn.active_goal_id.as_deref() != Some(goal_id) {
+        if !turn.account_tokens
+            || turn.active_goal_id.as_deref() != Some(goal_id)
+            || turn.line_change_baseline.is_some()
+        {
             return None;
         }
         Some((turn_id, turn.local_cwd.clone()?))
+    }
+
+    pub(crate) fn current_turn_line_change_retry_goal_id(&self, turn_id: &str) -> Option<String> {
+        let inner = self.inner();
+        if inner.current_turn_id.as_deref() != Some(turn_id) {
+            return None;
+        }
+        let turn = inner.turns.get(turn_id)?;
+        (turn.account_tokens
+            && turn.line_change_baseline.is_none()
+            && turn.line_change_baseline_retry_pending)
+            .then(|| turn.active_goal_id())
+            .flatten()
+    }
+
+    pub(crate) fn set_turn_line_change_baseline_retry_pending(
+        &self,
+        turn_id: &str,
+        goal_id: &str,
+        retry_pending: bool,
+    ) {
+        let mut inner = self.inner();
+        let Some(turn) = inner.turns.get_mut(turn_id) else {
+            return;
+        };
+        if !turn.account_tokens || turn.active_goal_id.as_deref() != Some(goal_id) {
+            return;
+        }
+        turn.line_change_baseline_retry_pending = retry_pending;
     }
 
     pub(crate) fn set_turn_line_change_baseline(
@@ -243,6 +278,7 @@ impl GoalAccountingState {
         }
         turn.last_accounted_line_changes = Some(baseline.persisted_stats());
         turn.line_change_baseline = Some(baseline);
+        turn.line_change_baseline_retry_pending = false;
     }
 
     pub(crate) fn mark_idle_goal_active(&self, goal_id: impl Into<String>) {
@@ -260,6 +296,7 @@ impl GoalAccountingState {
         if let Some(turn) = inner.turns.get_mut(turn_id.as_str()) {
             turn.active_goal_id = None;
             turn.line_change_baseline = None;
+            turn.line_change_baseline_retry_pending = false;
             turn.last_accounted_line_changes = None;
         }
         inner.wall_clock.clear_active_goal();
@@ -274,6 +311,7 @@ impl GoalAccountingState {
         {
             turn.active_goal_id = None;
             turn.line_change_baseline = None;
+            turn.line_change_baseline_retry_pending = false;
             turn.last_accounted_line_changes = None;
         }
         inner.wall_clock.clear_active_goal();
@@ -348,6 +386,7 @@ impl GoalAccountingState {
             if clear_active_goal {
                 turn.active_goal_id = None;
                 turn.line_change_baseline = None;
+                turn.line_change_baseline_retry_pending = false;
                 turn.last_accounted_line_changes = None;
             }
         }
@@ -476,6 +515,7 @@ impl GoalTurnAccounting {
             error_observed: false,
             local_cwd,
             line_change_baseline: None,
+            line_change_baseline_retry_pending: false,
             last_accounted_line_changes: None,
         }
     }

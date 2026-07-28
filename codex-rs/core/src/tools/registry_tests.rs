@@ -394,6 +394,25 @@ async fn first_party_read_only_handler_reports_no_worktree_mutation() -> anyhow:
 }
 
 #[tokio::test]
+async fn apply_patch_handler_reports_confirmed_worktree_mutation() -> anyhow::Result<()> {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let handler = crate::tools::handlers::ApplyPatchHandler::default();
+    let invocation = test_invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "apply-patch-call",
+        handler.tool_name(),
+    );
+
+    assert_eq!(
+        handler.worktree_mutation_signal(&invocation),
+        codex_extension_api::ToolWorktreeMutationSignal::ConfirmedWorktreeMutation
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));

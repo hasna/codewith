@@ -66,8 +66,8 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         Box::pin(async { Vec::new() })
     }
 
-    /// Returns a conservative host-owned signal describing whether this
-    /// invocation may mutate current repository worktree state.
+    /// Classifies how directly this tool runtime can mutate current repository
+    /// worktree state.
     fn worktree_mutation_signal(&self, _invocation: &ToolInvocation) -> ToolWorktreeMutationSignal {
         ToolWorktreeMutationSignal::MaybeMutatesWorktree
     }

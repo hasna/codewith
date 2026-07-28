@@ -1031,9 +1031,9 @@ impl GoalToolExecutor {
         let previous_status = self
             .current_goal_status_for_metrics(Some(snapshot.expected_goal_id.as_str()))
             .await?;
-        let line_changes = match snapshot.line_changes.as_ref() {
+        let line_change_update = match snapshot.line_changes.as_ref() {
             Some(line_changes) => {
-                crate::line_changes::stats_since_baseline(
+                crate::line_changes::update_since_baseline(
                     line_changes.cwd.as_path(),
                     &line_changes.baseline,
                     line_changes.last_accounted_stats,
@@ -1049,7 +1049,7 @@ impl GoalToolExecutor {
                 self.thread_id,
                 snapshot.time_delta_seconds,
                 snapshot.token_delta,
-                line_changes,
+                line_change_update.map(|update| update.persistence_delta),
                 mode,
                 Some(snapshot.expected_goal_id.as_str()),
             )
@@ -1081,7 +1081,7 @@ impl GoalToolExecutor {
                 self.accounting_state.mark_progress_accounted_for_status(
                     turn_id,
                     &snapshot,
-                    line_changes,
+                    line_change_update.map(|update| update.current_stats),
                     goal.status,
                     budget_limited_goal_disposition,
                 );

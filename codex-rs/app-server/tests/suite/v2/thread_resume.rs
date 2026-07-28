@@ -1802,7 +1802,10 @@ async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()>
             thread_id,
             /*time_delta_seconds*/ 12,
             /*token_delta*/ 50,
-            /*line_changes*/ None,
+            Some(codex_state::ThreadGoalLineChangeStats {
+                lines_added: 7,
+                lines_deleted: 3,
+            }),
             codex_state::GoalAccountingMode::ActiveOnly,
             Some(persisted_goal.goal_id.as_str()),
         )
@@ -1842,6 +1845,10 @@ async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()>
     assert_eq!(edit.goal.token_budget, Some(40));
     assert_eq!(edit.goal.tokens_used, 50);
     assert_eq!(edit.goal.time_used_seconds, 12);
+    assert_eq!(edit.goal.lines_added, 7);
+    assert_eq!(edit.goal.lines_deleted, 3);
+    assert_eq!(updated_goal.lines_added, 7);
+    assert_eq!(updated_goal.lines_deleted, 3);
     assert_eq!(edit.goal.created_at, goal.goal.created_at);
 
     Ok(())

@@ -1056,6 +1056,11 @@ WHERE thread_id = ?
             .map(|outcome| outcome.deleted)
     }
 
+    /// Adds usage deltas to the current goal.
+    ///
+    /// `line_changes`, when present, contains signed persistence deltas. Stored
+    /// line totals are clamped at zero so a reverted local change cannot make
+    /// persisted usage negative.
     pub async fn account_thread_goal_usage(
         &self,
         thread_id: ThreadId,
@@ -1067,10 +1072,8 @@ WHERE thread_id = ?
     ) -> anyhow::Result<GoalAccountingOutcome> {
         let time_delta_seconds = time_delta_seconds.max(0);
         let token_delta = token_delta.max(0);
-        let line_changes = line_changes.map(|stats| crate::ThreadGoalLineChangeStats {
-            lines_added: stats.lines_added.max(0),
-            lines_deleted: stats.lines_deleted.max(0),
-        });
+        let line_changes =
+            line_changes.filter(|stats| stats.lines_added != 0 || stats.lines_deleted != 0);
         if time_delta_seconds == 0 && token_delta == 0 && line_changes.is_none() {
             return Ok(GoalAccountingOutcome::Unchanged(
                 self.get_thread_goal(thread_id).await?,
@@ -1110,16 +1113,18 @@ SET
         if let Some(line_changes) = line_changes {
             builder.push(
                 r#",
-    lines_added =
+    lines_added = MAX(0, lines_added +
             "#,
             );
             builder.push_bind(line_changes.lines_added);
+            builder.push(")");
             builder.push(
                 r#",
-    lines_deleted =
+    lines_deleted = MAX(0, lines_deleted +
             "#,
             );
             builder.push_bind(line_changes.lines_deleted);
+            builder.push(")");
         }
         builder.push(
             r#",
@@ -1351,7 +1356,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-1",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("first blocker should persist");
@@ -1427,7 +1432,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-2",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("blocker should restart after manual pause");
@@ -1488,7 +1493,7 @@ ORDER BY turn_id
             goal_id.as_str(),
             "turn-contended",
             "codex_err:test_blocker",
-            3,
+            /*required_consecutive_turns*/ 3,
         ));
         assert!(
             tokio::time::timeout(Duration::from_millis(75), observation.as_mut())
@@ -1550,7 +1555,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     turn_id,
                     "codex_err:test_blocker",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("pre-threshold blocker observation should persist");
@@ -1573,7 +1578,7 @@ ORDER BY turn_id
                 goal.goal_id.as_str(),
                 "turn-3",
                 "codex_err:test_blocker",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("third blocker observation should persist");
@@ -1616,7 +1621,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     "turn-1",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("first blocker observation should persist");
@@ -1627,7 +1632,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     "turn-2",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("second blocker observation should persist");
@@ -1656,7 +1661,7 @@ ORDER BY turn_id
                     goal_id.as_str(),
                     "turn-1",
                     "codex_err:blocker_a",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("delayed replay should be idempotent");
@@ -1680,7 +1685,7 @@ ORDER BY turn_id
                     goal_id.as_str(),
                     "turn-3",
                     "codex_err:blocker_b",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("new blocker fingerprint should start a fresh streak");
@@ -1708,7 +1713,7 @@ ORDER BY turn_id
                 goal_id.as_str(),
                 "turn-1",
                 "codex_err:blocker_b",
-                3,
+                /*required_consecutive_turns*/ 3,
             )
             .await
             .expect("an id outside the current streak should count normally");
@@ -1766,7 +1771,7 @@ ORDER BY turn_id
                     goal.goal_id.as_str(),
                     format!("turn-{index}").as_str(),
                     "codex_err:test_blocker",
-                    3,
+                    /*required_consecutive_turns*/ 3,
                 )
                 .await
                 .expect("blocker audit should persist");
@@ -3104,6 +3109,111 @@ ORDER BY turn_id
             .expect("goal should exist");
         assert_eq!(100, goal.tokens_used);
         assert_eq!(10, goal.time_used_seconds);
+    }
+
+    #[tokio::test]
+    async fn usage_accounting_adds_concurrent_line_change_deltas() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "count every linked worktree change",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal replacement should succeed");
+
+        let first = runtime.thread_goals().account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 0,
+            /*token_delta*/ 0,
+            Some(crate::ThreadGoalLineChangeStats {
+                lines_added: 5,
+                lines_deleted: 2,
+            }),
+            GoalAccountingMode::ActiveOnly,
+            /*expected_goal_id*/ None,
+        );
+        let second = runtime.thread_goals().account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 0,
+            /*token_delta*/ 0,
+            Some(crate::ThreadGoalLineChangeStats {
+                lines_added: 7,
+                lines_deleted: 3,
+            }),
+            GoalAccountingMode::ActiveOnly,
+            /*expected_goal_id*/ None,
+        );
+        let (first, second) = tokio::join!(first, second);
+        first.expect("first line-change accounting should succeed");
+        second.expect("second line-change accounting should succeed");
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await
+            .expect("goal read should succeed")
+            .expect("goal should exist");
+        assert_eq!(12, goal.lines_added);
+        assert_eq!(5, goal.lines_deleted);
+    }
+
+    #[tokio::test]
+    async fn usage_accounting_clamps_negative_line_change_deltas_at_zero() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "clamp reverted line changes",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal replacement should succeed");
+
+        runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 0,
+                /*token_delta*/ 0,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: 5,
+                    lines_deleted: 3,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                /*expected_goal_id*/ None,
+            )
+            .await
+            .expect("initial line-change accounting should succeed");
+        let outcome = runtime
+            .thread_goals()
+            .account_thread_goal_usage(
+                thread_id,
+                /*time_delta_seconds*/ 0,
+                /*token_delta*/ 0,
+                Some(crate::ThreadGoalLineChangeStats {
+                    lines_added: -7,
+                    lines_deleted: -1,
+                }),
+                GoalAccountingMode::ActiveOnly,
+                /*expected_goal_id*/ None,
+            )
+            .await
+            .expect("negative line-change accounting should succeed");
+        let GoalAccountingOutcome::Updated(goal) = outcome else {
+            panic!("negative line-change delta should update goal usage");
+        };
+        assert_eq!(0, goal.lines_added);
+        assert_eq!(2, goal.lines_deleted);
     }
 
     #[tokio::test]

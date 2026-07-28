@@ -19,6 +19,7 @@ mod experimental_api;
 mod experimental_feature_list;
 mod external_agent_config;
 mod fs;
+mod goal_loc_lifecycle;
 mod hooks_list;
 mod imagegen_extension;
 mod initialize;
