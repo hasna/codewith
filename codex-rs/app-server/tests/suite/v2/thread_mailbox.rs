@@ -791,12 +791,8 @@ async fn thread_mailbox_dispatcher_retries_and_poisons_offline_targets() -> Resu
         /*mailbox_dispatcher_enabled*/ true,
     )?;
 
-    let (retry_thread_id, poison_thread_id) = {
-        let mut setup_mcp = init_mcp(codex_home.path()).await?;
-        let retry_thread_id = start_thread(&mut setup_mcp).await?;
-        let poison_thread_id = start_thread(&mut setup_mcp).await?;
-        (retry_thread_id, poison_thread_id)
-    };
+    let retry_thread_id = seed_unloaded_thread(codex_home.path()).await?;
+    let poison_thread_id = seed_unloaded_thread(codex_home.path()).await?;
 
     let mut mcp = init_mcp(codex_home.path()).await?;
     let retry = enqueue_auto_dispatch_message_with_max_attempts(

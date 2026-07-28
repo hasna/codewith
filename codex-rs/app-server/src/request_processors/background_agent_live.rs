@@ -5781,6 +5781,12 @@ done
             if !worker_process_group_exists(pgid)? {
                 return Ok(());
             }
+            // A dead descendant can remain as an orphaned zombie when the host's
+            // init process does not reap promptly. It cannot execute work or hold
+            // resources owned by the fixture, so the process group is drained.
+            if !worker_process_group_has_live_members(pgid)? {
+                return Ok(());
+            }
             // PID/PGID reuse: a live process now leads group `pgid`. Our leader
             // was already reaped, so this must be a recycled id, not our group.
             if worker_process_group_id(pgid)? == Some(pgid) {
@@ -5799,6 +5805,28 @@ done
             .stderr(std::process::Stdio::null())
             .status()?
             .success())
+    }
+
+    fn worker_process_group_has_live_members(pgid: u32) -> std::io::Result<bool> {
+        let output = std::process::Command::new("ps")
+            .args(["-eo", "pgid=,stat="])
+            .stderr(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(format!(
+                "ps failed while inspecting process group {pgid}: {}",
+                output.status
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let process_group_id = fields.next()?.parse::<u32>().ok()?;
+                let state = fields.next()?;
+                Some((process_group_id, state))
+            })
+            .any(|(process_group_id, state)| process_group_id == pgid && !state.starts_with('Z')))
     }
 
     /// Returns the process-group id of the live process `pid`, or `None` when no
