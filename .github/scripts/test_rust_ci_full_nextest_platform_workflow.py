@@ -56,6 +56,19 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
             workflow["jobs"]["tests_linux_x64_remote"]["with"],
         )
 
+    def test_user_namespace_setup_is_shard_only(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        user_namespace_step = "Enable unprivileged user namespaces (Linux)"
+
+        self.assertNotIn(
+            user_namespace_step,
+            [step.get("name") for step in workflow["jobs"]["archive"]["steps"]],
+        )
+        self.assertIn(
+            user_namespace_step,
+            [step.get("name") for step in workflow["jobs"]["shard"]["steps"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
