@@ -1372,6 +1372,7 @@ fn new_agent_id() -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+    use codex_utils_path::paths_match_after_normalization;
     use pretty_assertions::assert_eq;
 
     #[derive(Debug, Parser)]
@@ -1449,9 +1450,11 @@ mod tests {
 
     #[test]
     fn explicit_cwd_snapshot_uses_requested_cwd_as_only_workspace_root() {
+        let launcher = tempfile::TempDir::new().expect("create launcher cwd");
+        let requested_cwd = tempfile::TempDir::new().expect("create requested cwd");
         let runtime_context = AgentStartRuntimeContext {
-            cwd: PathBuf::from("/launcher"),
-            workspace_roots: vec![PathBuf::from("/launcher"), PathBuf::from("/launcher/huge")],
+            cwd: launcher.path().to_path_buf(),
+            workspace_roots: vec![launcher.path().to_path_buf(), launcher.path().join("huge")],
             auth_profile_ref: Some("profile-a".to_string()),
             approval_policy: Some(json!("never")),
             permission_profile: PermissionProfile::workspace_write(),
@@ -1459,24 +1462,26 @@ mod tests {
             provider: Some("provider-a".to_string()),
             service_tier: None,
         };
-        let requested_cwd = PathBuf::from("/target");
-        let expected_cwd =
-            AbsolutePathBuf::from_absolute_path_checked(&requested_cwd).expect("absolute test cwd");
+        let expected_cwd = AbsolutePathBuf::from_absolute_path_checked(requested_cwd.path())
+            .expect("absolute test cwd");
         let expected_permission_profile = PermissionProfile::workspace_write()
             .materialize_project_roots_with_workspace_roots(std::slice::from_ref(&expected_cwd));
 
-        assert_eq!(
-            agent_start_snapshot_workspace_roots(
-                Some(&runtime_context),
-                requested_cwd.as_path(),
-                /*explicit_cwd*/ true,
-            ),
-            Some(vec!["/target".to_string()])
+        let workspace_roots = agent_start_snapshot_workspace_roots(
+            Some(&runtime_context),
+            requested_cwd.path(),
+            /*explicit_cwd*/ true,
+        )
+        .expect("workspace roots should be snapshotted");
+        assert_eq!(workspace_roots.len(), 1);
+        assert!(
+            paths_match_after_normalization(&workspace_roots[0], requested_cwd.path()),
+            "expected requested cwd as the only workspace root: {workspace_roots:?}",
         );
         assert_eq!(
             agent_start_snapshot_permission_profile(
                 Some(&runtime_context),
-                requested_cwd.as_path(),
+                requested_cwd.path(),
                 /*explicit_cwd*/ true,
             )
             .expect("serialize permission profile"),
@@ -1543,9 +1548,11 @@ mod tests {
 
     #[test]
     fn explicit_cwd_snapshot_preserves_read_only_permission_profile() {
+        let launcher = tempfile::TempDir::new().expect("create launcher cwd");
+        let requested_cwd = tempfile::TempDir::new().expect("create requested cwd");
         let runtime_context = AgentStartRuntimeContext {
-            cwd: PathBuf::from("/launcher"),
-            workspace_roots: vec![PathBuf::from("/launcher")],
+            cwd: launcher.path().to_path_buf(),
+            workspace_roots: vec![launcher.path().to_path_buf()],
             auth_profile_ref: None,
             approval_policy: None,
             permission_profile: PermissionProfile::read_only(),
@@ -1557,7 +1564,7 @@ mod tests {
         assert_eq!(
             agent_start_snapshot_permission_profile(
                 Some(&runtime_context),
-                Path::new("/target"),
+                requested_cwd.path(),
                 /*explicit_cwd*/ true,
             )
             .expect("serialize permission profile"),
@@ -1565,6 +1572,65 @@ mod tests {
                 serde_json::to_value(PermissionProfile::read_only())
                     .expect("expected profile json")
             )
+        );
+    }
+
+    fn materialized_permission_paths(permission_profile: &Value) -> Vec<PathBuf> {
+        permission_profile
+            .pointer("/file_system/entries")
+            .and_then(Value::as_array)
+            .expect("managed permission profile entries")
+            .iter()
+            .filter_map(|entry| entry.get("path"))
+            .filter_map(|path| {
+                let field = match path.get("type").and_then(Value::as_str) {
+                    Some("path") => "path",
+                    Some("glob_pattern") => "pattern",
+                    _ => return None,
+                };
+                Some(PathBuf::from(
+                    path.get(field)
+                        .and_then(Value::as_str)
+                        .expect("materialized path value"),
+                ))
+            })
+            .collect()
+    }
+
+    fn path_is_equal_or_descendant_after_normalization(path: &Path, root: &Path) -> bool {
+        path.ancestors()
+            .any(|ancestor| paths_match_after_normalization(ancestor, root))
+    }
+
+    #[test]
+    fn materialized_permission_paths_detect_normalized_launcher_descendants() {
+        let launcher = tempfile::TempDir::new().expect("create launcher cwd");
+        let leaked_path = launcher.path().join(".git").join("config");
+        let leaked_pattern = launcher.path().join(".codewith").join("**").join("*.toml");
+        let permission_profile = json!({
+            "file_system": {
+                "entries": [
+                    {"path": {"type": "path", "path": leaked_path}},
+                    {"path": {"type": "glob_pattern", "pattern": leaked_pattern}},
+                ]
+            }
+        });
+        let materialized_paths = materialized_permission_paths(&permission_profile);
+
+        assert_eq!(
+            materialized_paths
+                .iter()
+                .map(|path| paths_match_after_normalization(path, launcher.path()))
+                .collect::<Vec<_>>(),
+            vec![false, false],
+            "exact path equality does not detect descendant leaks",
+        );
+        assert_eq!(
+            materialized_paths
+                .iter()
+                .map(|path| path_is_equal_or_descendant_after_normalization(path, launcher.path()))
+                .collect::<Vec<_>>(),
+            vec![true, true],
         );
     }
 
@@ -1593,19 +1659,31 @@ mod tests {
             /*explicit_cwd*/ true,
         )?
         .expect("permission profile should be snapshotted");
-        let permission_profile_json = serde_json::to_string(&permission_profile)?;
+        let materialized_paths = materialized_permission_paths(&permission_profile);
 
         assert!(
-            permission_profile_json.contains(target.path().to_string_lossy().as_ref()),
-            "expected target cwd in background agent permission profile: {permission_profile_json}",
+            materialized_paths
+                .iter()
+                .any(|path| paths_match_after_normalization(path, target.path())),
+            "expected target cwd in background agent permission profile: {permission_profile}",
         );
         assert!(
-            !permission_profile_json.contains(launcher.path().to_string_lossy().as_ref()),
-            "launcher cwd leaked into background agent permission profile: {permission_profile_json}",
+            materialized_paths
+                .iter()
+                .all(|path| !path_is_equal_or_descendant_after_normalization(
+                    path,
+                    launcher.path()
+                )),
+            "launcher cwd leaked into background agent permission profile: {permission_profile}",
         );
         assert!(
-            !permission_profile_json.contains(launcher_extra.path().to_string_lossy().as_ref()),
-            "launcher extra root leaked into background agent permission profile: {permission_profile_json}",
+            materialized_paths
+                .iter()
+                .all(|path| !path_is_equal_or_descendant_after_normalization(
+                    path,
+                    launcher_extra.path()
+                )),
+            "launcher extra root leaked into background agent permission profile: {permission_profile}",
         );
         Ok(())
     }
