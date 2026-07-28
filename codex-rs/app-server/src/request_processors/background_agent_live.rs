@@ -2783,14 +2783,18 @@ async fn load_all_managed_worktrees(
         let page = state_db
             .managed_worktrees()
             .list_managed_worktrees_page(
-                Some(base_repo_path),
+                /*base_repo_path*/ None,
                 /*include_deleted*/ false,
                 cursor.as_deref(),
                 codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT,
             )
             .await
             .map_err(|err| internal_error(format!("failed to list managed worktrees: {err}")))?;
-        worktrees.extend(page.data);
+        worktrees.extend(
+            page.data
+                .into_iter()
+                .filter(|worktree| worktree_matches_base_repo(worktree, base_repo_path)),
+        );
         let Some(next_cursor) = page.next_cursor else {
             return Ok(worktrees);
         };
@@ -5472,7 +5476,8 @@ mod tests {
         // context_length_exceeded): it must be reported as a failure, and the
         // recorded error must be consumed.
         let mut turn_error = Some("context_length_exceeded".to_string());
-        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        let reason =
+            turn_completion_failure_reason(/*last_agent_message*/ None, &mut turn_error);
         assert_eq!(reason.as_deref(), Some("context_length_exceeded"));
         assert_eq!(turn_error, None);
     }
@@ -5482,7 +5487,8 @@ mod tests {
         // No error observed and no final message (e.g. a tool-only turn) is a
         // legitimate completion, not a failure.
         let mut turn_error = None;
-        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        let reason =
+            turn_completion_failure_reason(/*last_agent_message*/ None, &mut turn_error);
         assert_eq!(reason, None);
         assert_eq!(turn_error, None);
     }
@@ -5775,6 +5781,12 @@ done
             if !worker_process_group_exists(pgid)? {
                 return Ok(());
             }
+            // A dead descendant can remain as an orphaned zombie when the host's
+            // init process does not reap promptly. It cannot execute work or hold
+            // resources owned by the fixture, so the process group is drained.
+            if !worker_process_group_has_live_members(pgid)? {
+                return Ok(());
+            }
             // PID/PGID reuse: a live process now leads group `pgid`. Our leader
             // was already reaped, so this must be a recycled id, not our group.
             if worker_process_group_id(pgid)? == Some(pgid) {
@@ -5793,6 +5805,28 @@ done
             .stderr(std::process::Stdio::null())
             .status()?
             .success())
+    }
+
+    fn worker_process_group_has_live_members(pgid: u32) -> std::io::Result<bool> {
+        let output = std::process::Command::new("ps")
+            .args(["-eo", "pgid=,stat="])
+            .stderr(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other(format!(
+                "ps failed while inspecting process group {pgid}: {}",
+                output.status
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let process_group_id = fields.next()?.parse::<u32>().ok()?;
+                let state = fields.next()?;
+                Some((process_group_id, state))
+            })
+            .any(|(process_group_id, state)| process_group_id == pgid && !state.starts_with('Z')))
     }
 
     /// Returns the process-group id of the live process `pid`, or `None` when no
@@ -6291,7 +6325,7 @@ done
             .list_background_agent_events_after(
                 "initial-prompt-receipt",
                 /*after_seq*/ None,
-                None,
+                /*limit*/ None,
             )
             .await?;
         assert_eq!(
@@ -6340,7 +6374,9 @@ done
         assert_eq!(goal.objective, "Investigate flaky test");
         assert_eq!(goal.status, codex_state::ThreadGoalStatus::Active);
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let thread_id_string = thread_id.to_string();
         let initial_goal_events = events
@@ -6374,7 +6410,9 @@ done
         .await?;
 
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let initial_goal_event_count = events
             .iter()

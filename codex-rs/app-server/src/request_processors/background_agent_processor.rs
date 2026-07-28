@@ -763,7 +763,8 @@ impl BackgroundAgentRequestProcessor {
         let state_db = self.state_db()?;
         let limit = params
             .limit
-            .unwrap_or(codex_state::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT);
+            .unwrap_or(codex_state::DEFAULT_MANAGED_WORKTREE_LIST_LIMIT)
+            .clamp(1, codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT);
         let include_deleted = params.include_deleted.unwrap_or(false);
         let base_repo_path = params
             .base_repo_path
@@ -778,23 +779,72 @@ impl BackgroundAgentRequestProcessor {
                 "worktree/list baseRepoPath must be absolute",
             ));
         }
-        let page = state_db
-            .managed_worktrees()
-            .list_managed_worktrees_page(
-                base_repo_path.as_deref(),
-                include_deleted,
-                params.cursor.as_deref(),
-                limit,
+        let (worktrees, next_cursor) = if let Some(base_repo_path) = base_repo_path.as_deref() {
+            let cursor = params.cursor.as_deref().map(str::trim).unwrap_or_default();
+            let offset = if cursor.is_empty() {
+                0
+            } else {
+                cursor.parse::<u32>().map_err(|_| {
+                    internal_error(format!(
+                        "failed to list worktrees: invalid managed worktree list cursor `{cursor}`"
+                    ))
+                })?
+            };
+            let page_end = offset.saturating_add(limit);
+            let required_matches = page_end.saturating_add(1) as usize;
+            let mut matching_worktrees = Vec::new();
+            let mut scan_cursor = None;
+            loop {
+                let page = state_db
+                    .managed_worktrees()
+                    .list_managed_worktrees_page(
+                        /*base_repo_path*/ None,
+                        include_deleted,
+                        scan_cursor.as_deref(),
+                        codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT,
+                    )
+                    .await
+                    .map_err(|err| internal_error(format!("failed to list worktrees: {err}")))?;
+                matching_worktrees.extend(page.data.into_iter().filter(|worktree| {
+                    paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
+                }));
+                if matching_worktrees.len() >= required_matches {
+                    break;
+                }
+                let Some(next_cursor) = page.next_cursor else {
+                    break;
+                };
+                scan_cursor = Some(next_cursor);
+            }
+            let has_more = matching_worktrees.len() > page_end as usize;
+            (
+                matching_worktrees
+                    .into_iter()
+                    .skip(offset as usize)
+                    .take(limit as usize)
+                    .collect(),
+                has_more.then(|| page_end.to_string()),
             )
-            .await
-            .map_err(|err| internal_error(format!("failed to list worktrees: {err}")))?;
-        let mut data = Vec::with_capacity(page.data.len());
-        for worktree in page.data {
+        } else {
+            let page = state_db
+                .managed_worktrees()
+                .list_managed_worktrees_page(
+                    /*base_repo_path*/ None,
+                    include_deleted,
+                    params.cursor.as_deref(),
+                    limit,
+                )
+                .await
+                .map_err(|err| internal_error(format!("failed to list worktrees: {err}")))?;
+            (page.data, page.next_cursor)
+        };
+        let mut data = Vec::with_capacity(worktrees.len());
+        for worktree in worktrees {
             data.push(api_worktree_from_state(state_db.as_ref(), worktree).await?);
         }
         Ok(WorktreeListResponse {
             data,
-            next_cursor: page.next_cursor,
+            next_cursor,
             policy,
         })
     }

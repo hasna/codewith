@@ -571,7 +571,10 @@ mod tests {
         assert_eq!(named_api_peer.auth_profile.as_deref(), Some("work"));
         assert_eq!(named_api_peer.auth_profile_kind, AuthProfileKind::Named);
 
-        let default_api_peer = api_active_session_peer(test_active_peer(ThreadId::new(), None));
+        let default_api_peer = api_active_session_peer(test_active_peer(
+            ThreadId::new(),
+            /*auth_profile*/ None,
+        ));
 
         assert_eq!(default_api_peer.auth_profile, None);
         assert_eq!(default_api_peer.auth_profile_kind, AuthProfileKind::Default);
@@ -682,7 +685,7 @@ mod tests {
             auth_profile,
             process: None,
             capabilities: ActivePeerCapabilities::codewith_session(),
-            last_seen_at: LastSeenAt::from_unix_seconds(100),
+            last_seen_at: LastSeenAt::from_unix_seconds(/*seconds*/ 100),
         }
     }
 }

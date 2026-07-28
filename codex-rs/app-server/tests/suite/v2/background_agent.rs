@@ -614,7 +614,7 @@ async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
+async fn agent_start_rebinds_effective_permissions_to_managed_worktree() -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;
     let server = create_mock_responses_server_sequence_unchecked(vec![
@@ -664,6 +664,16 @@ exclude_slash_tmp = true
     )?;
     let file_system_policy = permission_profile.file_system_sandbox_policy();
     let worktree_path = Path::new(created_worktree_path.as_str());
+    #[cfg(target_os = "windows")]
+    {
+        assert_eq!(permission_profile, PermissionProfile::read_only());
+        assert!(
+            !file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
+            "unsandboxed Windows worker must keep the effective read-only policy: \
+             {file_system_policy:?}"
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
     assert!(
         file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
         "managed worktree should be writable, policy: {file_system_policy:?}"
@@ -1730,13 +1740,22 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
         ],
     )?;
     let state_db = init_state_db(codex_home.path()).await?;
+    #[cfg(unix)]
+    let (_base_repo_alias_root, recorded_base_repo_path) = {
+        let alias_root = TempDir::new()?;
+        let alias_path = alias_root.path().join("repo");
+        std::os::unix::fs::symlink(codex_home.path(), &alias_path)?;
+        (alias_root, alias_path)
+    };
+    #[cfg(not(unix))]
+    let recorded_base_repo_path = codex_home.path().to_path_buf();
     state_db
         .managed_worktrees()
         .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
             worktree_id: Some("outside-root".to_string()),
             identity: Some("test:outside-root".to_string()),
             mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
-            base_repo_path: codex_home.path().to_path_buf(),
+            base_repo_path: recorded_base_repo_path,
             worktree_path: outside_root_path.clone(),
             branch: Some("codewith/outside-root".to_string()),
             base_sha: None,

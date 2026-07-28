@@ -532,7 +532,7 @@ async fn consume_rate_limit_reset_credit_rejects_stale_binding_after_account_a_t
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let account_a_fingerprint = read_account_identity(&mut mcp, None).await?;
+    let account_a_fingerprint = read_account_identity(&mut mcp, /*auth_profile*/ None).await?;
     let account_b_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
             .email("account-b@example.com")
@@ -611,7 +611,7 @@ async fn consume_rate_limit_reset_credit_uses_named_auth_profile_and_selected_cr
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
-    mount_usage_response(&server, None).await;
+    mount_usage_response(&server, /*available_count*/ None).await;
 
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
@@ -700,7 +700,7 @@ async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_p
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
-    mount_usage_response(&server, None).await;
+    mount_usage_response(&server, /*available_count*/ None).await;
 
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
@@ -725,12 +725,13 @@ async fn consume_rate_limit_reset_credit_reads_root_auth_profile_when_selected_p
     )
     .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let account_identity_fingerprint = read_account_identity(&mut mcp, Some(None)).await?;
+    let account_identity_fingerprint =
+        read_account_identity(&mut mcp, Some(/*profile*/ None)).await?;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
             consume_reset_params("root-redeem")
-                .with_auth_profile(None)
+                .with_auth_profile(/*profile*/ None)
                 .with_expected_fingerprint(account_identity_fingerprint),
         )
         .await?;
@@ -763,7 +764,7 @@ async fn consume_rate_limit_reset_credit_maps_no_credit_outcome() -> Result<()> 
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
-    mount_usage_response(&server, None).await;
+    mount_usage_response(&server, /*available_count*/ None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -774,7 +775,8 @@ async fn consume_rate_limit_reset_credit_maps_no_credit_outcome() -> Result<()> 
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
+    let account_identity_fingerprint =
+        read_account_identity(&mut mcp, /*auth_profile*/ None).await?;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
@@ -811,7 +813,7 @@ async fn consume_rate_limit_reset_credit_surfaces_backend_failure() -> Result<()
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
-    mount_usage_response(&server, None).await;
+    mount_usage_response(&server, /*available_count*/ None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -820,7 +822,8 @@ async fn consume_rate_limit_reset_credit_surfaces_backend_failure() -> Result<()
 
     let mut mcp = test_app_server(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
+    let account_identity_fingerprint =
+        read_account_identity(&mut mcp, /*auth_profile*/ None).await?;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
@@ -858,7 +861,7 @@ async fn consume_rate_limit_reset_credit_timeout_releases_later_request() -> Res
 
     let server = MockServer::start().await;
     write_chatgpt_base_url(codex_home.path(), &server.uri())?;
-    mount_usage_response(&server, None).await;
+    mount_usage_response(&server, /*available_count*/ None).await;
     Mock::given(method("POST"))
         .and(path("/api/codex/rate-limit-reset-credits/consume"))
         .and(wiremock::matchers::body_json(json!({
@@ -895,7 +898,8 @@ async fn consume_rate_limit_reset_credit_timeout_releases_later_request() -> Res
     )
     .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    let account_identity_fingerprint = read_account_identity(&mut mcp, None).await?;
+    let account_identity_fingerprint =
+        read_account_identity(&mut mcp, /*auth_profile*/ None).await?;
 
     let request_id = mcp
         .send_consume_account_rate_limit_reset_credit_request(
