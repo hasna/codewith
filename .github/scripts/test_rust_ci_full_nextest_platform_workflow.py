@@ -12,6 +12,7 @@ HOSTED_CLEANUP_IF = (
     "runner.environment == 'github-hosted' && runner.arch == 'X64' }}"
 )
 LINUX_REMOTE_RUNNER = "blacksmith-16vcpu-ubuntu-2404"
+REMOTE_CAPABILITY_FILTER = "binary_id(codex-core::all) and test(/^suite::remote_env::/)"
 
 
 class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
@@ -49,12 +50,56 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
                 "target": "x86_64-unknown-linux-gnu",
                 "profile": "ci-test",
                 "artifact_id": "linux-x64-remote",
-                "remote_env": True,
+                "remote_test_filter": REMOTE_CAPABILITY_FILTER,
                 "use_sccache": True,
                 "hosted_linux_preinstalled_tool_cleanup": True,
             },
             workflow["jobs"]["tests_linux_x64_remote"]["with"],
         )
+
+    def test_remote_environment_is_scoped_to_capability_tests(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        workflow_call = workflow.get("on", workflow.get(True))["workflow_call"]
+        inputs = workflow_call["inputs"]
+        shard_steps = workflow["jobs"]["shard"]["steps"]
+        setup_step = next(
+            step
+            for step in shard_steps
+            if step.get("name") == "Set up remote test env (Docker)"
+        )
+        ordinary_test_step = next(
+            step for step in shard_steps if step.get("id") == "test"
+        )
+        remote_test_step = next(
+            step for step in shard_steps if step.get("id") == "remote_test"
+        )
+
+        self.assertNotIn("remote_env", inputs)
+        self.assertEqual("string", inputs["remote_test_filter"]["type"])
+        self.assertNotIn("$GITHUB_ENV", setup_step["run"])
+        self.assertIn("$GITHUB_OUTPUT", setup_step["run"])
+        self.assertNotIn("CODEX_TEST_REMOTE_ENV", ordinary_test_step["run"])
+        self.assertLess(
+            shard_steps.index(ordinary_test_step),
+            shard_steps.index(remote_test_step),
+        )
+        expected_remote_env = {
+            "CODEX_TEST_REMOTE_ENV": "${{ steps.remote_env.outputs.container_name }}",
+            "CODEX_TEST_REMOTE_EXEC_SERVER_URL": (
+                "${{ steps.remote_env.outputs.exec_server_url }}"
+            ),
+            "CODEX_TEST_REMOTE_CODEX_PATH": (
+                "${{ steps.remote_env.outputs.codex_path }}"
+            ),
+            "REMOTE_TEST_FILTER": "${{ inputs.remote_test_filter }}",
+        }
+        self.assertEqual(
+            expected_remote_env,
+            {key: remote_test_step["env"][key] for key in expected_remote_env},
+        )
+        self.assertIn("--filterset", remote_test_step["run"])
+        self.assertIn('"${REMOTE_TEST_FILTER}"', remote_test_step["run"])
+        self.assertNotIn("--skip", remote_test_step["run"])
 
     def test_user_namespace_setup_is_shard_only(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))

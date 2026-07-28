@@ -453,7 +453,7 @@ jobs:
       target: x86_64-unknown-linux-gnu
       profile: ci-test
       artifact_id: linux-x64-remote
-      remote_env: true
+      remote_test_filter: "binary_id(codex-core::all) and test(/^suite::remote_env::/)"
       use_sccache: true
       hosted_linux_preinstalled_tool_cleanup: true
     secrets: inherit
