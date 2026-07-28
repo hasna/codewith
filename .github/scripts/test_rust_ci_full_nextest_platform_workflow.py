@@ -6,6 +6,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rust-ci-full-nextest-platform.yml"
+FULL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "rust-ci-full.yml"
 HOSTED_CLEANUP_IF = (
     "${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && "
     "runner.environment == 'github-hosted' && runner.arch == 'X64' }}"
@@ -37,6 +38,23 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
                 self.assertNotIn("/opt/hostedtoolcache", run)
                 self.assertNotIn("docker system prune", run)
                 self.assertNotIn("apt-get clean", run)
+
+    def test_linux_remote_archive_uses_capacity_runner(self) -> None:
+        workflow = yaml.safe_load(FULL_WORKFLOW.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            {
+                "runner": "ubuntu-24.04",
+                "archive_runner": "blacksmith-16vcpu-ubuntu-2404",
+                "target": "x86_64-unknown-linux-gnu",
+                "profile": "ci-test",
+                "artifact_id": "linux-x64-remote",
+                "remote_env": True,
+                "use_sccache": True,
+                "hosted_linux_preinstalled_tool_cleanup": True,
+            },
+            workflow["jobs"]["tests_linux_x64_remote"]["with"],
+        )
 
 
 if __name__ == "__main__":
