@@ -614,7 +614,7 @@ async fn agent_start_uses_validated_managed_worktree_cwd() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_start_rebinds_workspace_write_permissions_to_managed_worktree() -> Result<()> {
+async fn agent_start_rebinds_effective_permissions_to_managed_worktree() -> Result<()> {
     let codex_home = TempDir::new()?;
     init_git_repo(codex_home.path())?;
     let server = create_mock_responses_server_sequence_unchecked(vec![
@@ -664,6 +664,16 @@ exclude_slash_tmp = true
     )?;
     let file_system_policy = permission_profile.file_system_sandbox_policy();
     let worktree_path = Path::new(created_worktree_path.as_str());
+    #[cfg(target_os = "windows")]
+    {
+        assert_eq!(permission_profile, PermissionProfile::read_only());
+        assert!(
+            !file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
+            "unsandboxed Windows worker must keep the effective read-only policy: \
+             {file_system_policy:?}"
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
     assert!(
         file_system_policy.can_write_path_with_cwd(worktree_path, worktree_path),
         "managed worktree should be writable, policy: {file_system_policy:?}"
