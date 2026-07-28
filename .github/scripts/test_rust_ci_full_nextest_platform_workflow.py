@@ -11,6 +11,7 @@ HOSTED_CLEANUP_IF = (
     "${{ inputs.hosted_linux_preinstalled_tool_cleanup && runner.os == 'Linux' && "
     "runner.environment == 'github-hosted' && runner.arch == 'X64' }}"
 )
+LINUX_REMOTE_RUNNER = "blacksmith-16vcpu-ubuntu-2404"
 
 
 class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
@@ -39,13 +40,12 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
                 self.assertNotIn("docker system prune", run)
                 self.assertNotIn("apt-get clean", run)
 
-    def test_linux_remote_archive_uses_capacity_runner(self) -> None:
+    def test_linux_remote_archive_and_shards_use_capacity_runner(self) -> None:
         workflow = yaml.safe_load(FULL_WORKFLOW.read_text(encoding="utf-8"))
 
         self.assertEqual(
             {
-                "runner": "ubuntu-24.04",
-                "archive_runner": "blacksmith-16vcpu-ubuntu-2404",
+                "runner": LINUX_REMOTE_RUNNER,
                 "target": "x86_64-unknown-linux-gnu",
                 "profile": "ci-test",
                 "artifact_id": "linux-x64-remote",
@@ -59,6 +59,10 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
     def test_user_namespace_setup_is_shard_only(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         user_namespace_step = "Enable unprivileged user namespaces (Linux)"
+        shard_steps = workflow["jobs"]["shard"]["steps"]
+        shard_user_namespace_step = next(
+            step for step in shard_steps if step.get("name") == user_namespace_step
+        )
 
         self.assertNotIn(
             user_namespace_step,
@@ -66,7 +70,15 @@ class RustCiFullNextestPlatformWorkflowTest(unittest.TestCase):
         )
         self.assertIn(
             user_namespace_step,
-            [step.get("name") for step in workflow["jobs"]["shard"]["steps"]],
+            [step.get("name") for step in shard_steps],
+        )
+        self.assertIn(
+            "/proc/sys/kernel/unprivileged_userns_clone",
+            shard_user_namespace_step["run"],
+        )
+        self.assertIn(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            shard_user_namespace_step["run"],
         )
 
 
