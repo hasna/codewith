@@ -8,8 +8,10 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+#[cfg(not(windows))]
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::Op;
+#[cfg(not(windows))]
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
@@ -26,6 +28,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::fs;
 
+#[cfg(not(windows))]
 const COMPLEX_FORCED_RM_COMMAND: &str = "for target in \"\"; do rm -rf \"$target\"; done";
 
 fn collaboration_mode_for_model(model: String) -> CollaborationMode {
