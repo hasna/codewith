@@ -92,6 +92,7 @@ use codex_rollout::state_db::StateDbHandle;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
@@ -117,6 +118,7 @@ struct ScheduleHarness {
     state_db: StateDbHandle,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
+    pending_notifications: VecDeque<ServerNotification>,
     session: Arc<ConnectionSessionState>,
     next_request_id: i64,
 }
@@ -153,6 +155,7 @@ impl ScheduleHarness {
             state_db,
             processor,
             outgoing_rx,
+            pending_notifications: VecDeque::new(),
             session: Arc::new(ConnectionSessionState::new(ConnectionOrigin::WebSocket)),
             next_request_id: 1,
         };
@@ -250,6 +253,7 @@ impl ScheduleHarness {
                 params: ThreadStartParams {
                     cwd: Some(self.workspace_cwd()),
                     ephemeral: Some(ephemeral),
+                    auth_profile: Some(None),
                     ..ThreadStartParams::default()
                 },
             })
@@ -302,17 +306,9 @@ impl ScheduleHarness {
                     .await
                     .expect("timed out waiting for response")
                     .expect("outgoing channel closed");
-            let OutgoingEnvelope::ToConnection {
-                connection_id,
-                message,
-                ..
-            } = envelope
-            else {
+            let Some(message) = message_for_test_connection(envelope) else {
                 continue;
             };
-            if connection_id != TEST_CONNECTION_ID {
-                continue;
-            }
             match message {
                 OutgoingMessage::Response(response)
                     if response.id == RequestId::Integer(request_id) =>
@@ -322,6 +318,9 @@ impl ScheduleHarness {
                 }
                 OutgoingMessage::Error(error) if error.id == RequestId::Integer(request_id) => {
                     panic!("request {request_id} failed: {:?}", error.error);
+                }
+                OutgoingMessage::AppServerNotification(notification) => {
+                    self.pending_notifications.push_back(notification);
                 }
                 _ => {
                     continue;
@@ -337,17 +336,9 @@ impl ScheduleHarness {
                     .await
                     .expect("timed out waiting for error")
                     .expect("outgoing channel closed");
-            let OutgoingEnvelope::ToConnection {
-                connection_id,
-                message,
-                ..
-            } = envelope
-            else {
+            let Some(message) = message_for_test_connection(envelope) else {
                 continue;
             };
-            if connection_id != TEST_CONNECTION_ID {
-                continue;
-            }
             match message {
                 OutgoingMessage::Response(response)
                     if response.id == RequestId::Integer(request_id) =>
@@ -359,6 +350,9 @@ impl ScheduleHarness {
                 }
                 OutgoingMessage::Error(error) if error.id == RequestId::Integer(request_id) => {
                     return error.error;
+                }
+                OutgoingMessage::AppServerNotification(notification) => {
+                    self.pending_notifications.push_back(notification);
                 }
                 _ => {
                     continue;
@@ -421,6 +415,43 @@ impl ScheduleHarness {
             self.read_schedule_updated(thread_id).await.schedule
         );
         response.schedule
+    }
+
+    async fn seed_schedule_failure(&self, schedule_id: &str) -> Result<()> {
+        let now = Utc::now();
+        let local_active_fresh_after = self
+            .processor
+            .thread_schedule_runtime
+            .local_active_fresh_after(now);
+        let claim = self
+            .state_db
+            .thread_schedules()
+            .claim_thread_schedule_now_with_params(codex_state::ThreadScheduleNowClaimParams {
+                schedule_id,
+                now,
+                lease_id: "lease-fail",
+                lease_duration: std::time::Duration::from_secs(300),
+                local_active_owner_id: Some(
+                    self.processor
+                        .thread_schedule_runtime
+                        .local_active_owner_id(),
+                ),
+                local_active_fresh_after: Some(local_active_fresh_after),
+            })
+            .await?
+            .expect("schedule should claim for seeded failure");
+        self.state_db
+            .thread_schedules()
+            .fail_thread_schedule_run(
+                schedule_id,
+                claim.run.run_id.as_str(),
+                claim.run.lease_id.as_str(),
+                now,
+                /*next_run_at*/ None,
+                "model unavailable".to_string(),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn read_schedule_deleted(&mut self, thread_id: &str, schedule_id: &str) {
@@ -706,6 +737,9 @@ impl ScheduleHarness {
     }
 
     async fn read_server_notification(&mut self) -> ServerNotification {
+        if let Some(notification) = self.pending_notifications.pop_front() {
+            return notification;
+        }
         loop {
             let envelope = tokio::time::timeout(
                 std::time::Duration::from_secs(/*secs*/ 20),
@@ -714,23 +748,24 @@ impl ScheduleHarness {
             .await
             .expect("timed out waiting for server notification")
             .expect("outgoing channel closed");
-            let message = match envelope {
-                OutgoingEnvelope::ToConnection {
-                    connection_id,
-                    message,
-                    ..
-                } => {
-                    if connection_id != TEST_CONNECTION_ID {
-                        continue;
-                    }
-                    message
-                }
-                OutgoingEnvelope::Broadcast { message } => message,
+            let Some(message) = message_for_test_connection(envelope) else {
+                continue;
             };
             if let OutgoingMessage::AppServerNotification(notification) = message {
                 return notification;
             }
         }
+    }
+}
+
+fn message_for_test_connection(envelope: OutgoingEnvelope) -> Option<OutgoingMessage> {
+    match envelope {
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } => (connection_id == TEST_CONNECTION_ID).then_some(message),
+        OutgoingEnvelope::Broadcast { message } => Some(message),
     }
 }
 
@@ -759,7 +794,10 @@ where
         .name("schedule-harness".to_string())
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
+            // Message processing spawns runtime work that must remain runnable
+            // while Windows filesystem and SQLite operations block the caller.
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_all()
                 .build()
                 .expect("schedule harness runtime should build")
@@ -1191,28 +1229,8 @@ fn thread_schedule_resume_recomputes_recurring_without_next_run_at() -> Result<(
             .await;
         harness.read_schedule_updated(&thread_id).await;
 
-        let claim = harness
-            .state_db
-            .thread_schedules()
-            .claim_thread_schedule_now(
-                create_response.schedule.schedule_id.as_str(),
-                Utc::now(),
-                "lease-fail",
-                std::time::Duration::from_secs(300),
-            )
-            .await?
-            .expect("schedule should claim for seeded failure");
         harness
-            .state_db
-            .thread_schedules()
-            .fail_thread_schedule_run(
-                create_response.schedule.schedule_id.as_str(),
-                claim.run.run_id.as_str(),
-                "lease-fail",
-                Utc::now(),
-                /*next_run_at*/ None,
-                "model unavailable".to_string(),
-            )
+            .seed_schedule_failure(create_response.schedule.schedule_id.as_str())
             .await?;
         let failed_schedule = harness
             .state_db
@@ -1281,28 +1299,8 @@ fn thread_schedule_update_to_active_resets_failure_count() -> Result<()> {
             .await;
         harness.read_schedule_updated(&thread_id).await;
 
-        let claim = harness
-            .state_db
-            .thread_schedules()
-            .claim_thread_schedule_now(
-                create_response.schedule.schedule_id.as_str(),
-                Utc::now(),
-                "lease-fail",
-                std::time::Duration::from_secs(300),
-            )
-            .await?
-            .expect("schedule should claim for seeded failure");
         harness
-            .state_db
-            .thread_schedules()
-            .fail_thread_schedule_run(
-                create_response.schedule.schedule_id.as_str(),
-                claim.run.run_id.as_str(),
-                "lease-fail",
-                Utc::now(),
-                /*next_run_at*/ None,
-                "model unavailable".to_string(),
-            )
+            .seed_schedule_failure(create_response.schedule.schedule_id.as_str())
             .await?;
         let failed_schedule = harness
             .state_db
@@ -1788,13 +1786,18 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
         let thread_id = thread.thread.id.clone();
 
         let root = harness
-            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .create_interval_thread_schedule(
+                &thread_id,
+                "root loop",
+                /*amount_minutes*/ 1,
+                /*parent_schedule_id*/ None,
+            )
             .await;
         let level_2 = harness
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 2 loop",
-                2,
+                /*amount_minutes*/ 2,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1802,7 +1805,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "branch level 2 loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1810,7 +1813,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 3 loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(level_2.schedule_id.clone()),
             )
             .await;
@@ -1818,7 +1821,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 4 loop",
-                4,
+                /*amount_minutes*/ 4,
                 Some(level_3.schedule_id.clone()),
             )
             .await;
@@ -1826,7 +1829,7 @@ fn thread_schedule_create_nests_loops_to_depth_five() -> Result<()> {
             .create_interval_thread_schedule(
                 &thread_id,
                 "level 5 loop",
-                5,
+                /*amount_minutes*/ 5,
                 Some(level_4.schedule_id.clone()),
             )
             .await;
@@ -1889,13 +1892,18 @@ fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Resu
         let thread = harness.start_materialized_thread().await;
         let thread_id = thread.thread.id.clone();
         let root = harness
-            .create_interval_thread_schedule(&thread_id, "root loop", 1, None)
+            .create_interval_thread_schedule(
+                &thread_id,
+                "root loop",
+                /*amount_minutes*/ 1,
+                /*parent_schedule_id*/ None,
+            )
             .await;
         let child = harness
             .create_interval_thread_schedule(
                 &thread_id,
                 "child loop",
-                2,
+                /*amount_minutes*/ 2,
                 Some(root.schedule_id.clone()),
             )
             .await;
@@ -1903,7 +1911,7 @@ fn thread_schedule_delete_parent_emits_descendant_delete_notifications() -> Resu
             .create_interval_thread_schedule(
                 &thread_id,
                 "grandchild loop",
-                3,
+                /*amount_minutes*/ 3,
                 Some(child.schedule_id.clone()),
             )
             .await;
@@ -2300,7 +2308,7 @@ fn schedule_create_materializes_fresh_thread_rollout_before_first_user_turn() ->
         let rollout_path = codex_rollout::find_thread_path_by_id_str(
             harness._codex_home.path(),
             &thread_id,
-            Option::<&codex_state::StateRuntime>::None,
+            /*state_db_ctx*/ Option::<&codex_state::StateRuntime>::None,
         )
         .await?
         .expect("fresh scheduled thread should have a materialized rollout");

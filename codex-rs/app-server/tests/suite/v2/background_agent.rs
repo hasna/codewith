@@ -1730,13 +1730,22 @@ async fn worktree_create_reconcile_and_cleanup_use_real_git_worktrees() -> Resul
         ],
     )?;
     let state_db = init_state_db(codex_home.path()).await?;
+    #[cfg(unix)]
+    let (_base_repo_alias_root, recorded_base_repo_path) = {
+        let alias_root = TempDir::new()?;
+        let alias_path = alias_root.path().join("repo");
+        std::os::unix::fs::symlink(codex_home.path(), &alias_path)?;
+        (alias_root, alias_path)
+    };
+    #[cfg(not(unix))]
+    let recorded_base_repo_path = codex_home.path().to_path_buf();
     state_db
         .managed_worktrees()
         .create_managed_worktree(codex_state::ManagedWorktreeCreateParams {
             worktree_id: Some("outside-root".to_string()),
             identity: Some("test:outside-root".to_string()),
             mode: codex_state::ManagedWorktreeMode::IsolatedWorktree,
-            base_repo_path: codex_home.path().to_path_buf(),
+            base_repo_path: recorded_base_repo_path,
             worktree_path: outside_root_path.clone(),
             branch: Some("codewith/outside-root".to_string()),
             base_sha: None,

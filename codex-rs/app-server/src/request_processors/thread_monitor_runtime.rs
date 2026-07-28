@@ -823,7 +823,7 @@ mod tests {
         state_db
             .upsert_thread(&builder.build("test-provider"))
             .await?;
-        let monitor = test_monitor_for_thread(thread_id, None);
+        let monitor = test_monitor_for_thread(thread_id, /*cwd*/ None);
 
         assert_eq!(monitor_thread_cwd(&state_db, &monitor).await?, thread_cwd);
         assert_ne!(
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn monitor_output_communication_uses_wake_if_idle_mailbox_shape() {
-        let monitor = test_monitor(None);
+        let monitor = test_monitor(/*cwd*/ None);
         let communication =
             monitor_output_communication(&monitor, "new conversations message".to_string());
 

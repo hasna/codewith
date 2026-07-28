@@ -2992,8 +2992,8 @@ mod tests {
             &schedule.schedule_id,
             &retry_claim.run.run_id,
             "lease-retry",
-            None,
-            None,
+            /*goal_id*/ None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -3075,8 +3075,8 @@ mod tests {
             &schedule.schedule_id,
             &claim.run.run_id,
             "lease-run",
-            None,
-            None,
+            /*goal_id*/ None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -3171,7 +3171,7 @@ mod tests {
             &claim.run.run_id,
             "lease-run",
             Some(goal.goal_id.as_str()),
-            None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -3294,7 +3294,7 @@ mod tests {
             recovered.run_id.as_str(),
             recovered.lease_id.as_str(),
             recovered.goal_id.as_deref(),
-            None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -3638,8 +3638,8 @@ mod tests {
             &schedule.schedule_id,
             &claim.run.run_id,
             "lease-run",
-            None,
-            None,
+            /*goal_id*/ None,
+            /*error*/ None,
             completed_at,
         )
         .await
@@ -3720,7 +3720,7 @@ mod tests {
                     unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
                 }),
                 "UTC",
-                None,
+                /*scheduled_for*/ None,
                 at(/*seconds*/ 1_700_000_300),
             )
             .expect("next interval should compute")

@@ -1059,7 +1059,10 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
     )
     .await??;
     let saved_first: AuthProfileSaveCurrentResponse = to_response(resp)?;
-    assert_eq!(saved_first.profile, api_key_profile_summary("first", true));
+    assert_eq!(
+        saved_first.profile,
+        api_key_profile_summary("first", /*active*/ true)
+    );
     assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
 
     let req_id = mcp
@@ -1084,7 +1087,7 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
     let saved_second: AuthProfileSaveCurrentResponse = to_response(resp)?;
     assert_eq!(
         saved_second.profile,
-        api_key_profile_summary("second", true)
+        api_key_profile_summary("second", /*active*/ true)
     );
     assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
 
@@ -1100,7 +1103,7 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
     assert_eq!(
         profiles,
         AuthProfileListResponse {
-            data: vec![api_key_profile_summary("first", false)],
+            data: vec![api_key_profile_summary("first", /*active*/ false)],
             next_cursor: Some("1".to_string()),
         }
     );
@@ -1120,7 +1123,7 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
     assert_eq!(
         profiles,
         AuthProfileListResponse {
-            data: vec![api_key_profile_summary("second", true)],
+            data: vec![api_key_profile_summary("second", /*active*/ true)],
             next_cursor: None,
         }
     );
@@ -1134,7 +1137,10 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
     )
     .await??;
     let switched: AuthProfileSwitchResponse = to_response(resp)?;
-    assert_eq!(switched.profile, api_key_profile_summary("first", true));
+    assert_eq!(
+        switched.profile,
+        api_key_profile_summary("first", /*active*/ true)
+    );
     assert_account_updated_notification(&mut mcp, Some(AuthMode::ApiKey)).await?;
 
     let list_id = mcp
@@ -1150,8 +1156,8 @@ async fn auth_profile_rpcs_save_list_and_switch_api_key_profiles() -> Result<()>
         profiles,
         AuthProfileListResponse {
             data: vec![
-                api_key_profile_summary("first", true),
-                api_key_profile_summary("second", false),
+                api_key_profile_summary("first", /*active*/ true),
+                api_key_profile_summary("second", /*active*/ false),
             ],
             next_cursor: None,
         }
@@ -1193,9 +1199,13 @@ async fn auth_profile_switch_accepts_external_subscription_profiles() -> Result<
 
     assert_eq!(
         switched.profile,
-        external_profile_summary("cursor", AuthProfileSubscriptionProvider::Cursor, true)
+        external_profile_summary(
+            "cursor",
+            AuthProfileSubscriptionProvider::Cursor,
+            /*active*/ true,
+        )
     );
-    assert_account_updated_notification(&mut mcp, None).await?;
+    assert_account_updated_notification(&mut mcp, /*auth_mode*/ None).await?;
 
     let list_id = mcp
         .send_raw_request("authProfile/list", Some(json!({})))
@@ -1212,7 +1222,7 @@ async fn auth_profile_switch_accepts_external_subscription_profiles() -> Result<
             data: vec![external_profile_summary(
                 "cursor",
                 AuthProfileSubscriptionProvider::Cursor,
-                true,
+                /*active*/ true,
             )],
             next_cursor: None,
         }
@@ -1252,8 +1262,8 @@ async fn auth_profile_list_uses_selected_profile_for_active_state() -> Result<()
         profiles,
         AuthProfileListResponse {
             data: vec![
-                api_key_profile_summary("personal", false),
-                api_key_profile_summary("work", true),
+                api_key_profile_summary("personal", /*active*/ false),
+                api_key_profile_summary("work", /*active*/ true),
             ],
             next_cursor: None,
         }

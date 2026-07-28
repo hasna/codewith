@@ -285,8 +285,8 @@ async fn remote_submit_error(
             Some(remote_submit_params(
                 source_machine_id,
                 target_machine_id,
-                None,
-                None,
+                /*capability_version*/ None,
+                /*expires_at*/ None,
                 message,
             )),
         )

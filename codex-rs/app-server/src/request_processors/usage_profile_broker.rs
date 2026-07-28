@@ -613,8 +613,8 @@ mod tests {
             chatgpt_profile("third"),
         ];
         let health_by_profile = BTreeMap::from([
-            ("second".to_string(), health(20.0)),
-            ("third".to_string(), health(80.0)),
+            ("second".to_string(), health(/*remaining_percent*/ 20.0)),
+            ("third".to_string(), health(/*remaining_percent*/ 80.0)),
         ]);
         let now = Instant::now();
 
@@ -810,7 +810,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 Instant::now(),
-                1_000,
+                /*now_epoch*/ 1_000,
             )
         );
     }
@@ -902,8 +902,8 @@ mod tests {
     #[test]
     fn highest_available_dispatch_selects_healthiest_non_exhausted_profile() {
         let health_by_profile = BTreeMap::from([
-            ("second".to_string(), health(20.0)),
-            ("third".to_string(), health(80.0)),
+            ("second".to_string(), health(/*remaining_percent*/ 20.0)),
+            ("third".to_string(), health(/*remaining_percent*/ 80.0)),
         ]);
 
         assert_eq!(
@@ -1009,7 +1009,7 @@ mod tests {
                 /*trigger_window_label*/ None,
                 /*is_fresh*/ true,
             ),
-            health(60.0)
+            health(/*remaining_percent*/ 60.0)
         );
     }
 }

@@ -410,6 +410,17 @@ async fn thread_mailbox_dispatcher_does_not_steal_live_target_from_dispatch_disa
 
     let mut target_mcp = init_mcp(codex_home.path()).await?;
     let thread_id = start_thread(&mut target_mcp).await?;
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    let target_thread_id = ThreadId::from_string(&thread_id)?;
+    assert!(
+        state_db
+            .local_active_sessions()
+            .get_session(target_thread_id)
+            .await?
+            .is_some(),
+        "thread/start must advertise the live target before returning"
+    );
 
     create_config_toml_with_mailbox_dispatcher(
         codex_home.path(),
@@ -533,7 +544,7 @@ async fn thread_mailbox_dispatcher_resume_preserves_persisted_permissions() -> R
     create_config_toml_with_mailbox_dispatcher_and_sandbox(
         codex_home.path(),
         &server.uri(),
-        /*enabled*/ true,
+        /*mailbox_dispatcher_enabled*/ true,
         "danger-full-access",
     )?;
 

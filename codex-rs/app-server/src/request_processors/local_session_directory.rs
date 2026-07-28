@@ -510,8 +510,8 @@ mod tests {
 
         let local_session = api_local_session(
             thread,
-            None,
-            None,
+            /*model*/ None,
+            /*thread_agent_path*/ None,
             &live_overlay,
             &auth_profile_account_labels,
             &HashSet::new(),

@@ -80,8 +80,10 @@ use codex_background_agent::process_lifecycle::WorkerProcessCommand;
 use codex_background_agent::process_lifecycle::WorkerProcessController;
 use codex_background_agent::process_lifecycle::WorkerProcessHandle;
 use codex_background_agent::process_lifecycle::WorkerProcessStatus;
+use codex_config::config_toml::ConfigToml;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
+use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::WorktreeCleanupMode as CoreWorktreeCleanupMode;
 use codex_core::config::WorktreeSessionMode as CoreWorktreeSessionMode;
@@ -101,6 +103,7 @@ use codex_git_utils::worktree_has_commits_after;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
@@ -362,14 +365,10 @@ impl ThreadRequestProcessor {
             params.cwd = Some(worktree_path.clone());
             if let Some(context) = params.execution_context.as_mut() {
                 context.workspace_roots = Some(vec![worktree_path]);
-                let permission_profile = self
-                    .config
-                    .permissions
-                    .permission_profile()
-                    .clone()
-                    .materialize_project_roots_with_workspace_roots(std::slice::from_ref(
-                        &absolute_worktree_path,
-                    ));
+                let permission_profile = managed_worktree_permission_profile(
+                    self.config.as_ref(),
+                    &absolute_worktree_path,
+                );
                 context.permission_profile =
                     Some(serde_json::to_value(permission_profile).map_err(|err| {
                         internal_error(format!(
@@ -2783,14 +2782,18 @@ async fn load_all_managed_worktrees(
         let page = state_db
             .managed_worktrees()
             .list_managed_worktrees_page(
-                Some(base_repo_path),
+                /*base_repo_path*/ None,
                 /*include_deleted*/ false,
                 cursor.as_deref(),
                 codex_state::MAX_MANAGED_WORKTREE_LIST_LIMIT,
             )
             .await
             .map_err(|err| internal_error(format!("failed to list managed worktrees: {err}")))?;
-        worktrees.extend(page.data);
+        worktrees.extend(
+            page.data
+                .into_iter()
+                .filter(|worktree| worktree_matches_base_repo(worktree, base_repo_path)),
+        );
         let Some(next_cursor) = page.next_cursor else {
             return Ok(worktrees);
         };
@@ -2803,6 +2806,47 @@ fn worktree_matches_base_repo(
     base_repo_path: &Path,
 ) -> bool {
     paths_equivalent(worktree.base_repo_path.as_path(), base_repo_path)
+}
+
+fn managed_worktree_permission_profile(
+    config: &Config,
+    worktree_path: &AbsolutePathBuf,
+) -> PermissionProfile {
+    let configured_profile = config.permissions.permission_profile().clone();
+    let profile = if cfg!(target_os = "windows")
+        && !config.explicit_permission_profile_mode
+        && let Ok(config_toml) = config
+            .config_layer_stack
+            .effective_config()
+            .try_into::<ConfigToml>()
+        && config_toml.sandbox_mode == Some(SandboxMode::WorkspaceWrite)
+    {
+        let candidate = match config_toml.sandbox_workspace_write {
+            Some(settings) => PermissionProfile::workspace_write_with(
+                settings.writable_roots.as_slice(),
+                if settings.network_access {
+                    NetworkSandboxPolicy::Enabled
+                } else {
+                    NetworkSandboxPolicy::Restricted
+                },
+                settings.exclude_tmpdir_env_var,
+                settings.exclude_slash_tmp,
+            ),
+            None => PermissionProfile::workspace_write(),
+        };
+        if config
+            .permissions
+            .can_set_permission_profile(&candidate)
+            .is_ok()
+        {
+            candidate
+        } else {
+            configured_profile
+        }
+    } else {
+        configured_profile
+    };
+    profile.materialize_project_roots_with_workspace_roots(std::slice::from_ref(worktree_path))
 }
 
 async fn status_snapshot_for_release(
@@ -5472,7 +5516,8 @@ mod tests {
         // context_length_exceeded): it must be reported as a failure, and the
         // recorded error must be consumed.
         let mut turn_error = Some("context_length_exceeded".to_string());
-        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        let reason =
+            turn_completion_failure_reason(/*last_agent_message*/ None, &mut turn_error);
         assert_eq!(reason.as_deref(), Some("context_length_exceeded"));
         assert_eq!(turn_error, None);
     }
@@ -5482,7 +5527,8 @@ mod tests {
         // No error observed and no final message (e.g. a tool-only turn) is a
         // legitimate completion, not a failure.
         let mut turn_error = None;
-        let reason = turn_completion_failure_reason(None, &mut turn_error);
+        let reason =
+            turn_completion_failure_reason(/*last_agent_message*/ None, &mut turn_error);
         assert_eq!(reason, None);
         assert_eq!(turn_error, None);
     }
@@ -6291,7 +6337,7 @@ done
             .list_background_agent_events_after(
                 "initial-prompt-receipt",
                 /*after_seq*/ None,
-                None,
+                /*limit*/ None,
             )
             .await?;
         assert_eq!(
@@ -6340,7 +6386,9 @@ done
         assert_eq!(goal.objective, "Investigate flaky test");
         assert_eq!(goal.status, codex_state::ThreadGoalStatus::Active);
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let thread_id_string = thread_id.to_string();
         let initial_goal_events = events
@@ -6374,7 +6422,9 @@ done
         .await?;
 
         let events = state_db
-            .list_background_agent_events_after("goal-run", /*after_seq*/ None, None)
+            .list_background_agent_events_after(
+                "goal-run", /*after_seq*/ None, /*limit*/ None,
+            )
             .await?;
         let initial_goal_event_count = events
             .iter()

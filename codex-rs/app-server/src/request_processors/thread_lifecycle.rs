@@ -472,6 +472,14 @@ async fn heartbeat_local_active_session(
     let Some(state_db) = listener_task_context.state_db.as_ref() else {
         return;
     };
+    if let Err(err) =
+        materialize_local_active_session_thread(state_db, conversation_id, conversation).await
+    {
+        tracing::warn!(
+            thread_id = %conversation_id,
+            "failed to materialize thread metadata before local active-session heartbeat: {err}"
+        );
+    }
     let session_id = conversation.session_configured().session_id.to_string();
     if let Err(err) = state_db
         .local_active_sessions()
@@ -489,6 +497,41 @@ async fn heartbeat_local_active_session(
             "failed to heartbeat local active session while starting listener: {err}"
         );
     }
+}
+
+async fn materialize_local_active_session_thread(
+    state_db: &StateDbHandle,
+    conversation_id: ThreadId,
+    conversation: &CodexThread,
+) -> anyhow::Result<()> {
+    if state_db.get_thread(conversation_id).await?.is_some() {
+        return Ok(());
+    }
+    let config_snapshot = conversation.config_snapshot().await;
+    if config_snapshot.ephemeral {
+        return Ok(());
+    }
+    let Some(rollout_path) = conversation.rollout_path() else {
+        return Ok(());
+    };
+    let mut builder = ThreadMetadataBuilder::new(
+        conversation_id,
+        rollout_path,
+        Utc::now(),
+        config_snapshot.session_source.clone(),
+    );
+    builder.thread_source = config_snapshot.thread_source;
+    builder.agent_nickname = config_snapshot.session_source.get_nickname();
+    builder.agent_role = config_snapshot.session_source.get_agent_role();
+    builder.model_provider = Some(config_snapshot.model_provider_id.clone());
+    builder.cwd = config_snapshot.cwd.to_path_buf();
+    builder.cli_version = Some(env!("CARGO_PKG_VERSION").to_string());
+    builder.approval_mode = config_snapshot.approval_policy;
+    let mut metadata = builder.build(config_snapshot.model_provider_id.as_str());
+    metadata.model = Some(config_snapshot.model);
+    metadata.sandbox_policy = serde_json::to_string(&config_snapshot.permission_profile)?;
+    state_db.insert_thread_if_absent(&metadata).await?;
+    Ok(())
 }
 
 pub(super) async fn wait_for_thread_shutdown(thread: &Arc<CodexThread>) -> ThreadShutdownResult {
