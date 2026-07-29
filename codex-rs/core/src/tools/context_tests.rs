@@ -488,6 +488,128 @@ fn telemetry_preview_truncates_by_lines() {
     assert_eq!(lines.last(), Some(&TELEMETRY_PREVIEW_TRUNCATION_NOTICE));
 }
 
+fn runtime_env_assignment(name_parts: &[&str]) -> (String, String, String) {
+    let name = name_parts.concat();
+    let value = ["runtime", "fixture", "value", "1234567890"].join("-");
+    let assignment = format!("{name}={value}");
+    (name, value, assignment)
+}
+
+fn assert_redacted_assignment(text: &str, name: &str, value: &str) {
+    assert!(text.contains(&format!("{name}=[REDACTED_SECRET]")));
+    assert_secret_value_absent(text, value);
+}
+
+fn assert_secret_value_absent(text: &str, value: &str) {
+    assert!(!text.contains(value));
+    for segment in value.split('-').filter(|segment| segment.len() >= 4) {
+        assert!(
+            !text.contains(segment),
+            "partial secret segment survived in model-visible output: {segment}"
+        );
+    }
+}
+
+fn exec_output(raw_output: String, max_output_tokens: Option<usize>) -> ExecCommandToolOutput {
+    ExecCommandToolOutput {
+        event_call_id: "call-redacted".to_string(),
+        chunk_id: "chunk-redacted".to_string(),
+        wall_time: std::time::Duration::from_millis(1250),
+        raw_output: raw_output.into_bytes(),
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        output_omitted_bytes: None,
+        hook_command: Some("printf output".to_string()),
+    }
+}
+
+#[test]
+fn exec_command_tool_output_redacts_assignments_from_all_visible_outputs() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let (name, value, assignment) = runtime_env_assignment(&["API", "_", "KEY"]);
+    let output = exec_output(
+        format!("before {assignment} after"),
+        /*max_output_tokens*/ None,
+    );
+
+    let response = output.to_response_item("call-redacted", &payload);
+    let ResponseInputItem::FunctionCallOutput {
+        output: response_output,
+        ..
+    } = response
+    else {
+        panic!("expected FunctionCallOutput");
+    };
+    let response_text = response_output
+        .body
+        .to_text()
+        .expect("exec output should serialize as text");
+    assert_redacted_assignment(&response_text, &name, &value);
+
+    let hook_response = output
+        .post_tool_use_response("call-redacted", &payload)
+        .and_then(|value| value.as_str().map(str::to_string))
+        .expect("completed exec should produce a post-tool-use response");
+    assert_redacted_assignment(&hook_response, &name, &value);
+
+    let code_mode_result = output.code_mode_result(&payload);
+    let code_mode_output = code_mode_result
+        .get("output")
+        .and_then(JsonValue::as_str)
+        .expect("code-mode result should include text output");
+    assert_redacted_assignment(code_mode_output, &name, &value);
+
+    let preview = output.log_preview();
+    assert_redacted_assignment(&preview, &name, &value);
+}
+
+#[test]
+fn exec_command_tool_output_redacts_before_truncation_boundaries() {
+    let (name, value, assignment) = runtime_env_assignment(&["TOKEN"]);
+    let auth_name = ["SERVICE", "_", "AUTH", "_", "TOKEN"].concat();
+    let raw_output = format!(
+        "{assignment}\n{}\n{auth_name}={value}",
+        "tail output ".repeat(500)
+    );
+    let output = exec_output(raw_output, Some(32));
+
+    let text = output.truncated_output(/*max_tokens*/ 32);
+    assert!(text.contains(&format!("{name}=[REDACTED_SECRET]")));
+    assert_secret_value_absent(&text, &value);
+    assert!(text.contains("tokens truncated"));
+
+    let code_mode_result = output.code_mode_result(&ToolPayload::Function {
+        arguments: "{}".to_string(),
+    });
+    let code_mode_output = code_mode_result
+        .get("output")
+        .and_then(JsonValue::as_str)
+        .expect("code-mode result should include text output");
+    assert!(code_mode_output.contains(&format!("{name}=[REDACTED_SECRET]")));
+    assert_secret_value_absent(code_mode_output, &value);
+    assert!(code_mode_output.contains("tokens truncated"));
+}
+
+#[test]
+fn exec_command_tool_output_redaction_preserves_collector_omission_marker() {
+    let (name, value, assignment) =
+        runtime_env_assignment(&["SERVICE", "_", "BEARER", "_", "TOKEN"]);
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 123_456);
+    let raw_output = format!("HEAD {assignment}\n{marker}\nTAIL {assignment}");
+    let mut output = exec_output(raw_output, /*max_output_tokens*/ None);
+    output.output_omitted_bytes = NonZeroUsize::new(/*n*/ 123_456);
+
+    let text = output.truncated_output(/*max_tokens*/ 10_000);
+
+    assert_redacted_assignment(&text, &name, &value);
+    assert_eq!(text.matches(&marker).count(), 1);
+}
+
 #[test]
 fn exec_command_tool_output_formats_truncated_response() {
     let payload = ToolPayload::Function {
