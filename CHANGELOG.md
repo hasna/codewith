@@ -42,6 +42,47 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.79] - 2026-07-28
+
+Tag: `rust-v0.1.79`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.79>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.78...rust-v0.1.79>
+
+Release headlined by a hardened Responses tool namespace boundary, account-wide
+usage inspection and profile switching, and durable per-goal line-change
+accounting. It also carries the portability and CI repairs needed to keep the
+feature train green across Linux, macOS, and Windows.
+
+### Added
+
+- Accounts: `get_usage` can inspect usage and rate limits across every saved
+  ChatGPT auth profile concurrently, report per-profile health, and recommend
+  the best available profile without exposing private email or account
+  identifiers. `manage_auth_profiles` can switch through the normal session
+  settings path or toggle session-local automatic switching, and low-capacity
+  sessions receive a targeted usage-tool prompt. (#418)
+- Goals: track lines added and deleted for active goals and aggregate totals for
+  goal plans across app-server, mission control, TUI, and persisted state.
+  Accounting follows committed and uncommitted work, isolates linked worktrees,
+  serializes concurrent writers, and correctly subtracts reverted changes.
+  (#415, #433)
+
+### Fixed
+
+- Tools: enforce the reserved Responses namespaces and canonical first-party
+  contracts for image generation and web search across extension registration,
+  deferred discovery, runtime admission, and provider request serialization.
+  Untrusted or stale extension metadata can no longer claim those namespaces or
+  bypass the boundary after admission. (#424)
+- Portability: make CLI working-directory snapshot tests reliable on Windows,
+  preserve Windows read-only app-server workers and unmaterialized archive
+  threads, and gate Unix-only daemon and exec-policy test items correctly.
+  (#431, #434, #436, #447)
+- CI: repair cross-platform Rust lint failures, verify Git snapshot isolation by
+  object semantics, and resolve full-matrix toolchains from the checked-in Rust
+  manifest while keeping platform test shards isolated and correctly sized.
+  (#430, #432, #435)
+
 ## [0.1.78] - 2026-07-26
 
 Tag: `rust-v0.1.78`
