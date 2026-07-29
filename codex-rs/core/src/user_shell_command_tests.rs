@@ -56,3 +56,23 @@ async fn uses_aggregated_output_over_streams() {
         "<user_shell_command>\n<command>\nfalse\n</command>\n<result>\nExit code: 42\nDuration: 0.1200 seconds\nOutput:\ncombined output wins\n</result>\n</user_shell_command>"
     );
 }
+
+#[tokio::test]
+async fn user_shell_command_context_redacts_secret_output() {
+    let secret = format!("{}{}", "sk-proj-", "s".repeat(32));
+    let exec_output = ExecToolCallOutput {
+        exit_code: 0,
+        stdout: StreamOutput::new(String::new()),
+        stderr: StreamOutput::new(String::new()),
+        aggregated_output: StreamOutput::new(format!("SERVICE_API_KEY='{secret}'\nkept=benign")),
+        duration: Duration::from_secs(1),
+        timed_out: false,
+    };
+    let (_, turn_context) = make_session_and_context().await;
+
+    let record = format_user_shell_command_record("printenv", &exec_output, &turn_context);
+
+    assert!(!record.contains(&secret));
+    assert!(record.contains("SERVICE_API_KEY='[REDACTED_SECRET]'"));
+    assert!(record.contains("kept=benign"));
+}

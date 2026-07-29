@@ -101,7 +101,7 @@ pub fn format_exec_output_str(
 
 /// Extracts exec output content and prepends a timeout message if the command timed out.
 fn build_content_with_timeout(exec_output: &ExecToolCallOutput) -> String {
-    if exec_output.timed_out {
+    let content = if exec_output.timed_out {
         format!(
             "command timed out after {} milliseconds\n{}",
             exec_output.duration.as_millis(),
@@ -109,5 +109,91 @@ fn build_content_with_timeout(exec_output: &ExecToolCallOutput) -> String {
         )
     } else {
         exec_output.aggregated_output.text.clone()
+    };
+
+    codex_secrets::redact_secrets(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::exec_output::StreamOutput;
+    use pretty_assertions::assert_eq;
+    use std::time::Duration;
+
+    fn exec_output(aggregated_output: String) -> ExecToolCallOutput {
+        ExecToolCallOutput {
+            exit_code: 0,
+            stdout: StreamOutput::new(String::new()),
+            stderr: StreamOutput::new(String::new()),
+            aggregated_output: StreamOutput::new(aggregated_output),
+            duration: Duration::from_millis(1250),
+            timed_out: false,
+        }
+    }
+
+    fn openai_key(ch: char) -> String {
+        format!("{}{}", "sk-proj-", ch.to_string().repeat(32))
+    }
+
+    fn github_token(ch: char) -> String {
+        format!("{}{}", "ghp_", ch.to_string().repeat(36))
+    }
+
+    fn assert_secret_redacted(output: &str, secret: &str) {
+        assert!(
+            !output.contains(secret),
+            "formatted output should not contain secret: {output}"
+        );
+        assert!(
+            output.contains("[REDACTED_SECRET]"),
+            "formatted output should include redaction marker: {output}"
+        );
+    }
+
+    #[test]
+    fn model_exec_output_redacts_secrets_before_headers_and_truncation() {
+        let exact_assignment = format!("token={}", "x".repeat(20));
+        let suffix_assignment_secret = openai_key('a');
+        let quoted_secret = openai_key('b');
+        let escaped_value_secret = github_token('c');
+        let content = format!(
+            "ready\n{exact_assignment}\nSERVICE_TOKEN={suffix_assignment_secret}\napi_key=\"{quoted_secret}\"\nescaped={escaped_value_secret}\\ with-space\nbenign output\n"
+        );
+        let output = exec_output(content);
+
+        let formatted = format_exec_output_for_model(&output, TruncationPolicy::Bytes(512));
+
+        assert!(formatted.starts_with("Exit code: 0\nWall time: 1.3 seconds\nOutput:\n"));
+        assert_secret_redacted(&formatted, &"x".repeat(20));
+        assert_secret_redacted(&formatted, &suffix_assignment_secret);
+        assert_secret_redacted(&formatted, &quoted_secret);
+        assert_secret_redacted(&formatted, &escaped_value_secret);
+        assert!(formatted.contains("ready"));
+        assert!(formatted.contains("benign output"));
+    }
+
+    #[test]
+    fn formatted_exec_output_str_redacts_timeout_output_before_truncation() {
+        let secret = openai_key('d');
+        let mut output = exec_output(format!("before\nOPENAI_API_KEY={secret}\nafter"));
+        output.timed_out = true;
+        output.duration = Duration::from_millis(2500);
+
+        let formatted = format_exec_output_str(&output, TruncationPolicy::Bytes(80));
+
+        assert!(formatted.contains("command timed out after 2500 milliseconds"));
+        assert_secret_redacted(&formatted, &secret);
+        assert!(formatted.contains("after"));
+    }
+
+    #[test]
+    fn formatted_exec_output_preserves_benign_output() {
+        let output = exec_output("PATH=/tmp/bin\nstatus=ok\nthread_id=abc123".to_string());
+
+        assert_eq!(
+            format_exec_output_str(&output, TruncationPolicy::Bytes(512)),
+            "PATH=/tmp/bin\nstatus=ok\nthread_id=abc123"
+        );
     }
 }
