@@ -45,7 +45,7 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_MIN_STACK: "8388608"
     steps:
-      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # pin: v1
+      - uses: useblacksmith/checkout@6fd481652155169ed4d2f25ebaf97464f685175f # pin: v1
 
       - uses: useblacksmith/begin-testbox@d0e04585c26905fdd92c94a09c159544c7ee1b67 # pin: v2
         with:
