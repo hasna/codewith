@@ -379,23 +379,9 @@ fn path_with_fake_bin(bin_dir: &Path) -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-#[cfg(unix)]
 fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = bin_dir.join(name);
-    std::fs::write(&path, "#!/bin/sh\nsleep 30\n")?;
-    let mut permissions = std::fs::metadata(&path)?.permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn write_fake_executable(bin_dir: &Path, name: &str) -> Result<()> {
-    std::fs::write(
-        bin_dir.join(format!("{name}.cmd")),
-        "@echo off\r\nif \"%2\"==\"--help\" exit /b 0\r\ntimeout /t 30 /nobreak >NUL\r\n",
-    )?;
+    let fixture = codex_utils_cargo_bin::cargo_bin("codex-app-server-test-external-agent")?;
+    let destination = bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(fixture, destination)?;
     Ok(())
 }

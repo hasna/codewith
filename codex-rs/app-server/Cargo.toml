@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "codex-app-server-test-notify-capture"
 path = "src/bin/notify_capture.rs"
 
+[[bin]]
+name = "codex-app-server-test-external-agent"
+path = "src/bin/external_agent_test_fixture.rs"
+
 [lib]
 name = "codex_app_server"
 path = "src/lib.rs"
