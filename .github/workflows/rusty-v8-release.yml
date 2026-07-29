@@ -22,7 +22,7 @@ jobs:
       v8_version: ${{ steps.v8_version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -161,7 +161,7 @@ jobs:
           echo "Skipping macOS V8 artifact build in ${GITHUB_REPOSITORY}; this path requires upstream BuildBuddy and Apple SDK access."
 
       - if: ${{ github.repository == 'openai/codex' || startsWith(matrix.runner, 'macos-') == false }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -310,7 +310,7 @@ jobs:
             target: aarch64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -319,7 +319,7 @@ jobs:
         run: git config --global core.symlinks true
 
       - name: Check out upstream rusty_v8
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: denoland/rusty_v8
           ref: v${{ needs.metadata.outputs.v8_version }}
