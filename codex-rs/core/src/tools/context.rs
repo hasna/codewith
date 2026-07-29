@@ -423,7 +423,7 @@ impl ExecCommandToolOutput {
 
         let marker = format_output_omission_marker(omitted_bytes.get());
         if text.len() <= policy.byte_budget() {
-            return if text.contains(&marker) {
+            return if contains_output_omission_marker_line(&text, &marker) {
                 text
             } else {
                 format!("{marker}\n{text}")
@@ -434,7 +434,7 @@ impl ExecCommandToolOutput {
             .original_token_count
             .unwrap_or_else(|| approx_token_count(&text));
         let truncated = truncate_text(&text, policy);
-        let omission_notice = if truncated.contains(&marker) {
+        let omission_notice = if contains_output_omission_marker_line(&truncated, &marker) {
             String::new()
         } else {
             format!("{marker}\n")
@@ -475,6 +475,10 @@ impl ExecCommandToolOutput {
     fn redacted_output_text(&self) -> String {
         redact_secrets(String::from_utf8_lossy(&self.raw_output).to_string())
     }
+}
+
+fn contains_output_omission_marker_line(text: &str, marker: &str) -> bool {
+    text.lines().any(|line| line == marker)
 }
 
 fn function_tool_response(

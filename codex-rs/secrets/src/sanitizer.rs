@@ -23,8 +23,8 @@ static ANTHROPIC_KEY_REGEX: LazyLock<Regex> =
 static JWT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 });
-static OUTPUT_OMISSION_MARKER_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| compile_regex(r"\.\.\. [0-9]+ bytes omitted \.\.\."));
+static OUTPUT_OMISSION_MARKER_LINE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| compile_regex(r"^\.\.\. [0-9]+ bytes omitted \.\.\.$"));
 static ENV_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(concat!(
         r#"(^|[^A-Za-z0-9_])"#,
@@ -94,44 +94,52 @@ fn redact_sensitive_env_assignments(input: &str) -> String {
 }
 
 fn redact_omission_boundary_secret_fragments(input: String) -> String {
-    let mut redacted = String::with_capacity(input.len());
-    let mut last = 0;
-    let mut search_start = 0;
+    let mut replacements = Vec::new();
+    let mut previous_line = None;
+    let mut line_start = 0;
 
-    while let Some(marker_match) = OUTPUT_OMISSION_MARKER_REGEX.find_at(&input, search_start) {
-        let marker_start = marker_match.start();
-        let marker_end = marker_match.end();
-        let previous_line_end = marker_start
-            .checked_sub(1)
-            .filter(|idx| input.as_bytes().get(*idx) == Some(&b'\n'))
-            .unwrap_or(marker_start);
-        let previous_line_start = input[..previous_line_end]
-            .rfind('\n')
-            .map(|idx| idx + 1)
-            .unwrap_or(0);
-        let next_line_start =
-            marker_end + usize::from(input.as_bytes().get(marker_end) == Some(&b'\n'));
-        let next_line_end = input[next_line_start..]
+    while line_start < input.len() {
+        let line_end = input[line_start..]
             .find('\n')
-            .map(|idx| next_line_start + idx)
+            .map(|idx| line_start + idx)
             .unwrap_or(input.len());
+        let next_line_start =
+            line_end + usize::from(input.as_bytes().get(line_end) == Some(&b'\n'));
+        let line = &input[line_start..line_end];
 
-        if let Some(value_start) = sensitive_assignment_value_start_at_line_end(
-            &input[previous_line_start..previous_line_end],
-        ) {
-            redacted.push_str(&input[last..previous_line_start + value_start]);
-            redacted.push_str("[REDACTED_SECRET]");
-            redacted.push_str(&input[previous_line_end..next_line_start]);
-            if next_line_start < next_line_end {
-                redacted.push_str("[REDACTED_SECRET]");
+        if OUTPUT_OMISSION_MARKER_LINE_REGEX.is_match(line) {
+            if let Some((previous_line_start, previous_line_end)) = previous_line
+                && let Some(value_start) = sensitive_assignment_value_start_at_line_end(
+                    &input[previous_line_start..previous_line_end],
+                )
+            {
+                replacements.push((previous_line_start + value_start, previous_line_end));
             }
-            last = next_line_end;
-            search_start = next_line_end;
-        } else {
-            search_start = marker_end;
+
+            let tail_line_start = next_line_start;
+            let tail_line_end = input[tail_line_start..]
+                .find('\n')
+                .map(|idx| tail_line_start + idx)
+                .unwrap_or(input.len());
+            if tail_line_start < tail_line_end {
+                replacements.push((tail_line_start, tail_line_end));
+            }
         }
+
+        previous_line = Some((line_start, line_end));
+        line_start = next_line_start;
     }
 
+    let mut redacted = String::with_capacity(input.len());
+    let mut last = 0;
+    for (start, end) in replacements {
+        if start < last {
+            continue;
+        }
+        redacted.push_str(&input[last..start]);
+        redacted.push_str("[REDACTED_SECRET]");
+        last = end;
+    }
     redacted.push_str(&input[last..]);
     redacted
 }
@@ -371,5 +379,42 @@ mod tests {
         );
         assert!(redacted.contains("before"));
         assert!(redacted.contains("after"));
+    }
+
+    #[test]
+    fn redacts_first_tail_line_when_omission_marker_splits_sensitive_name() {
+        let marker = ["...", " 333 bytes omitted ", "..."].concat();
+        let tail = ["unpatterned", "secret", "tail"].join("-");
+        let input = format!("before\nSERVICE_ACCESS_\n{marker}\nTOKEN={tail}\nafter");
+
+        let redacted = redact_secrets(input);
+
+        assert!(redacted.contains(&format!(
+            "SERVICE_ACCESS_\n{marker}\n[REDACTED_SECRET]\nafter"
+        )));
+        assert!(!redacted.contains(&tail));
+    }
+
+    #[test]
+    fn redacts_first_tail_line_after_exact_omission_marker() {
+        let marker = ["...", " 333 bytes omitted ", "..."].concat();
+        let ambiguous_tail = "plain benign tail";
+        let later_line = "later benign line \u{1F510}";
+        let input = format!("before\nplain head\n{marker}\n{ambiguous_tail}\n{later_line}");
+
+        let redacted = redact_secrets(input);
+
+        assert_eq!(
+            redacted,
+            format!("before\nplain head\n{marker}\n[REDACTED_SECRET]\n{later_line}")
+        );
+    }
+
+    #[test]
+    fn preserves_marker_like_inline_output_without_boundary_redaction() {
+        let marker = ["...", " 333 bytes omitted ", "..."].concat();
+        let input = format!("before {marker} after\nplain tail");
+
+        assert_eq!(redact_secrets(input.clone()), input);
     }
 }

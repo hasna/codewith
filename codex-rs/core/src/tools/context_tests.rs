@@ -710,6 +710,74 @@ fn exec_command_tool_output_redacts_tail_when_value_starts_in_omitted_bytes() {
 }
 
 #[test]
+fn exec_command_tool_output_redacts_first_tail_line_when_marker_splits_sensitive_name() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 333);
+    let value_tail = ["unpatterned", "secret", "tail"].join("-");
+    let later_line = "later benign line";
+    let raw_output = format!("before\nSERVICE_ACCESS_\n{marker}\nTOKEN={value_tail}\n{later_line}");
+    let mut output = exec_output(raw_output, /*max_output_tokens*/ None);
+    output.output_omitted_bytes = NonZeroUsize::new(/*n*/ 333);
+
+    let assert_boundary_redacted = |text: &str| {
+        assert_eq!(text.matches(&marker).count(), 1);
+        assert!(text.contains(&format!(
+            "SERVICE_ACCESS_\n{marker}\n[REDACTED_SECRET]\n{later_line}"
+        )));
+        assert_secret_value_absent(text, &value_tail);
+    };
+
+    let response = output.to_response_item("call-redacted", &payload);
+    let ResponseInputItem::FunctionCallOutput {
+        output: response_output,
+        ..
+    } = response
+    else {
+        panic!("expected FunctionCallOutput");
+    };
+    let response_text = response_output
+        .body
+        .to_text()
+        .expect("exec output should serialize as text");
+    assert_boundary_redacted(&response_text);
+
+    let hook_response = output
+        .post_tool_use_response("call-redacted", &payload)
+        .and_then(|value| value.as_str().map(str::to_string))
+        .expect("completed exec should produce a post-tool-use response");
+    assert_boundary_redacted(&hook_response);
+
+    let code_mode_result = output.code_mode_result(&payload);
+    let code_mode_output = code_mode_result
+        .get("output")
+        .and_then(JsonValue::as_str)
+        .expect("code-mode result should include text output");
+    assert_boundary_redacted(code_mode_output);
+
+    let preview = output.log_preview();
+    assert_boundary_redacted(&preview);
+
+    let text = output.truncated_output(/*max_tokens*/ 10_000);
+    assert_boundary_redacted(&text);
+}
+
+#[test]
+fn exec_command_tool_output_preserves_real_marker_when_user_output_contains_inline_marker_text() {
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 333);
+    let raw_output = format!("before {marker} after\nplain tail");
+    let mut output = exec_output(raw_output, Some(10_000));
+    output.output_omitted_bytes = NonZeroUsize::new(/*n*/ 333);
+
+    let text = output.truncated_output(/*max_tokens*/ 10_000);
+
+    assert!(text.starts_with(&format!("{marker}\n")));
+    assert_eq!(text.matches(&marker).count(), 2);
+    assert!(text.contains(&format!("before {marker} after\nplain tail")));
+}
+
+#[test]
 fn exec_command_tool_output_formats_truncated_response() {
     let payload = ToolPayload::Function {
         arguments: "{}".to_string(),
