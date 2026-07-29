@@ -14,6 +14,7 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::function_call_output_content_items_to_text;
+use codex_secrets::redact_secrets;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -398,7 +399,7 @@ impl ToolOutput for ExecCommandToolOutput {
             original_token_count: self.original_token_count,
             output: match self.max_output_tokens {
                 Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
+                None => self.redacted_output_text(),
             },
         };
 
@@ -414,7 +415,7 @@ impl ExecCommandToolOutput {
     }
 
     pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
-        let text = String::from_utf8_lossy(&self.raw_output).to_string();
+        let text = self.redacted_output_text();
         let policy = TruncationPolicy::Tokens(max_tokens);
         let Some(omitted_bytes) = self.output_omitted_bytes else {
             return formatted_truncate_text(&text, policy);
@@ -422,7 +423,7 @@ impl ExecCommandToolOutput {
 
         let marker = format_output_omission_marker(omitted_bytes.get());
         if text.len() <= policy.byte_budget() {
-            return if text.contains(&marker) {
+            return if contains_output_omission_marker_line(&text, &marker) {
                 text
             } else {
                 format!("{marker}\n{text}")
@@ -433,7 +434,7 @@ impl ExecCommandToolOutput {
             .original_token_count
             .unwrap_or_else(|| approx_token_count(&text));
         let truncated = truncate_text(&text, policy);
-        let omission_notice = if truncated.contains(&marker) {
+        let omission_notice = if contains_output_omission_marker_line(&truncated, &marker) {
             String::new()
         } else {
             format!("{marker}\n")
@@ -470,6 +471,14 @@ impl ExecCommandToolOutput {
 
         sections.join("\n")
     }
+
+    fn redacted_output_text(&self) -> String {
+        redact_secrets(String::from_utf8_lossy(&self.raw_output).to_string())
+    }
+}
+
+fn contains_output_omission_marker_line(text: &str, marker: &str) -> bool {
+    text.lines().any(|line| line == marker)
 }
 
 fn function_tool_response(
