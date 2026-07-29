@@ -501,8 +501,15 @@ fn assert_redacted_assignment(text: &str, name: &str, value: &str) {
 }
 
 fn assert_secret_value_absent(text: &str, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+
     assert!(!text.contains(value));
-    for segment in value.split('-').filter(|segment| segment.len() >= 4) {
+    for segment in value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|segment| segment.len() >= 4)
+    {
         assert!(
             !text.contains(segment),
             "partial secret segment survived in model-visible output: {segment}"
@@ -521,6 +528,58 @@ fn assert_split_omission_redacted(
     assert_eq!(text.matches(marker).count(), 1);
     assert_secret_value_absent(text, value_head);
     assert_secret_value_absent(text, value_tail);
+}
+
+fn assert_exec_output_omission_redacted(
+    raw_output: String,
+    marker: &str,
+    name: &str,
+    value_head: &str,
+    value_tail: &str,
+) {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let mut output = exec_output(raw_output, /*max_output_tokens*/ None);
+    output.output_omitted_bytes = NonZeroUsize::new(/*n*/ 333);
+
+    let response = output.to_response_item("call-redacted", &payload);
+    let ResponseInputItem::FunctionCallOutput {
+        output: response_output,
+        ..
+    } = response
+    else {
+        panic!("expected FunctionCallOutput");
+    };
+    let response_text = response_output
+        .body
+        .to_text()
+        .expect("exec output should serialize as text");
+    assert_split_omission_redacted(&response_text, marker, name, value_head, value_tail);
+    assert!(response_text.contains("after"));
+
+    let hook_response = output
+        .post_tool_use_response("call-redacted", &payload)
+        .and_then(|value| value.as_str().map(str::to_string))
+        .expect("completed exec should produce a post-tool-use response");
+    assert_split_omission_redacted(&hook_response, marker, name, value_head, value_tail);
+    assert!(hook_response.contains("after"));
+
+    let code_mode_result = output.code_mode_result(&payload);
+    let code_mode_output = code_mode_result
+        .get("output")
+        .and_then(JsonValue::as_str)
+        .expect("code-mode result should include text output");
+    assert_split_omission_redacted(code_mode_output, marker, name, value_head, value_tail);
+    assert!(code_mode_output.contains("after"));
+
+    let preview = output.log_preview();
+    assert_split_omission_redacted(&preview, marker, name, value_head, value_tail);
+    assert!(preview.contains("after"));
+
+    let text = output.truncated_output(/*max_tokens*/ 10_000);
+    assert_split_omission_redacted(&text, marker, name, value_head, value_tail);
+    assert!(text.contains("after"));
 }
 
 fn exec_output(raw_output: String, max_output_tokens: Option<usize>) -> ExecCommandToolOutput {
@@ -610,49 +669,34 @@ fn exec_command_tool_output_redacts_before_truncation_boundaries() {
 
 #[test]
 fn exec_command_tool_output_redaction_preserves_collector_omission_marker() {
-    let payload = ToolPayload::Function {
-        arguments: "{}".to_string(),
-    };
     let marker = format_output_omission_marker(/*omitted_bytes*/ 333);
     let name = ["SERVICE", "_", "ACCESS", "_", "TOKEN"].concat();
     let value_head = ["runtime", "fixture"].join("-");
     let value_tail = ["value", "1234567890"].join("-");
     let raw_output = format!("before\n{name}={value_head}\n{marker}\n{value_tail}\nafter");
-    let mut output = exec_output(raw_output, /*max_output_tokens*/ None);
-    output.output_omitted_bytes = NonZeroUsize::new(/*n*/ 333);
+    assert_exec_output_omission_redacted(raw_output, &marker, &name, &value_head, &value_tail);
+}
 
-    let response = output.to_response_item("call-redacted", &payload);
-    let ResponseInputItem::FunctionCallOutput {
-        output: response_output,
-        ..
-    } = response
-    else {
-        panic!("expected FunctionCallOutput");
-    };
-    let response_text = response_output
-        .body
-        .to_text()
-        .expect("exec output should serialize as text");
-    assert_split_omission_redacted(&response_text, &marker, &name, &value_head, &value_tail);
+#[test]
+fn exec_command_tool_output_redacts_quoted_space_split_around_omission_marker() {
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 333);
+    let name = ["SERVICE", "_", "ACCESS", "_", "TOKEN"].concat();
+    let value_head = ["quotedhead", "fixture"].join(" ");
+    let value_tail = ["quotedtail", "1234567890"].join(" ");
+    let raw_output = format!("before\n{name}=\"{value_head}\n{marker}\n{value_tail}\"\nafter");
 
-    let hook_response = output
-        .post_tool_use_response("call-redacted", &payload)
-        .and_then(|value| value.as_str().map(str::to_string))
-        .expect("completed exec should produce a post-tool-use response");
-    assert_split_omission_redacted(&hook_response, &marker, &name, &value_head, &value_tail);
+    assert_exec_output_omission_redacted(raw_output, &marker, &name, &value_head, &value_tail);
+}
 
-    let code_mode_result = output.code_mode_result(&payload);
-    let code_mode_output = code_mode_result
-        .get("output")
-        .and_then(JsonValue::as_str)
-        .expect("code-mode result should include text output");
-    assert_split_omission_redacted(code_mode_output, &marker, &name, &value_head, &value_tail);
+#[test]
+fn exec_command_tool_output_redacts_tail_when_value_starts_in_omitted_bytes() {
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 333);
+    let name = ["SERVICE", "_", "ACCESS", "_", "TOKEN"].concat();
+    let value_head = "";
+    let value_tail = ["omittedstart", "1234567890"].join("-");
+    let raw_output = format!("before\n{name}=\n{marker}\n{value_tail}\nafter");
 
-    let preview = output.log_preview();
-    assert_split_omission_redacted(&preview, &marker, &name, &value_head, &value_tail);
-
-    let text = output.truncated_output(/*max_tokens*/ 10_000);
-    assert_split_omission_redacted(&text, &marker, &name, &value_head, &value_tail);
+    assert_exec_output_omission_redacted(raw_output, &marker, &name, value_head, &value_tail);
 }
 
 #[test]

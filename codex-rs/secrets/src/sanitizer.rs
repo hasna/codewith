@@ -112,7 +112,7 @@ fn redact_omission_boundary_secret_fragments(input: String) -> String {
         let next_line_start =
             marker_end + usize::from(input.as_bytes().get(marker_end) == Some(&b'\n'));
         let next_line_end = input[next_line_start..]
-            .find(char::is_whitespace)
+            .find('\n')
             .map(|idx| next_line_start + idx)
             .unwrap_or(input.len());
 
@@ -320,6 +320,47 @@ mod tests {
                 "omitted secret fragment survived in redacted output: {fragment}"
             );
         }
+        assert!(redacted.contains("before"));
+        assert!(redacted.contains("after"));
+    }
+
+    #[test]
+    fn redacts_quoted_assignment_tail_line_around_omission_markers() {
+        let name = ["SERVICE", "_", "ACCESS", "_", "TOKEN"].concat();
+        let marker = ["...", " 333 bytes omitted ", "..."].concat();
+        let head = ["runtime", "fixture"].join(" ");
+        let tail = ["value", "1234567890"].join(" ");
+        let input = format!("before\n{name}=\"{head}\n{marker}\n{tail}\"\nafter");
+
+        let redacted = redact_secrets(input);
+
+        assert!(redacted.contains(&format!("{name}=[REDACTED_SECRET]")));
+        assert_eq!(redacted.matches(&marker).count(), 1);
+        for fragment in [head, tail] {
+            assert!(
+                !redacted.contains(&fragment),
+                "omitted secret fragment survived in redacted output: {fragment}"
+            );
+        }
+        assert!(redacted.contains("before"));
+        assert!(redacted.contains("after"));
+    }
+
+    #[test]
+    fn redacts_assignment_tail_when_value_starts_in_omitted_bytes() {
+        let name = ["SERVICE", "_", "ACCESS", "_", "TOKEN"].concat();
+        let marker = ["...", " 333 bytes omitted ", "..."].concat();
+        let tail = ["value", "1234567890"].join("-");
+        let input = format!("before\n{name}=\n{marker}\n{tail}\nafter");
+
+        let redacted = redact_secrets(input);
+
+        assert!(redacted.contains(&format!("{name}=[REDACTED_SECRET]")));
+        assert_eq!(redacted.matches(&marker).count(), 1);
+        assert!(
+            !redacted.contains(&tail),
+            "omitted secret fragment survived in redacted output: {tail}"
+        );
         assert!(redacted.contains("before"));
         assert!(redacted.contains("after"));
     }
