@@ -23,6 +23,14 @@ static ANTHROPIC_KEY_REGEX: LazyLock<Regex> =
 static JWT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 });
+static ENV_SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    compile_regex(concat!(
+        r#"(?i)(^|[^A-Za-z0-9_])"#,
+        r#"([A-Za-z_][A-Za-z0-9_]*(?:API_KEY|"#,
+        r#"ACCESS_TOKEN|AUTH_TOKEN|BEARER_TOKEN|TOKEN|SECRET|PASSWORD))"#,
+        r#"(\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"']+)"#
+    ))
+});
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(concat!(
         r#"(?i)\b(api[_-]?key|access[_-]?"#,
@@ -44,6 +52,7 @@ pub fn redact_secrets(input: String) -> String {
     let redacted = GOOGLE_API_KEY_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = ANTHROPIC_KEY_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = JWT_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
+    let redacted = ENV_SECRET_ASSIGNMENT_REGEX.replace_all(&redacted, "$1$2$3[REDACTED_SECRET]");
     let redacted = SECRET_ASSIGNMENT_REGEX.replace_all(&redacted, "$1$2$3[REDACTED_SECRET]");
 
     redacted.to_string()
@@ -109,5 +118,44 @@ mod tests {
     fn does_not_redact_benign_identifiers() {
         let input = "thread_id=00000000-0000-0000-0000-000000000001 path=/tmp/codewith";
         assert_eq!(redact_secrets(input.to_string()), input);
+    }
+
+    #[test]
+    fn redacts_argv_embedded_env_assignments_with_sensitive_suffix_names() {
+        let suffixes = [
+            vec!["API", "_", "KEY"],
+            vec!["TOKEN"],
+            vec!["SECRET"],
+            vec!["PASSWORD"],
+            vec!["ACCESS", "_", "TOKEN"],
+            vec!["AUTH", "_", "TOKEN"],
+            vec!["BEARER", "_", "TOKEN"],
+        ];
+        let value = ["runtime", "fixture", "value", "1234567890"].join("-");
+        let mut assignments = Vec::new();
+        let mut expected_names = Vec::new();
+
+        for suffix_parts in suffixes {
+            let suffix = suffix_parts.concat();
+            for name in [suffix.clone(), format!("SERVICE_{suffix}")] {
+                assignments.push(format!(r#""{name}={value}""#));
+                expected_names.push(name);
+            }
+        }
+        assignments.push(format!(
+            r#""{}='{} {}'""#,
+            ["SERVICE", "_", "SECRET"].concat(),
+            value,
+            ["quoted", "tail"].join("-")
+        ));
+        expected_names.push(["SERVICE", "_", "SECRET"].concat());
+
+        let redacted = redact_secrets(format!("argv=[{}]", assignments.join(", ")));
+
+        for name in expected_names {
+            assert!(redacted.contains(&format!("{name}=[REDACTED_SECRET]")));
+        }
+        assert!(!redacted.contains(&value));
+        assert!(!redacted.contains("quoted-tail"));
     }
 }
