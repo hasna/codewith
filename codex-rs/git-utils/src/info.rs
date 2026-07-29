@@ -778,7 +778,7 @@ fn find_ancestor_git_entry(base_dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
     loop {
         let dot_git = dir.join(".git");
-        if dot_git.exists() {
+        if is_valid_local_git_entry(&dot_git) {
             return Some((dir, dot_git));
         }
 
@@ -792,13 +792,29 @@ fn find_ancestor_git_entry(base_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+fn is_valid_local_git_entry(dot_git: &Path) -> bool {
+    if dot_git.is_file() {
+        return true;
+    }
+
+    dot_git.is_dir() && dot_git.join("HEAD").exists()
+}
+
 async fn find_ancestor_git_entry_with_fs(
     fs: &dyn ExecutorFileSystem,
     base_dir: &AbsolutePathBuf,
 ) -> Option<(AbsolutePathBuf, AbsolutePathBuf)> {
     for dir in base_dir.ancestors() {
         let dot_git = dir.join(".git");
-        if fs.get_metadata(&dot_git, /*sandbox*/ None).await.is_ok() {
+        let Ok(metadata) = fs.get_metadata(&dot_git, /*sandbox*/ None).await else {
+            continue;
+        };
+        if !metadata.is_directory
+            || fs
+                .get_metadata(&dot_git.join("HEAD"), /*sandbox*/ None)
+                .await
+                .is_ok()
+        {
             return Some((dir, dot_git));
         }
     }
