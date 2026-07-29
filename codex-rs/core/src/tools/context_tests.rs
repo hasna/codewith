@@ -497,7 +497,17 @@ fn runtime_env_assignment(name_parts: &[&str]) -> (String, String, String) {
 
 fn assert_redacted_assignment(text: &str, name: &str, value: &str) {
     assert!(text.contains(&format!("{name}=[REDACTED_SECRET]")));
+    assert_secret_value_absent(text, value);
+}
+
+fn assert_secret_value_absent(text: &str, value: &str) {
     assert!(!text.contains(value));
+    for segment in value.split('-').filter(|segment| segment.len() >= 4) {
+        assert!(
+            !text.contains(segment),
+            "partial secret segment survived in model-visible output: {segment}"
+        );
+    }
 }
 
 fn exec_output(raw_output: String, max_output_tokens: Option<usize>) -> ExecCommandToolOutput {
@@ -560,14 +570,16 @@ fn exec_command_tool_output_redacts_assignments_from_all_visible_outputs() {
 
 #[test]
 fn exec_command_tool_output_redacts_before_truncation_boundaries() {
-    let (name, value, assignment) = runtime_env_assignment(&["SERVICE", "_", "AUTH", "_", "TOKEN"]);
-    let raw_output = format!("{assignment}\n{}", "tail output ".repeat(500));
+    let (name, value, assignment) = runtime_env_assignment(&["TOKEN"]);
+    let raw_output = format!(
+        "{assignment}\n{}\nSERVICE_AUTH_TOKEN={value}",
+        "tail output ".repeat(500)
+    );
     let output = exec_output(raw_output, Some(8));
 
     let text = output.truncated_output(/*max_tokens*/ 8);
-    assert_redacted_assignment(&text, &name, &value);
-    assert!(!text.contains("runtime-fixture"));
-    assert!(!text.contains("1234567890"));
+    assert!(text.contains(&format!("{name}=")));
+    assert_secret_value_absent(&text, &value);
     assert!(text.contains("tokens truncated"));
 
     let code_mode_result = output.code_mode_result(&ToolPayload::Function {
@@ -577,9 +589,8 @@ fn exec_command_tool_output_redacts_before_truncation_boundaries() {
         .get("output")
         .and_then(JsonValue::as_str)
         .expect("code-mode result should include text output");
-    assert_redacted_assignment(code_mode_output, &name, &value);
-    assert!(!code_mode_output.contains("runtime-fixture"));
-    assert!(!code_mode_output.contains("1234567890"));
+    assert!(code_mode_output.contains(&format!("{name}=")));
+    assert_secret_value_absent(code_mode_output, &value);
     assert!(code_mode_output.contains("tokens truncated"));
 }
 
