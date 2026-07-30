@@ -42,6 +42,29 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.80] - 2026-07-30
+
+Tag: `rust-v0.1.80`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.80>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.79...rust-v0.1.80>
+
+This release hardens model-visible command output so secrets are redacted
+before truncation, including at ambiguous collector omission boundaries. It
+also carries the portability and dependency repairs merged after `0.1.79`.
+
+### Fixed
+
+- Tools: redact sensitive assignments before every model-visible unified-exec
+  output is truncated, including Responses input, code mode, post-tool hooks,
+  and persistent log previews. Exact collector omission markers are preserved,
+  while ambiguous retained tail content is conservatively redacted so a secret
+  split across discarded bytes cannot leak. (#455, #460)
+- CI: replace platform-specific shell and batch external-agent test fixtures
+  with a native test binary so the release gate behaves consistently on
+  Windows ARM as well as Unix targets. (#450)
+- Dependencies: update `regex` to `1.13.1`, including the upstream correction
+  for reverse suffix and inner-literal match offsets. (#442)
+
 ## [0.1.79] - 2026-07-28
 
 Tag: `rust-v0.1.79`
