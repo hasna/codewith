@@ -66,3 +66,29 @@ codewith profile remove <name>
 ```
 
 `codewith --profile <name>` is still the runtime config-profile flag. Use `codewith profile ...` for saved authentication profile management, and use `--auth-profile <name>` when a session must stay pinned to one auth profile without changing the root active login.
+
+## Checking whether a profile's auth still works
+
+`codewith usage --auth-profile <name>` inspects a saved profile without switching active auth. Read its **exit code**:
+
+| exit | meaning |
+| --- | --- |
+| `0` | every inspected target was verified — the provider answered |
+| `1` | the command could not run: bad flags, an unknown auth profile name, unreadable config |
+| `2` | the command ran, but at least one target could **not** be verified: dead or rejected auth, a failed or timed-out fetch, or a provider this command cannot check |
+
+```shell
+codewith usage --auth-profile work && codewith --auth-profile work exec "..."
+```
+
+**A populated report is not evidence that a profile works.** `plan` and `redactedAccountId` are read from the auth file on this machine *before* any request is issued, so they are present and plausible even when the provider never answered. A profile with dead auth prints a real-looking plan tier and account id; the only difference is the `error` field, the `STATUS: NOT VERIFIED` lines in the default output, and `"ok": false` in JSON.
+
+That asymmetry is why exit code `2` exists. Until it did, this command exited `0` for a dead profile and `1` only for an unknown profile *name* — so the exit code discriminated name resolution and never auth, and the probe agents used to ask "is this profile healthy" could not fail on the condition it was used to test.
+
+Scripting against JSON:
+
+```shell
+codewith usage --auth-profile work --json | jq -e '.ok'
+```
+
+`.ok` is set at the top level and per target, and mirrors the exit code. `not_codex_backend` means the target's provider cannot be checked by this command — its health is **unknown**, not healthy, and it is reported as unverified for that reason.
