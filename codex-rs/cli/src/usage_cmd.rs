@@ -23,7 +23,41 @@ use tokio::time::timeout;
 
 const USAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Process exit code used when the command itself ran fine, but at least one
+/// inspected target could NOT be verified against the provider — dead auth, a
+/// failed or timed-out fetch, or a provider this command cannot check.
+///
+/// This exists because `usage` is the probe callers reach for to ask "is this
+/// auth profile healthy". Before this code existed the answer was always exit
+/// 0: an unknown profile name failed loudly (exit 1) while a profile whose auth
+/// was dead succeeded quietly, so the exit code discriminated name resolution
+/// only and never auth. `usage --auth-profile P && use-it` is now meaningful.
+pub const USAGE_EXIT_TARGET_UNVERIFIED: i32 = 2;
+
+/// Explanation attached to every unverified target, because the report body
+/// still carries a plausible `plan` and `redactedAccountId` in that case: both
+/// are read from the auth file on this machine BEFORE any request is made, so
+/// they are present and real-looking even when the provider never answered.
+const LOCAL_FILE_PROVENANCE_NOTE: &str = concat!(
+    "The plan and account above are read from the LOCAL auth file on this machine, ",
+    "not from the provider. They are NOT evidence that this profile's auth works."
+);
+
+const USAGE_EXIT_CODE_HELP: &str = "Exit codes:
+  0  every inspected target was verified against the provider
+  1  the command could not run (bad flags, unknown auth profile, bad config)
+  2  the command ran, but at least one target could NOT be verified: dead or
+     rejected auth, a failed or timed-out fetch, or a provider this command
+     cannot check
+
+Exit 2 exists because a report body is still populated when the provider never
+answered: `plan` and `redactedAccountId` are read from the LOCAL auth file on
+this machine before any request is made, so a dead profile prints a plausible
+plan and account. Check the exit code, or the STATUS lines, or `.ok` in JSON --
+never the presence of a plan.";
+
 #[derive(Debug, Parser)]
+#[command(after_long_help = USAGE_EXIT_CODE_HELP)]
 pub struct UsageCommand {
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
@@ -60,12 +94,23 @@ struct UsageOptions {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageReport {
+    /// True only when every inspected target was verified against the provider.
+    /// Mirrors the process exit code so a JSON consumer does not have to know to
+    /// look inside `targets[..].error`.
+    ok: bool,
     targets: Vec<UsageTargetReport>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UsageTargetReport {
+    /// True when this target was actually verified against the provider.
+    ///
+    /// Deliberately initialised to `false` by every constructor and set only by
+    /// [`UsageReport::new`]. If the normalisation step is ever skipped the
+    /// output reports "not verified", which is the fail-safe direction for a
+    /// health probe.
+    ok: bool,
     target: UsageTarget,
     auth_mode: Option<AuthMode>,
     plan: Option<String>,
@@ -201,11 +246,26 @@ pub async fn run_usage(command: UsageCommand) -> anyhow::Result<()> {
             fetch_target_report(&config, target, options.include_token_profile, options.all).await,
         );
     }
-    let report = UsageReport { targets: reports };
+    let report = UsageReport::new(reports);
     if options.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_human_report(&report);
+    }
+
+    // Both output routes are covered on purpose. The exit code makes
+    // `usage --auth-profile P && use-it` correct for scripts; the stderr line
+    // and the human STATUS block make the failure visible to a person who is
+    // reading output rather than checking `$?`.
+    if !report.ok {
+        for line in report.failure_summary_lines() {
+            eprintln!("{line}");
+        }
+        // `println!` writes through a LineWriter, but flush explicitly so no
+        // buffered report can be lost to `process::exit`.
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        std::process::exit(USAGE_EXIT_TARGET_UNVERIFIED);
     }
     Ok(())
 }
@@ -276,6 +336,7 @@ async fn fetch_target_report(
 
     if !auth.uses_codex_backend() {
         return UsageTargetReport {
+            ok: false,
             target,
             auth_mode,
             plan,
@@ -296,6 +357,7 @@ async fn fetch_target_report(
         Ok(client) => client,
         Err(_) => {
             return UsageTargetReport {
+                ok: false,
                 target,
                 auth_mode,
                 plan,
@@ -337,6 +399,7 @@ async fn fetch_target_report(
         .unwrap_or_else(UsageSpendSummary::account_without_backend_credits);
 
     UsageTargetReport {
+        ok: false,
         target,
         auth_mode,
         plan,
@@ -496,9 +559,73 @@ impl UsageTarget {
     }
 }
 
+impl UsageReport {
+    /// Single normalisation point for `ok`. Every `UsageTargetReport`
+    /// constructor leaves `ok` false, so verification can only be asserted
+    /// here, from the one field that records whether the provider answered.
+    fn new(mut targets: Vec<UsageTargetReport>) -> Self {
+        for target in &mut targets {
+            target.ok = target.error.is_none();
+        }
+        let ok = targets.iter().all(|target| target.ok);
+        Self { ok, targets }
+    }
+
+    /// One line per unverified target, for stderr. Kept separate from the human
+    /// report so it is emitted in `--json` mode too, where stdout must stay
+    /// parseable.
+    fn failure_summary_lines(&self) -> Vec<String> {
+        self.targets
+            .iter()
+            .filter_map(|target| {
+                let reason = target.error.as_ref()?.reason;
+                Some(format!(
+                    "codewith usage: NOT VERIFIED: `{}` could not be checked against the provider ({}). {}",
+                    target.target.display_name,
+                    reason.as_str(),
+                    LOCAL_FILE_PROVENANCE_NOTE
+                ))
+            })
+            .collect()
+    }
+}
+
+impl UsageErrorReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AccountsFetchFailed => "accounts_fetch_failed",
+            Self::AccountsFetchTimedOut => "accounts_fetch_timed_out",
+            Self::FetchFailed => "fetch_failed",
+            Self::NoAuth => "no_auth",
+            Self::NotCodexBackend => "not_codex_backend",
+            Self::RateLimitFetchTimedOut => "rate_limit_fetch_timed_out",
+            Self::TokenProfileFetchTimedOut => "token_profile_fetch_timed_out",
+        }
+    }
+
+    /// Plain-language cause, so the human report does not require the reader to
+    /// know what the enum variant means.
+    fn explanation(self) -> &'static str {
+        match self {
+            Self::AccountsFetchFailed => "the backend rejected the accounts request",
+            Self::AccountsFetchTimedOut => "the accounts request timed out",
+            Self::FetchFailed => {
+                "the provider request failed - the auth for this target is dead, rejected, or unreachable"
+            }
+            Self::NoAuth => "there is no usable auth stored for this target",
+            Self::NotCodexBackend => {
+                "this provider cannot be checked by this command, so its health is UNKNOWN, not healthy"
+            }
+            Self::RateLimitFetchTimedOut => "the rate-limit request timed out",
+            Self::TokenProfileFetchTimedOut => "the token-profile request timed out",
+        }
+    }
+}
+
 impl UsageTargetReport {
     fn unavailable(target: UsageTarget, reason: UsageErrorReason) -> Self {
         Self {
+            ok: false,
             target,
             auth_mode: None,
             plan: None,
@@ -585,18 +712,24 @@ impl UsageSpendAvailability {
 
 fn print_human_report(report: &UsageReport) {
     for target in &report.targets {
+        // A target whose provider fetch failed still has a `plan` and an
+        // account id, both read from the local auth file before any request was
+        // made. Tag them at the point they are printed: an unqualified
+        // "Plan: Pro" on a dead profile is precisely what has been read as
+        // proof that the profile works.
+        let local_only = if target.ok { "" } else { "  [local file]" };
         println!("Target: {}", target.target.display_name);
         if let Some(provider) = target.target.subscription_provider {
             println!("  Provider: {provider}");
         }
         if let Some(auth_mode) = target.auth_mode {
-            println!("  Auth mode: {auth_mode}");
+            println!("  Auth mode: {auth_mode}{local_only}");
         }
         if let Some(plan) = target.plan.as_deref() {
-            println!("  Plan: {plan}");
+            println!("  Plan: {plan}{local_only}");
         }
         if let Some(account_id) = target.redacted_account_id.as_deref() {
-            println!("  Account: {account_id}");
+            println!("  Account: {account_id}{local_only}");
         }
         print_spend_status("  ", &target.spend_status);
         if let Some(rate_limits) = target.rate_limits.as_ref() {
@@ -605,9 +738,7 @@ fn print_human_report(report: &UsageReport) {
         if let Some(token_profile) = target.token_profile.as_ref() {
             print_token_profile("  ", token_profile);
         }
-        if let Some(error) = target.error.as_ref() {
-            println!("  Error: {:?}", error.reason);
-        }
+        print_target_status("  ", target);
         if let Some(error) = target.token_profile_error.as_ref() {
             println!("  Token profile error: {:?}", error.reason);
         }
@@ -638,6 +769,32 @@ fn print_human_report(report: &UsageReport) {
                 println!("    Token profile error: {:?}", error.reason);
             }
         }
+    }
+}
+
+/// The verdict lines. This is what a reader is meant to see; everything above
+/// them is detail. They never say "verified" for a target the provider did not
+/// confirm.
+fn target_status_lines(target: &UsageTargetReport) -> Vec<String> {
+    match target.error.as_ref() {
+        None => vec!["STATUS: VERIFIED - the provider answered for this target".to_string()],
+        Some(error) => {
+            let reason = error.reason;
+            vec![
+                format!(
+                    "STATUS: NOT VERIFIED - {} ({})",
+                    reason.explanation(),
+                    reason.as_str()
+                ),
+                format!("STATUS: {LOCAL_FILE_PROVENANCE_NOTE}"),
+            ]
+        }
+    }
+}
+
+fn print_target_status(indent: &str, target: &UsageTargetReport) {
+    for line in target_status_lines(target) {
+        println!("{indent}{line}");
     }
 }
 
@@ -883,6 +1040,146 @@ mod tests {
                 "reason": null
             })
         );
+    }
+
+    /// A target report shaped exactly like the one a DEAD auth profile produces:
+    /// `plan` and `redacted_account_id` populated from the local auth file,
+    /// `error` set because the provider never answered.
+    fn dead_auth_target_report(name: &str) -> UsageTargetReport {
+        UsageTargetReport {
+            ok: false,
+            target: UsageTarget::profile_name(name.to_string()),
+            auth_mode: Some(AuthMode::Chatgpt),
+            plan: Some("Pro".to_string()),
+            redacted_account_id: Some("acct...7890".to_string()),
+            spend_status: UsageSpendSummary::account_without_backend_credits(),
+            rate_limits: None,
+            token_profile: None,
+            token_profile_error: None,
+            accounts_error: None,
+            accounts: Vec::new(),
+            error: Some(UsageError {
+                reason: UsageErrorReason::FetchFailed,
+            }),
+        }
+    }
+
+    fn verified_target_report(name: &str) -> UsageTargetReport {
+        UsageTargetReport {
+            error: None,
+            ..dead_auth_target_report(name)
+        }
+    }
+
+    #[test]
+    fn report_is_not_ok_when_a_target_failed_even_though_its_body_looks_complete() {
+        let report = UsageReport::new(vec![dead_auth_target_report("account012")]);
+
+        assert!(
+            !report.ok,
+            "a target the provider never confirmed is not ok"
+        );
+        assert!(!report.targets[0].ok);
+
+        // The body a dead profile returns is deliberately asserted here: a
+        // plausible plan and account id are what made four separate agents read
+        // rc=0 as proof the profile worked. They come from the local auth file.
+        let value = serde_json::to_value(&report).expect("serialize report");
+        assert_eq!(value["ok"], serde_json::json!(false));
+        assert_eq!(value["targets"][0]["ok"], serde_json::json!(false));
+        assert_eq!(value["targets"][0]["plan"], serde_json::json!("Pro"));
+        assert_eq!(
+            value["targets"][0]["redactedAccountId"],
+            serde_json::json!("acct...7890")
+        );
+        assert_eq!(
+            value["targets"][0]["error"]["reason"],
+            serde_json::json!("fetch_failed")
+        );
+    }
+
+    #[test]
+    fn report_is_ok_only_when_every_target_was_verified() {
+        let all_good = UsageReport::new(vec![
+            verified_target_report("account001"),
+            verified_target_report("account011"),
+        ]);
+        assert!(all_good.ok);
+        assert!(all_good.targets.iter().all(|target| target.ok));
+        assert!(all_good.failure_summary_lines().is_empty());
+
+        let mixed = UsageReport::new(vec![
+            verified_target_report("account001"),
+            dead_auth_target_report("account012"),
+        ]);
+        assert!(
+            !mixed.ok,
+            "one unverified target makes the whole run not ok"
+        );
+        assert!(mixed.targets[0].ok);
+        assert!(!mixed.targets[1].ok);
+    }
+
+    #[test]
+    fn failure_summary_names_the_target_and_the_local_file_provenance() {
+        let report = UsageReport::new(vec![dead_auth_target_report("account012")]);
+        let lines = report.failure_summary_lines();
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("NOT VERIFIED"), "{}", lines[0]);
+        assert!(lines[0].contains("account012"), "{}", lines[0]);
+        assert!(lines[0].contains("fetch_failed"), "{}", lines[0]);
+        assert!(lines[0].contains("LOCAL auth file"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn status_lines_never_claim_verification_for_a_failed_target() {
+        let failed = target_status_lines(&dead_auth_target_report("account012")).join("\n");
+        assert!(failed.contains("STATUS: NOT VERIFIED"), "{failed}");
+        assert!(failed.contains("fetch_failed"), "{failed}");
+        assert!(failed.contains("LOCAL auth file"), "{failed}");
+
+        let verified = target_status_lines(&verified_target_report("account001")).join("\n");
+        assert_eq!(
+            verified, "STATUS: VERIFIED - the provider answered for this target",
+            "a verified target gets exactly one unambiguous line"
+        );
+    }
+
+    #[test]
+    fn not_codex_backend_is_reported_as_unverified_rather_than_healthy() {
+        let report = UsageReport::new(vec![UsageTargetReport::unavailable(
+            UsageTarget::profile_name("claude".to_string()),
+            UsageErrorReason::NotCodexBackend,
+        )]);
+
+        assert!(
+            !report.ok,
+            "a provider we cannot check is not a healthy one"
+        );
+        let lines = target_status_lines(&report.targets[0]).join("\n");
+        assert!(lines.contains("UNKNOWN, not healthy"), "{lines}");
+    }
+
+    #[test]
+    fn every_error_reason_has_a_wire_name_matching_its_serialized_form() {
+        // `as_str` feeds the human and stderr output while serde feeds JSON;
+        // this keeps a reader grepping for one from missing the other.
+        for reason in [
+            UsageErrorReason::AccountsFetchFailed,
+            UsageErrorReason::AccountsFetchTimedOut,
+            UsageErrorReason::FetchFailed,
+            UsageErrorReason::NoAuth,
+            UsageErrorReason::NotCodexBackend,
+            UsageErrorReason::RateLimitFetchTimedOut,
+            UsageErrorReason::TokenProfileFetchTimedOut,
+        ] {
+            assert_eq!(
+                serde_json::to_value(reason).expect("serialize reason"),
+                serde_json::json!(reason.as_str())
+            );
+            assert!(!reason.explanation().is_empty());
+        }
     }
 
     #[test]
