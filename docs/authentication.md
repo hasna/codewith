@@ -71,19 +71,19 @@ codewith profile remove <name>
 
 `codewith usage --auth-profile <name>` inspects a saved profile without switching active auth. Read its **exit code**:
 
-| exit | meaning |
-| --- | --- |
-| `0` | every inspected target was verified — the provider answered |
-| `1` | the command could not run: bad flags, an unknown auth profile name, unreadable config |
-| `2` | the command ran, but at least one target could **not** be verified: dead or rejected auth, a failed or timed-out fetch, or a provider this command cannot check |
+| exit | meaning                                                                                                                                                         |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | every inspected target was verified — the provider answered                                                                                                     |
+| `1`  | the command could not run: bad flags, an unknown auth profile name, unreadable config                                                                           |
+| `2`  | the command ran, but at least one target could **not** be verified: dead or rejected auth, a failed or timed-out fetch, or a provider this command cannot check |
 
 ```shell
 codewith usage --auth-profile work && codewith --auth-profile work exec "..."
 ```
 
-**A populated report is not evidence that a profile works.** `plan` and `redactedAccountId` are read from the auth file on this machine *before* any request is issued, so they are present and plausible even when the provider never answered. A profile with dead auth prints a real-looking plan tier and account id; the only difference is the `error` field, the `STATUS: NOT VERIFIED` lines in the default output, and `"ok": false` in JSON.
+**A populated report is not evidence that a profile works.** `plan` and `redactedAccountId` are read from the auth file on this machine _before_ any request is issued, so they are present and plausible even when the provider never answered. A profile with dead auth prints a real-looking plan tier and account id; the only difference is the `error` field, the `STATUS: NOT VERIFIED` lines in the default output, and `"ok": false` in JSON.
 
-That asymmetry is why exit code `2` exists. Until it did, this command exited `0` for a dead profile and `1` only for an unknown profile *name* — so the exit code discriminated name resolution and never auth, and the probe agents used to ask "is this profile healthy" could not fail on the condition it was used to test.
+That asymmetry is why exit code `2` exists. Until it did, this command exited `0` for a dead profile and `1` only for an unknown profile _name_ — so the exit code discriminated name resolution and never auth, and the probe agents used to ask "is this profile healthy" could not fail on the condition it was used to test.
 
 Scripting against JSON:
 
