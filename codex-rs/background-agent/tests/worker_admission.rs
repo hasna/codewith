@@ -532,8 +532,7 @@ async fn pre_spawn_revalidation_detects_a_lock_lost_after_admission() {
     admission_runner.assert_exhausted();
 
     let mut revalidation_commands = valid_commands(one_page_roster());
-    revalidation_commands[6] =
-        lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
+    revalidation_commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let revalidation_runner = ScriptedRunner::new(revalidation_commands);
     let error = revalidate_worker_admission(
         &revalidation_runner,
