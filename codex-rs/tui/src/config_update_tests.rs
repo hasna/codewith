@@ -163,7 +163,10 @@ fn bare_display_on_wrapped_config_error_drops_the_real_cause() {
     // The pre-fix code path: `format!("Failed to save provider `{provider_id}`: {err}")`.
     let message = format!("Failed to save provider `{provider_id}`: {err}");
 
-    assert_eq!(message, "Failed to save provider `openai`: config/batchWrite failed in TUI");
+    assert_eq!(
+        message,
+        "Failed to save provider `openai`: config/batchWrite failed in TUI"
+    );
     assert!(
         !message.contains("missing env_key"),
         "bare Display unexpectedly preserved the real cause; if this now fails, the eyre \
