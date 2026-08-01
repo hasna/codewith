@@ -1926,7 +1926,7 @@ async fn reconcile_background_agents(
             .await?;
             continue;
         }
-        if !should_start_background_run(&run) {
+        if !should_start_in_process_background_run(&context.state_db, &run).await? {
             continue;
         }
         if !context
@@ -3171,6 +3171,29 @@ fn should_start_background_run(run: &BackgroundAgentRun) -> bool {
         return wait_until <= Utc::now().timestamp();
     }
     true
+}
+
+async fn should_start_in_process_background_run(
+    state_db: &StateDbHandle,
+    run: &BackgroundAgentRun,
+) -> anyhow::Result<bool> {
+    if !should_start_background_run(run) {
+        return Ok(false);
+    }
+    Ok(!background_agent_run_has_worker_admission(state_db, run.id.as_str()).await?)
+}
+
+async fn background_agent_run_has_worker_admission(
+    state_db: &StateDbHandle,
+    run_id: &str,
+) -> anyhow::Result<bool> {
+    let Some(snapshot) = state_db
+        .get_background_agent_initial_execution_snapshot(run_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    Ok(worker_admission_from_snapshot(&snapshot.payload_json)?.is_some())
 }
 
 fn background_agent_worker_preclaimed_generation(
@@ -6329,6 +6352,42 @@ done
         Ok(())
     }
 
+    #[tokio::test]
+    async fn in_process_reconciler_refuses_worker_admission_runs() -> anyhow::Result<()> {
+        let temp = TempDir::new()?;
+        let state_db =
+            codex_state::StateRuntime::init(temp.path().to_path_buf(), "test-provider".to_string())
+                .await?;
+        seed_worker_admission_queued_run(state_db.as_ref(), /*run_id*/ "worker-admission-run")
+            .await?;
+
+        let run = state_db
+            .get_background_agent_run("worker-admission-run")
+            .await?
+            .expect("seeded run should exist");
+        assert!(
+            should_start_background_run(&run),
+            "the old in-process reconciler predicate treated the queued run as claimable"
+        );
+        assert!(
+            state_db
+                .background_agent_admission_is_ready(
+                    /*run_id*/ "worker-admission-run",
+                    BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                    BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                )
+                .await?,
+            "the bypass must not rely on runtime compatibility failure"
+        );
+
+        assert!(
+            !should_start_in_process_background_run(&state_db, &run).await?,
+            "worker-admission runs require the process supervisor's revalidation and identity injection"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn initial_goal_objective_payload_parser_trims_and_ignores_missing_values() {
         assert_eq!(
@@ -7026,6 +7085,61 @@ done
         state_db: &codex_state::StateRuntime,
         run_id: &str,
     ) -> anyhow::Result<()> {
+        seed_queued_run_with_payload(
+            state_db,
+            run_id,
+            json!({
+                "cwd": null,
+                "configFingerprint": "cfg-test",
+                "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+            }),
+        )
+        .await
+    }
+
+    async fn seed_worker_admission_queued_run(
+        state_db: &codex_state::StateRuntime,
+        run_id: &str,
+    ) -> anyhow::Result<()> {
+        seed_queued_run_with_payload(
+            state_db,
+            run_id,
+            json!({
+                "cwd": null,
+                "configFingerprint": "cfg-test",
+                "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
+                "workerAdmission": {
+                    "worker": "worker-one",
+                    "parent": "parent-one",
+                    "taskId": "task-one",
+                    "artifactType": "git-branch",
+                    "artifactId": "github:hasna/codewith:branch:feature",
+                    "taskAssignee": "parent-one",
+                    "workerReportsTo": "parent-todos-id",
+                    "evidence": {
+                        "identitiesWorkerId": "worker-identities-id",
+                        "todosWorkerId": "worker-todos-id",
+                        "todosParentId": "parent-todos-id",
+                        "conversationsWorkerId": "worker-conversations-id",
+                        "effectiveParent": "parent-one",
+                        "lockHolder": "worker-one",
+                        "rosterPagesScanned": 1
+                    }
+                }
+            }),
+        )
+        .await
+    }
+
+    async fn seed_queued_run_with_payload(
+        state_db: &codex_state::StateRuntime,
+        run_id: &str,
+        execution_payload_json: Value,
+    ) -> anyhow::Result<()> {
         let start_event_payload = json!({
             "cwd": null,
             "prompt": "process supervisor test",
@@ -7034,13 +7148,7 @@ done
         let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
             run_id: run_id.to_string(),
             snapshot_kind: "initial_execution_context".to_string(),
-            payload_json: json!({
-                "cwd": null,
-                "configFingerprint": "cfg-test",
-                "versionFingerprint": BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
-                "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
-                "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
-            }),
+            payload_json: execution_payload_json,
             recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
             config_fingerprint: Some("cfg-test".to_string()),
         };
