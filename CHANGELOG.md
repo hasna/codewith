@@ -39,8 +39,40 @@ Known evidence gaps:
 - This file intentionally excludes pre-fork alpha tags
   `rust-v0.1.0-alpha.*`, upstream high-version `rust-v*` tags, `python-v*`
   SDK tags, and `rusty-v8-v*` dependency artifact tags.
+- `rust-v0.1.81` tag exists (workspace version bump only, PR #465) but its
+  release run failed at the changelog-notes step before `publish-npm`, so
+  nothing was ever published to npm under that version. Its two included
+  fixes (#462, #463) are documented under `0.1.82` below instead, which is
+  the first version this fork actually published after `0.1.80`.
 
 ## [Unreleased]
+
+## [0.1.82] - 2026-08-01
+
+Tag: `rust-v0.1.82`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.82>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.80...rust-v0.1.82>
+
+This release fixes a false-positive auth-profile health check, a spawn-receipt
+cursor underflow that failed every durable background agent at start, and a
+TUI provider-save error message that discarded the real validation cause.
+
+### Fixed
+
+- Usage: `codewith usage --auth-profile <name>` now exits `2` when a target
+  cannot be verified instead of `0`, tags every field sourced from the local
+  auth file so it cannot be misread as a live health signal, and reports a
+  `STATUS:` line and an `ok` field per target so a caller does not have to
+  know to look inside `targets[..].error`. (#462)
+- App server: fix a `saturating_sub` underflow that produced a negative
+  lookback cursor for the durable background-agent spawn-receipt poll on
+  every fresh run; the retention guard rejected the negative cursor as
+  `"event cursor has been compacted"` and aborted the worker before it could
+  start. (#463)
+- TUI: stop discarding the real config/batchWrite validation error when a
+  model provider save fails — the provider-save handler now formats the
+  error with the same chain-aware formatter already used by the sibling
+  default-model and status-line save handlers. (#467)
 
 ## [0.1.80] - 2026-07-30
 
