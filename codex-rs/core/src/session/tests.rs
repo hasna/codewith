@@ -4493,8 +4493,7 @@ fn model_reasoning_effort_accepts_ultra_alias_when_max_is_advertised() {
 
 #[test]
 fn model_reasoning_effort_rejects_ultra_alias_when_max_is_not_advertised() {
-    let model_info =
-        model_with_supported_reasoning_levels(vec![ReasoningEffortConfig::XHigh]);
+    let model_info = model_with_supported_reasoning_levels(vec![ReasoningEffortConfig::XHigh]);
     let ultra = "ultra"
         .parse::<ReasoningEffortConfig>()
         .expect("ultra should parse as the max alias");
@@ -4515,7 +4514,9 @@ fn model_reasoning_effort_allows_custom_value_without_model_metadata() {
     assert_eq!(
         validate_model_reasoning_effort(
             &model_info,
-            Some(&ReasoningEffortConfig::Custom("provider-defined".to_string())),
+            Some(&ReasoningEffortConfig::Custom(
+                "provider-defined".to_string()
+            )),
         ),
         Ok(())
     );
