@@ -770,6 +770,11 @@ for entry in "${ELIGIBLE[@]}"; do
 
   row="$(state_get "$key")"; att=0
   [ -n "$row" ] && att="$(cut -f4 <<<"$row")"
+  [[ "${att:-0}" =~ ^[0-9]+$ ]] || att=0
+  if [ "$att" -ge "$MAX_ATTEMPTS" ]; then
+    log "RESET $key — eligible state carried attempts=$att/$MAX_ATTEMPTS; starting a fresh attempt window"
+    att=0
+  fi
   att=$(( ${att:-0} + 1 ))
 
   grep -qxF "$key" "$ATTEMPTED" || echo "$key" >> "$ATTEMPTED"

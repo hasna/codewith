@@ -276,6 +276,29 @@ class DrainSupervisorGuardTest(unittest.TestCase):
                 log,
             )
 
+    def test_external_unburned_cold_key_resets_attempt_window(self) -> None:
+        comments = [
+            {
+                "createdAt": "2026-08-01T12:00:00Z",
+                "body": review_line("GO", reviewer="Castor"),
+            }
+        ]
+        with TemporaryDirectory() as temp_dir:
+            fixture = DrainFixture(
+                temp_dir, comments=comments, state_class="go_open_cold", attempts=3
+            )
+            (fixture.home / "drain-attempted.txt").write_text("", encoding="utf-8")
+
+            result = fixture.run_supervisor()
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            log = fixture.supervisor_log()
+            self.assertIn("attempt=1/3", log)
+            self.assertIsNone(
+                re.search(r"attempt[ =]([4-9]|[1-9][0-9]+)/3", log),
+                log,
+            )
+
 
 if __name__ == "__main__":
     if not SCRIPT_DIR.is_dir():
