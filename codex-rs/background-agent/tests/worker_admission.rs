@@ -58,13 +58,8 @@ impl WorkerAdmissionCommandRunner for ScriptedRunner {
     fn run(
         &self,
         command: WorkerAdmissionCommand,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = anyhow::Result<WorkerAdmissionCommandOutput>>
-                + Send
-                + '_,
-        >,
-    > {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<WorkerAdmissionCommandOutput>> + Send + '_>>
+    {
         Box::pin(async move {
             let expected = self
                 .expected
@@ -154,11 +149,7 @@ fn identity_command(exit_code: i32) -> ExpectedCommand {
 fn todos_agent_command(name: &str, id: &str, reports_to: Option<&str>) -> ExpectedCommand {
     ExpectedCommand {
         program: "todos",
-        args: vec![
-            "--json".to_string(),
-            "agent".to_string(),
-            name.to_string(),
-        ],
+        args: vec!["--json".to_string(), "agent".to_string(), name.to_string()],
         output: output(
             0,
             json!({
@@ -287,26 +278,41 @@ fn worker_admission_is_disabled_only_when_every_field_is_omitted() {
 #[test]
 fn worker_admission_refuses_each_missing_identity_or_artifact_field() {
     let missing_fields = [
-        ("worker", WorkerAdmissionInput {
-            worker: None,
-            ..input()
-        }),
-        ("parent", WorkerAdmissionInput {
-            parent: None,
-            ..input()
-        }),
-        ("task-id", WorkerAdmissionInput {
-            task_id: None,
-            ..input()
-        }),
-        ("artifact-type", WorkerAdmissionInput {
-            artifact_type: None,
-            ..input()
-        }),
-        ("artifact-id", WorkerAdmissionInput {
-            artifact_id: None,
-            ..input()
-        }),
+        (
+            "worker",
+            WorkerAdmissionInput {
+                worker: None,
+                ..input()
+            },
+        ),
+        (
+            "parent",
+            WorkerAdmissionInput {
+                parent: None,
+                ..input()
+            },
+        ),
+        (
+            "task-id",
+            WorkerAdmissionInput {
+                task_id: None,
+                ..input()
+            },
+        ),
+        (
+            "artifact-type",
+            WorkerAdmissionInput {
+                artifact_type: None,
+                ..input()
+            },
+        ),
+        (
+            "artifact-id",
+            WorkerAdmissionInput {
+                artifact_id: None,
+                ..input()
+            },
+        ),
     ];
     for (field, candidate) in missing_fields {
         let error = candidate
@@ -375,7 +381,11 @@ async fn effective_conversations_parent_mismatch_is_rejected() {
         .await
         .expect_err("actual parent mismatch must fail");
 
-    assert!(error.to_string().contains("effective Conversations identity"));
+    assert!(
+        error
+            .to_string()
+            .contains("effective Conversations identity")
+    );
     runner.assert_exhausted();
 }
 

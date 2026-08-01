@@ -2218,9 +2218,7 @@ async fn revalidate_background_agent_worker_admission(
         .get_background_agent_initial_execution_snapshot(run_id)
         .await?
         .with_context(|| {
-            format!(
-                "background agent `{run_id}` is missing its initial execution context snapshot"
-            )
+            format!("background agent `{run_id}` is missing its initial execution context snapshot")
         })?;
     let Some(admission) = worker_admission_from_snapshot(&snapshot.payload_json)? else {
         return Ok(None);

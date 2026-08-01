@@ -187,9 +187,7 @@ pub async fn revalidate_worker_admission(
     Ok(current)
 }
 
-pub fn worker_admission_from_snapshot(
-    payload: &Value,
-) -> anyhow::Result<Option<WorkerAdmission>> {
+pub fn worker_admission_from_snapshot(payload: &Value) -> anyhow::Result<Option<WorkerAdmission>> {
     payload
         .get(WORKER_ADMISSION_SNAPSHOT_FIELD)
         .filter(|value| !value.is_null())
@@ -222,7 +220,11 @@ async fn verify_worker_admission_inner(
         runner,
         WorkerAdmissionCommand {
             program: programs.identities.clone(),
-            args: argv(["--json", "show", format!("agent:{}", request.worker).as_str()]),
+            args: argv([
+                "--json",
+                "show",
+                format!("agent:{}", request.worker).as_str(),
+            ]),
             env: Vec::new(),
         },
         &[0],
@@ -328,8 +330,7 @@ async fn verify_worker_admission_inner(
                 "read effective Conversations identity",
             )
             .await?;
-            let effective_parent =
-                required_json_string(&whoami, "agent", "Conversations whoami")?;
+            let effective_parent = required_json_string(&whoami, "agent", "Conversations whoami")?;
             if !same_identity(effective_parent.as_str(), request.parent.as_str()) {
                 anyhow::bail!(
                     "effective Conversations identity `{effective_parent}` does not match parent `{}`",
@@ -372,8 +373,7 @@ async fn verify_worker_admission_inner(
     }
     let returned_artifact_type =
         required_json_string(&lock, "resource_type", "Conversations lock")?;
-    let returned_artifact_id =
-        required_json_string(&lock, "resource_id", "Conversations lock")?;
+    let returned_artifact_id = required_json_string(&lock, "resource_id", "Conversations lock")?;
     if returned_artifact_type != request.artifact_type
         || returned_artifact_id != request.artifact_id
     {
@@ -448,9 +448,7 @@ async fn find_conversations_worker(
     let mut matches = Vec::new();
     loop {
         if pages_scanned >= MAX_ROSTER_PAGES {
-            anyhow::bail!(
-                "Conversations roster did not terminate after {MAX_ROSTER_PAGES} pages"
-            );
+            anyhow::bail!("Conversations roster did not terminate after {MAX_ROSTER_PAGES} pages");
         }
         let page = run_json(
             runner,
