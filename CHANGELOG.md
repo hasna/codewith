@@ -47,6 +47,28 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.83] - 2026-08-01
+
+Tag: `rust-v0.1.83`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.83>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.82...rust-v0.1.83>
+
+This release keeps secret-assignment redaction from breaking shell snapshots
+that contain trailing escape backslashes. It also restores selectable
+repository-local agent roles in the default MultiAgentV2 `spawn_agent` tool
+without exposing its locked execution metadata controls.
+
+### Fixed
+
+- Shell snapshots: preserve the trailing backslash run when redacting a
+  secret-like assignment value, so the following quote keeps its escape parity
+  and fresh sessions can validate and use the redacted Bash snapshot. (#471)
+- Multi-agent tools: restore `agent_type` as the repository-local role selector
+  in the default MultiAgentV2 `spawn_agent` schema. Hidden mode keeps configured
+  model, provider, reasoning-effort, and service-tier metadata out of role
+  descriptions, while those controls and `auth_profile` remain absent from the
+  caller-settable parameters. (#472)
+
 ## [0.1.82] - 2026-08-01
 
 Tag: `rust-v0.1.82`
