@@ -130,7 +130,7 @@ fn identity_command(exit_code: i32) -> ExpectedCommand {
         ],
         output: if exit_code == 0 {
             output(
-                0,
+                /*exit_code*/ 0,
                 json!({
                     "id": "worker-identities-id",
                     "fullName": WORKER,
@@ -151,7 +151,7 @@ fn todos_agent_command(name: &str, id: &str, reports_to: Option<&str>) -> Expect
         program: "todos",
         args: vec!["--json".to_string(), "agent".to_string(), name.to_string()],
         output: output(
-            0,
+            /*exit_code*/ 0,
             json!({
                 "agent": {
                     "id": id,
@@ -175,7 +175,7 @@ fn task_command(assigned_to: &str, status: &str) -> ExpectedCommand {
             TASK_ID.to_string(),
         ],
         output: output(
-            0,
+            /*exit_code*/ 0,
             json!({
                 "id": TASK_ID,
                 "status": status,
@@ -197,7 +197,7 @@ fn roster_command(cursor: usize, agents: Value) -> ExpectedCommand {
             "--cursor".to_string(),
             cursor.to_string(),
         ],
-        output: output(0, agents),
+        output: output(/*exit_code*/ 0, agents),
     }
 }
 
@@ -205,7 +205,10 @@ fn whoami_command(agent: &str) -> ExpectedCommand {
     ExpectedCommand {
         program: "conversations",
         args: vec!["whoami".to_string(), "--json".to_string()],
-        output: output(0, json!({"agent": agent, "source": "env var"})),
+        output: output(
+            /*exit_code*/ 0,
+            json!({"agent": agent, "source": "env var"}),
+        ),
     }
 }
 
@@ -240,9 +243,9 @@ fn lock_command(
 
 fn valid_commands(roster_pages: Vec<Value>) -> Vec<ExpectedCommand> {
     let mut commands = vec![
-        identity_command(0),
+        identity_command(/*exit_code*/ 0),
         todos_agent_command(WORKER, WORKER_TODOS_ID, Some(PARENT_TODOS_ID)),
-        todos_agent_command(PARENT, PARENT_TODOS_ID, None),
+        todos_agent_command(PARENT, PARENT_TODOS_ID, /*reports_to*/ None),
         task_command(PARENT, "in_progress"),
     ];
     commands.extend(
@@ -253,7 +256,7 @@ fn valid_commands(roster_pages: Vec<Value>) -> Vec<ExpectedCommand> {
     );
     commands.extend([
         whoami_command(PARENT),
-        lock_command(ARTIFACT_TYPE, ARTIFACT_ID, true, WORKER),
+        lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ true, WORKER),
     ]);
     commands
 }
@@ -327,7 +330,7 @@ fn worker_admission_refuses_each_missing_identity_or_artifact_field() {
 
 #[tokio::test]
 async fn unregistered_worker_identity_is_rejected_before_other_queries() {
-    let runner = ScriptedRunner::new(vec![identity_command(1)]);
+    let runner = ScriptedRunner::new(vec![identity_command(/*exit_code*/ 1)]);
 
     let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
         .await
@@ -340,9 +343,9 @@ async fn unregistered_worker_identity_is_rejected_before_other_queries() {
 #[tokio::test]
 async fn worker_without_parent_lineage_is_rejected() {
     let runner = ScriptedRunner::new(vec![
-        identity_command(0),
-        todos_agent_command(WORKER, WORKER_TODOS_ID, None),
-        todos_agent_command(PARENT, PARENT_TODOS_ID, None),
+        identity_command(/*exit_code*/ 0),
+        todos_agent_command(WORKER, WORKER_TODOS_ID, /*reports_to*/ None),
+        todos_agent_command(PARENT, PARENT_TODOS_ID, /*reports_to*/ None),
         task_command(PARENT, "in_progress"),
     ]);
 
@@ -357,9 +360,9 @@ async fn worker_without_parent_lineage_is_rejected() {
 #[tokio::test]
 async fn task_assigned_to_a_different_parent_is_rejected() {
     let runner = ScriptedRunner::new(vec![
-        identity_command(0),
+        identity_command(/*exit_code*/ 0),
         todos_agent_command(WORKER, WORKER_TODOS_ID, Some(PARENT_TODOS_ID)),
-        todos_agent_command(PARENT, PARENT_TODOS_ID, None),
+        todos_agent_command(PARENT, PARENT_TODOS_ID, /*reports_to*/ None),
         task_command("another-parent", "in_progress"),
     ]);
 
@@ -392,7 +395,7 @@ async fn effective_conversations_parent_mismatch_is_rejected() {
 #[tokio::test]
 async fn missing_artifact_lock_is_rejected() {
     let mut commands = valid_commands(one_page_roster());
-    commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, false, "");
+    commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let runner = ScriptedRunner::new(commands);
 
     let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
@@ -406,7 +409,7 @@ async fn missing_artifact_lock_is_rejected() {
 #[tokio::test]
 async fn lock_in_a_different_resource_namespace_does_not_satisfy_admission() {
     let mut commands = valid_commands(one_page_roster());
-    commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, false, "");
+    commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let runner = ScriptedRunner::new(commands);
 
     let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
@@ -447,11 +450,11 @@ async fn roster_page_error_fails_closed() {
         .map(|index| json!({"id": format!("other-{index}"), "agent": format!("other-{index}")}))
         .collect::<Vec<_>>();
     let mut commands = vec![
-        identity_command(0),
+        identity_command(/*exit_code*/ 0),
         todos_agent_command(WORKER, WORKER_TODOS_ID, Some(PARENT_TODOS_ID)),
-        todos_agent_command(PARENT, PARENT_TODOS_ID, None),
+        todos_agent_command(PARENT, PARENT_TODOS_ID, /*reports_to*/ None),
         task_command(PARENT, "in_progress"),
-        roster_command(0, json!(first_page)),
+        roster_command(/*cursor*/ 0, json!(first_page)),
     ];
     commands.push(ExpectedCommand {
         program: "conversations",
@@ -529,7 +532,8 @@ async fn pre_spawn_revalidation_detects_a_lock_lost_after_admission() {
     admission_runner.assert_exhausted();
 
     let mut revalidation_commands = valid_commands(one_page_roster());
-    revalidation_commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, false, "");
+    revalidation_commands[6] =
+        lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let revalidation_runner = ScriptedRunner::new(revalidation_commands);
     let error = revalidate_worker_admission(
         &revalidation_runner,
