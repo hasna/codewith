@@ -58,8 +58,7 @@ pub fn resolve_review_request(
         );
         prompt.push_str(canonical_envelope.as_str());
     }
-    let user_facing_hint =
-        requested_user_facing_hint.unwrap_or_else(|| user_facing_hint(&target));
+    let user_facing_hint = requested_user_facing_hint.unwrap_or_else(|| user_facing_hint(&target));
 
     Ok(ResolvedReviewRequest {
         target,
