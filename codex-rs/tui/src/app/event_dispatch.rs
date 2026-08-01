@@ -152,8 +152,14 @@ impl App {
                 );
             }
             Err(err) => {
+                let error = format_config_error(&err);
+                tracing::error!(
+                    error = %error,
+                    provider_id = %provider_id,
+                    "failed to persist model provider selection"
+                );
                 self.chat_widget
-                    .add_error_message(format!("Failed to save provider `{provider_id}`: {err}"));
+                    .add_error_message(format!("Failed to save provider `{provider_id}`: {error}"));
             }
         }
     }
