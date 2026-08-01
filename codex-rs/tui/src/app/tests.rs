@@ -101,12 +101,14 @@ use codex_app_server_protocol::WarningNotification;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::save_auth_profile;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::ProfileV2Name;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
@@ -2560,6 +2562,97 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
     assert!(!config.contains("approvals_reviewer ="));
     assert!(config.contains("approval_policy = \"on-request\""));
     assert!(config.contains("sandbox_mode = \"workspace-write\""));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+/// Regression test for the provider-save handler swallowing the real
+/// batchWrite failure reason (todos task `4b13c309`).
+///
+/// `App::select_model_provider_model` is the handler behind
+/// `AppEvent::SelectModelProvider` / `AppEvent::SelectModelProviderModel` -
+/// what fires when a user picks a provider in the TUI. It used to format a
+/// failed `write_config_batch` with bare `{err}` Display, which drops the
+/// whole `color_eyre` cause chain and leaves only the outermost
+/// "config/batchWrite failed in TUI" wrapper. This drives the real handler,
+/// through a real embedded app-server, to a real (not hand-constructed)
+/// server-side validation failure, and asserts the user-visible message
+/// carries the actual reason. Reverting the `format_config_error(&err)` fix
+/// in `event_dispatch.rs` makes this test fail: the message would then be
+/// exactly `"Failed to save provider `openai`: config/batchWrite failed in
+/// TUI"`, which does not contain the assertions below.
+///
+/// The failure is triggered by giving the app an *active named profile*
+/// (`ProfileV2Name`, i.e. as if launched with `--profile work-hotfix-test`).
+/// `select_model_provider_model` scopes every edit it writes under
+/// `profiles."work-hotfix-test".*` via `profile_scoped_key_path` whenever a
+/// profile is active - but the server's `apply_edits`
+/// (`config_manager_service.rs`) unconditionally rejects any non-null edit
+/// whose top key segment is `profiles`, calling it a "legacy config profile
+/// table" now superseded by per-profile `<name>.config.toml` files. So
+/// *every* provider switch while a named profile is active hits this
+/// deterministically - this was found while building this regression test
+/// and is flagged separately as a candidate for what the owner actually hit,
+/// distinct from (and in addition to) the message-swallowing bug this test
+/// targets.
+#[tokio::test]
+async fn select_model_provider_model_save_failure_surfaces_real_batch_write_cause() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+
+    let profile = "work-hotfix-test"
+        .parse::<ProfileV2Name>()
+        .expect("valid profile name");
+    let profile_config_path = codex_home.path().join("work-hotfix-test.config.toml").abs();
+    std::fs::write(profile_config_path.as_path(), "")?;
+    app.config.config_layer_stack = app.config.config_layer_stack.with_user_config_profile(
+        &profile_config_path,
+        Some(&profile),
+        TomlValue::Table(toml::map::Map::new()),
+    );
+    assert_eq!(
+        app.active_config_profile(),
+        Some("work-hotfix-test"),
+        "test setup did not actually make an active profile visible to the handler"
+    );
+
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+
+    app.select_model_provider_model(
+        &mut app_server,
+        "openai".to_string(),
+        ModelProviderInfo::default(),
+        Vec::new(),
+        "gpt-5".to_string(),
+        /*effort*/ None,
+    )
+    .await;
+
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell error event, got {other:?}"),
+    };
+    let rendered = cell
+        .display_lines(/*width*/ 120)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        rendered.contains("Failed to save provider `openai`"),
+        "expected the provider-save error prefix, got: {rendered}"
+    );
+    // This is the property the pre-fix bare-`{err}` Display could never
+    // satisfy: the real server-side cause, not just the outer
+    // "config/batchWrite failed in TUI" wrapper.
+    assert!(
+        rendered.contains("profiles") && rendered.contains("legacy config profile"),
+        "expected the real batchWrite validation cause to survive into the \
+         history cell, got: {rendered}"
+    );
+
     app_server.shutdown().await?;
     Ok(())
 }

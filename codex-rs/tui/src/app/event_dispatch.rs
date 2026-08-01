@@ -81,7 +81,11 @@ impl App {
         is_current
     }
 
-    fn active_config_profile(&self) -> Option<&str> {
+    // pub(super): read directly from app/tests.rs as a setup assertion in
+    // select_model_provider_model_save_failure_surfaces_real_batch_write_cause,
+    // so a broken test fixture fails at setup instead of at the unrelated
+    // assertion further down. No behavior change.
+    pub(super) fn active_config_profile(&self) -> Option<&str> {
         match &self.config.config_layer_stack.get_active_user_layer()?.name {
             codex_app_server_protocol::ConfigLayerSource::User {
                 profile: Some(profile),
@@ -91,7 +95,13 @@ impl App {
         }
     }
 
-    async fn select_model_provider_model(
+    // pub(super) rather than private: exercised directly from app/tests.rs
+    // (select_model_provider_model_save_failure_surfaces_real_batch_write_cause),
+    // matching the same pattern already used for update_feature_flags and
+    // other handler methods in this module tree that need to be callable
+    // from App-level integration tests without going through the full
+    // handle_event/Tui plumbing. No behavior change.
+    pub(super) async fn select_model_provider_model(
         &mut self,
         app_server: &mut AppServerSession,
         provider_id: String,
@@ -152,8 +162,14 @@ impl App {
                 );
             }
             Err(err) => {
+                let error = format_config_error(&err);
+                tracing::error!(
+                    error = %error,
+                    provider_id = %provider_id,
+                    "failed to persist model provider selection"
+                );
                 self.chat_widget
-                    .add_error_message(format!("Failed to save provider `{provider_id}`: {err}"));
+                    .add_error_message(format!("Failed to save provider `{provider_id}`: {error}"));
             }
         }
     }

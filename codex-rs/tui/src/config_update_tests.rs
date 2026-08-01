@@ -107,3 +107,69 @@ fn format_config_error_preserves_server_validation_message() {
          features.fast_mode=true violates managed requirements; allowed set [fast_mode=false]"
     );
 }
+
+/// Regression test for the provider-save error message swallowing the real
+/// server-side cause. `select_model_provider_model` (event_dispatch.rs) used
+/// to format the write_config_batch error with bare `{err}` Display, which
+/// for a `color_eyre::eyre::Report` only prints the outermost `wrap_err`
+/// context and silently drops everything the error was wrapped over — so a
+/// TUI user selecting a provider whose config write failed validation only
+/// ever saw "Failed to save provider `<id>`: config/batchWrite failed in
+/// TUI", with the actual reason (e.g. an "Invalid configuration: ..."
+/// validation message from the app-server) discarded. This asserts the fix:
+/// the same message-building logic used by the provider-save handler must
+/// preserve the full chain, mirroring the sibling "Failed to save default
+/// model" / "Failed to save model for profile" handlers a few hundred lines
+/// below it in the same file, which already used `format_config_error`.
+#[test]
+fn provider_save_error_message_preserves_server_validation_message() {
+    let provider_id = "openai";
+    let err = Err::<(), _>(color_eyre::eyre::eyre!(
+        "config/batchWrite failed: Invalid configuration: model_provider.openai is not \
+         reachable: missing env_key"
+    ))
+    .wrap_err("config/batchWrite failed in TUI")
+    .unwrap_err();
+
+    // This mirrors exactly the message construction in
+    // `App::select_model_provider_model`'s `Err` branch.
+    let message = format!(
+        "Failed to save provider `{provider_id}`: {}",
+        format_config_error(&err)
+    );
+
+    assert_eq!(
+        message,
+        "Failed to save provider `openai`: config/batchWrite failed in TUI: \
+         config/batchWrite failed: Invalid configuration: model_provider.openai is not \
+         reachable: missing env_key"
+    );
+}
+
+/// Companion negative control: proves the OLD formatting (bare `{err}`
+/// Display on the eyre chain) is what produced the uninformative message the
+/// owner hit — i.e. this test documents the bug this fix closes, so a future
+/// reader can see both the failure mode and the fix in one place.
+#[test]
+fn bare_display_on_wrapped_config_error_drops_the_real_cause() {
+    let provider_id = "openai";
+    let err = Err::<(), _>(color_eyre::eyre::eyre!(
+        "config/batchWrite failed: Invalid configuration: model_provider.openai is not \
+         reachable: missing env_key"
+    ))
+    .wrap_err("config/batchWrite failed in TUI")
+    .unwrap_err();
+
+    // The pre-fix code path: `format!("Failed to save provider `{provider_id}`: {err}")`.
+    let message = format!("Failed to save provider `{provider_id}`: {err}");
+
+    assert_eq!(
+        message,
+        "Failed to save provider `openai`: config/batchWrite failed in TUI"
+    );
+    assert!(
+        !message.contains("missing env_key"),
+        "bare Display unexpectedly preserved the real cause; if this now fails, the eyre \
+         Display contract changed and this whole regression test class needs re-justifying"
+    );
+}
