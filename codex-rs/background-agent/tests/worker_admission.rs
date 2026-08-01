@@ -56,6 +56,7 @@ impl ScriptedRunner {
 }
 
 impl WorkerAdmissionCommandRunner for ScriptedRunner {
+    #[allow(clippy::manual_async_fn)]
     fn run(
         &self,
         command: WorkerAdmissionCommand,
@@ -377,7 +378,6 @@ async fn worker_without_parent_lineage_is_rejected() {
         identity_command(/*exit_code*/ 0),
         todos_agent_command(WORKER, WORKER_TODOS_ID, /*reports_to*/ None),
         todos_agent_command(PARENT, PARENT_TODOS_ID, /*reports_to*/ None),
-        task_command(PARENT, "in_progress"),
     ]);
 
     let error = must_err(
@@ -411,6 +411,7 @@ async fn task_assigned_to_a_different_parent_is_rejected() {
 async fn effective_conversations_parent_mismatch_is_rejected() {
     let mut commands = valid_commands(one_page_roster());
     commands[5] = whoami_command("another-parent");
+    let _lock_command = commands.pop();
     let runner = ScriptedRunner::new(commands);
 
     let error = must_err(
@@ -574,7 +575,14 @@ async fn pre_spawn_revalidation_detects_a_lock_lost_after_admission() {
     admission_runner.assert_exhausted();
 
     let mut revalidation_commands = valid_commands(one_page_roster());
-    revalidation_commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
+    let _lock_command = revalidation_commands.pop();
+    let _whoami_command = revalidation_commands.pop();
+    revalidation_commands.push(lock_command(
+        ARTIFACT_TYPE,
+        ARTIFACT_ID,
+        /*locked*/ false,
+        "",
+    ));
     let revalidation_runner = ScriptedRunner::new(revalidation_commands);
     let error = must_err(
         revalidate_worker_admission(
