@@ -282,6 +282,7 @@ fn spawn_agent_tool_keeps_agent_type_while_hiding_spawn_metadata() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
+        output_schema,
         ..
     }) = tool
     else {
@@ -303,6 +304,9 @@ fn spawn_agent_tool_keeps_agent_type_while_hiding_spawn_metadata() {
     assert!(!properties.contains_key("auth_profile"));
     assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(!description.contains("Available model overrides"));
+    let output_schema = output_schema.expect("spawn_agent output schema");
+    assert_eq!(output_schema["required"], json!(["task_name"]));
+    assert!(output_schema["properties"].get("nickname").is_none());
 }
 
 #[test]
