@@ -220,13 +220,26 @@ pub(crate) mod spawn_tool_spec {
     /// Builds the spawn-agent tool description text from built-in and configured roles.
     pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
         let built_in_roles = built_in::configs();
-        build_from_configs(built_in_roles, user_defined_agent_roles)
+        build_from_configs(built_in_roles, user_defined_agent_roles, format_role)
+    }
+
+    /// Builds the spawn-agent tool description without role configuration metadata.
+    pub(crate) fn build_without_metadata(
+        user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>,
+    ) -> String {
+        let built_in_roles = built_in::configs();
+        build_from_configs(
+            built_in_roles,
+            user_defined_agent_roles,
+            format_role_without_metadata,
+        )
     }
 
     // This function is not inlined for testing purpose.
     fn build_from_configs(
         built_in_roles: &BTreeMap<String, AgentRoleConfig>,
         user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
+        format_role: fn(&str, &AgentRoleConfig) -> String,
     ) -> String {
         let mut seen = BTreeSet::new();
         let mut formatted_roles = Vec::new();
@@ -296,6 +309,14 @@ pub(crate) mod spawn_tool_spec {
                 })
                 .unwrap_or_default();
             format!("{name}: {{\n{description}{locked_settings_note}\n}}")
+        } else {
+            format!("{name}: no description")
+        }
+    }
+
+    fn format_role_without_metadata(name: &str, declaration: &AgentRoleConfig) -> String {
+        if let Some(description) = &declaration.description {
+            format!("{name}: {{\n{description}\n}}")
         } else {
             format!("{name}: no description")
         }

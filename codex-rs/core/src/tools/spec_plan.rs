@@ -591,6 +591,20 @@ fn agent_type_description(
     }
 }
 
+fn agent_type_description_without_metadata(
+    turn_context: &TurnContext,
+    default_agent_type_description: &str,
+) -> String {
+    let agent_type_description = crate::agent::role::spawn_tool_spec::build_without_metadata(
+        &turn_context.config.agent_roles,
+    );
+    if agent_type_description.is_empty() {
+        default_agent_type_description.to_string()
+    } else {
+        agent_type_description
+    }
+}
+
 fn is_hidden_by_code_mode(
     turn_context: &TurnContext,
     tool_name: &ToolName,
@@ -961,17 +975,22 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             let tool_namespace = namespace_tools_enabled(turn_context)
                 .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
                 .flatten();
-            let agent_type_description =
-                agent_type_description(turn_context, context.default_agent_type_description);
+            let hide_spawn_agent_metadata =
+                turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
+            let agent_type_description = if hide_spawn_agent_metadata {
+                agent_type_description_without_metadata(
+                    turn_context,
+                    context.default_agent_type_description,
+                )
+            } else {
+                agent_type_description(turn_context, context.default_agent_type_description)
+            };
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
                         available_models: turn_context.available_models.clone(),
                         agent_type_description,
-                        hide_agent_type_model_reasoning: turn_context
-                            .config
-                            .multi_agent_v2
-                            .hide_spawn_agent_metadata,
+                        hide_agent_type_model_reasoning: hide_spawn_agent_metadata,
                         include_usage_hint: turn_context.config.multi_agent_v2.usage_hint_enabled,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
                         max_concurrent_threads_per_session: max_concurrent_threads_per_session(

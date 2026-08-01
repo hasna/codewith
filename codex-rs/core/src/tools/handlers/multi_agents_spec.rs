@@ -689,7 +689,9 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
 }
 
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {
-    properties.remove("agent_type");
+    // `agent_type` is the selector for configured roles, not an optional runtime
+    // override. Hiding it makes discovered roles impossible to choose even
+    // though both V1 and V2 handlers still validate and apply the field.
     properties.remove("model");
     properties.remove("provider");
     properties.remove("reasoning_effort");
