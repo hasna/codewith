@@ -522,7 +522,7 @@ fn ensure_stable_evidence(
     admitted: &WorkerAdmission,
     current: &WorkerAdmission,
 ) -> anyhow::Result<()> {
-    let admitted_stable = (
+    let admitted_stable = [
         admitted.worker.as_str(),
         admitted.parent.as_str(),
         admitted.task_id.as_str(),
@@ -536,8 +536,8 @@ fn ensure_stable_evidence(
         admitted.evidence.conversations_worker_id.as_str(),
         admitted.evidence.effective_parent.as_str(),
         admitted.evidence.lock_holder.as_str(),
-    );
-    let current_stable = (
+    ];
+    let current_stable = [
         current.worker.as_str(),
         current.parent.as_str(),
         current.task_id.as_str(),
@@ -551,7 +551,7 @@ fn ensure_stable_evidence(
         current.evidence.conversations_worker_id.as_str(),
         current.evidence.effective_parent.as_str(),
         current.evidence.lock_holder.as_str(),
-    );
+    ];
     if admitted_stable != current_stable {
         anyhow::bail!("worker-admission evidence changed before process spawn");
     }
