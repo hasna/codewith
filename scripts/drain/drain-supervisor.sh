@@ -470,7 +470,7 @@ classify_burned() {  # $1=repo $2=prn $3=key $4=attempts
     # Disabled unless REVIEWER_EPOCH is armed; see the note at the top of the file
     # for why arming it without fixing the gate is pure waste.
     #
-    # FAIL-CLOSED on an unparseable timestamp, which is the opposite of the
+    # FAIL-CLOSED on an unparsable timestamp, which is the opposite of the
     # fail-OPEN rule used for probes elsewhere, and deliberately so: a probe that
     # cannot run is not evidence either way, but a timestamp that cannot be read
     # must not be allowed to LIFT a live block. Unknown age keeps the burn.

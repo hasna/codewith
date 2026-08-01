@@ -68,7 +68,9 @@ class DrainFixture:
         self._write_executable("conversations", self._conversations_script())
         self._write_executable("lane.sh", self._lane_script(), directory=self.home)
         self._write_executable(
-            "drain-requeue-authfail.sh", "#!/usr/bin/env bash\nexit 0\n", directory=self.home
+            "drain-requeue-authfail.sh",
+            "#!/usr/bin/env bash\nexit 0\n",
+            directory=self.home,
         )
         self._write_executable(
             "drain-queue-build.sh", "#!/usr/bin/env bash\nexit 0\n", directory=self.home
@@ -81,7 +83,9 @@ class DrainFixture:
             f"{KEY}\t{state_class}\t0\t{HEAD}\t{attempts}\n", encoding="utf-8"
         )
 
-    def _write_executable(self, name: str, content: str, *, directory: Path | None = None) -> None:
+    def _write_executable(
+        self, name: str, content: str, *, directory: Path | None = None
+    ) -> None:
         path = (directory or self.home_bun_bin) / name
         path.write_text(content, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -164,7 +168,12 @@ class DrainFixture:
 
     def run_guard(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["bash", str(SCRIPT_DIR / "drain-merge-guard.sh"), "hasna/attachments", "22"],
+            [
+                "bash",
+                str(SCRIPT_DIR / "drain-merge-guard.sh"),
+                "hasna/attachments",
+                "22",
+            ],
             text=True,
             capture_output=True,
             env=self.env(),
