@@ -53,6 +53,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ModelServiceTier;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -4440,6 +4441,85 @@ fn model_with_default_service_tier(default_service_tier: Option<&str>) -> ModelI
     }];
     model_info.default_service_tier = default_service_tier.map(str::to_string);
     model_info
+}
+
+fn model_with_supported_reasoning_levels(
+    supported_reasoning_levels: Vec<ReasoningEffortConfig>,
+) -> ModelInfo {
+    let mut model_info = model_info::model_info_from_slug("gpt-5.4");
+    model_info.supported_reasoning_levels = supported_reasoning_levels
+        .into_iter()
+        .map(|effort| ReasoningEffortPreset {
+            description: format!("{effort} reasoning"),
+            effort,
+        })
+        .collect();
+    model_info
+}
+
+#[test]
+fn model_reasoning_effort_rejects_unadvertised_custom_value() {
+    let model_info = model_with_supported_reasoning_levels(vec![
+        ReasoningEffortConfig::Low,
+        ReasoningEffortConfig::High,
+    ]);
+
+    assert_eq!(
+        validate_model_reasoning_effort(
+            &model_info,
+            Some(&ReasoningEffortConfig::Custom("unknown".to_string())),
+        ),
+        Err(
+            "model_reasoning_effort `unknown` is not supported for model `gpt-5.4`. Supported values: low, high"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn model_reasoning_effort_accepts_ultra_alias_when_max_is_advertised() {
+    let model_info = model_with_supported_reasoning_levels(vec![ReasoningEffortConfig::Custom(
+        "max".to_string(),
+    )]);
+    let ultra = "ultra"
+        .parse::<ReasoningEffortConfig>()
+        .expect("ultra should parse as the max alias");
+
+    assert_eq!(
+        validate_model_reasoning_effort(&model_info, Some(&ultra)),
+        Ok(())
+    );
+}
+
+#[test]
+fn model_reasoning_effort_rejects_ultra_alias_when_max_is_not_advertised() {
+    let model_info = model_with_supported_reasoning_levels(vec![ReasoningEffortConfig::XHigh]);
+    let ultra = "ultra"
+        .parse::<ReasoningEffortConfig>()
+        .expect("ultra should parse as the max alias");
+
+    assert_eq!(
+        validate_model_reasoning_effort(&model_info, Some(&ultra)),
+        Err(
+            "model_reasoning_effort `max` is not supported for model `gpt-5.4`. Supported values: xhigh"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn model_reasoning_effort_allows_custom_value_without_model_metadata() {
+    let model_info = model_with_supported_reasoning_levels(Vec::new());
+
+    assert_eq!(
+        validate_model_reasoning_effort(
+            &model_info,
+            Some(&ReasoningEffortConfig::Custom(
+                "provider-defined".to_string()
+            )),
+        ),
+        Ok(())
+    );
 }
 
 #[test]
