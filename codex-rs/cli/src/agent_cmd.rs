@@ -16,6 +16,10 @@ use codex_background_agent::daemon::BackgroundAgentDaemon;
 use codex_background_agent::daemon::BackgroundAgentDaemonPaths;
 use codex_background_agent::daemon::background_agent_daemon_state_dir;
 use codex_background_agent::daemon::ensure_supported_platform as ensure_background_agent_supported_platform;
+use codex_background_agent::worker_admission::ProcessWorkerAdmissionCommandRunner;
+use codex_background_agent::worker_admission::WorkerAdmissionPrograms;
+use codex_background_agent::worker_admission::WorkerAdmissionRequest;
+use codex_background_agent::worker_admission::verify_worker_admission;
 use codex_core::config::find_codex_home;
 use codex_protocol::models::PermissionProfile;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
@@ -76,6 +80,10 @@ pub(crate) enum AgentSubcommand {
     /// Enqueue a durable background-agent run.
     Start(AgentStartCommand),
 
+    /// Enqueue a durable external worker after identity, lineage, task, and lock admission.
+    #[command(name = "start-worker")]
+    StartWorker(AgentWorkerStartCommand),
+
     /// List durable background-agent runs.
     List(AgentListCommand),
 
@@ -120,6 +128,47 @@ pub(crate) struct AgentStartCommand {
     /// Output the full background-agent record as JSON.
     #[arg(long = "json")]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AgentWorkerStartCommand {
+    #[command(flatten)]
+    start: AgentStartCommand,
+
+    /// Registered identity the worker process will use.
+    #[arg(long = "worker")]
+    worker: String,
+
+    /// Current effective Conversations identity dispatching the worker.
+    #[arg(long = "parent")]
+    parent: String,
+
+    /// Active parent-owned Todos task that authorizes the worker.
+    #[arg(long = "task")]
+    task_id: String,
+
+    /// Conversations lock resource type for the one canonical artifact.
+    #[arg(long = "artifact-type")]
+    artifact_type: String,
+
+    /// Conversations lock resource id for the one canonical artifact.
+    #[arg(long = "artifact-id")]
+    artifact_id: String,
+}
+
+impl AgentWorkerStartCommand {
+    fn into_parts(self) -> (AgentStartCommand, WorkerAdmissionRequest) {
+        (
+            self.start,
+            WorkerAdmissionRequest {
+                worker: self.worker,
+                parent: self.parent,
+                task_id: self.task_id,
+                artifact_type: self.artifact_type,
+                artifact_id: self.artifact_id,
+            },
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -199,6 +248,27 @@ pub(crate) async fn run_agent_command(
             let output = start_agent(
                 state_db.as_ref(),
                 cmd,
+                /*worker_admission_request*/ None,
+                runtime_context.as_ref(),
+                auth_profile,
+            )
+            .await?;
+            (
+                output,
+                if json {
+                    AgentPrintMode::Json
+                } else {
+                    AgentPrintMode::Start
+                },
+            )
+        }
+        AgentSubcommand::StartWorker(cmd) => {
+            let (start, worker_admission_request) = cmd.into_parts();
+            let json = start.json;
+            let output = start_agent(
+                state_db.as_ref(),
+                start,
+                Some(worker_admission_request),
                 runtime_context.as_ref(),
                 auth_profile,
             )
@@ -1003,6 +1073,7 @@ fn resolve_agent_start_auth_profile(
 async fn start_agent(
     state_db: &StateRuntime,
     cmd: AgentStartCommand,
+    worker_admission_request: Option<WorkerAdmissionRequest>,
     runtime_context: Option<&AgentStartRuntimeContext>,
     auth_profile: Option<&str>,
 ) -> anyhow::Result<Value> {
@@ -1011,6 +1082,19 @@ async fn start_agent(
     if prompt.is_empty() {
         anyhow::bail!("agent prompt must not be empty");
     }
+
+    let worker_admission = match worker_admission_request {
+        Some(request) => Some(
+            verify_worker_admission(
+                &ProcessWorkerAdmissionCommandRunner,
+                &WorkerAdmissionPrograms::default(),
+                &request,
+            )
+            .await
+            .context("durable worker admission rejected before run creation")?,
+        ),
+        None => None,
+    };
 
     ensure_background_agent_supported_platform()?;
     let daemon_output = background_agent_daemon()?.start().await?;
@@ -1040,6 +1124,7 @@ async fn start_agent(
         "model": runtime_context.and_then(|context| context.model.as_deref()),
         "provider": runtime_context.and_then(|context| context.provider.as_deref()),
         "serviceTier": runtime_context.and_then(|context| context.service_tier.as_deref()),
+        "workerAdmission": &worker_admission,
         "recoveryPolicy": "abort_mid_turn_resume_at_safe_boundary",
     });
     let config_fingerprint = StateRuntime::background_agent_identity_sha256(
@@ -1050,6 +1135,7 @@ async fn start_agent(
         "prompt": prompt,
         "promptSha256": StateRuntime::background_agent_identity_sha256(prompt.as_bytes()),
         "promptSnapshotRef": prompt_snapshot_ref.as_str(),
+        "workerAdmission": &worker_admission,
     });
     let snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: agent_id.clone(),
@@ -1065,6 +1151,7 @@ async fn start_agent(
             "provider": runtime_context.and_then(|context| context.provider.as_deref()),
             "serviceTier": runtime_context
                 .and_then(|context| context.service_tier.as_deref()),
+            "workerAdmission": &worker_admission,
             "authProfileIdentitySha256": auth_profile_ref.as_deref().map(|profile| {
                 StateRuntime::background_agent_identity_sha256(profile.as_bytes())
             }),
@@ -1095,7 +1182,11 @@ async fn start_agent(
         parent_agent_run_id: None,
         spawn_linkage_json: None,
         auth_profile_ref: auth_profile_ref.clone(),
-        status_reason: Some("queued by codewith agent start".to_string()),
+        status_reason: Some(if worker_admission.is_some() {
+            "queued by codewith agent start-worker".to_string()
+        } else {
+            "queued by codewith agent start".to_string()
+        }),
         config_fingerprint: Some(config_fingerprint),
         version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
     };

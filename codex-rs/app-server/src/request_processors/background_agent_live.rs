@@ -80,6 +80,12 @@ use codex_background_agent::process_lifecycle::WorkerProcessCommand;
 use codex_background_agent::process_lifecycle::WorkerProcessController;
 use codex_background_agent::process_lifecycle::WorkerProcessHandle;
 use codex_background_agent::process_lifecycle::WorkerProcessStatus;
+use codex_background_agent::worker_admission::ProcessWorkerAdmissionCommandRunner;
+use codex_background_agent::worker_admission::WorkerAdmission;
+use codex_background_agent::worker_admission::WorkerAdmissionPrograms;
+use codex_background_agent::worker_admission::apply_worker_identity;
+use codex_background_agent::worker_admission::revalidate_worker_admission;
+use codex_background_agent::worker_admission::worker_admission_from_snapshot;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::config::ConfigOverrides;
@@ -2063,6 +2069,24 @@ async fn reconcile_background_agent_worker_processes(
         else {
             continue;
         };
+        let worker_admission =
+            match revalidate_background_agent_worker_admission(&context, run.id.as_str()).await {
+                Ok(worker_admission) => worker_admission,
+                Err(err) => {
+                    fail_claimed_background_agent_worker_process(
+                        &context,
+                        run.id.as_str(),
+                        generation,
+                        "worker admission pre-spawn revalidation failed",
+                        &json!({
+                            "reason": "worker_admission_revalidation_failed",
+                            "error": err.to_string(),
+                        }),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
         let stderr_log_path = background_agent_worker_stderr_log_path(&context, run.id.as_str());
         let command = WorkerProcessCommand::new(&context.codex_bin, &stderr_log_path)
             .arg(OsString::from("app-server"))
@@ -2078,6 +2102,10 @@ async fn reconcile_background_agent_worker_processes(
                 BACKGROUND_AGENT_WORKER_GENERATION_ENV,
                 generation.to_string(),
             );
+        let command = match worker_admission.as_ref() {
+            Some(admission) => apply_worker_identity(command, admission),
+            None => command,
+        };
         let handle = match WorkerProcessController::default().spawn(command).await {
             Ok(handle) => handle,
             Err(err) => {
@@ -2179,6 +2207,31 @@ async fn reconcile_background_agent_worker_processes(
         }
     }
     Ok(())
+}
+
+async fn revalidate_background_agent_worker_admission(
+    context: &BackgroundAgentProcessSupervisorContext,
+    run_id: &str,
+) -> anyhow::Result<Option<WorkerAdmission>> {
+    let snapshot = context
+        .state_db
+        .get_background_agent_initial_execution_snapshot(run_id)
+        .await?
+        .with_context(|| {
+            format!(
+                "background agent `{run_id}` is missing its initial execution context snapshot"
+            )
+        })?;
+    let Some(admission) = worker_admission_from_snapshot(&snapshot.payload_json)? else {
+        return Ok(None);
+    };
+    revalidate_worker_admission(
+        &ProcessWorkerAdmissionCommandRunner,
+        &WorkerAdmissionPrograms::default(),
+        &admission,
+    )
+    .await
+    .map(Some)
 }
 
 async fn fail_claimed_background_agent_worker_process(
