@@ -14,8 +14,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::ffi::OsString;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Mutex;
 
 const WORKER: &str = "worker-one";
@@ -47,7 +48,7 @@ impl ScriptedRunner {
 
     fn assert_exhausted(&self) {
         assert_eq!(
-            self.expected.lock().expect("runner lock").len(),
+            lock_expected_commands(&self.expected).len(),
             0,
             "all expected direct-argv commands should be consumed"
         );
@@ -58,15 +59,12 @@ impl WorkerAdmissionCommandRunner for ScriptedRunner {
     fn run(
         &self,
         command: WorkerAdmissionCommand,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<WorkerAdmissionCommandOutput>> + Send + '_>>
-    {
-        Box::pin(async move {
-            let expected = self
-                .expected
-                .lock()
-                .expect("runner lock")
-                .pop_front()
-                .expect("unexpected worker-admission command");
+    ) -> impl Future<Output = anyhow::Result<WorkerAdmissionCommandOutput>> + Send {
+        async move {
+            let expected = match lock_expected_commands(&self.expected).pop_front() {
+                Some(expected) => expected,
+                None => panic!("unexpected worker-admission command"),
+            };
             assert_eq!(
                 command.program.to_string_lossy(),
                 expected.program,
@@ -83,14 +81,44 @@ impl WorkerAdmissionCommandRunner for ScriptedRunner {
             );
             assert_eq!(command.env, Vec::<(OsString, OsString)>::new());
             Ok(expected.output)
-        })
+        }
+    }
+}
+
+fn lock_expected_commands(
+    expected: &Mutex<VecDeque<ExpectedCommand>>,
+) -> std::sync::MutexGuard<'_, VecDeque<ExpectedCommand>> {
+    match expected.lock() {
+        Ok(guard) => guard,
+        Err(error) => panic!("runner lock poisoned: {error}"),
+    }
+}
+
+fn must_ok<T, E: Display>(result: Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{context}: {error}"),
+    }
+}
+
+fn must_err<T: Debug, E>(result: Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(value) => panic!("{context}: unexpectedly succeeded with {value:?}"),
+        Err(error) => error,
+    }
+}
+
+fn must_some<T>(option: Option<T>, context: &str) -> T {
+    match option {
+        Some(value) => value,
+        None => panic!("{context}"),
     }
 }
 
 fn output(exit_code: i32, stdout: Value) -> WorkerAdmissionCommandOutput {
     WorkerAdmissionCommandOutput {
         exit_code,
-        stdout: serde_json::to_vec(&stdout).expect("serialize command output"),
+        stdout: must_ok(serde_json::to_vec(&stdout), "serialize command output"),
         stderr: Vec::new(),
     }
 }
@@ -114,10 +142,10 @@ fn input() -> WorkerAdmissionInput {
 }
 
 fn request() -> codex_background_agent::worker_admission::WorkerAdmissionRequest {
-    input()
-        .into_request()
-        .expect("complete worker admission")
-        .expect("worker admission enabled")
+    must_some(
+        must_ok(input().into_request(), "complete worker admission"),
+        "worker admission enabled",
+    )
 }
 
 fn identity_command(exit_code: i32) -> ExpectedCommand {
@@ -271,9 +299,10 @@ fn one_page_roster() -> Vec<Value> {
 #[test]
 fn worker_admission_is_disabled_only_when_every_field_is_omitted() {
     assert_eq!(
-        WorkerAdmissionInput::default()
-            .into_request()
-            .expect("omitted worker admission"),
+        must_ok(
+            WorkerAdmissionInput::default().into_request(),
+            "omitted worker admission"
+        ),
         None
     );
 }
@@ -318,9 +347,10 @@ fn worker_admission_refuses_each_missing_identity_or_artifact_field() {
         ),
     ];
     for (field, candidate) in missing_fields {
-        let error = candidate
-            .into_request()
-            .expect_err("partial worker admission must fail closed");
+        let error = must_err(
+            candidate.into_request(),
+            "partial worker admission must fail closed",
+        );
         assert!(
             error.to_string().contains(field),
             "missing {field} error should name the field: {error:#}"
@@ -332,9 +362,10 @@ fn worker_admission_refuses_each_missing_identity_or_artifact_field() {
 async fn unregistered_worker_identity_is_rejected_before_other_queries() {
     let runner = ScriptedRunner::new(vec![identity_command(/*exit_code*/ 1)]);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("unregistered identity must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "unregistered identity must fail",
+    );
 
     assert!(error.to_string().contains("not registered in Identities"));
     runner.assert_exhausted();
@@ -349,9 +380,10 @@ async fn worker_without_parent_lineage_is_rejected() {
         task_command(PARENT, "in_progress"),
     ]);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("missing lineage must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "missing lineage must fail",
+    );
 
     assert!(error.to_string().contains("reports_to"));
     runner.assert_exhausted();
@@ -366,9 +398,10 @@ async fn task_assigned_to_a_different_parent_is_rejected() {
         task_command("another-parent", "in_progress"),
     ]);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("task-parent mismatch must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "task-parent mismatch must fail",
+    );
 
     assert!(error.to_string().contains("assigned_to"));
     runner.assert_exhausted();
@@ -380,9 +413,10 @@ async fn effective_conversations_parent_mismatch_is_rejected() {
     commands[5] = whoami_command("another-parent");
     let runner = ScriptedRunner::new(commands);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("actual parent mismatch must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "actual parent mismatch must fail",
+    );
 
     assert!(
         error
@@ -398,9 +432,10 @@ async fn missing_artifact_lock_is_rejected() {
     commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let runner = ScriptedRunner::new(commands);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("missing artifact lock must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "missing artifact lock must fail",
+    );
 
     assert!(error.to_string().contains("is not actively locked"));
     runner.assert_exhausted();
@@ -412,9 +447,10 @@ async fn lock_in_a_different_resource_namespace_does_not_satisfy_admission() {
     commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let runner = ScriptedRunner::new(commands);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("wrong lock namespace must fail");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "wrong lock namespace must fail",
+    );
 
     assert!(error.to_string().contains(ARTIFACT_TYPE));
     assert!(error.to_string().contains(ARTIFACT_ID));
@@ -431,10 +467,10 @@ async fn worker_beyond_first_roster_page_is_registered() {
     ]);
     let runner = ScriptedRunner::new(valid_commands(vec![json!(first_page), second_page]));
 
-    let admission =
-        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-            .await
-            .expect("worker on the second page must pass");
+    let admission = must_ok(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "worker on the second page must pass",
+    );
 
     assert_eq!(admission.evidence.roster_pages_scanned, 2);
     assert_eq!(
@@ -471,9 +507,10 @@ async fn roster_page_error_fails_closed() {
     });
     let runner = ScriptedRunner::new(commands);
 
-    let error = verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-        .await
-        .expect_err("roster page failure must fail closed");
+    let error = must_err(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "roster page failure must fail closed",
+    );
 
     assert!(error.to_string().contains("cursor 100"));
     runner.assert_exhausted();
@@ -483,10 +520,10 @@ async fn roster_page_error_fails_closed() {
 async fn complete_worker_admission_persists_structured_evidence() {
     let runner = ScriptedRunner::new(valid_commands(one_page_roster()));
 
-    let admission =
-        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request())
-            .await
-            .expect("complete worker admission");
+    let admission = must_ok(
+        verify_worker_admission(&runner, &WorkerAdmissionPrograms::default(), &request()).await,
+        "complete worker admission",
+    );
 
     assert_eq!(
         admission,
@@ -510,10 +547,13 @@ async fn complete_worker_admission_persists_structured_evidence() {
         }
     );
     assert_eq!(
-        serde_json::from_value::<WorkerAdmission>(
-            serde_json::to_value(&admission).expect("serialize admission")
-        )
-        .expect("deserialize admission"),
+        must_ok(
+            serde_json::from_value::<WorkerAdmission>(must_ok(
+                serde_json::to_value(&admission),
+                "serialize admission"
+            )),
+            "deserialize admission"
+        ),
         admission
     );
     runner.assert_exhausted();
@@ -522,25 +562,29 @@ async fn complete_worker_admission_persists_structured_evidence() {
 #[tokio::test]
 async fn pre_spawn_revalidation_detects_a_lock_lost_after_admission() {
     let admission_runner = ScriptedRunner::new(valid_commands(one_page_roster()));
-    let admission = verify_worker_admission(
-        &admission_runner,
-        &WorkerAdmissionPrograms::default(),
-        &request(),
-    )
-    .await
-    .expect("initial admission");
+    let admission = must_ok(
+        verify_worker_admission(
+            &admission_runner,
+            &WorkerAdmissionPrograms::default(),
+            &request(),
+        )
+        .await,
+        "initial admission",
+    );
     admission_runner.assert_exhausted();
 
     let mut revalidation_commands = valid_commands(one_page_roster());
     revalidation_commands[6] = lock_command(ARTIFACT_TYPE, ARTIFACT_ID, /*locked*/ false, "");
     let revalidation_runner = ScriptedRunner::new(revalidation_commands);
-    let error = revalidate_worker_admission(
-        &revalidation_runner,
-        &WorkerAdmissionPrograms::default(),
-        &admission,
-    )
-    .await
-    .expect_err("lost lock must prevent spawn");
+    let error = must_err(
+        revalidate_worker_admission(
+            &revalidation_runner,
+            &WorkerAdmissionPrograms::default(),
+            &admission,
+        )
+        .await,
+        "lost lock must prevent spawn",
+    );
 
     assert!(error.to_string().contains("is not actively locked"));
     revalidation_runner.assert_exhausted();
