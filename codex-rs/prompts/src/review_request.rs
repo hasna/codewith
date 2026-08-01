@@ -47,7 +47,7 @@ pub fn resolve_review_request(
 ) -> anyhow::Result<ResolvedReviewRequest> {
     let ReviewRequest {
         target,
-        user_facing_hint,
+        user_facing_hint: requested_user_facing_hint,
         review_envelope,
     } = request;
     let mut prompt = review_prompt(&target, cwd)?;
@@ -58,7 +58,8 @@ pub fn resolve_review_request(
         );
         prompt.push_str(canonical_envelope.as_str());
     }
-    let user_facing_hint = user_facing_hint.unwrap_or_else(|| user_facing_hint(&target));
+    let user_facing_hint =
+        requested_user_facing_hint.unwrap_or_else(|| user_facing_hint(&target));
 
     Ok(ResolvedReviewRequest {
         target,

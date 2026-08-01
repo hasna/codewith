@@ -323,13 +323,7 @@ fn dispatcher_config_from_env() -> Option<ReviewPublisherDispatcherConfig> {
     let endpoint = std::env::var(REVIEW_PUBLISHER_URL_ENV).ok()?;
     let credential_env = std::env::var(REVIEW_PUBLISHER_CREDENTIAL_ENV_ENV).ok()?;
     let endpoint = reqwest::Url::parse(endpoint.trim()).ok()?;
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-        || !valid_env_name(credential_env.trim())
-    {
+    if !valid_publisher_endpoint(&endpoint) || !valid_env_name(credential_env.trim()) {
         warn!("review publisher configuration is invalid; dispatcher is disabled");
         return None;
     }
@@ -337,6 +331,28 @@ fn dispatcher_config_from_env() -> Option<ReviewPublisherDispatcherConfig> {
         endpoint,
         credential_env: credential_env.trim().to_string(),
     })
+}
+
+fn valid_publisher_endpoint(endpoint: &reqwest::Url) -> bool {
+    let transport_is_safe = match endpoint.scheme() {
+        "https" => endpoint.host_str().is_some(),
+        "http" => endpoint.host_str().is_some_and(|host| {
+            let host = host
+                .strip_prefix('[')
+                .and_then(|host| host.strip_suffix(']'))
+                .unwrap_or(host);
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        }),
+        _ => false,
+    };
+    transport_is_safe
+        && endpoint.username().is_empty()
+        && endpoint.password().is_none()
+        && endpoint.query().is_none()
+        && endpoint.fragment().is_none()
 }
 
 fn valid_env_name(value: &str) -> bool {
@@ -575,8 +591,8 @@ fn api_run(snapshot: codex_state::ReviewPublisherRunSnapshot) -> ApiRun {
             codex_protocol::protocol::ReviewPublisherVerdict::Go => ApiVerdict::Go,
             codex_protocol::protocol::ReviewPublisherVerdict::NoGo => ApiVerdict::NoGo,
         }),
-        created_at: snapshot.run.created_at.timestamp(),
-        completed_at: snapshot.run.completed_at.map(|value| value.timestamp()),
+        created_at: api_timestamp(snapshot.run.created_at),
+        completed_at: snapshot.run.completed_at.map(api_timestamp),
         events: snapshot.events.into_iter().map(api_event).collect(),
     }
 }
@@ -599,13 +615,17 @@ fn api_event(event: codex_state::ReviewPublisherOutboxEvent) -> ApiOutboxEvent {
         },
         payload_sha256: event.payload_sha256,
         attempt_count: event.attempt_count,
-        next_attempt_at: event.next_attempt_at.timestamp(),
-        lease_expires_at: event.lease_expires_at.map(|value| value.timestamp()),
+        next_attempt_at: api_timestamp(event.next_attempt_at),
+        lease_expires_at: event.lease_expires_at.map(api_timestamp),
         receipt_id: event.receipt_id,
         last_error_code: event.last_error_code,
-        created_at: event.created_at.timestamp(),
-        delivered_at: event.delivered_at.map(|value| value.timestamp()),
+        created_at: api_timestamp(event.created_at),
+        delivered_at: event.delivered_at.map(api_timestamp),
     }
+}
+
+fn api_timestamp(value: chrono::DateTime<Utc>) -> i64 {
+    value.timestamp()
 }
 
 #[cfg(test)]
@@ -617,6 +637,38 @@ mod tests {
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
+
+    #[test]
+    fn publisher_endpoint_requires_https_except_for_loopback_http() {
+        for endpoint in [
+            "https://publisher.example.com/reviews",
+            "http://localhost:8080/reviews",
+            "http://127.0.0.1:8080/reviews",
+            "http://[::1]:8080/reviews",
+        ] {
+            assert!(valid_publisher_endpoint(
+                &reqwest::Url::parse(endpoint).expect("valid URL")
+            ));
+        }
+        for endpoint in [
+            "http://publisher.example.com/reviews",
+            "http://10.0.0.8/reviews",
+            "https://user@publisher.example.com/reviews",
+            "https://publisher.example.com/reviews?key=value",
+            "https://publisher.example.com/reviews#fragment",
+        ] {
+            assert!(!valid_publisher_endpoint(
+                &reqwest::Url::parse(endpoint).expect("valid URL")
+            ));
+        }
+    }
+
+    #[test]
+    fn publisher_api_timestamps_are_unix_seconds() {
+        let timestamp = chrono::DateTime::<Utc>::from_timestamp_millis(1_700_000_000_123)
+            .expect("valid timestamp");
+        assert_eq!(api_timestamp(timestamp), 1_700_000_000);
+    }
 
     #[test]
     fn http_statuses_are_classified_fail_closed() {

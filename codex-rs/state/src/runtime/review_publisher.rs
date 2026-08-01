@@ -80,10 +80,10 @@ impl ReviewPublisherStore {
             review_run_id.as_str(),
             ReviewPublisherEventKind::Started,
             params.envelope.clone(),
-            None,
-            None,
+            /*verdict*/ None,
+            /*overall_correctness*/ None,
             Vec::new(),
-            None,
+            /*terminal_reason*/ None,
         );
         let start_event_json = serde_json::to_string(&start_event)?;
         let start_payload_sha256 = sha256_hex(start_event_json.as_bytes());
