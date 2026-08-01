@@ -72,6 +72,7 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
                 sha: "1234567deadbeef".to_string(),
                 title: Some("Tidy UI colors".to_string()),
             },
+            publisher_context: None,
         })
         .await?;
     let review_resp: JSONRPCResponse = timeout(
@@ -82,7 +83,9 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
     let ReviewStartResponse {
         turn,
         review_thread_id,
+        review_run_id,
     } = to_response::<ReviewStartResponse>(review_resp)?;
+    assert!(review_run_id.is_none());
     assert_eq!(review_thread_id, thread_id.clone());
     let turn_id = turn.id.clone();
     assert_eq!(turn.status, TurnStatus::InProgress);
@@ -186,6 +189,7 @@ async fn review_start_exec_approval_item_id_matches_command_execution_item() -> 
                 sha: "1234567deadbeef".to_string(),
                 title: Some("Check review approvals".to_string()),
             },
+            publisher_context: None,
         })
         .await?;
     let review_resp: JSONRPCResponse = timeout(
@@ -267,6 +271,7 @@ async fn review_start_rejects_empty_base_branch() -> Result<()> {
             target: ReviewTarget::BaseBranch {
                 branch: "   ".to_string(),
             },
+            publisher_context: None,
         })
         .await?;
     let error: JSONRPCError = timeout(
@@ -312,6 +317,7 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
             target: ReviewTarget::Custom {
                 instructions: "detached review".to_string(),
             },
+            publisher_context: None,
         })
         .await?;
     let review_resp: JSONRPCResponse = timeout(
@@ -322,7 +328,9 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
     let ReviewStartResponse {
         turn,
         review_thread_id,
+        review_run_id,
     } = to_response::<ReviewStartResponse>(review_resp)?;
+    assert!(review_run_id.is_none());
 
     assert_eq!(turn.status, TurnStatus::InProgress);
     assert_eq!(turn.items_view, TurnItemsView::NotLoaded);
@@ -389,6 +397,7 @@ async fn review_start_rejects_empty_commit_sha() -> Result<()> {
                 sha: "\t".to_string(),
                 title: None,
             },
+            publisher_context: None,
         })
         .await?;
     let error: JSONRPCError = timeout(
@@ -423,6 +432,7 @@ async fn review_start_rejects_empty_custom_instructions() -> Result<()> {
             target: ReviewTarget::Custom {
                 instructions: "\n\n".to_string(),
             },
+            publisher_context: None,
         })
         .await?;
     let error: JSONRPCError = timeout(

@@ -249,6 +249,7 @@ async fn review_start_sends_parent_lineage_in_turn_metadata_for_thread_fork_v2()
             target: ReviewTarget::Custom {
                 instructions: "Review the fork".to_string(),
             },
+            publisher_context: None,
         })
         .await?;
     let review_resp: JSONRPCResponse = timeout(

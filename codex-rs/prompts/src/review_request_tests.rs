@@ -1,4 +1,6 @@
 use super::*;
+use codex_protocol::protocol::ReviewImplementerProvenance;
+use codex_protocol::protocol::ReviewImplementerProvenanceSource;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -47,5 +49,48 @@ fn review_prompt_template_renders_commit_variant_with_title() {
         )
         .expect("commit prompt should render"),
         "Review the code changes introduced by commit deadbeef (\"Fix bug\"). Provide prioritized, actionable findings."
+    );
+}
+
+#[test]
+fn resolved_prompt_carries_the_exact_typed_review_envelope() {
+    let envelope = ReviewEnvelope {
+        schema_version: "codewith-review-envelope-v1".to_string(),
+        repository_origin: "github.com/hasna/codewith".to_string(),
+        pull_request_number: 17,
+        base_ref: "refs/remotes/origin/main".to_string(),
+        reviewed_base_sha: "a".repeat(40),
+        head_sha: "b".repeat(40),
+        merge_result_tree_sha: "c".repeat(40),
+        candidate_sha256: "d".repeat(64),
+        acceptance_scope_id: "codewith-review-envelope-v1".to_string(),
+        acceptance_scope_sha256: "e".repeat(64),
+        implementer: ReviewImplementerProvenance {
+            source: ReviewImplementerProvenanceSource::GitAgentTrailer,
+            agent: "Herminia".to_string(),
+            commit_sha: "b".repeat(40),
+        },
+        envelope_sha256: "f".repeat(64),
+    };
+    let canonical = envelope.canonical_json().expect("canonical envelope");
+    let resolved = resolve_review_request(
+        ReviewRequest {
+            target: ReviewTarget::Commit {
+                sha: envelope.head_sha.clone(),
+                title: None,
+            },
+            user_facing_hint: None,
+            review_envelope: Some(envelope.clone()),
+        },
+        &AbsolutePathBuf::current_dir().expect("cwd"),
+    )
+    .expect("resolved review request");
+
+    assert_eq!(resolved.review_envelope, Some(envelope));
+    assert_eq!(resolved.prompt.matches(canonical.as_str()).count(), 1);
+    assert!(
+        resolved
+            .prompt
+            .contains("do not infer identity from comments")
     );
 }

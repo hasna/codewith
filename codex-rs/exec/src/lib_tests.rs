@@ -116,6 +116,7 @@ fn builds_uncommitted_review_request() {
     let expected = ReviewRequest {
         target: ReviewTarget::UncommittedChanges,
         user_facing_hint: None,
+        review_envelope: None,
     };
 
     assert_eq!(request, expected);
@@ -138,6 +139,7 @@ fn builds_commit_review_request_with_title() {
             title: Some("Add review command".to_string()),
         },
         user_facing_hint: None,
+        review_envelope: None,
     };
 
     assert_eq!(request, expected);
@@ -159,6 +161,7 @@ fn builds_custom_review_request_trims_prompt() {
             instructions: "custom review instructions".to_string(),
         },
         user_facing_hint: None,
+        review_envelope: None,
     };
 
     assert_eq!(request, expected);

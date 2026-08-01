@@ -1631,6 +1631,10 @@ Example request/response:
 
 For a detached review, use `"delivery": "detached"`. The response is the same shape, but `reviewThreadId` will be the id of the new review thread (different from the original `threadId`). The server also emits a `thread/started` notification for that new thread before streaming the review turn.
 
+An authenticated publisher can add `publisherContext` to a `baseBranch` review. This path is fail-closed: `baseRef` must be the same full Git ref used by the target, the worktree must be clean, `reviewedBaseSha` and `headSha` must resolve exactly, `git merge-tree --write-tree` must produce a clean result, and the head commit must carry exactly one `Agent:` trailer. The server derives the canonical origin and implementer from Git, persists an immutable `codewith-review-envelope-v1` start event before starting the turn, and returns its stable `reviewRunId`. It publishes the terminal `GO` or `NO_GO` event only from structured review output; missing output, unknown correctness, malformed priorities, or P0/P1 findings all map to `NO_GO`.
+
+The owner-only outbox dispatcher is enabled only when `CODEWITH_REVIEW_PUBLISHER_URL` names the HTTP endpoint and `CODEWITH_REVIEW_PUBLISHER_CREDENTIAL_ENV` names the environment variable holding its bearer credential. The credential itself is never accepted in RPC payloads or persisted. Delivery is ordered start-before-terminal, leases in-flight work, treats HTTP 409 as an idempotent receipt, retries timeouts/429/5xx, and dead-letters permanent failures. Inspect a run with `review/publisher/status/read`; replay only an exact immutable payload by passing both `eventId` and `payloadSha256` to `review/publisher/replay`.
+
 Codewith streams the usual `turn/started` notification followed by an `item/started`
 with an `enteredReviewMode` item so clients can show progress:
 

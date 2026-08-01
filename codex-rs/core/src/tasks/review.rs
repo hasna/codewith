@@ -12,6 +12,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::ReviewEnvelope;
 use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::protocol::SubAgentSource;
 use tokio_util::sync::CancellationToken;
@@ -30,12 +31,14 @@ use codex_protocol::user_input::UserInput;
 use super::SessionTask;
 use super::SessionTaskContext;
 
-#[derive(Clone, Copy)]
-pub(crate) struct ReviewTask;
+#[derive(Clone)]
+pub(crate) struct ReviewTask {
+    review_envelope: Option<ReviewEnvelope>,
+}
 
 impl ReviewTask {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(review_envelope: Option<ReviewEnvelope>) -> Self {
+        Self { review_envelope }
     }
 }
 
@@ -82,13 +85,25 @@ impl SessionTask for ReviewTask {
             None => None,
         };
         if !cancellation_token.is_cancelled() {
-            exit_review_mode(session.clone_session(), output.clone(), ctx.clone()).await;
+            exit_review_mode(
+                session.clone_session(),
+                output.clone(),
+                self.review_envelope.clone(),
+                ctx.clone(),
+            )
+            .await;
         }
         None
     }
 
     async fn abort(&self, session: Arc<SessionTaskContext>, ctx: Arc<TurnContext>) {
-        exit_review_mode(session.clone_session(), /*review_output*/ None, ctx).await;
+        exit_review_mode(
+            session.clone_session(),
+            /*review_output*/ None,
+            self.review_envelope.clone(),
+            ctx,
+        )
+        .await;
     }
 }
 
@@ -214,6 +229,7 @@ fn parse_review_output_event(text: &str) -> ReviewOutputEvent {
 pub(crate) async fn exit_review_mode(
     session: Arc<Session>,
     review_output: Option<ReviewOutputEvent>,
+    review_envelope: Option<ReviewEnvelope>,
     ctx: Arc<TurnContext>,
 ) {
     const REVIEW_USER_MESSAGE_ID: &str = "review_rollout_user";
@@ -254,7 +270,10 @@ pub(crate) async fn exit_review_mode(
     session
         .send_event(
             ctx.as_ref(),
-            EventMsg::ExitedReviewMode(ExitedReviewModeEvent { review_output }),
+            EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                review_output,
+                review_envelope,
+            }),
         )
         .await;
     session

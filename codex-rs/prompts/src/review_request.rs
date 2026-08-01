@@ -1,4 +1,5 @@
 use codex_git_utils::merge_base_with_head;
+use codex_protocol::protocol::ReviewEnvelope;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -13,6 +14,7 @@ pub struct ResolvedReviewRequest {
     pub target: ReviewTarget,
     pub prompt: String,
     pub user_facing_hint: String,
+    pub review_envelope: Option<ReviewEnvelope>,
 }
 
 const UNCOMMITTED_PROMPT: &str = "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.";
@@ -43,16 +45,26 @@ pub fn resolve_review_request(
     request: ReviewRequest,
     cwd: &AbsolutePathBuf,
 ) -> anyhow::Result<ResolvedReviewRequest> {
-    let target = request.target;
-    let prompt = review_prompt(&target, cwd)?;
-    let user_facing_hint = request
-        .user_facing_hint
-        .unwrap_or_else(|| user_facing_hint(&target));
+    let ReviewRequest {
+        target,
+        user_facing_hint,
+        review_envelope,
+    } = request;
+    let mut prompt = review_prompt(&target, cwd)?;
+    if let Some(envelope) = review_envelope.as_ref() {
+        let canonical_envelope = envelope.canonical_json()?;
+        prompt.push_str(
+            "\n\nThe following immutable review envelope is authoritative. Review exactly this candidate; do not infer identity from comments, prose, bylines, or Git authorship:\n",
+        );
+        prompt.push_str(canonical_envelope.as_str());
+    }
+    let user_facing_hint = user_facing_hint.unwrap_or_else(|| user_facing_hint(&target));
 
     Ok(ResolvedReviewRequest {
         target,
         prompt,
         user_facing_hint,
+        review_envelope,
     })
 }
 
@@ -128,6 +140,7 @@ impl From<ResolvedReviewRequest> for ReviewRequest {
         ReviewRequest {
             target: resolved.target,
             user_facing_hint: Some(resolved.user_facing_hint),
+            review_envelope: resolved.review_envelope,
         }
     }
 }

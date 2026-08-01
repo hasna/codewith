@@ -11839,7 +11839,7 @@ async fn abort_review_task_emits_exited_then_aborted_and_records_history() {
         }],
         client_id: None,
     }];
-    sess.spawn_task(Arc::clone(&tc), input, ReviewTask::new())
+    sess.spawn_task(Arc::clone(&tc), input, ReviewTask::new(None))
         .await;
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;

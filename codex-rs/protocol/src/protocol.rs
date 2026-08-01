@@ -1900,6 +1900,9 @@ impl HasLegacyEvent for EventMsg {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ExitedReviewModeEvent {
     pub review_output: Option<ReviewOutputEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review_envelope: Option<ReviewEnvelope>,
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -3255,6 +3258,89 @@ pub struct ReviewRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub user_facing_hint: Option<String>,
+    /// Immutable, runtime-verified identity of the pull-request candidate.
+    ///
+    /// This is populated only by the trusted app-server review entrypoint. It
+    /// is never synthesized from review prose, comments, or model output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review_envelope: Option<ReviewEnvelope>,
+}
+
+/// Immutable identity of an exact pull-request review candidate.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ReviewEnvelope {
+    pub schema_version: String,
+    pub repository_origin: String,
+    pub pull_request_number: u64,
+    pub base_ref: String,
+    pub reviewed_base_sha: String,
+    pub head_sha: String,
+    pub merge_result_tree_sha: String,
+    pub candidate_sha256: String,
+    pub acceptance_scope_id: String,
+    pub acceptance_scope_sha256: String,
+    pub implementer: ReviewImplementerProvenance,
+    pub envelope_sha256: String,
+}
+
+impl ReviewEnvelope {
+    /// Serialize the envelope deterministically using its typed field order.
+    pub fn canonical_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string(self)
+    }
+}
+
+/// Trusted implementer provenance derived from the reviewed head commit.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ReviewImplementerProvenance {
+    pub source: ReviewImplementerProvenanceSource,
+    pub agent: String,
+    pub commit_sha: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ReviewImplementerProvenanceSource {
+    GitAgentTrailer,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ReviewPublisherEventKind {
+    Started,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[ts(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewPublisherVerdict {
+    Go,
+    NoGo,
+}
+
+/// Authenticated payload sent to the package-owned review publisher ingress.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ReviewPublisherEvent {
+    pub schema_version: String,
+    pub event_id: String,
+    pub event_kind: ReviewPublisherEventKind,
+    pub review_run_id: String,
+    pub sequence: u8,
+    pub envelope: ReviewEnvelope,
+    pub verdict: Option<ReviewPublisherVerdict>,
+    pub overall_correctness: Option<String>,
+    pub finding_priorities: Vec<i32>,
+    pub terminal_reason: Option<String>,
 }
 
 /// Structured review result produced by a child review session.
