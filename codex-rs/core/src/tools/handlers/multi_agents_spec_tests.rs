@@ -269,7 +269,7 @@ fn spawn_agent_tool_caps_reasoning_effort_value_length() {
 }
 
 #[test]
-fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
+fn spawn_agent_tool_keeps_agent_type_while_hiding_spawn_metadata() {
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
         agent_type_description: "role help".to_string(),
@@ -292,7 +292,10 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         .as_ref()
         .expect("spawn_agent should use object params");
 
-    assert!(!properties.contains_key("agent_type"));
+    assert_eq!(
+        properties.get("agent_type"),
+        Some(&JsonSchema::string(Some("role help".to_string())))
+    );
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("provider"));
     assert!(!properties.contains_key("reasoning_effort"));
