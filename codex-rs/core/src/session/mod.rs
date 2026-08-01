@@ -463,6 +463,34 @@ pub(crate) fn resolve_multi_agent_version(
         })
 }
 
+fn validate_model_reasoning_effort(
+    model_info: &ModelInfo,
+    configured_effort: Option<&ReasoningEffortConfig>,
+) -> Result<(), String> {
+    let Some(configured_effort) = configured_effort else {
+        return Ok(());
+    };
+    if model_info.supported_reasoning_levels.is_empty()
+        || model_info
+            .supported_reasoning_levels
+            .iter()
+            .any(|preset| &preset.effort == configured_effort)
+    {
+        return Ok(());
+    }
+
+    let supported_efforts = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "model_reasoning_effort `{configured_effort}` is not supported for model `{}`. Supported values: {supported_efforts}",
+        model_info.slug
+    ))
+}
+
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
@@ -595,6 +623,8 @@ impl Codex {
         let model_info = models_manager
             .get_model_info(model.as_str(), &models_manager_config)
             .await;
+        validate_model_reasoning_effort(&model_info, config.model_reasoning_effort.as_ref())
+            .map_err(CodexErr::InvalidRequest)?;
         let multi_agent_version =
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);
         config
