@@ -46,6 +46,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::config::AgentRoleConfig;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolPayload;
@@ -1419,6 +1420,52 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         direct_model_only.exposure("spawn_agent"),
         ToolExposure::DirectModelOnly
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_default_spawn_schema_keeps_custom_roles_selectable() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            assert!(config.multi_agent_v2.hide_spawn_agent_metadata);
+            config.agent_roles.insert(
+                "synthetic".to_string(),
+                AgentRoleConfig {
+                    description: Some("Synthetic workspace role.".to_string()),
+                    config_file: None,
+                    nickname_candidates: None,
+                },
+            );
+        });
+    })
+    .await;
+
+    let ToolSpec::Function(spawn_agent) = plan.visible_spec("spawn_agent") else {
+        panic!("expected v2 spawn_agent function");
+    };
+    let properties = spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("spawn_agent should use object params");
+    let agent_type_description = properties
+        .get("agent_type")
+        .and_then(|schema| schema.description.as_deref())
+        .expect("default v2 spawn_agent should expose agent_type");
+    assert!(agent_type_description.contains("synthetic: {\nSynthetic workspace role.\n}"));
+
+    for hidden_override in [
+        "model",
+        "provider",
+        "reasoning_effort",
+        "service_tier",
+        "auth_profile",
+    ] {
+        assert!(
+            !properties.contains_key(hidden_override),
+            "expected default v2 spawn_agent to keep `{hidden_override}` hidden"
+        );
+    }
 }
 
 #[tokio::test]
