@@ -110,11 +110,17 @@ struct ReviewPublisherDispatcherConfig {
 
 impl ReviewPublisherDispatcherRuntime {
     pub(crate) fn new(state_db: Option<StateDbHandle>) -> Self {
-        let config = dispatcher_config_from_env();
-        let client = reqwest::Client::builder()
-            .timeout(DISPATCH_HTTP_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let mut config = dispatcher_config_from_env();
+        let client = match build_dispatch_client() {
+            Ok(client) => client,
+            Err(err) => {
+                warn!(
+                    "failed to build review publisher HTTP client; dispatcher is disabled: {err}"
+                );
+                config = None;
+                reqwest::Client::new()
+            }
+        };
         Self {
             state_db,
             config,
@@ -249,6 +255,13 @@ impl ReviewPublisherDispatcherRuntime {
             Err(err) => classify_transport_error(&err),
         }
     }
+}
+
+fn build_dispatch_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(DISPATCH_HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -716,6 +729,28 @@ mod tests {
                 error_code: "http_timeout".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn publisher_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(StatusCode::FOUND.as_u16())
+                    .append_header("location", server.uri()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = build_dispatch_client()
+            .expect("client")
+            .post(server.uri())
+            .send()
+            .await
+            .expect("redirect response");
+
+        assert_eq!(response.status(), StatusCode::FOUND);
     }
 
     #[test]
