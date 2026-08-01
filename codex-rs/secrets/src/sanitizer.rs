@@ -8,7 +8,7 @@ static AWS_ACCESS_KEY_ID_REGEX: LazyLock<Regex> =
 static AWS_SECRET_ACCESS_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     compile_regex(concat!(
         r#"(?i)\baws_secret"#,
-        r#"_access_key\b(\s*[:=]\s*)(["']?)[^\s"']{20,}"#
+        r#"_access_key\b(\s*[:=]\s*)(["']?)([^\s"']{20,})"#
     ))
 });
 static BEARER_TOKEN_REGEX: LazyLock<Regex> =
@@ -47,7 +47,7 @@ static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?i)\b(api[_-]?key|access[_-]?"#,
         r#"token|refresh[_-]?token|id[_-]?"#,
         r#"token|auth(?:orization)?|token|secret|client[_-]?"#,
-        r#"secret|password|private[_-]?key)\b(\s*[:=]\s*)(["']?)[^\s"']{8,}"#,
+        r#"secret|password|private[_-]?key)\b(\s*[:=]\s*)(["']?)([^\s"']{8,})"#,
     ))
 });
 
@@ -57,15 +57,33 @@ pub fn redact_secrets(input: String) -> String {
     let input = redact_omission_boundary_secret_fragments(input);
     let redacted = OPENAI_KEY_REGEX.replace_all(&input, "[REDACTED_SECRET]");
     let redacted = AWS_ACCESS_KEY_ID_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
-    let redacted = AWS_SECRET_ACCESS_KEY_REGEX
-        .replace_all(&redacted, "aws_secret_access_key$1$2[REDACTED_SECRET]");
+    let redacted =
+        AWS_SECRET_ACCESS_KEY_REGEX.replace_all(&redacted, |captures: &regex::Captures<'_>| {
+            let value = captures.get(3).map_or("", |capture| capture.as_str());
+            format!(
+                "aws_secret_access_key{}{}{}",
+                captures.get(1).map_or("", |capture| capture.as_str()),
+                captures.get(2).map_or("", |capture| capture.as_str()),
+                redact_assignment_match_value(value)
+            )
+        });
     let redacted = BEARER_TOKEN_REGEX.replace_all(&redacted, "Bearer [REDACTED_SECRET]");
     let redacted = GITHUB_TOKEN_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = GOOGLE_API_KEY_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = ANTHROPIC_KEY_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = JWT_REGEX.replace_all(&redacted, "[REDACTED_SECRET]");
     let redacted = redact_sensitive_env_assignments(&redacted);
-    let redacted = SECRET_ASSIGNMENT_REGEX.replace_all(&redacted, "$1$2$3[REDACTED_SECRET]");
+    let redacted =
+        SECRET_ASSIGNMENT_REGEX.replace_all(&redacted, |captures: &regex::Captures<'_>| {
+            let value = captures.get(4).map_or("", |capture| capture.as_str());
+            format!(
+                "{}{}{}{}",
+                captures.get(1).map_or("", |capture| capture.as_str()),
+                captures.get(2).map_or("", |capture| capture.as_str()),
+                captures.get(3).map_or("", |capture| capture.as_str()),
+                redact_assignment_match_value(value)
+            )
+        });
 
     redacted.to_string()
 }
@@ -168,6 +186,12 @@ fn redact_assignment_value(value: &str) -> String {
     }
 }
 
+fn redact_assignment_match_value(value: &str) -> String {
+    let trailing_backslashes_start = value.trim_end_matches('\\').len();
+    let trailing_backslashes = &value[trailing_backslashes_start..];
+    format!("[REDACTED_SECRET]{trailing_backslashes}")
+}
+
 fn is_sensitive_env_name(name: &str) -> bool {
     let name = name.to_ascii_uppercase();
     [
@@ -237,6 +261,23 @@ mod tests {
         assert!(!redacted.contains("token-token-token-token"));
         assert!(!redacted.contains("eeeeeeeeeeeeeeeeeeee"));
         assert!(!redacted.contains("eyJhbGci"));
+    }
+
+    #[test]
+    fn redacts_assignment_values_without_consuming_trailing_shell_escapes() {
+        let generic_key = ["sec", "ret"].concat();
+        let aws_key = ["aws_", "sec", "ret", "_access_key"].concat();
+        let value = ["synthetic", "fixture", "value", "1234567890"].join("-");
+
+        for key in [generic_key, aws_key] {
+            for backslash_count in [1, 2] {
+                let backslashes = "\\".repeat(backslash_count);
+                let input = format!("{key}:{value}{backslashes}\"");
+                let expected = format!("{key}:[REDACTED_SECRET]{backslashes}\"");
+
+                assert_eq!(redact_secrets(input), expected);
+            }
+        }
     }
 
     #[test]

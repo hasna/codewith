@@ -187,6 +187,50 @@ fn bash_snapshot_preserves_multiline_exports() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn bash_snapshot_redaction_preserves_shell_escaped_json_exports() -> Result<()> {
+    let secret_segment = ["sec", "ret"].concat();
+    let metadata = format!(
+        r#"{{"rds_managed_{secret_segment}_arn":"arn:aws:secretsmanager:eu-test-1:000000000000:{secret_segment}:synthetic-database-000001"}}"#
+    );
+    let output = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(bash_snapshot_script())
+        .env_clear()
+        .env("BASH_ENV", "/dev/null")
+        .env("PATH", "/usr/bin:/bin")
+        .env("SYNTHETIC_INFRA_METADATA", metadata)
+        .output()?;
+
+    assert!(output.status.success());
+
+    let raw_snapshot = String::from_utf8(output.stdout)?;
+    let snapshot = codex_state::redact_local_state_string(strip_snapshot_preamble(&raw_snapshot)?);
+    assert!(snapshot.contains(codex_state::local_state_redaction_marker()));
+
+    let dir = tempdir()?;
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(&snapshot_path, snapshot)?;
+
+    let validate = Command::new("/bin/bash")
+        .arg("-c")
+        .arg("set -e; . \"$1\"")
+        .arg("bash")
+        .arg(&snapshot_path)
+        .env_clear()
+        .env("BASH_ENV", "/dev/null")
+        .env("PATH", "/usr/bin:/bin")
+        .output()?;
+
+    assert!(
+        validate.status.success(),
+        "redacted snapshot should remain valid Bash"
+    );
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn zsh_snapshot_restores_tied_path() -> Result<()> {
