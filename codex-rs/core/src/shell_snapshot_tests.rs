@@ -197,15 +197,16 @@ fn bash_snapshot_redaction_preserves_shell_escaped_json_exports() -> Result<()> 
     let output = Command::new("/bin/bash")
         .arg("-c")
         .arg(bash_snapshot_script())
+        .env_clear()
         .env("BASH_ENV", "/dev/null")
+        .env("PATH", "/usr/bin:/bin")
         .env("SYNTHETIC_INFRA_METADATA", metadata)
         .output()?;
 
     assert!(output.status.success());
 
     let raw_snapshot = String::from_utf8(output.stdout)?;
-    let snapshot =
-        codex_state::redact_local_state_string(strip_snapshot_preamble(&raw_snapshot)?);
+    let snapshot = codex_state::redact_local_state_string(strip_snapshot_preamble(&raw_snapshot)?);
     assert!(snapshot.contains(codex_state::local_state_redaction_marker()));
 
     let dir = tempdir()?;
@@ -213,8 +214,13 @@ fn bash_snapshot_redaction_preserves_shell_escaped_json_exports() -> Result<()> 
     std::fs::write(&snapshot_path, snapshot)?;
 
     let validate = Command::new("/bin/bash")
-        .arg("-n")
+        .arg("-c")
+        .arg("set -e; . \"$1\"")
+        .arg("bash")
         .arg(&snapshot_path)
+        .env_clear()
+        .env("BASH_ENV", "/dev/null")
+        .env("PATH", "/usr/bin:/bin")
         .output()?;
 
     assert!(
