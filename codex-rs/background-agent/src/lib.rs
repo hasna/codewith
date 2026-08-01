@@ -4,6 +4,7 @@ use std::time::Duration;
 pub mod daemon;
 pub mod process_lifecycle;
 mod supervisor;
+pub mod worker_admission;
 
 pub use codex_state::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 pub use codex_state::BackgroundAgentDesiredState;
