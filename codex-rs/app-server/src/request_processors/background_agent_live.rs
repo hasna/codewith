@@ -3144,13 +3144,32 @@ fn background_agent_worker_preclaimed_generation(
     Ok(Some(generation))
 }
 
+/// Lookback cursor for polling recent events while waiting for a durable
+/// worker-process spawn receipt. `i64::saturating_sub` only guards against
+/// under/overflowing the *type's* range (`i64::MIN`/`i64::MAX`); it does not
+/// clamp toward zero the way an unsigned saturating subtraction would. A
+/// freshly admitted run has well under `SPAWN_RECEIPT_LOOKBACK_EVENTS` events
+/// at this point in its lifecycle (admitted/started/claimed/heartbeat is
+/// already only 4), so the unclamped subtraction produced a negative cursor
+/// on effectively every run, which `list_events_after` /
+/// `ensure_background_agent_event_cursor_retained` then rejected as
+/// "compacted" even though nothing had been compacted. Clamp to a floor of
+/// `0` (the sentinel `list_events_after` already treats as "from the start").
+const SPAWN_RECEIPT_LOOKBACK_EVENTS: i64 = 20;
+
+fn background_agent_worker_spawn_receipt_after_seq(last_event_seq: i64) -> i64 {
+    last_event_seq
+        .saturating_sub(SPAWN_RECEIPT_LOOKBACK_EVENTS)
+        .max(0)
+}
+
 async fn wait_for_background_agent_worker_spawn_receipt(
     context: &BackgroundAgentWorkerContext,
     run_id: &str,
     generation: i64,
     last_event_seq: i64,
 ) -> anyhow::Result<()> {
-    let after_seq = last_event_seq.saturating_sub(20);
+    let after_seq = background_agent_worker_spawn_receipt_after_seq(last_event_seq);
     let wait = async {
         loop {
             let events = context
@@ -5468,6 +5487,38 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    #[test]
+    fn spawn_receipt_after_seq_never_goes_negative_for_a_fresh_run() {
+        // Regression for the 100%-at-spawn durable-agent failure: a freshly
+        // admitted run reaches `wait_for_background_agent_worker_spawn_receipt`
+        // with `last_event_seq` in the low single digits (admitted, started,
+        // claimed, heartbeat is already 4 events before the worker process
+        // even exists). `i64::saturating_sub(20)` does not clamp toward zero
+        // on a signed integer, so this used to compute a negative cursor
+        // (e.g. last_event_seq=5 -> after_seq=-15) on every new run, which the
+        // event-cursor-retention guard then rejected as "compacted" and
+        // aborted the worker before it could start. The cursor must never go
+        // below the store's own "from the start" sentinel of 0.
+        for last_event_seq in 0..20 {
+            let after_seq = background_agent_worker_spawn_receipt_after_seq(last_event_seq);
+            assert!(
+                after_seq >= 0,
+                "after_seq must never be negative: last_event_seq={last_event_seq} produced after_seq={after_seq}"
+            );
+        }
+        assert_eq!(background_agent_worker_spawn_receipt_after_seq(5), 0);
+        assert_eq!(background_agent_worker_spawn_receipt_after_seq(0), 0);
+    }
+
+    #[test]
+    fn spawn_receipt_after_seq_still_windows_for_a_long_lived_run() {
+        // The lookback window itself must be preserved for a run that has
+        // accumulated plenty of history — the fix must not degrade this into
+        // an unbounded "from the start" scan.
+        assert_eq!(background_agent_worker_spawn_receipt_after_seq(25), 5);
+        assert_eq!(background_agent_worker_spawn_receipt_after_seq(1000), 980);
+    }
 
     #[test]
     fn turn_completion_failure_reason_flags_silent_error_turn_as_failure() {
