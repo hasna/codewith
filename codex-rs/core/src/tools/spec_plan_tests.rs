@@ -45,8 +45,9 @@ use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use tempfile::TempDir;
 
-use crate::config::AgentRoleConfig;
+use crate::config::ConfigBuilder;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolPayload;
@@ -1423,20 +1424,42 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_default_spawn_schema_keeps_custom_roles_selectable() {
-    let plan = probe(|turn| {
+async fn multi_agent_v2_default_spawn_schema_keeps_custom_roles_selectable() -> std::io::Result<()>
+{
+    let codex_home = TempDir::new()?;
+    let agents_dir = codex_home.path().join("agents");
+    std::fs::create_dir(&agents_dir)?;
+    let role_path = agents_dir.join("synthetic.toml");
+    std::fs::write(
+        &role_path,
+        r#"name = "synthetic"
+description = "Synthetic workspace role."
+developer_instructions = "Stay focused."
+model = "metadata-role-model"
+model_provider = "openai"
+model_reasoning_effort = "high"
+service_tier = "priority"
+"#,
+    )?;
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+    let role = config
+        .agent_roles
+        .get("synthetic")
+        .expect("config-backed role should be discovered");
+    assert_eq!(
+        role.description.as_deref(),
+        Some("Synthetic workspace role.")
+    );
+    assert_eq!(role.config_file.as_deref(), Some(role_path.as_path()));
+
+    let plan = probe(move |turn| {
+        turn.config = Arc::new(config);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            assert!(config.multi_agent_v2.hide_spawn_agent_metadata);
-            config.agent_roles.insert(
-                "synthetic".to_string(),
-                AgentRoleConfig {
-                    description: Some("Synthetic workspace role.".to_string()),
-                    config_file: None,
-                    nickname_candidates: None,
-                },
-            );
-        });
+        assert!(turn.config.multi_agent_v2.hide_spawn_agent_metadata);
     })
     .await;
 
@@ -1453,6 +1476,12 @@ async fn multi_agent_v2_default_spawn_schema_keeps_custom_roles_selectable() {
         .and_then(|schema| schema.description.as_deref())
         .expect("default v2 spawn_agent should expose agent_type");
     assert!(agent_type_description.contains("synthetic: {\nSynthetic workspace role.\n}"));
+    for hidden_role_metadata in ["metadata-role-model", "`openai`", "`high`", "`priority`"] {
+        assert!(
+            !agent_type_description.contains(hidden_role_metadata),
+            "expected default v2 agent_type description to hide `{hidden_role_metadata}`"
+        );
+    }
 
     for hidden_override in [
         "model",
@@ -1466,6 +1495,8 @@ async fn multi_agent_v2_default_spawn_schema_keeps_custom_roles_selectable() {
             "expected default v2 spawn_agent to keep `{hidden_override}` hidden"
         );
     }
+
+    Ok(())
 }
 
 #[tokio::test]
