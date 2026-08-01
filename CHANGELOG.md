@@ -42,6 +42,29 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.81] - 2026-08-01
+
+Tag: `rust-v0.1.81`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.81>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.80...rust-v0.1.81>
+
+This release repairs durable background agents, which failed at spawn on every
+new run in `0.1.78` through `0.1.80`. Any deployment that relies on background
+agents outliving a single turn should upgrade directly to this version.
+
+### Fixed
+
+- Background agents: clamp the durable spawn-receipt lookback cursor to a floor
+  of `0`. `i64::saturating_sub` bounds the _type's_ range rather than clamping
+  toward zero, so subtracting the 20-event lookback window from a freshly
+  admitted run — which has only about four events at that point in its
+  lifecycle — produced a negative cursor. The event-cursor retention guard then
+  rejected that cursor as "compacted" even though nothing had been compacted,
+  and aborted the worker before it could start. Observed failures reported
+  `requested after seq -15, earliest retained seq is 1`. (#463)
+- Auth: exit non-zero when an auth profile cannot be verified, so a failed
+  profile check is not mistaken for a successful one. (#462)
+
 ## [0.1.80] - 2026-07-30
 
 Tag: `rust-v0.1.80`
