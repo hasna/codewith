@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codewith E2B Build"
+  short_description: "Build and test Codewith Rust crates on a remote E2B sandbox (offload heavy builds)."
+  default_prompt: "Offload the Codewith Rust build/test to a remote E2B sandbox: fetch the pushed branch, run a scoped just test-fast for the changed crate(s), and report the verified pass/fail with the log path."

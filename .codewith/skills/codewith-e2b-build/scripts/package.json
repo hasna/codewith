@@ -1,0 +1,10 @@
+{
+  "name": "codewith-e2b-build",
+  "private": true,
+  "type": "module",
+  "description": "Remote Codewith Rust build/test on an E2B sandbox (offload heavy Rust builds).",
+  "bin": { "codewith-e2b-build": "./codewith-e2b-build.mjs" },
+  "dependencies": {
+    "e2b": "^2.32.0"
+  }
+}
