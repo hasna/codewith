@@ -2,6 +2,18 @@
   "name": "@hasna/codewith",
   "version": "0.1.80",
   "description": "Codewith command-line coding agent from Hasna.",
+  "keywords": [
+    "codewith",
+    "coding-agent",
+    "ai",
+    "cli",
+    "terminal",
+    "tui",
+    "mcp",
+    "sandbox",
+    "codex",
+    "chatgpt"
+  ],
   "license": "Apache-2.0",
   "bin": {
     "codewith": "bin/codex.js"
