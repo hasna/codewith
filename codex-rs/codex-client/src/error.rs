@@ -5,6 +5,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 const PROVIDER_AUTH_ERROR_MESSAGE: &str = "Authentication failed.";
+const SANITIZED_PROVIDER_AUTH_ERROR_CODE: &str = "authentication_error";
 const PROVIDER_ERROR_TOKEN_MAX_BYTES: usize = 128;
 
 #[derive(Debug)]
@@ -86,6 +87,10 @@ pub fn is_http_auth_error(status: StatusCode, body: Option<&str>) -> bool {
 
 fn sanitized_provider_auth_error_body(body: &str) -> String {
     let parsed = serde_json::from_str::<Value>(body).ok();
+    let auth_classified_from_provider_fields = parsed.as_ref().is_some_and(|value| {
+        provider_error_field(value, "code").is_some_and(is_authentication_error_token)
+            || provider_error_field(value, "type").is_some_and(is_authentication_error_token)
+    });
     let mut error = Map::new();
     error.insert(
         "message".to_string(),
@@ -107,6 +112,11 @@ fn sanitized_provider_auth_error_body(body: &str) -> String {
         .filter(|value| is_safe_provider_error_code(value))
     {
         error.insert("code".to_string(), Value::String(code.to_string()));
+    } else if auth_classified_from_provider_fields {
+        error.insert(
+            "code".to_string(),
+            Value::String(SANITIZED_PROVIDER_AUTH_ERROR_CODE.to_string()),
+        );
     }
 
     let mut root = Map::new();
@@ -285,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn http_constructor_drops_credential_like_provider_code() {
+    fn http_constructor_normalizes_credential_like_provider_code() {
         let credential_fragment = "xy";
         let body = serde_json::json!({
             "error": {
@@ -311,6 +321,8 @@ mod tests {
         assert!(!body.contains(credential_fragment));
         assert!(body.contains(PROVIDER_AUTH_ERROR_MESSAGE));
         assert!(!body.contains("invalid_api_key_xy"));
+        assert!(body.contains(SANITIZED_PROVIDER_AUTH_ERROR_CODE));
+        assert!(is_http_auth_error(StatusCode::BAD_REQUEST, Some(&body)));
     }
 
     #[test]

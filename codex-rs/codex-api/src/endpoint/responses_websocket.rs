@@ -9,6 +9,7 @@ use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
 use crate::telemetry::WebsocketTelemetry;
 use codex_client::TransportError;
+use codex_client::is_http_auth_error;
 use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
@@ -588,7 +589,13 @@ fn map_wrapped_websocket_error_event(
         });
     }
 
-    let status = StatusCode::from_u16(status?).ok()?;
+    let status = match status {
+        Some(status) => StatusCode::from_u16(status).ok()?,
+        None if is_http_auth_error(StatusCode::BAD_REQUEST, Some(&original_payload)) => {
+            StatusCode::UNAUTHORIZED
+        }
+        None => return None,
+    };
     if status.is_success() {
         return None;
     }
@@ -799,6 +806,24 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
+    fn websocket_stream_with_incoming_message(message: Message) -> WsStream {
+        let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(1);
+        let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
+        let pump_task = tokio::spawn(async move {
+            let Some(WsCommand::Send { tx_result, .. }) = rx_command.recv().await else {
+                return;
+            };
+            let _ = tx_result.send(Ok(()));
+            let _ = tx_message.send(Ok(message));
+        });
+
+        WsStream {
+            tx_command,
+            rx_message,
+            pump_task,
+        }
+    }
+
     #[test]
     fn websocket_config_enables_permessage_deflate() {
         let config = websocket_config();
@@ -998,8 +1023,97 @@ mod tests {
         assert_eq!(delay, None);
     }
 
+    #[tokio::test]
+    async fn statusless_wrapped_websocket_auth_error_is_sanitized_before_sse_fallback() {
+        let credential_fragment = "q7";
+        let payload = json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": format!("invalid_api_key_{credential_fragment}"),
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                )
+            },
+            "headers": {
+                "x-request-id": "req-ws-statusless-auth",
+                "cf-ray": "ray-ws-statusless-auth"
+            }
+        })
+        .to_string();
+
+        let mut ws_stream = websocket_stream_with_incoming_message(Message::Text(payload.into()));
+        let (tx_event, _rx_event) =
+            mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1);
+        let api_error = run_websocket_response_stream(
+            &mut ws_stream,
+            tx_event,
+            json!({"type": "response.create"}),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            /*connection_reused*/ false,
+        )
+        .await
+        .expect_err("expected terminal websocket authentication error");
+
+        let ApiError::Transport(TransportError::Http {
+            status,
+            headers,
+            body,
+            ..
+        }) = &api_error
+        else {
+            panic!("expected ApiError::Transport(Http), got {api_error:?}");
+        };
+        assert_eq!(*status, StatusCode::UNAUTHORIZED);
+        let body = body.as_deref().expect("expected sanitized body");
+        assert!(!body.contains(credential_fragment));
+        assert!(!body.contains("invalid_api_key_q7"));
+        assert!(body.contains("authentication_error"));
+        let headers = headers.as_ref().expect("expected mapped headers");
+        assert_eq!(
+            headers
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("req-ws-statusless-auth")
+        );
+
+        let codex_error = crate::map_api_error(api_error);
+        let codex_protocol::error::CodexErr::UnexpectedStatus(details) = &codex_error else {
+            panic!("expected CodexErr::UnexpectedStatus, got {codex_error:?}");
+        };
+        assert_eq!(details.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            details.request_id.as_deref(),
+            Some("req-ws-statusless-auth")
+        );
+        assert_eq!(details.cf_ray.as_deref(), Some("ray-ws-statusless-auth"));
+        assert!(!details.body.contains(credential_fragment));
+        assert!(!details.body.contains("invalid_api_key_q7"));
+
+        let protocol_event = codex_error.to_error_event(/*message_prefix*/ None);
+        assert!(!protocol_event.message.contains(credential_fragment));
+        assert!(!protocol_event.message.contains("invalid_api_key_q7"));
+        assert!(protocol_event.message.contains("401 Unauthorized"));
+        assert!(
+            protocol_event
+                .message
+                .contains("provider error code: authentication_error")
+        );
+        assert!(
+            protocol_event
+                .message
+                .contains("request id: req-ws-statusless-auth")
+        );
+        assert!(
+            protocol_event
+                .message
+                .contains("cf-ray: ray-ws-statusless-auth")
+        );
+    }
+
     #[test]
-    fn parse_wrapped_websocket_error_event_without_status_is_not_mapped() {
+    fn statusless_wrapped_websocket_non_auth_error_is_not_mapped() {
         let payload = json!({
             "type": "error",
             "error": {
