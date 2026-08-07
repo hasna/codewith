@@ -1739,6 +1739,56 @@ async fn load_auth_keeps_codex_api_key_env_precedence() {
 
 #[tokio::test]
 #[serial(codex_auth_env)]
+async fn enforce_login_restrictions_preserves_chatgpt_auth_for_api_method_mismatch()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let _api_key_guard = EnvVarGuard::remove(CODEX_API_KEY_ENV_VAR);
+    let _access_token_guard = remove_access_token_env_var();
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )?;
+    save_current_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "active")?;
+
+    let auth_path = get_auth_file(codex_home.path());
+    let root_auth_before = std::fs::read(&auth_path)?;
+    let profile_auth_before =
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "active")?;
+    let active_profile_before = active_auth_profile(codex_home.path())?;
+    let config = build_config(
+        codex_home.path(),
+        Some(ForcedLoginMethod::Api),
+        /*forced_chatgpt_workspace_id*/ None,
+    )
+    .await;
+
+    let err = super::enforce_login_restrictions(&config)
+        .await
+        .expect_err("expected method mismatch to error");
+
+    assert_eq!(
+        err.to_string(),
+        "API key login is required, but ChatGPT is currently being used."
+    );
+    assert_eq!(std::fs::read(&auth_path)?, root_auth_before);
+    assert_eq!(
+        load_auth_profile(codex_home.path(), AuthCredentialsStoreMode::File, "active")?,
+        profile_auth_before
+    );
+    assert_eq!(
+        active_auth_profile(codex_home.path())?,
+        active_profile_before
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
 async fn enforce_login_restrictions_logs_out_for_method_mismatch() {
     let codex_home = tempdir().unwrap();
     let _access_token_guard = remove_access_token_env_var();
