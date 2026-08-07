@@ -853,6 +853,84 @@ mod tests {
     }
 
     #[test]
+    fn websocket_handshake_auth_error_redacts_reflected_credential() {
+        let credential_fragment = "xy";
+        let body = json!({
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                ),
+                "type": "invalid_request_error",
+                "code": "invalid_api_key"
+            }
+        })
+        .to_string();
+        let response = http::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("x-request-id", "req-ws-handshake-401")
+            .body(Some(body.into_bytes()))
+            .expect("build websocket handshake response");
+        let url = Url::parse("wss://example.com/v1/responses").expect("valid websocket URL");
+
+        let api_error = map_ws_error(WsError::Http(response), &url);
+        let ApiError::Transport(TransportError::Http { body, .. }) = &api_error else {
+            panic!("expected ApiError::Transport(Http)");
+        };
+        let body = body.as_deref().expect("expected sanitized body");
+        assert!(
+            !body.contains(credential_fragment),
+            "websocket handshake body retained synthetic credential fragment: {body}"
+        );
+        assert!(body.contains("invalid_api_key"));
+
+        let rendered = crate::map_api_error(api_error).to_string();
+        assert!(!rendered.contains(credential_fragment));
+        assert!(rendered.contains("401 Unauthorized"));
+        assert!(rendered.contains("provider error code: invalid_api_key"));
+        assert!(rendered.contains("request id: req-ws-handshake-401"));
+    }
+
+    #[test]
+    fn wrapped_websocket_auth_error_redacts_reflected_credential() {
+        let credential_fragment = "synthetic-credential-piece";
+        let payload = json!({
+            "type": "error",
+            "status": 401,
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                ),
+                "type": "invalid_request_error",
+                "code": "invalid_api_key"
+            },
+            "headers": {
+                "x-request-id": "req-ws-event-401"
+            }
+        })
+        .to_string();
+
+        let wrapped_error = parse_wrapped_websocket_error_event(&payload)
+            .expect("expected websocket auth error payload to be parsed");
+        let api_error = map_wrapped_websocket_error_event(wrapped_error, payload)
+            .expect("expected websocket auth error payload to map to ApiError");
+        let ApiError::Transport(TransportError::Http { body, .. }) = &api_error else {
+            panic!("expected ApiError::Transport(Http)");
+        };
+        let body = body.as_deref().expect("expected sanitized body");
+        assert!(
+            !body.contains(credential_fragment),
+            "wrapped websocket body retained synthetic credential fragment: {body}"
+        );
+        assert!(body.contains("invalid_api_key"));
+
+        let rendered = crate::map_api_error(api_error).to_string();
+        assert!(!rendered.contains(credential_fragment));
+        assert!(rendered.contains("401 Unauthorized"));
+        assert!(rendered.contains("provider error code: invalid_api_key"));
+        assert!(rendered.contains("request id: req-ws-event-401"));
+    }
+
+    #[test]
     fn parse_wrapped_websocket_error_event_ignores_non_error_payloads() {
         let payload = json!({
             "type": "response.created",

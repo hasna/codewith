@@ -299,3 +299,49 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
     );
     assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
 }
+
+#[test]
+fn map_api_error_redacts_reflected_credentials_and_preserves_diagnostics() {
+    for credential_fragment in ["xy", "synthetic-credential-piece"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            REQUEST_ID_HEADER,
+            http::HeaderValue::from_static("req-provider-auth-401"),
+        );
+        let body = serde_json::json!({
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                ),
+                "type": "invalid_request_error",
+                "code": "invalid_api_key"
+            }
+        })
+        .to_string();
+
+        let err = map_api_error(ApiError::Transport(TransportError::Http {
+            status: http::StatusCode::UNAUTHORIZED,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(headers),
+            body: Some(body),
+        }));
+
+        let CodexErr::UnexpectedStatus(err) = err else {
+            panic!("expected CodexErr::UnexpectedStatus, got {err:?}");
+        };
+        assert!(
+            !err.body.contains(credential_fragment),
+            "mapped error body retained synthetic credential fragment {credential_fragment:?}: {}",
+            err.body
+        );
+
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains(credential_fragment),
+            "mapped error display retained synthetic credential fragment {credential_fragment:?}: {rendered}"
+        );
+        assert!(rendered.contains("401 Unauthorized"));
+        assert!(rendered.contains("provider error code: invalid_api_key"));
+        assert!(rendered.contains("request id: req-provider-auth-401"));
+    }
+}

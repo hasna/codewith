@@ -555,6 +555,44 @@ fn unexpected_status_includes_identity_auth_details() {
 }
 
 #[test]
+fn unauthorized_error_event_redacts_reflected_credentials() {
+    for credential_fragment in ["xy", "synthetic-credential-piece"] {
+        let err = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status: StatusCode::UNAUTHORIZED,
+            body: serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "Incorrect API key provided: {credential_fragment}."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key"
+                }
+            })
+            .to_string(),
+            url: Some("https://example.com/v1/responses".to_string()),
+            cf_ray: None,
+            request_id: Some("req-error-event-401".to_string()),
+            identity_authorization_error: None,
+            identity_error_code: None,
+        });
+
+        let event = err.to_error_event(/*message_prefix*/ None);
+        assert!(
+            !event.message.contains(credential_fragment),
+            "error event retained synthetic credential fragment {credential_fragment:?}: {}",
+            event.message
+        );
+        assert!(event.message.contains("401 Unauthorized"));
+        assert!(
+            event
+                .message
+                .contains("provider error code: invalid_api_key")
+        );
+        assert!(event.message.contains("request id: req-error-event-401"));
+    }
+}
+
+#[test]
 fn usage_limit_reached_includes_hours_and_minutes() {
     let base = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
     let resets_at = base + ChronoDuration::hours(3) + ChronoDuration::minutes(32);
