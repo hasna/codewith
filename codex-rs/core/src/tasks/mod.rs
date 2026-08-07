@@ -11,7 +11,9 @@ use std::time::Instant;
 use codex_extension_api::ExtensionData;
 use futures::future::BoxFuture;
 use tokio::select;
+use tokio::sync::Mutex;
 use tokio::sync::Notify;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
@@ -32,6 +34,7 @@ use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
+use crate::state::TurnState;
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
 use codex_login::AuthManager;
@@ -362,8 +365,17 @@ impl Session {
         }
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
         self.clear_connector_selection().await;
-        self.start_task_after_policy_preflight(turn_context, input, task)
-            .await;
+        if !self
+            .start_task_after_policy_preflight(
+                turn_context,
+                input,
+                task,
+                /*expected_turn_state*/ None,
+            )
+            .await
+        {
+            warn!("task start lost ownership of its active-turn reservation");
+        }
     }
 
     // The explicit return type keeps the `Send` contract visible for lifecycle
@@ -387,8 +399,19 @@ impl Session {
                 .await;
                 return Err(error);
             }
-            self.start_task_after_policy_preflight(turn_context, input, task)
-                .await;
+            if !self
+                .start_task_after_policy_preflight(
+                    turn_context,
+                    input,
+                    task,
+                    /*expected_turn_state*/ None,
+                )
+                .await
+            {
+                return Err(codex_protocol::error::CodexErr::InvalidRequest(
+                    "thread became active before task start".to_string(),
+                ));
+            }
             Ok(())
         }
     }
@@ -396,53 +419,33 @@ impl Session {
     // Keep the explicit `Send` bound visible: this helper participates in a
     // recursive task-start path that can be awaited from a spawned turn.
     #[allow(clippy::manual_async_fn)]
-    fn start_task_after_policy_preflight<T: SessionTask>(
+    pub(crate) fn start_task_after_policy_preflight<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+        expected_turn_state: Option<Arc<Mutex<TurnState>>>,
+    ) -> impl std::future::Future<Output = bool> + Send + '_ {
         async move {
+            let turn_state = match expected_turn_state {
+                Some(turn_state) => turn_state,
+                None => {
+                    let mut active = self.active_turn.lock().await;
+                    let turn = active.get_or_insert_with(ActiveTurn::default);
+                    if turn.task.is_some() {
+                        return false;
+                    }
+                    Arc::clone(&turn.turn_state)
+                }
+            };
             let task: Arc<dyn AnySessionTask> = Arc::new(task);
             let task_kind = task.kind();
             let span_name = task.span_name();
-            let started_at = Instant::now();
-            let turn_started_at_unix_ms = turn_context
-                .turn_timing_state
-                .mark_turn_started(started_at)
-                .await;
-            turn_context
-                .turn_metadata_state
-                .set_turn_started_at_unix_ms(turn_started_at_unix_ms);
-            let token_usage_at_turn_start = self.total_token_usage().await.unwrap_or_default();
 
             let cancellation_token = CancellationToken::new();
             let done = Arc::new(Notify::new());
 
-            self.services
-                .guardian_rejection_circuit_breaker
-                .lock()
-                .await
-                .clear_turn(&turn_context.sub_id);
-
-            let pending_items = self.input_queue.get_pending_input(&self.active_turn).await;
-            let turn_state = {
-                let mut active = self.active_turn.lock().await;
-                let turn = active.get_or_insert_with(ActiveTurn::default);
-                debug_assert!(turn.task.is_none());
-                Arc::clone(&turn.turn_state)
-            };
-            turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
-            self.input_queue
-                .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
-                .await;
-            self.emit_turn_start_lifecycle(turn_context.as_ref(), &token_usage_at_turn_start)
-                .await;
-
             let turn_extension_data = Arc::clone(&turn_context.extension_data);
-            let mut active = self.active_turn.lock().await;
-            let turn = active.get_or_insert_with(ActiveTurn::default);
-            debug_assert!(turn.task.is_none());
             let done_clone = Arc::clone(&done);
             let session_ctx = Arc::new(SessionTaskContext::new(
                 Arc::clone(self),
@@ -451,6 +454,8 @@ impl Session {
             let ctx = Arc::clone(&turn_context);
             let task_for_run = Arc::clone(&task);
             let task_input = input;
+            let task_turn_state = Arc::clone(&turn_state);
+            let (start_tx, start_rx) = oneshot::channel();
             let task_cancellation_token = cancellation_token.child_token();
             // Task-owned turn spans keep a core-owned span open for the
             // full task lifecycle after the submission dispatch span ends.
@@ -472,6 +477,47 @@ impl Session {
             );
             let handle = tokio::spawn(
                 async move {
+                    let may_start = select! {
+                        result = start_rx => result.is_ok(),
+                        _ = task_cancellation_token.cancelled() => false,
+                    };
+                    if !may_start {
+                        done_clone.notify_one();
+                        return;
+                    }
+                    let sess = session_ctx.clone_session();
+                    let started_at = Instant::now();
+                    let turn_started_at_unix_ms = ctx
+                        .turn_timing_state
+                        .mark_turn_started(started_at)
+                        .await;
+                    ctx.turn_metadata_state
+                        .set_turn_started_at_unix_ms(turn_started_at_unix_ms);
+                    let token_usage_at_turn_start =
+                        sess.total_token_usage().await.unwrap_or_default();
+                    sess.services
+                        .guardian_rejection_circuit_breaker
+                        .lock()
+                        .await
+                        .clear_turn(&ctx.sub_id);
+                    let pending_items = sess
+                        .input_queue
+                        .get_pending_input_for_turn_state(task_turn_state.as_ref())
+                        .await;
+                    task_turn_state.lock().await.token_usage_at_turn_start =
+                        token_usage_at_turn_start.clone();
+                    sess.input_queue
+                        .extend_pending_input_for_turn_state(
+                            task_turn_state.as_ref(),
+                            pending_items,
+                        )
+                        .await;
+                    sess.emit_turn_start_lifecycle(ctx.as_ref(), &token_usage_at_turn_start)
+                        .await;
+                    if task_cancellation_token.is_cancelled() {
+                        done_clone.notify_one();
+                        return;
+                    }
                     let ctx_for_finish = Arc::clone(&ctx);
                     let last_agent_message = task_for_run
                         .run(
@@ -481,7 +527,6 @@ impl Session {
                             task_cancellation_token.child_token(),
                         )
                         .await;
-                    let sess = session_ctx.clone_session();
                     if let Err(err) = sess.flush_rollout().await {
                         warn!("failed to flush rollout before completing turn: {err}");
                         sess.send_event(
@@ -517,7 +562,22 @@ impl Session {
                 turn_extension_data,
                 _timer: timer,
             };
-            turn.task = Some(running_task);
+            let installed = {
+                let mut active = self.active_turn.lock().await;
+                match active.as_mut() {
+                    Some(turn)
+                        if turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &turn_state) =>
+                    {
+                        turn.task = Some(running_task);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if installed {
+                let _ = start_tx.send(());
+            }
+            installed
         }
     }
 
@@ -580,7 +640,7 @@ impl Session {
             return false;
         }
 
-        {
+        let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
             if active_turn
                 .as_ref()
@@ -593,13 +653,23 @@ impl Session {
             // mail is user/client-directed, so it takes over stale or lower-priority
             // reservations and lets their owners observe that the reservation was lost.
             *active_turn = Some(ActiveTurn::default());
-        }
+            Arc::clone(
+                &active_turn
+                    .as_ref()
+                    .expect("pending-work reservation should be present")
+                    .turn_state,
+            )
+        };
 
         self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
             .await;
-        self.start_task_after_policy_preflight(turn_context, Vec::new(), RegularTask::new())
-            .await;
-        true
+        self.start_task_after_policy_preflight(
+            turn_context,
+            Vec::new(),
+            RegularTask::new(),
+            Some(turn_state),
+        )
+        .await
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {

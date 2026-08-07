@@ -2,6 +2,8 @@ use super::*;
 use crate::request_processors::thread_goal_processor::api_thread_goal_from_state;
 use crate::request_processors::thread_goal_processor::api_thread_goal_plan_from_state_for_thread;
 
+mod scheduled_runs;
+
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
@@ -321,25 +323,17 @@ pub(super) async fn ensure_listener_task_running(
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
-                    let terminal_event = matches!(
-                        event.msg,
-                        EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) | EventMsg::Error(_)
-                    );
-                    let (raw_events_enabled, tracked_scheduled_run, turn_error) = {
+                    let scheduled_runs::TrackedScheduledEvent {
+                        raw_events_enabled,
+                        terminal_event,
+                        scheduled_run: tracked_scheduled_run,
+                        turn_error,
+                    } = {
                         let mut thread_state = thread_state.lock().await;
-                        thread_state.track_current_turn_event(&event.id, &event.msg);
-                        let tracked_scheduled_run = if terminal_event {
-                            thread_state.take_scheduled_run(&event.id)
-                        } else {
-                            None
-                        };
-                        let turn_error = terminal_event
-                            .then(|| thread_state.turn_summary.last_error.clone())
-                            .flatten();
-                        (
-                            thread_state.experimental_raw_events,
-                            tracked_scheduled_run,
-                            turn_error,
+                        scheduled_runs::track_scheduled_event(
+                            &mut thread_state,
+                            event.id.as_str(),
+                            &event.msg,
                         )
                     };
                     let terminal_scheduled_run = match (

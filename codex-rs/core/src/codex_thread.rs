@@ -131,6 +131,8 @@ pub enum TryStartUserInputTurnIfIdleError {
     Rejected(TryStartTurnIfIdleRejectionReason),
     /// The requested turn settings were rejected before the turn started.
     InvalidRequest(CodexErr),
+    /// The durable scheduled occurrence could not be materialized as started.
+    ScheduleState(anyhow::Error),
 }
 
 impl TryStartUserInputTurnIfIdleError {
@@ -139,6 +141,7 @@ impl TryStartUserInputTurnIfIdleError {
             Self::EmptyInput => None,
             Self::Rejected(reason) => Some(*reason),
             Self::InvalidRequest(_) => None,
+            Self::ScheduleState(_) => None,
         }
     }
 }
@@ -149,6 +152,7 @@ impl std::fmt::Display for TryStartUserInputTurnIfIdleError {
             Self::EmptyInput => write!(f, "turn input must not be empty"),
             Self::Rejected(reason) => write!(f, "thread is not idle: {reason:?}"),
             Self::InvalidRequest(err) => write!(f, "{err}"),
+            Self::ScheduleState(err) => write!(f, "{err}"),
         }
     }
 }
@@ -186,6 +190,17 @@ pub struct CodexThreadSettingsOverrides {
     pub collaboration_mode: Option<CollaborationMode>,
     pub worktree_mode: Option<codex_protocol::protocol::SessionWorktreeMode>,
     pub personality: Option<Personality>,
+}
+
+/// Durable schedule state that must become `Started` inside the idle-turn
+/// reservation, immediately before model work begins.
+#[derive(Clone, Debug)]
+pub struct ScheduledTurnStart {
+    pub schedule_id: String,
+    pub run_id: String,
+    pub lease_id: String,
+    pub goal_id: Option<String>,
+    pub lease_duration: std::time::Duration,
 }
 
 pub struct CodexThread {
@@ -474,6 +489,29 @@ impl CodexThread {
         self.codex
             .session
             .try_start_user_input_turn_if_idle(sub_id, items, additional_context, updates)
+            .await
+    }
+
+    /// Starts a scheduled user-input turn only if idle, materializing the
+    /// durable run as `Started` under the same reservation before task launch.
+    pub async fn try_start_scheduled_user_input_turn_if_idle(
+        &self,
+        sub_id: String,
+        items: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        overrides: CodexThreadSettingsOverrides,
+        scheduled_start: ScheduledTurnStart,
+    ) -> Result<codex_state::ThreadScheduleRun, TryStartUserInputTurnIfIdleError> {
+        let updates = self.thread_settings_update(overrides).await;
+        self.codex
+            .session
+            .try_start_scheduled_user_input_turn_if_idle(
+                sub_id,
+                items,
+                additional_context,
+                updates,
+                scheduled_start,
+            )
             .await
     }
 

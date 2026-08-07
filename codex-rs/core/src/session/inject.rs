@@ -209,10 +209,14 @@ impl Session {
                 input.into_iter().map(TurnInput::ResponseItem).collect(),
             )
             .await;
-        if self
-            .start_task(turn_context, Vec::new(), RegularTask::new())
+        if !self
+            .start_task_after_policy_preflight(
+                turn_context,
+                Vec::new(),
+                RegularTask::new(),
+                Some(Arc::clone(&turn_state)),
+            )
             .await
-            .is_err()
         {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
@@ -235,6 +239,50 @@ impl Session {
         additional_context: BTreeMap<String, AdditionalContextEntry>,
         updates: SessionSettingsUpdate,
     ) -> Result<String, TryStartUserInputTurnIfIdleError> {
+        self.try_start_user_input_turn_if_idle_inner(
+            sub_id,
+            input,
+            additional_context,
+            updates,
+            /*scheduled_start*/ None,
+        )
+        .await
+        .map(|(sub_id, _)| sub_id)
+    }
+
+    pub(crate) async fn try_start_scheduled_user_input_turn_if_idle(
+        self: &Arc<Self>,
+        sub_id: String,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        updates: SessionSettingsUpdate,
+        scheduled_start: crate::codex_thread::ScheduledTurnStart,
+    ) -> Result<codex_state::ThreadScheduleRun, TryStartUserInputTurnIfIdleError> {
+        self.try_start_user_input_turn_if_idle_inner(
+            sub_id,
+            input,
+            additional_context,
+            updates,
+            Some(scheduled_start),
+        )
+        .await?
+        .1
+        .ok_or_else(|| {
+            TryStartUserInputTurnIfIdleError::ScheduleState(anyhow::anyhow!(
+                "scheduled turn started without a durable schedule run"
+            ))
+        })
+    }
+
+    async fn try_start_user_input_turn_if_idle_inner(
+        self: &Arc<Self>,
+        sub_id: String,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        updates: SessionSettingsUpdate,
+        scheduled_start: Option<crate::codex_thread::ScheduledTurnStart>,
+    ) -> Result<(String, Option<codex_state::ThreadScheduleRun>), TryStartUserInputTurnIfIdleError>
+    {
         if input.is_empty() {
             return Err(TryStartUserInputTurnIfIdleError::EmptyInput);
         }
@@ -328,15 +376,72 @@ impl Session {
             content: input,
             client_id: None,
         });
-        if let Err(error) = self
-            .start_task(turn_context, task_input, RegularTask::new())
+        if !self.still_holds_reserved_idle_turn(&turn_state).await {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return Err(TryStartUserInputTurnIfIdleError::Rejected(
+                TryStartTurnIfIdleRejectionReason::Busy,
+            ));
+        }
+        let scheduled_run_result = if let Some(scheduled_start) = scheduled_start {
+            match self.state_db() {
+                Some(state_db) => state_db
+                    .thread_schedules()
+                    .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                        schedule_id: scheduled_start.schedule_id.as_str(),
+                        run_id: scheduled_start.run_id.as_str(),
+                        lease_id: scheduled_start.lease_id.as_str(),
+                        turn_id: sub_id.as_str(),
+                        goal_id: scheduled_start.goal_id.as_deref(),
+                        now: chrono::Utc::now(),
+                        lease_duration: scheduled_start.lease_duration,
+                    })
+                    .await
+                    .map_err(TryStartUserInputTurnIfIdleError::ScheduleState)
+                    .and_then(|run| {
+                        run.ok_or_else(|| {
+                            TryStartUserInputTurnIfIdleError::ScheduleState(anyhow::anyhow!(
+                                "scheduled occurrence {} no longer owns its active lease",
+                                scheduled_start.run_id
+                            ))
+                        })
+                    })
+                    .map(Some),
+                None => Err(TryStartUserInputTurnIfIdleError::ScheduleState(
+                    anyhow::anyhow!(
+                        "state persistence is unavailable for scheduled turn {}",
+                        scheduled_start.run_id
+                    ),
+                )),
+            }
+        } else {
+            Ok(None)
+        };
+        let scheduled_run = match scheduled_run_result {
+            Ok(scheduled_run) => scheduled_run,
+            Err(error) => {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                self.maybe_start_turn_for_pending_work().await;
+                return Err(error);
+            }
+        };
+        if !self
+            .start_task_after_policy_preflight(
+                turn_context,
+                task_input,
+                RegularTask::new(),
+                Some(Arc::clone(&turn_state)),
+            )
             .await
         {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
-            return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(error));
+            return Err(TryStartUserInputTurnIfIdleError::InvalidRequest(
+                CodexErr::InvalidRequest(
+                    "thread became active before scheduled task start".to_string(),
+                ),
+            ));
         }
-        Ok(sub_id)
+        Ok((sub_id, scheduled_run))
     }
 
     /// Returns true when `turn_state` is still the bare (task-less) idle-turn reservation

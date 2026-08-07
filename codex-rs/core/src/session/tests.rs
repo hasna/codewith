@@ -10912,6 +10912,52 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
 }
 
 #[tokio::test]
+async fn reserved_task_start_cannot_overwrite_a_replacement_active_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let reservation = ActiveTurn::default();
+    let reserved_turn_state = Arc::clone(&reservation.turn_state);
+    *sess.active_turn.lock().await = Some(reservation);
+
+    let replacement = ActiveTurn::default();
+    let replacement_turn_state = Arc::clone(&replacement.turn_state);
+    *sess.active_turn.lock().await = Some(replacement);
+    sess.input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "replacement trigger".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await
+        .expect("mailbox queue has room");
+
+    let installed = sess
+        .start_task_after_policy_preflight(
+            Arc::clone(&tc),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+            Some(reserved_turn_state),
+        )
+        .await;
+
+    assert!(!installed);
+    {
+        let active_turn = sess.active_turn.lock().await;
+        let active_turn = active_turn.as_ref().expect("replacement remains active");
+        assert!(active_turn.task.is_none());
+        assert!(Arc::ptr_eq(
+            &active_turn.turn_state,
+            &replacement_turn_state
+        ));
+    }
+    assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+}
+
+#[tokio::test]
 async fn session_continuation_rejects_active_destination_without_injecting() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.spawn_task(

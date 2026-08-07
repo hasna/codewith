@@ -341,6 +341,34 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.split_off(0)
     }
 
+    pub(crate) async fn get_pending_input_for_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+    ) -> Vec<TurnInput> {
+        let (pending_input, accepts_mailbox_delivery) = {
+            let mut turn_state = turn_state.lock().await;
+            (
+                turn_state.pending_input.items.split_off(0),
+                turn_state.accepts_mailbox_delivery_for_current_turn(),
+            )
+        };
+        if !accepts_mailbox_delivery {
+            return pending_input;
+        }
+        let mailbox_items = self
+            .drain_mailbox_input_items()
+            .await
+            .into_iter()
+            .map(TurnInput::ResponseItem);
+        if pending_input.is_empty() {
+            mailbox_items.collect()
+        } else {
+            let mut pending_input = pending_input;
+            pending_input.extend(mailbox_items);
+            pending_input
+        }
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"

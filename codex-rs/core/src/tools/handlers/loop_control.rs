@@ -985,6 +985,47 @@ mod tests {
             .expect("schedule should be created")
     }
 
+    async fn enqueue_and_start_claim(
+        runtime: &codex_state::StateRuntime,
+        claim: &codex_state::ThreadScheduleClaim,
+        now: DateTime<Utc>,
+    ) -> codex_state::ThreadScheduleRun {
+        let turn_id = claim
+            .run
+            .turn_id
+            .as_deref()
+            .expect("claimed occurrence should have a stable turn id");
+        runtime
+            .thread_schedules()
+            .enqueue_thread_schedule_run(codex_state::ThreadScheduleRunEnqueueParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                goal_id: None,
+                auth_profile_recorded: false,
+                auth_profile: None,
+                turn_input: "loop-control test input",
+                now,
+            })
+            .await
+            .expect("claimed occurrence should enqueue")
+            .expect("claimed occurrence should retain its lease");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id,
+                goal_id: None,
+                now,
+                lease_duration: Duration::from_secs(300),
+            })
+            .await
+            .expect("enqueued occurrence should start")
+            .expect("enqueued occurrence should retain its lease")
+    }
+
     #[test]
     fn create_action_deserializes() {
         let args: ManageLoopArgs = serde_json::from_str(
@@ -1301,20 +1342,7 @@ mod tests {
             .await
             .expect("first run should claim")
             .expect("first run should be due");
-        runtime
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: &schedule.schedule_id,
-                run_id: &first_claim.run.run_id,
-                lease_id: "lease-complete",
-                turn_id: "turn-complete",
-                goal_id: None,
-                now: first_run_at,
-                lease_duration: Duration::from_secs(300),
-            })
-            .await
-            .expect("first run should start")
-            .expect("first run should exist");
+        enqueue_and_start_claim(&runtime, &first_claim, first_run_at).await;
 
         let second_run_at = at(/*seconds*/ 1_700_000_600);
         runtime
@@ -1335,20 +1363,7 @@ mod tests {
             .await
             .expect("second run should claim")
             .expect("second run should be due");
-        runtime
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: &schedule.schedule_id,
-                run_id: &second_claim.run.run_id,
-                lease_id: "lease-fail",
-                turn_id: "turn-fail",
-                goal_id: None,
-                now: second_run_at,
-                lease_duration: Duration::from_secs(300),
-            })
-            .await
-            .expect("second run should start")
-            .expect("second run should exist");
+        enqueue_and_start_claim(&runtime, &second_claim, second_run_at).await;
         runtime
             .thread_schedules()
             .fail_thread_schedule_run(
@@ -1574,20 +1589,7 @@ mod tests {
             .await
             .expect("run should claim")
             .expect("run should be due");
-        runtime
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: &first.schedule_id,
-                run_id: &claim.run.run_id,
-                lease_id: "lease-complete",
-                turn_id: "turn-complete",
-                goal_id: None,
-                now: first_run_at,
-                lease_duration: Duration::from_secs(300),
-            })
-            .await
-            .expect("run should start")
-            .expect("run should exist");
+        enqueue_and_start_claim(&runtime, &claim, first_run_at).await;
         runtime
             .thread_schedules()
             .complete_thread_schedule_run(
@@ -1682,6 +1684,7 @@ mod tests {
             .await
             .expect("run should claim")
             .expect("run should be due");
+        enqueue_and_start_claim(&runtime, &claim, at(/*seconds*/ 1_700_000_300)).await;
         runtime
             .thread_schedules()
             .fail_thread_schedule_run(
