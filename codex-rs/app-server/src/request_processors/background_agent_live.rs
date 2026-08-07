@@ -5581,8 +5581,14 @@ mod tests {
                 "after_seq must never be negative: last_event_seq={last_event_seq} produced after_seq={after_seq}"
             );
         }
-        assert_eq!(background_agent_worker_spawn_receipt_after_seq(5), 0);
-        assert_eq!(background_agent_worker_spawn_receipt_after_seq(0), 0);
+        assert_eq!(
+            background_agent_worker_spawn_receipt_after_seq(/*last_event_seq*/ 5),
+            0
+        );
+        assert_eq!(
+            background_agent_worker_spawn_receipt_after_seq(/*last_event_seq*/ 0),
+            0
+        );
     }
 
     #[test]
@@ -5590,8 +5596,14 @@ mod tests {
         // The lookback window itself must be preserved for a run that has
         // accumulated plenty of history — the fix must not degrade this into
         // an unbounded "from the start" scan.
-        assert_eq!(background_agent_worker_spawn_receipt_after_seq(25), 5);
-        assert_eq!(background_agent_worker_spawn_receipt_after_seq(1000), 980);
+        assert_eq!(
+            background_agent_worker_spawn_receipt_after_seq(/*last_event_seq*/ 25),
+            5
+        );
+        assert_eq!(
+            background_agent_worker_spawn_receipt_after_seq(/*last_event_seq*/ 1000),
+            980
+        );
     }
 
     #[test]
