@@ -6,6 +6,8 @@ use crate::rate_limits::parse_rate_limit_reached_type;
 use base64::Engine;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_client::is_http_auth_error;
+use codex_client::sanitize_http_error_body;
 use codex_protocol::auth::PlanType;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::RetryLimitReachedError;
@@ -25,7 +27,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => CodexErr::UnexpectedStatus(UnexpectedResponseError {
             status,
-            body: message,
+            body: sanitize_http_error_body(status, Some(message)).unwrap_or_default(),
             url: None,
             cf_ray: None,
             request_id: None,
@@ -41,7 +43,12 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 headers,
                 body,
             } => {
-                let body_text = body.unwrap_or_default();
+                let is_auth_error = is_http_auth_error(status, body.as_deref());
+                let body_text = sanitize_http_error_body(status, body).unwrap_or_default();
+
+                if is_auth_error {
+                    return unexpected_status(status, url, headers, body_text);
+                }
 
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
                     && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
@@ -119,18 +126,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         request_id: extract_request_tracking_id(headers.as_ref()),
                     })
                 } else {
-                    CodexErr::UnexpectedStatus(UnexpectedResponseError {
-                        status,
-                        body: body_text,
-                        url,
-                        cf_ray: extract_header(headers.as_ref(), CF_RAY_HEADER),
-                        request_id: extract_request_id(headers.as_ref()),
-                        identity_authorization_error: extract_header(
-                            headers.as_ref(),
-                            X_OPENAI_AUTHORIZATION_ERROR_HEADER,
-                        ),
-                        identity_error_code: extract_x_error_json_code(headers.as_ref()),
-                    })
+                    unexpected_status(status, url, headers, body_text)
                 }
             }
             TransportError::RetryLimit => CodexErr::RetryLimit(RetryLimitReachedError {
@@ -162,6 +158,26 @@ mod tests;
 
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
     extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))
+}
+
+fn unexpected_status(
+    status: http::StatusCode,
+    url: Option<String>,
+    headers: Option<HeaderMap>,
+    body: String,
+) -> CodexErr {
+    CodexErr::UnexpectedStatus(UnexpectedResponseError {
+        status,
+        body,
+        url,
+        cf_ray: extract_header(headers.as_ref(), CF_RAY_HEADER),
+        request_id: extract_request_id(headers.as_ref()),
+        identity_authorization_error: extract_header(
+            headers.as_ref(),
+            X_OPENAI_AUTHORIZATION_ERROR_HEADER,
+        ),
+        identity_error_code: extract_x_error_json_code(headers.as_ref()),
+    })
 }
 
 fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {

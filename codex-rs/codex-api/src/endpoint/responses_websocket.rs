@@ -471,8 +471,9 @@ async fn connect_websocket(
             (stream, response)
         }
         Err(err) => {
+            let err = map_ws_error(err, &url);
             error!("failed to connect to websocket: {err}, url: {url}");
-            return Err(map_ws_error(err, &url));
+            return Err(err);
         }
     };
 
@@ -522,12 +523,12 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
                 .body()
                 .as_ref()
                 .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
-            ApiError::Transport(TransportError::Http {
+            ApiError::Transport(TransportError::http(
                 status,
-                url: Some(url.to_string()),
-                headers: Some(headers),
+                Some(url.to_string()),
+                Some(headers),
                 body,
-            })
+            ))
         }
         WsError::ConnectionClosed | WsError::AlreadyClosed => {
             ApiError::Stream("websocket closed".to_string())
@@ -592,12 +593,12 @@ fn map_wrapped_websocket_error_event(
         return None;
     }
 
-    Some(ApiError::Transport(TransportError::Http {
+    Some(ApiError::Transport(TransportError::http(
         status,
-        url: None,
-        headers: headers.map(json_headers_to_http_headers),
-        body: Some(original_payload),
-    }))
+        None,
+        headers.map(json_headers_to_http_headers),
+        Some(original_payload),
+    )))
 }
 
 fn json_headers_to_http_headers(headers: JsonMap<String, Value>) -> HeaderMap {
@@ -677,7 +678,11 @@ async fn run_websocket_response_stream(
                 let event = match serde_json::from_str::<ResponsesStreamEvent>(&text) {
                     Ok(event) => event,
                     Err(err) => {
-                        debug!("failed to parse websocket event: {err}, data: {text}");
+                        debug!(
+                            error = %err,
+                            payload_bytes = text.len(),
+                            "failed to parse websocket event"
+                        );
                         continue;
                     }
                 };

@@ -25,6 +25,8 @@ pub use crate::default_client::CodexHttpClient;
 pub use crate::default_client::CodexRequestBuilder;
 pub use crate::error::StreamError;
 pub use crate::error::TransportError;
+pub use crate::error::is_http_auth_error;
+pub use crate::error::sanitize_http_error_body;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;
 pub use crate::request::RequestBody;

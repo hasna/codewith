@@ -472,7 +472,7 @@ fn unexpected_status_non_html_is_unchanged() {
 }
 
 #[test]
-fn unexpected_status_prefers_error_message_when_present() {
+fn unexpected_status_suppresses_unauthorized_body() {
     let err = UnexpectedResponseError {
         status: StatusCode::UNAUTHORIZED,
         body: r#"{"error":{"message":"Workspace is not authorized in this region."},"status":401}"#
@@ -487,7 +487,7 @@ fn unexpected_status_prefers_error_message_when_present() {
     assert_eq!(
         err.to_string(),
         format!(
-            "unexpected status {status}: Workspace is not authorized in this region., url: https://chatgpt.com/backend-api/codex/responses, request id: req-123"
+            "unexpected status {status}: {PROVIDER_AUTH_ERROR_MESSAGE}, url: https://chatgpt.com/backend-api/codex/responses, request id: req-123"
         )
     );
 }
@@ -529,7 +529,7 @@ fn unexpected_status_includes_cf_ray_and_request_id() {
     assert_eq!(
         err.to_string(),
         format!(
-            "unexpected status {status}: plain text error, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: 9c81f9f18f2fa49d-LHR, request id: req-xyz"
+            "unexpected status {status}: {PROVIDER_AUTH_ERROR_MESSAGE}, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: 9c81f9f18f2fa49d-LHR, request id: req-xyz"
         )
     );
 }
@@ -549,7 +549,7 @@ fn unexpected_status_includes_identity_auth_details() {
     assert_eq!(
         err.to_string(),
         format!(
-            "unexpected status {status}: plain text error, url: https://chatgpt.com/backend-api/codex/models, cf-ray: cf-ray-auth-401-test, request id: req-auth, auth error: missing_authorization_header, auth error code: token_expired"
+            "unexpected status {status}: {PROVIDER_AUTH_ERROR_MESSAGE}, url: https://chatgpt.com/backend-api/codex/models, cf-ray: cf-ray-auth-401-test, request id: req-auth, auth error: missing_authorization_header, auth error code: token_expired"
         )
     );
 }
@@ -590,6 +590,39 @@ fn unauthorized_error_event_redacts_reflected_credentials() {
         );
         assert!(event.message.contains("request id: req-error-event-401"));
     }
+}
+
+#[test]
+fn unauthorized_error_event_drops_credential_like_provider_code() {
+    let credential_fragment = "xy";
+    let err = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+        status: StatusCode::UNAUTHORIZED,
+        body: serde_json::json!({
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                ),
+                "type": "invalid_request_error",
+                "code": format!("invalid_api_key_{credential_fragment}")
+            }
+        })
+        .to_string(),
+        url: Some("https://example.com/v1/responses".to_string()),
+        cf_ray: None,
+        request_id: Some("req-error-event-code-401".to_string()),
+        identity_authorization_error: None,
+        identity_error_code: None,
+    });
+
+    let event = err.to_error_event(/*message_prefix*/ None);
+    assert!(!event.message.contains(credential_fragment));
+    assert!(!event.message.contains("invalid_api_key_xy"));
+    assert!(event.message.contains("401 Unauthorized"));
+    assert!(
+        event
+            .message
+            .contains("request id: req-error-event-code-401")
+    );
 }
 
 #[test]

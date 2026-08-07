@@ -316,10 +316,16 @@ pub struct UnexpectedResponseError {
 
 const CLOUDFLARE_BLOCKED_MESSAGE: &str =
     "Access blocked by Cloudflare. This usually happens when connecting from a restricted region";
+const PROVIDER_AUTH_ERROR_MESSAGE: &str = "Authentication failed.";
+const PROVIDER_ERROR_CODE_MAX_BYTES: usize = 128;
 const UNEXPECTED_RESPONSE_BODY_MAX_BYTES: usize = 1000;
 
 impl UnexpectedResponseError {
     fn display_body(&self) -> String {
+        if self.status == StatusCode::UNAUTHORIZED {
+            return PROVIDER_AUTH_ERROR_MESSAGE.to_string();
+        }
+
         if let Some(message) = self.extract_error_message() {
             return message;
         }
@@ -343,6 +349,20 @@ impl UnexpectedResponseError {
             None
         } else {
             Some(message.to_string())
+        }
+    }
+
+    fn extract_provider_error_code(&self) -> Option<String> {
+        let json = serde_json::from_str::<serde_json::Value>(&self.body).ok()?;
+        let code = json
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(serde_json::Value::as_str)?
+            .trim();
+        if is_safe_provider_error_code(code) {
+            Some(code.to_string())
+        } else {
+            None
         }
     }
 
@@ -394,6 +414,9 @@ impl std::fmt::Display for UnexpectedResponseError {
             if let Some(id) = &self.request_id {
                 message.push_str(&format!(", request id: {id}"));
             }
+            if let Some(error_code) = self.extract_provider_error_code() {
+                message.push_str(&format!(", provider error code: {error_code}"));
+            }
             if let Some(auth_error) = &self.identity_authorization_error {
                 message.push_str(&format!(", auth error: {auth_error}"));
             }
@@ -406,6 +429,43 @@ impl std::fmt::Display for UnexpectedResponseError {
 }
 
 impl std::error::Error for UnexpectedResponseError {}
+
+fn is_safe_provider_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= PROVIDER_ERROR_CODE_MAX_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        && is_known_authentication_error_code(value)
+}
+
+fn is_known_authentication_error_code(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "invalid_api_key"
+            | "invalid_api_key_error"
+            | "invalidapikey"
+            | "authentication_error"
+            | "authorization_error"
+            | "invalid_auth"
+            | "invalid_authentication"
+            | "invalid_authentication_token"
+            | "invalidauthenticationtoken"
+            | "invalid_credential"
+            | "invalid_credentials"
+            | "invalid_access_token"
+            | "invalid_refresh_token"
+            | "invalid_token"
+            | "missing_token"
+            | "token_expired"
+            | "expired_token"
+            | "unauthorized"
+            | "unauthenticated"
+            | "permission_denied"
+            | "insufficient_permission"
+            | "insufficient_permissions"
+    )
+}
 
 fn truncate_with_ellipsis(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {

@@ -345,3 +345,40 @@ fn map_api_error_redacts_reflected_credentials_and_preserves_diagnostics() {
         assert!(rendered.contains("request id: req-provider-auth-401"));
     }
 }
+
+#[test]
+fn map_api_error_preserves_diagnostics_for_auth_code_on_nonstandard_status() {
+    let credential_fragment = "xy";
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        REQUEST_ID_HEADER,
+        http::HeaderValue::from_static("req-provider-auth-400"),
+    );
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "Incorrect API key provided: {credential_fragment}."
+            ),
+            "type": "invalid_request_error",
+            "code": "invalid_api_key"
+        }
+    })
+    .to_string();
+
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("https://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some(body),
+    }));
+
+    let CodexErr::UnexpectedStatus(err) = err else {
+        panic!("expected CodexErr::UnexpectedStatus, got {err:?}");
+    };
+    assert!(!err.body.contains(credential_fragment));
+    let rendered = err.to_string();
+    assert!(!rendered.contains(credential_fragment));
+    assert!(rendered.contains("400 Bad Request"));
+    assert!(rendered.contains("provider error code: invalid_api_key"));
+    assert!(rendered.contains("request id: req-provider-auth-400"));
+}

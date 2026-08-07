@@ -109,8 +109,7 @@ async fn sampling_retry_redacts_reflected_auth_error_context() {
     assert!(logs.contains("provider error code: invalid_api_key"));
     assert!(logs.contains("request id: req-retry-401"));
 
-    let fallback_summary =
-        format!("Falling back from WebSockets to HTTPS transport. {err:#}");
+    let fallback_summary = format!("Falling back from WebSockets to HTTPS transport. {err:#}");
     assert!(!fallback_summary.contains(credential_fragment));
     assert!(fallback_summary.contains("provider error code: invalid_api_key"));
     assert!(fallback_summary.contains("request id: req-retry-401"));
