@@ -872,7 +872,7 @@ mod tests {
             .expect("build websocket handshake response");
         let url = Url::parse("wss://example.com/v1/responses").expect("valid websocket URL");
 
-        let api_error = map_ws_error(WsError::Http(response), &url);
+        let api_error = map_ws_error(WsError::Http(Box::new(response)), &url);
         let ApiError::Transport(TransportError::Http { body, .. }) = &api_error else {
             panic!("expected ApiError::Transport(Http)");
         };
