@@ -595,7 +595,7 @@ fn map_wrapped_websocket_error_event(
 
     Some(ApiError::Transport(TransportError::http(
         status,
-        None,
+        /*url*/ None,
         headers.map(json_headers_to_http_headers),
         Some(original_payload),
     )))
