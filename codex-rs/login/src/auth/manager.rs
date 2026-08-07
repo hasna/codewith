@@ -713,22 +713,18 @@ pub async fn enforce_login_restrictions(config: &AuthConfig) -> std::io::Result<
             (ForcedLoginMethod::Api, AuthMode::Chatgpt)
             | (ForcedLoginMethod::Api, AuthMode::ChatgptAuthTokens)
             | (ForcedLoginMethod::Api, AuthMode::AgentIdentity)
-            | (ForcedLoginMethod::Api, AuthMode::PersonalAccessToken) => Some(
-                "API key login is required, but ChatGPT is currently being used. Logging out."
-                    .to_string(),
-            ),
-            (ForcedLoginMethod::Chatgpt, AuthMode::ApiKey) => Some(
-                "ChatGPT login is required, but an API key is currently being used. Logging out."
-                    .to_string(),
-            ),
+            | (ForcedLoginMethod::Api, AuthMode::PersonalAccessToken) => {
+                Some("API key login is required, but ChatGPT is currently being used.")
+            }
+            (ForcedLoginMethod::Chatgpt, AuthMode::ApiKey) => {
+                Some("ChatGPT login is required, but an API key is currently being used.")
+            }
         };
 
         if let Some(message) = method_violation {
-            return logout_with_message(
-                &config.codex_home,
-                message,
-                config.auth_credentials_store_mode,
-            );
+            // A forced login method is an invocation policy. Reject incompatible
+            // credentials without mutating shared auth or profile state.
+            return Err(std::io::Error::other(message));
         }
     }
 
