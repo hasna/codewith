@@ -253,7 +253,7 @@ mod tests {
         let error = TransportError::http(
             StatusCode::UNAUTHORIZED,
             Some("https://example.com/v1/responses".to_string()),
-            None,
+            /*headers*/ None,
             Some(body),
         );
         let TransportError::Http { body, .. } = error else {
@@ -282,7 +282,7 @@ mod tests {
         let error = TransportError::http(
             StatusCode::BAD_REQUEST,
             Some("https://example.com/v1/responses".to_string()),
-            None,
+            /*headers*/ None,
             Some(body),
         );
         let TransportError::Http { body, .. } = error else {
@@ -311,7 +311,7 @@ mod tests {
         let error = TransportError::http(
             StatusCode::BAD_REQUEST,
             Some("https://example.com/v1/responses".to_string()),
-            None,
+            /*headers*/ None,
             Some(body),
         );
         let TransportError::Http { body, .. } = error else {
@@ -331,7 +331,7 @@ mod tests {
         let error = TransportError::http(
             StatusCode::BAD_GATEWAY,
             Some("https://example.com/v1/responses".to_string()),
-            None,
+            /*headers*/ None,
             Some(body.to_string()),
         );
         let TransportError::Http {

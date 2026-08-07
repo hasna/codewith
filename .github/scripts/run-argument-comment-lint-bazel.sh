@@ -54,7 +54,7 @@ read_query_labels() {
   rm -f "$query_stdout" "$query_stderr"
 }
 
-final_build_targets=(//codex-rs/...)
+final_build_targets=()
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   # Bazel's local Windows platform currently lacks a default test toolchain for
   # `rust_test`, so target the concrete Rust crate rules directly. The lint
@@ -68,6 +68,24 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
 
   if [[ ${#final_build_targets[@]} -eq 0 ]]; then
     echo "Failed to discover Windows Bazel lint targets." >&2
+    exit 1
+  fi
+else
+  linux_build_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
+  has_workspace_target=0
+  has_manual_unit_test_target=0
+  while IFS= read -r label; do
+    [[ -n "$label" ]] || continue
+    final_build_targets+=("$label")
+    if [[ "$label" == "//codex-rs/..." ]]; then
+      has_workspace_target=1
+    elif [[ "$label" == *-unit-tests-bin ]]; then
+      has_manual_unit_test_target=1
+    fi
+  done <<<"$linux_build_targets"
+
+  if [[ $has_workspace_target -eq 0 || $has_manual_unit_test_target -eq 0 ]]; then
+    echo "Failed to discover Linux Bazel lint targets: expected //codex-rs/... plus manual Rust unit-test targets." >&2
     exit 1
   fi
 fi
