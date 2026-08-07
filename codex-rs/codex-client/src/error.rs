@@ -125,7 +125,7 @@ fn provider_error_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
 fn is_safe_provider_error_type(value: &str) -> bool {
     is_safe_provider_error_token(value)
         && (matches!(value, "api_error" | "invalid_request_error")
-            || is_authentication_error_token(value))
+            || is_known_authentication_error_code(value))
 }
 
 fn is_safe_provider_error_code(value: &str) -> bool {
@@ -292,7 +292,7 @@ mod tests {
                 "message": format!(
                     "Incorrect API key provided: {credential_fragment}."
                 ),
-                "type": "invalid_request_error",
+                "type": format!("authentication_error_{credential_fragment}"),
                 "code": format!("invalid_api_key_{credential_fragment}")
             }
         })
