@@ -133,12 +133,7 @@ impl HttpTransport for ReqwestTransport {
         let bytes = resp.bytes().await.map_err(Self::map_error)?;
         if !status.is_success() {
             let body = String::from_utf8(bytes.to_vec()).ok();
-            return Err(TransportError::Http {
-                status,
-                url: Some(url),
-                headers: Some(headers),
-                body,
-            });
+            return Err(TransportError::http(status, Some(url), Some(headers), body));
         }
         Ok(Response {
             status,
@@ -164,12 +159,7 @@ impl HttpTransport for ReqwestTransport {
         let headers = resp.headers().clone();
         if !status.is_success() {
             let body = resp.text().await.ok();
-            return Err(TransportError::Http {
-                status,
-                url: Some(url),
-                headers: Some(headers),
-                body,
-            });
+            return Err(TransportError::http(status, Some(url), Some(headers), body));
         }
         let stream = resp
             .bytes_stream()

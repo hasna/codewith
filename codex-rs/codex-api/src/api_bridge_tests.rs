@@ -299,3 +299,149 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
     );
     assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
 }
+
+#[test]
+fn map_api_error_redacts_reflected_credentials_and_preserves_diagnostics() {
+    for credential_fragment in ["xy", "synthetic-credential-piece"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            REQUEST_ID_HEADER,
+            http::HeaderValue::from_static("req-provider-auth-401"),
+        );
+        let body = serde_json::json!({
+            "error": {
+                "message": format!(
+                    "Incorrect API key provided: {credential_fragment}."
+                ),
+                "type": "invalid_request_error",
+                "code": "invalid_api_key"
+            }
+        })
+        .to_string();
+
+        let err = map_api_error(ApiError::Transport(TransportError::Http {
+            status: http::StatusCode::UNAUTHORIZED,
+            url: Some("https://example.com/v1/responses".to_string()),
+            headers: Some(headers),
+            body: Some(body),
+        }));
+
+        let CodexErr::UnexpectedStatus(err) = err else {
+            panic!("expected CodexErr::UnexpectedStatus, got {err:?}");
+        };
+        assert!(
+            !err.body.contains(credential_fragment),
+            "mapped error body retained synthetic credential fragment {credential_fragment:?}: {}",
+            err.body
+        );
+
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains(credential_fragment),
+            "mapped error display retained synthetic credential fragment {credential_fragment:?}: {rendered}"
+        );
+        assert!(rendered.contains("401 Unauthorized"));
+        assert!(rendered.contains("provider error code: invalid_api_key"));
+        assert!(rendered.contains("request id: req-provider-auth-401"));
+    }
+}
+
+#[test]
+fn map_api_error_preserves_sanitized_auth_classification_on_nonstandard_status() {
+    let credential_fragment = "xy";
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        REQUEST_ID_HEADER,
+        http::HeaderValue::from_static("req-provider-auth-400"),
+    );
+    headers.insert(
+        CF_RAY_HEADER,
+        http::HeaderValue::from_static("ray-provider-auth-400"),
+    );
+    headers.insert(
+        X_OPENAI_AUTHORIZATION_ERROR_HEADER,
+        http::HeaderValue::from_static("invalid_api_key"),
+    );
+    let x_error_json =
+        base64::engine::general_purpose::STANDARD.encode(r#"{"error":{"code":"token_expired"}}"#);
+    headers.insert(
+        X_ERROR_JSON_HEADER,
+        http::HeaderValue::from_str(&x_error_json).expect("valid x-error-json header"),
+    );
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "Incorrect API key provided: {credential_fragment}."
+            ),
+            "type": "invalid_request_error",
+            "code": format!("invalid_api_key_{credential_fragment}")
+        }
+    })
+    .to_string();
+
+    let transport = TransportError::http(
+        http::StatusCode::BAD_REQUEST,
+        Some("https://example.com/v1/responses".to_string()),
+        Some(headers),
+        Some(body),
+    );
+    let TransportError::Http { body, .. } = &transport else {
+        panic!("expected HTTP transport error");
+    };
+    let stored_body = body.as_deref().expect("expected sanitized body");
+    assert!(!stored_body.contains(credential_fragment));
+    assert!(!stored_body.contains("invalid_api_key_xy"));
+    assert!(stored_body.contains("authentication_error"));
+
+    let codex_error = map_api_error(ApiError::Transport(transport));
+
+    let CodexErr::UnexpectedStatus(err) = &codex_error else {
+        panic!("expected CodexErr::UnexpectedStatus, got {codex_error:?}");
+    };
+    assert!(!err.body.contains(credential_fragment));
+    let rendered = err.to_string();
+    assert!(!rendered.contains(credential_fragment));
+    assert!(rendered.contains("400 Bad Request"));
+    assert!(rendered.contains("provider error code: authentication_error"));
+    assert!(rendered.contains("request id: req-provider-auth-400"));
+    assert!(rendered.contains("cf-ray: ray-provider-auth-400"));
+    assert!(rendered.contains("auth error: invalid_api_key"));
+    assert!(rendered.contains("auth error code: token_expired"));
+    assert_eq!(err.request_id.as_deref(), Some("req-provider-auth-400"));
+    assert_eq!(err.cf_ray.as_deref(), Some("ray-provider-auth-400"));
+    assert_eq!(
+        err.identity_authorization_error.as_deref(),
+        Some("invalid_api_key")
+    );
+    assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
+
+    let protocol_event = codex_error.to_error_event(/*message_prefix*/ None);
+    assert!(!protocol_event.message.contains(credential_fragment));
+    assert!(!protocol_event.message.contains("invalid_api_key_xy"));
+    assert!(protocol_event.message.contains("400 Bad Request"));
+    assert!(
+        protocol_event
+            .message
+            .contains("provider error code: authentication_error")
+    );
+    assert!(
+        protocol_event
+            .message
+            .contains("request id: req-provider-auth-400")
+    );
+    assert!(
+        protocol_event
+            .message
+            .contains("cf-ray: ray-provider-auth-400")
+    );
+    assert!(
+        protocol_event
+            .message
+            .contains("auth error: invalid_api_key")
+    );
+    assert!(
+        protocol_event
+            .message
+            .contains("auth error code: token_expired")
+    );
+}

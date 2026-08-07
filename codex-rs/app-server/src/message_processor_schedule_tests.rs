@@ -2843,7 +2843,13 @@ fn thread_schedule_run_now_records_model_errors_as_failed_runs() -> Result<()> {
             .as_deref()
             .expect("failed scheduled run should record an error");
         assert!(error.contains("scheduled turn failed"));
-        assert!(error.contains("Incorrect API key provided"));
+        assert!(error.contains("Authentication failed."));
+        assert!(error.contains("401 Unauthorized"));
+        assert!(error.contains("invalid_api_key"));
+        assert!(
+            !error.contains("Incorrect API key provided"),
+            "schedule run error should discard raw provider auth messages: {error}"
+        );
         assert!(
             !error.contains("sk-test-schedule-secret"),
             "schedule run error should redact API keys: {error}"
