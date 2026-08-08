@@ -327,16 +327,31 @@ impl ManageWorkflowTool {
             .await
             .map_err(|_| respond("failed to start workflow run"))?;
         let run_id = snapshot.run.run_id.clone();
-        let run = run_snapshot_json(&snapshot);
         let goal_plan = state_db
             .project_workflow_run_to_goal_plan(codex_state::WorkflowGoalPlanProjectionParams {
-                workflow_run_id: run_id,
+                workflow_run_id: run_id.clone(),
                 thread_id,
                 idempotency_key,
             })
             .await
             .map_err(|_| respond("failed to project workflow run into task plan"))?
             .map(goal_plan_projection_json);
+        let execution = state_db
+            .start_workflow_run_execution(codex_state::WorkflowRunStartExecutionParams {
+                run_id,
+                owner_id: format!("workflow-manager:{thread_id}"),
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: None,
+            })
+            .await
+            .map_err(|_| respond("failed to admit workflow execution branches"))?;
+        let run = execution
+            .as_ref()
+            .map(|execution| run_snapshot_json(&execution.snapshot))
+            .unwrap_or_else(|| run_snapshot_json(&snapshot));
         Ok(json!({
             "action": "start",
             "run": run,
@@ -631,7 +646,7 @@ mod tests {
             &tool,
             json!({
                 "action": "start",
-                "workflow_record_id": workflow_record_id,
+                "workflow_record_id": workflow_record_id.clone(),
                 "idempotency_key": " run-1 ",
             }),
         )
@@ -659,6 +674,47 @@ mod tests {
                     && step.background_agent_run_id.is_some()
             }),
             "starting a workflow must queue an independent background worker"
+        );
+        assert_eq!(
+            state_db
+                .get_thread_goal(thread_id)
+                .await
+                .expect("source goal should load"),
+            None,
+            "workflow execution must not replace the source thread goal"
+        );
+        let first_branch_ids = persisted
+            .steps
+            .iter()
+            .filter_map(|step| step.background_agent_run_id.clone())
+            .collect::<Vec<_>>();
+        let duplicate_start = call_tool(
+            &tool,
+            json!({
+                "action": "start",
+                "workflow_record_id": workflow_record_id,
+                "idempotency_key": "run-1",
+            }),
+        )
+        .await;
+        let duplicate_run_id = duplicate_start["run"]["run"]["runId"]
+            .as_str()
+            .expect("duplicate start should include its run id");
+        assert_eq!(duplicate_run_id, run_id);
+        let duplicate_persisted = state_db
+            .workflows()
+            .get_workflow_run_snapshot(duplicate_run_id)
+            .await
+            .expect("duplicate workflow run should load")
+            .expect("duplicate workflow run should exist");
+        assert_eq!(
+            duplicate_persisted
+                .steps
+                .iter()
+                .filter_map(|step| step.background_agent_run_id.clone())
+                .collect::<Vec<_>>(),
+            first_branch_ids,
+            "duplicate start must not queue duplicate workflow branches"
         );
         assert_eq!(
             start["goalPlan"]["nodeCount"],

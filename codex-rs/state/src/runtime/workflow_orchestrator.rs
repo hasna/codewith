@@ -104,7 +104,181 @@ pub struct WorkflowRunBranchReconcileOutcome {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunStartExecutionParams {
+    pub run_id: String,
+    pub owner_id: String,
+    pub auth_profile_ref: Option<String>,
+    pub config_fingerprint: Option<String>,
+    pub version_fingerprint: Option<String>,
+    pub parent_agent_run_id: Option<String>,
+    pub max_active_background_agent_runs: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunStartExecutionOutcome {
+    pub snapshot: crate::WorkflowRunSnapshot,
+    pub generation: i64,
+    pub lease_expires_at_ms: i64,
+    pub admitted: Vec<WorkflowRunBranchAdmission>,
+}
+
 impl StateRuntime {
+    pub async fn list_active_workflow_run_ids(&self, limit: u32) -> anyhow::Result<Vec<String>> {
+        let limit = i64::from(limit.clamp(1, 500));
+        sqlx::query_scalar(
+            r#"
+SELECT run_id
+FROM workflow_runs
+WHERE status NOT IN ('completed', 'failed', 'cancelled', 'paused')
+ORDER BY updated_at_ms, run_id
+LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(anyhow::Error::from)
+    }
+
+    /// Atomically claims a newly created workflow run, marks dependency-free steps ready,
+    /// and admits their independent background-agent branches.
+    pub async fn start_workflow_run_execution(
+        &self,
+        params: WorkflowRunStartExecutionParams,
+    ) -> anyhow::Result<Option<WorkflowRunStartExecutionOutcome>> {
+        self.start_workflow_run_execution_with_provider_env_check(params, provider_env_key_present)
+            .await
+    }
+
+    async fn start_workflow_run_execution_with_provider_env_check(
+        &self,
+        params: WorkflowRunStartExecutionParams,
+        provider_env_key_present: impl Fn(&str) -> bool,
+    ) -> anyhow::Result<Option<WorkflowRunStartExecutionOutcome>> {
+        validate_owner_id(&params.owner_id)?;
+        if params
+            .max_active_background_agent_runs
+            .is_some_and(|limit| limit <= 0)
+        {
+            anyhow::bail!("max_active_background_agent_runs must be positive when set");
+        }
+        let lease_duration_ms = DEFAULT_WORKFLOW_LEASE_DURATION_MS;
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let lease_expires_at_ms = now_ms.saturating_add(lease_duration_ms);
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+UPDATE workflow_runs
+SET
+    owner_id = ?,
+    lease_expires_at_ms = ?,
+    heartbeat_at_ms = ?,
+    generation = generation + 1,
+    status = CASE
+        WHEN status IN ('pending', 'waiting') THEN ?
+        ELSE status
+    END,
+    started_at_ms = COALESCE(started_at_ms, ?),
+    updated_at_ms = ?
+WHERE run_id = ?
+  AND status NOT IN ('completed', 'failed', 'cancelled', 'paused')
+  AND (
+      owner_id IS NULL
+      OR owner_id = ?
+      OR lease_expires_at_ms IS NULL
+      OR lease_expires_at_ms <= ?
+  )
+RETURNING generation
+            "#,
+        )
+        .bind(params.owner_id.as_str())
+        .bind(lease_expires_at_ms)
+        .bind(now_ms)
+        .bind(crate::WorkflowRunStatus::Running.as_str())
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(params.run_id.as_str())
+        .bind(params.owner_id.as_str())
+        .bind(now_ms)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let generation: i64 = row.try_get("generation")?;
+        append_workflow_run_event_in_tx(
+            &mut tx,
+            params.run_id.as_str(),
+            WorkflowRunEventAppend {
+                event_type: "claimed",
+                actor_kind: "orchestrator",
+                actor_id: Some(params.owner_id.clone()),
+                step_run_id: None,
+                verifier_run_id: None,
+                visibility: "internal",
+                payload: json!({
+                    "generation": generation,
+                    "leaseExpiresAtMs": lease_expires_at_ms,
+                }),
+                now_ms,
+            },
+        )
+        .await?;
+
+        mark_ready_steps_in_tx(
+            &mut tx,
+            params.run_id.as_str(),
+            params.owner_id.as_str(),
+            now_ms,
+        )
+        .await?;
+        let run = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str())
+            .await?
+            .run;
+        let admission_params = WorkflowRunBranchAdmissionParams {
+            run_id: params.run_id.clone(),
+            owner_id: params.owner_id.clone(),
+            generation,
+            auth_profile_ref: params.auth_profile_ref,
+            config_fingerprint: params.config_fingerprint,
+            version_fingerprint: params.version_fingerprint,
+            parent_agent_run_id: params.parent_agent_run_id,
+            max_active_background_agent_runs: params.max_active_background_agent_runs,
+        };
+        let admission = admit_ready_workflow_branches_in_tx(
+            &mut tx,
+            &run,
+            &admission_params,
+            &provider_env_key_present,
+            now_ms,
+        )
+        .await?;
+        if admission.changed {
+            recompute_workflow_run_status_in_tx(
+                &mut tx,
+                params.run_id.as_str(),
+                params.owner_id.as_str(),
+                now_ms,
+            )
+            .await?;
+        }
+        let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
+        tx.commit().await?;
+        if admission.blocked_by_provider_preflight {
+            self.thread_goals
+                .block_workflow_goal_plan_projection(params.run_id.as_str())
+                .await?;
+        }
+        Ok(Some(WorkflowRunStartExecutionOutcome {
+            snapshot,
+            generation,
+            lease_expires_at_ms,
+            admitted: admission.admitted,
+        }))
+    }
+
     pub async fn claim_workflow_run(
         &self,
         params: WorkflowRunClaimParams,
@@ -656,10 +830,13 @@ SELECT
     step.step_run_id,
     step.step_id,
     step.background_agent_run_id,
-    agent.status
+    agent.status,
+    snapshot.payload_json AS status_payload_json
 FROM workflow_run_steps step
 JOIN background_agent_runs agent
   ON agent.id = step.background_agent_run_id
+LEFT JOIN background_agent_status_snapshots snapshot
+  ON snapshot.run_id = agent.id
 WHERE step.run_id = ?
   AND step.status = 'active'
   AND step.background_agent_run_id IS NOT NULL
@@ -677,6 +854,10 @@ ORDER BY step.sequence, step.step_id
             step_id: row.try_get("step_id")?,
             background_agent_run_id: row.try_get("background_agent_run_id")?,
             status: row.try_get("status")?,
+            status_payload_json: row
+                .try_get::<Option<String>, _>("status_payload_json")?
+                .map(|payload| serde_json::from_str(payload.as_str()))
+                .transpose()?,
         };
         if branch.status == BackgroundAgentRunStatus::Completed.as_str() {
             changed |= mark_branch_completed_in_tx(tx, run_id, owner_id, &branch, now_ms).await?;
@@ -730,6 +911,14 @@ WHERE step_run_id = ?
             payload: json!({
                 "stepId": branch.step_id.as_str(),
                 "backgroundAgentRunId": branch.background_agent_run_id.as_str(),
+                "terminalResult": branch
+                    .status_payload_json
+                    .as_ref()
+                    .and_then(|payload| payload.get("finalResult")),
+                "workspaceCwd": branch
+                    .status_payload_json
+                    .as_ref()
+                    .and_then(|payload| payload.get("cwd")),
             }),
             now_ms,
         },
@@ -845,6 +1034,7 @@ struct TerminalWorkflowBranch {
     step_id: String,
     background_agent_run_id: String,
     status: String,
+    status_payload_json: Option<Value>,
 }
 
 struct WorkflowRunBranchAdmissionTxOutcome {

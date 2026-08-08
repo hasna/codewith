@@ -276,6 +276,8 @@ pub use runtime::WorkflowRunCreateParams;
 pub use runtime::WorkflowRunListPage;
 pub use runtime::WorkflowRunPauseParams;
 pub use runtime::WorkflowRunResumeParams;
+pub use runtime::WorkflowRunStartExecutionOutcome;
+pub use runtime::WorkflowRunStartExecutionParams;
 pub use runtime::WorkflowRunStatusMutationOutcome;
 pub use runtime::WorkflowRunStepApprovalDecision;
 pub use runtime::WorkflowRunStepApprovalOutcome;

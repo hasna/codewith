@@ -317,6 +317,25 @@ impl ThreadWorkflowRequestProcessor {
             ))
         })?
         .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
+        let execution = state_db
+            .start_workflow_run_execution(codex_state::WorkflowRunStartExecutionParams {
+                run_id: snapshot.run.run_id.clone(),
+                owner_id: format!("workflow-manager:{thread_id}"),
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: None,
+            })
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to admit workflow execution branches: {err}"
+                ))
+            })?;
+        let snapshot = execution
+            .map(|execution| execution.snapshot)
+            .unwrap_or(snapshot);
         Ok(ThreadWorkflowRunStartResponse {
             run: api_thread_workflow_run_snapshot_from_state(snapshot),
             goal_plan,
