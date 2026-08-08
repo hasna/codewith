@@ -23,6 +23,9 @@ use crate::manager_output::goal_plan_projection_json;
 use crate::manager_output::run_snapshot_json;
 use crate::manager_output::run_summary_json;
 use crate::manager_output::workflow_json;
+use crate::WorkflowActivationConfig;
+use crate::WorkflowActivationService;
+use crate::WorkflowStartRequest;
 
 pub const MANAGE_WORKFLOW_TOOL_NAME: &str = "manage_workflow";
 
@@ -35,6 +38,8 @@ enum ManageWorkflowRuntime {
     Available {
         state_db: Arc<StateRuntime>,
         thread_id: ThreadId,
+        activation_service: Arc<WorkflowActivationService>,
+        activation_config: WorkflowActivationConfig,
     },
     Unavailable {
         reason: &'static str,
@@ -47,11 +52,30 @@ impl ManageWorkflowTool {
         state_db: Arc<StateRuntime>,
         thread_id: ThreadId,
     ) -> Self {
+        let activation_service = Arc::new(WorkflowActivationService::new(Arc::clone(&state_db)));
+        Self::new_with_activation(
+            enabled,
+            state_db,
+            thread_id,
+            activation_service,
+            WorkflowActivationConfig::default(),
+        )
+    }
+
+    pub(crate) fn new_with_activation(
+        enabled: Arc<AtomicBool>,
+        state_db: Arc<StateRuntime>,
+        thread_id: ThreadId,
+        activation_service: Arc<WorkflowActivationService>,
+        activation_config: WorkflowActivationConfig,
+    ) -> Self {
         Self {
             enabled,
             runtime: ManageWorkflowRuntime::Available {
                 state_db,
                 thread_id,
+                activation_service,
+                activation_config,
             },
         }
     }
@@ -242,7 +266,35 @@ impl ManageWorkflowTool {
             ManageWorkflowRuntime::Available {
                 state_db,
                 thread_id,
+                ..
             } => Ok((state_db.as_ref(), *thread_id)),
+            ManageWorkflowRuntime::Unavailable { reason } => Err(respond(*reason)),
+        }
+    }
+
+    fn activation_runtime(
+        &self,
+    ) -> Result<
+        (
+            &StateRuntime,
+            ThreadId,
+            &WorkflowActivationService,
+            &WorkflowActivationConfig,
+        ),
+        FunctionCallError,
+    > {
+        match &self.runtime {
+            ManageWorkflowRuntime::Available {
+                state_db,
+                thread_id,
+                activation_service,
+                activation_config,
+            } => Ok((
+                state_db.as_ref(),
+                *thread_id,
+                activation_service.as_ref(),
+                activation_config,
+            )),
             ManageWorkflowRuntime::Unavailable { reason } => Err(respond(*reason)),
         }
     }
@@ -299,7 +351,8 @@ impl ManageWorkflowTool {
     }
 
     async fn start_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
-        let (state_db, thread_id) = self.runtime()?;
+        let (state_db, thread_id, activation_service, activation_config) =
+            self.activation_runtime()?;
         let workflow_record_id =
             required_field(args.workflow_record_id, "workflow_record_id", "start")?;
         let idempotency_key = normalize_optional_string(args.idempotency_key);
@@ -317,26 +370,17 @@ impl ManageWorkflowTool {
                 "error": "workflow not found for current thread",
             }));
         }
-        let snapshot = state_db
-            .workflows()
-            .create_workflow_run(codex_state::WorkflowRunCreateParams {
+        let outcome = activation_service
+            .start_workflow_run(WorkflowStartRequest {
                 workflow_record_id,
-                source_thread_id: Some(thread_id),
-                idempotency_key: idempotency_key.clone(),
+                source_thread_id: thread_id,
+                idempotency_key,
+                activation_config: activation_config.clone(),
             })
             .await
             .map_err(|_| respond("failed to start workflow run"))?;
-        let run_id = snapshot.run.run_id.clone();
-        let run = run_snapshot_json(&snapshot);
-        let goal_plan = state_db
-            .project_workflow_run_to_goal_plan(codex_state::WorkflowGoalPlanProjectionParams {
-                workflow_run_id: run_id,
-                thread_id,
-                idempotency_key,
-            })
-            .await
-            .map_err(|_| respond("failed to project workflow run into task plan"))?
-            .map(goal_plan_projection_json);
+        let run = run_snapshot_json(&outcome.snapshot);
+        let goal_plan = outcome.goal_plan.map(goal_plan_projection_json);
         Ok(json!({
             "action": "start",
             "run": run,
@@ -392,15 +436,23 @@ impl ManageWorkflowTool {
     }
 
     async fn resume_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
-        let (state_db, _) = self.runtime()?;
+        let (state_db, _, activation_service, activation_config) =
+            self.activation_runtime()?;
         let run_id = required_field(args.run_id, "run_id", "resume")?;
         if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
             return Ok(not_found_run_response("resume"));
         }
         let snapshot = state_db
-            .resume_workflow_run(codex_state::WorkflowRunResumeParams { run_id })
+            .resume_workflow_run(codex_state::WorkflowRunResumeParams {
+                run_id: run_id.clone(),
+            })
             .await
             .map_err(|_| respond("failed to resume workflow run"))?;
+        if snapshot.is_some() {
+            activation_service
+                .activate(run_id, activation_config.clone())
+                .await;
+        }
         Ok(json!({
             "action": "resume",
             "run": snapshot.as_ref().map(run_snapshot_json),
@@ -596,16 +648,15 @@ mod tests {
         .await
         .expect("state runtime should initialize");
         let thread_id = codex_protocol::ThreadId::new();
+        let mut thread = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            state_db.codex_home().join("rollout.jsonl"),
+            chrono::Utc::now(),
+            codex_protocol::protocol::SessionSource::Cli,
+        );
+        thread.cwd = tempdir.path().to_path_buf();
         state_db
-            .upsert_thread(
-                &codex_state::ThreadMetadataBuilder::new(
-                    thread_id,
-                    state_db.codex_home().join("rollout.jsonl"),
-                    chrono::Utc::now(),
-                    codex_protocol::protocol::SessionSource::Cli,
-                )
-                .build("test-provider"),
-            )
+            .upsert_thread(&thread.build("test-provider"))
             .await
             .expect("thread metadata should insert");
         let tool =
@@ -710,16 +761,15 @@ mod tests {
         .await
         .expect("state runtime should initialize");
         let thread_id = codex_protocol::ThreadId::new();
+        let mut thread = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            state_db.codex_home().join("rollout.jsonl"),
+            chrono::Utc::now(),
+            codex_protocol::protocol::SessionSource::Cli,
+        );
+        thread.cwd = tempdir.path().to_path_buf();
         state_db
-            .upsert_thread(
-                &codex_state::ThreadMetadataBuilder::new(
-                    thread_id,
-                    state_db.codex_home().join("rollout.jsonl"),
-                    chrono::Utc::now(),
-                    codex_protocol::protocol::SessionSource::Cli,
-                )
-                .build("test-provider"),
-            )
+            .upsert_thread(&thread.build("test-provider"))
             .await
             .expect("thread metadata should insert");
         let tool =

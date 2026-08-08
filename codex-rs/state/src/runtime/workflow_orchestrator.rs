@@ -101,6 +101,7 @@ pub struct WorkflowRunBranchAdmissionParams {
     pub auth_profile_ref: Option<String>,
     pub config_fingerprint: Option<String>,
     pub version_fingerprint: Option<String>,
+    pub runtime_package_fingerprint: Option<String>,
     pub parent_agent_run_id: Option<String>,
     pub max_active_background_agent_runs: Option<i64>,
 }
@@ -1542,6 +1543,9 @@ fn branch_execution_payload(
             .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes())),
         "workspace": workspace_json,
         "envSnapshotPolicy": "inherit-minimal",
+        "configFingerprint": params.config_fingerprint,
+        "versionFingerprint": params.version_fingerprint,
+        "packageFingerprint": params.runtime_package_fingerprint,
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
     })
 }
@@ -3502,6 +3506,7 @@ WHERE plan_id = ? AND key = ?
                 auth_profile_ref: Some("profile:workflow".to_string()),
                 config_fingerprint: Some("cfg-workflow".to_string()),
                 version_fingerprint: Some("version-workflow".to_string()),
+                runtime_package_fingerprint: Some("package-workflow".to_string()),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3593,6 +3598,27 @@ WHERE plan_id = ? AND key = ?
             execution_snapshot
                 .payload_json
                 .get("managedWorktreeId")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("cfg-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("configFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("version-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("versionFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("package-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("packageFingerprint")
                 .and_then(Value::as_str)
         );
         let mut isolated_paths = Vec::new();
@@ -3718,6 +3744,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3852,6 +3879,7 @@ WHERE worktree_id = ?
                     auth_profile_ref: None,
                     config_fingerprint: None,
                     version_fingerprint: None,
+                    runtime_package_fingerprint: None,
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
@@ -3987,6 +4015,7 @@ WHERE worktree_id = ?
                     auth_profile_ref: None,
                     config_fingerprint: None,
                     version_fingerprint: None,
+                    runtime_package_fingerprint: None,
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
@@ -4046,6 +4075,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4091,6 +4121,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4127,6 +4158,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4225,6 +4257,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4242,6 +4275,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4275,6 +4309,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4343,6 +4378,7 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4496,6 +4532,7 @@ WHERE run_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4999,6 +5036,7 @@ cleanup:
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             })
