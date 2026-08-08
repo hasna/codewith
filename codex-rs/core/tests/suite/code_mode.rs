@@ -741,8 +741,13 @@ text(JSON.stringify(await tools.write_stdin({{
     test.submit_turn("poll the process from code mode").await?;
 
     let code_started_items = custom_tool_output_items(&code_started.single_request(), "call-2");
-    assert_eq!(code_started_items.len(), 1);
+    assert!((1..=2).contains(&code_started_items.len()));
     let cell_id = extract_running_cell_id(text_item(&code_started_items, /*index*/ 0));
+    let initial_nested_result = code_started_items
+        .get(1)
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
 
     responses::mount_sse_once(
         &server,
@@ -776,7 +781,7 @@ text(JSON.stringify(await tools.write_stdin({{
     fs::write(&release_path, "release")?;
     fs_wait::wait_for_path_exists(&exit_path, Duration::from_secs(5)).await?;
 
-    assert_eq!(still_running_items.len(), 2);
+    assert!((1..=2).contains(&still_running_items.len()));
     assert_regex_match(
         concat!(
             r"(?s)\A",
@@ -784,8 +789,17 @@ text(JSON.stringify(await tools.write_stdin({{
         ),
         text_item(&still_running_items, /*index*/ 0),
     );
-    let nested_result: Value =
-        serde_json::from_str(text_item(&still_running_items, /*index*/ 1))?;
+    let wait_nested_result = still_running_items
+        .get(1)
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let nested_results = [initial_nested_result, wait_nested_result]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(nested_results.len(), 1);
+    let nested_result: Value = serde_json::from_str(&nested_results[0])?;
     assert_eq!(
         nested_result.get("session_id").and_then(Value::as_u64),
         Some(u64::from(process_id)),
