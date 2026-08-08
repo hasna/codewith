@@ -4,6 +4,73 @@ use serde_json::json;
 
 const GOAL_STATUS_WAIT_POLICY: &str = "record-and-wait-for-coordinator";
 
+pub(crate) async fn has_active_thread_wait(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+) -> Result<bool, String> {
+    state_db
+        .list_thread_pending_interactions(codex_state::PendingInteractionListParams {
+            thread_id: Some(thread_id),
+            statuses: vec![
+                codex_state::PendingInteractionStatus::Pending,
+                codex_state::PendingInteractionStatus::Delivered,
+            ],
+            kinds: Vec::new(),
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .map(|page| !page.data.is_empty())
+        .map_err(|err| err.to_string())
+}
+
+pub(crate) async fn record_goal_plan_termination_wait(
+    state_db: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    turn_id: &str,
+    plan: &codex_state::ThreadGoalPlanSnapshot,
+) -> Result<(), String> {
+    let summary = plan.usage_summary();
+    let occurred_at_ms = plan.plan.updated_at.timestamp_millis();
+    let worker_request_id = format!(
+        "goal-plan:{}:termination:{occurred_at_ms}",
+        plan.plan.plan_id
+    );
+    state_db
+        .create_thread_pending_interaction_if_absent(&codex_state::PendingInteractionCreateParams {
+            interaction_id: worker_request_id.clone(),
+            thread_id,
+            source_kind: codex_state::PendingInteractionSourceKind::Thread,
+            source_id: Some(plan.plan.plan_id.clone()),
+            turn_id: Some(turn_id.to_string()),
+            worker_request_id: Some(worker_request_id),
+            server_request_id_json: None,
+            kind: codex_state::PendingInteractionKind::Blocked,
+            request_payload_json: json!({
+                "type": "goalPlanTerminationWait",
+                "reason": "terminal-completion-repeated",
+                "threadId": thread_id.to_string(),
+                "planId": plan.plan.plan_id.as_str(),
+                "planStatus": plan.plan.status.as_str(),
+                "completedNodeCount": summary.completed_node_count,
+                "pendingNodeCount": summary.pending_node_count,
+                "deferredNodeCount": summary.deferred_node_count,
+                "readyNodeCount": summary.ready_node_count,
+                "activeNodeCount": summary.active_node_count,
+            }),
+            request_payload_preview: format!(
+                "active goal plan {} remains unfinished",
+                plan.plan.plan_id
+            ),
+            request_redactions_json: json!([]),
+            no_client_policy: GOAL_STATUS_WAIT_POLICY.to_string(),
+            timeout_at: None,
+        })
+        .await
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
 pub(crate) async fn record_goal_status_wait(
     state_db: &codex_state::StateRuntime,
     thread_id: ThreadId,
