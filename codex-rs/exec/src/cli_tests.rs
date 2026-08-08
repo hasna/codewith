@@ -72,14 +72,27 @@ fn durable_parses_as_explicit_persistent_mode() {
 fn task_marker_accepts_a_canonical_todos_task_uuid() {
     const TASK_ID: &str = "5a0c359e-a437-4415-81c7-f2ec09995739";
 
-    let cli = Cli::try_parse_from([
-        "codex-exec",
-        "--task-marker",
-        TASK_ID,
-        "summarize",
-    ])
-    .expect("a canonical Todos task UUID should be accepted as a process marker");
+    let cli = Cli::try_parse_from(["codex-exec", "--task-marker", TASK_ID, "summarize"])
+        .expect("a canonical Todos task UUID should be accepted as a process marker");
 
+    assert_eq!(cli.task_marker.as_deref(), Some(TASK_ID));
+    assert_eq!(cli.prompt.as_deref(), Some("summarize"));
+}
+
+#[test]
+fn task_marker_rejects_a_noncanonical_value() {
+    let error = Cli::try_parse_from(["codex-exec", "--task-marker", "A3-00499", "summarize"])
+        .expect_err("a task marker must be a canonical Todos task UUID");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+}
+
+#[test]
+fn task_marker_remains_optional() {
+    let cli = Cli::try_parse_from(["codex-exec", "summarize"])
+        .expect("existing exec invocations must continue to parse without a task marker");
+
+    assert_eq!(cli.task_marker, None);
     assert_eq!(cli.prompt.as_deref(), Some("summarize"));
 }
 
