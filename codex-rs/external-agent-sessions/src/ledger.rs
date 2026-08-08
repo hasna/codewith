@@ -28,11 +28,14 @@ struct ImportedExternalAgentSessionRecord {
     imported_at: i64,
     #[serde(default)]
     source_modified_at: Option<i64>,
+    #[serde(default)]
+    source_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ImportedSourceState {
     pub source_modified_at: Option<i64>,
+    pub source_size_bytes: Option<u64>,
     pub imported_at: i64,
 }
 
@@ -51,7 +54,7 @@ pub fn record_imported_session(
     let mut ledger = load_import_ledger(codex_home)?;
     let source_path = canonical_source_path(source_path)?;
     let content_sha256 = session_content_sha256(&source_path)?;
-    let source_modified_at = session_modified_at(&source_path)?;
+    let (source_modified_at, source_size_bytes) = session_source_metadata(&source_path)?;
     if let Some(index) = ledger.records.iter().rposition(|record| {
         record.source_path == source_path && record.content_sha256 == content_sha256
     }) {
@@ -59,6 +62,7 @@ pub fn record_imported_session(
         record.imported_thread_id = imported_thread_id;
         record.imported_at = now_unix_seconds();
         record.source_modified_at = source_modified_at;
+        record.source_size_bytes = Some(source_size_bytes);
         ledger.records.push(record);
     } else {
         ledger.records.push(ImportedExternalAgentSessionRecord {
@@ -67,6 +71,7 @@ pub fn record_imported_session(
             imported_thread_id,
             imported_at: now_unix_seconds(),
             source_modified_at,
+            source_size_bytes: Some(source_size_bytes),
         });
     }
     save_import_ledger(codex_home, &ledger)
@@ -80,6 +85,7 @@ impl ImportedExternalAgentSessionLedger {
                 record.source_path.as_path(),
                 ImportedSourceState {
                     source_modified_at: record.source_modified_at,
+                    source_size_bytes: record.source_size_bytes,
                     imported_at: record.imported_at,
                 },
             );
@@ -106,6 +112,7 @@ impl ImportedExternalAgentSessionLedger {
         &mut self,
         source_path: &Path,
         source_modified_at: i64,
+        source_size_bytes: u64,
     ) -> io::Result<bool> {
         let source_path = canonical_source_path(source_path)?;
         if !self
@@ -124,6 +131,7 @@ impl ImportedExternalAgentSessionLedger {
         let mut record = self.records.remove(index);
         record.imported_at = now_unix_seconds();
         record.source_modified_at = Some(source_modified_at);
+        record.source_size_bytes = Some(source_size_bytes);
         self.records.push(record);
         Ok(true)
     }
@@ -181,10 +189,12 @@ fn session_content_sha256(path: &Path) -> io::Result<String> {
     Ok(format!("{digest:x}"))
 }
 
-fn session_modified_at(path: &Path) -> io::Result<Option<i64>> {
-    Ok(fs::metadata(path)?
+fn session_source_metadata(path: &Path) -> io::Result<(Option<i64>, u64)> {
+    let metadata = fs::metadata(path)?;
+    let source_modified_at = metadata
         .modified()?
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
-        .and_then(|duration| i64::try_from(duration.as_nanos()).ok()))
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
+    Ok((source_modified_at, metadata.len()))
 }

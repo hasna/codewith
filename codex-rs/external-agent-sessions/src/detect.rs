@@ -66,6 +66,7 @@ pub fn detect_recent_sessions(
                 continue;
             };
             if let Some(state) = source_states.get(source_path.as_path())
+                && state.source_size_bytes == Some(metadata.len())
                 && (state.source_modified_at == Some(modified_at_nanos)
                     || state.source_modified_at.is_none()
                         && modified_at.as_secs() as i64 <= state.imported_at)
@@ -84,7 +85,10 @@ pub fn detect_recent_sessions(
     let mut migrations = Vec::new();
     let mut ledger_changed = false;
     for (modified_at, path) in file_candidates {
-        match ledger.refresh_current_source(&path, modified_at.0) {
+        let Ok(source_size_bytes) = fs::metadata(&path).map(|metadata| metadata.len()) else {
+            continue;
+        };
+        match ledger.refresh_current_source(&path, modified_at.0, source_size_bytes) {
             Ok(false) => {}
             Ok(true) => {
                 ledger_changed = true;
