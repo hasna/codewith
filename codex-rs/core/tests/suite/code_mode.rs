@@ -713,8 +713,9 @@ async fn code_mode_wait_stays_live_for_nested_write_stdin_session() -> Result<()
     let code = format!(
         r#"// @exec: {{"yield_time_ms": 25}}
 text(JSON.stringify(await tools.write_stdin({{
+  chars: "\n",
   session_id: {process_id},
-  yield_time_ms: 100,
+  yield_time_ms: 250,
 }})));
 "#
     );
