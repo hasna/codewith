@@ -179,7 +179,7 @@ async fn unfinished_active_goal_plan_blocks_terminal_turn_completion() -> anyhow
         .thread_goals()
         .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
             thread_id,
-            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::AiDirected,
             max_tokens: None,
             nodes: vec![
                 codex_state::ThreadGoalPlanNodeCreateParams {
@@ -234,7 +234,7 @@ async fn unfinished_active_goal_plan_blocks_terminal_turn_completion() -> anyhow
         .defer_goal_plan_node_and_maybe_advance(
             thread_id,
             &deferred_goal,
-            codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            codex_state::ThreadGoalPlanAutoExecute::AiDirected,
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal plan should update"))?;
