@@ -29,6 +29,17 @@ use crate::ancient_names::is_ancient_display_name;
 const CANDIDATE_SUCCEEDED: &str = "candidate_succeeded";
 const ARTIFACT_CONTAINS_VERIFIER: &str = "artifact_contains";
 const RUN_COMMANDS_VERIFIER: &str = "run_commands";
+// The v0 schema has no typed review-policy fields, so single-review workflows use the
+// existing deterministic artifact verifier as their finite compatibility contract.
+const REVIEW_ARTIFACT_CONTRACT_FIELDS: &[&str] = &[
+    "candidate_identity:",
+    "acceptance_criteria:",
+    "verdict:",
+    "blocking_p0_p1:",
+    "non_blocking_p2_p3:",
+    "remediation_cycle:",
+    "remediation_cycle_cap: 2",
+];
 const MAX_VERIFIER_RETRY_ATTEMPTS: u32 = 5;
 const MAX_WORKFLOW_LOOPS: usize = 32;
 const MAX_WORKFLOW_LOOP_ITERATIONS: u32 = 10_000;
@@ -759,26 +770,109 @@ fn validate_acyclic_dependencies(steps: &[WorkflowStep]) -> WorkflowSpecResult<(
 }
 
 fn validate_adversarial_work(spec: &WorkflowSpec) -> WorkflowSpecResult<()> {
-    let adversarial_agents = spec
+    let reviewer_agent_ids = spec
         .agents
         .iter()
         .filter(|agent| {
-            is_adversarial_text(&agent.id)
-                || is_adversarial_text(&agent.display_name)
+            is_reviewer_text(&agent.id)
+                || is_reviewer_text(&agent.display_name)
                 || is_adversarial_text(&agent.role)
         })
-        .count();
-    let adversarial_steps = spec
+        .map(|agent| agent.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let review_steps = spec
         .steps
         .iter()
-        .filter(|step| is_adversarial_text(&step.id) || is_adversarial_text(&step.title))
-        .count();
-    if adversarial_agents == 0 && adversarial_steps == 0 {
+        .filter(|step| is_review_step(step))
+        .collect::<Vec<_>>();
+
+    if let Some(step) = review_steps
+        .iter()
+        .find(|step| !reviewer_agent_ids.contains(step.agent.as_str()))
+    {
+        return Err(WorkflowSpecError::invalid(format!(
+            "adversarial review step `{}` must be assigned to a reviewer agent",
+            step.id
+        )));
+    }
+
+    let paired_review_steps = review_steps
+        .iter()
+        .copied()
+        .filter(|review_step| {
+            review_step.depends_on.iter().any(|dependency_id| {
+                spec.steps.iter().any(|candidate_step| {
+                    candidate_step.id == dependency_id.as_str()
+                        && candidate_step.agent != review_step.agent
+                        && !is_review_step(candidate_step)
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    if paired_review_steps.is_empty()
+        || reviewer_agent_ids.iter().any(|reviewer_agent_id| {
+            !paired_review_steps
+                .iter()
+                .any(|step| step.agent.as_str() == *reviewer_agent_id)
+        })
+    {
         return Err(WorkflowSpecError::invalid(
-            "draft workflows must include adversarial work by at least one agent or one step",
+            "draft workflows must include at least one independent adversarial review run assigned to a reviewer agent",
         ));
     }
+
+    let paired_reviewer_ids = paired_review_steps
+        .iter()
+        .map(|step| step.agent.as_str())
+        .collect::<BTreeSet<_>>();
+    if paired_reviewer_ids.len() == 1
+        && !paired_review_steps
+            .iter()
+            .any(|step| verifies_finite_review_artifact(spec, step))
+    {
+        return Err(WorkflowSpecError::invalid(
+            "single-review workflows must verifier-gate a finite review artifact contract containing candidate identity, acceptance criteria, verdict, blocking P0/P1 findings, non-blocking P2/P3 findings, and remediation cycle 0..2",
+        ));
+    }
+
     Ok(())
+}
+
+fn is_review_step(step: &WorkflowStep) -> bool {
+    is_reviewer_text(&step.id) || is_adversarial_text(&step.title)
+}
+
+fn verifies_finite_review_artifact(spec: &WorkflowSpec, step: &WorkflowStep) -> bool {
+    let Some(completion) = &step.completion else {
+        return false;
+    };
+    completion.verifiers.iter().any(|verifier| {
+        if verifier.kind != ARTIFACT_CONTAINS_VERIFIER {
+            return false;
+        }
+        let Some(artifact) = verifier.artifact.as_deref() else {
+            return false;
+        };
+        step.outputs.iter().any(|output| output == artifact)
+            && spec
+                .artifacts
+                .required
+                .iter()
+                .any(|required| required == artifact)
+            && REVIEW_ARTIFACT_CONTRACT_FIELDS.iter().all(|required| {
+                verifier
+                    .must_contain
+                    .iter()
+                    .any(|field| field.trim() == *required)
+            })
+    })
+}
+
+fn is_reviewer_text(value: &str) -> bool {
+    is_adversarial_text(value)
+        || value
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|part| matches!(part.to_ascii_lowercase().as_str(), "review" | "reviewer"))
 }
 
 fn is_adversarial_text(value: &str) -> bool {

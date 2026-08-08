@@ -19,7 +19,7 @@ const SINGLE_REVIEWER_WORKFLOW_YAML: &str = r#"
 schema_version: "workflow.codex.codewith/v0"
 workflow_id: "wf_single_adversarial_review"
 display_name: "Single adversarial review"
-source_prompt: "Run one independent adversarial review."
+source_prompt: "Build one candidate and run one independent adversarial review."
 status: "draft"
 execution_defaults:
   model_gateway: "hasna"
@@ -28,7 +28,7 @@ execution_defaults:
   reasoning: "high"
 limits:
   max_parallel_steps: 1
-  max_agents: 1
+  max_agents: 2
   max_worktrees: 1
   max_runtime_seconds: 3600
   max_step_runtime_seconds: 1200
@@ -37,15 +37,42 @@ limits:
 approvals:
   required_before: []
 agents:
+  - id: "candidate_builder"
+    display_name: "Builder-Vitruvius"
+    role: "Build the exact candidate and record its acceptance criteria."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
   - id: "adversarial_reviewer"
-    display_name: "Adversary-Hypatia"
-    role: "Run the one independent adversarial review."
+    display_name: "Reviewer-Hypatia"
+    role: "Independently review the exact candidate against its acceptance criteria."
     model:
       model_gateway: "hasna"
       provider: "openai"
       model: "gpt-5.4"
       reasoning: "high"
 steps:
+  - id: "build_candidate"
+    title: "Build the exact candidate"
+    agent: "candidate_builder"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on: []
+    outputs:
+      - "candidate.txt"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "candidate_identity_present"
+          type: "artifact_contains"
+          artifact: "candidate.txt"
+          must_contain:
+            - "candidate_identity:"
   - id: "initial_adversarial_review"
     title: "Run the initial adversarial review"
     agent: "adversarial_reviewer"
@@ -54,21 +81,29 @@ steps:
       provider: "openai"
       model: "gpt-5.4"
       reasoning: "high"
-    depends_on: []
+    depends_on:
+      - "build_candidate"
     outputs:
-      - "review.md"
+      - "review.yaml"
     completion:
       model_marked_state: "candidate_succeeded"
       verifiers:
-        - id: "review_verdict_present"
+        - id: "finite_review_artifact_contract"
           type: "artifact_contains"
-          artifact: "review.md"
+          artifact: "review.yaml"
           must_contain:
-            - "GO"
+            - "candidate_identity:"
+            - "acceptance_criteria:"
+            - "verdict:"
+            - "blocking_p0_p1:"
+            - "non_blocking_p2_p3:"
+            - "remediation_cycle:"
+            - "remediation_cycle_cap: 2"
 artifacts:
   retention: "preserve_evidence"
   required:
-    - "review.md"
+    - "candidate.txt"
+    - "review.yaml"
 cleanup:
   on_cancel:
     - "stop_child_agents"
@@ -322,14 +357,71 @@ fn parses_typed_workspace_modes_and_rejects_unknown_modes() {
 }
 
 #[test]
-fn accepts_single_adversarial_reviewer_and_initial_review_step() {
+fn accepts_one_independent_adversarial_review_run() {
     let spec = parse_workflow_yaml(SINGLE_REVIEWER_WORKFLOW_YAML)
-        .expect("one adversarial reviewer and one initial review step should parse");
+        .expect("one independent reviewer-agent/review-step pair should parse");
 
-    assert_eq!(1, spec.agents.len());
-    assert_eq!(1, spec.steps.len());
-    assert_eq!("adversarial_reviewer", spec.agents[0].id);
-    assert_eq!("initial_adversarial_review", spec.steps[0].id);
+    assert_eq!(2, spec.agents.len());
+    assert_eq!(2, spec.steps.len());
+    assert_eq!("candidate_builder", spec.agents[0].id);
+    assert_eq!("adversarial_reviewer", spec.agents[1].id);
+    assert_eq!("build_candidate", spec.steps[0].id);
+    assert_eq!("initial_adversarial_review", spec.steps[1].id);
+    assert_ne!(spec.steps[0].agent, spec.steps[1].agent);
+}
+
+#[test]
+fn validates_synthetic_finance_retry_without_payment_execution_steps() {
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
+        .replace("wf_single_adversarial_review", "wf_synthetic_finance_retry")
+        .replace("Single adversarial review", "Synthetic finance retry")
+        .replace(
+            "Build one candidate and run one independent adversarial review.",
+            "Analyze synthetic invoice metadata and review the bounded evidence without execution.",
+        )
+        .replace("build_candidate", "analyze_synthetic_invoice")
+        .replace(
+            "Build the exact candidate",
+            "Produce the synthetic finance analysis artifact",
+        )
+        .replace("candidate.txt", "finance-analysis.txt");
+
+    let spec = parse_workflow_yaml(&yaml)
+        .expect("the non-executing synthetic finance workflow should validate");
+    let reviewer_agents = spec
+        .agents
+        .iter()
+        .filter(|agent| agent.id == "adversarial_reviewer")
+        .count();
+    let review_steps = spec
+        .steps
+        .iter()
+        .filter(|step| step.id == "initial_adversarial_review")
+        .count();
+    let forbidden_execution_terms = [
+        "pay", "approve", "schedule", "transfer", "submit", "bank", "provider", "mutate",
+    ];
+    let payment_or_provider_execution_steps = spec
+        .steps
+        .iter()
+        .filter(|step| {
+            let identity = format!("{} {}", step.id, step.title).to_ascii_lowercase();
+            forbidden_execution_terms.iter().any(|term| {
+                identity
+                    .split(|ch: char| !ch.is_ascii_alphanumeric())
+                    .any(|part| part == *term)
+            })
+        })
+        .count();
+
+    assert_eq!(1, reviewer_agents);
+    assert_eq!(1, review_steps);
+    assert_eq!(0, payment_or_provider_execution_steps);
+    assert!(spec.steps.iter().all(|step| {
+        step.completion
+            .as_ref()
+            .is_some_and(|completion| !completion.verifiers.is_empty())
+    }));
 }
 
 #[test]
@@ -362,34 +454,115 @@ fn accepts_single_adversarial_reviewer_with_focused_rereview() {
     let spec = parse_workflow_yaml(&yaml)
         .expect("the same reviewer should be allowed to perform a focused re-review");
 
-    assert_eq!(1, spec.agents.len());
-    assert_eq!(2, spec.steps.len());
+    assert_eq!(2, spec.agents.len());
+    assert_eq!(3, spec.steps.len());
     assert_eq!(
-        "adversarial_reviewer", spec.steps[1].agent,
+        "adversarial_reviewer", spec.steps[2].agent,
         "the focused re-review must reuse the fixed reviewer"
     );
 }
 
 #[test]
-fn rejects_draft_without_adversarial_reviewer_or_review_step() {
+fn rejects_draft_without_adversarial_review_run() {
     let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
-        .replace("adversarial_reviewer", "reviewer")
-        .replace("Adversary-Hypatia", "Reviewer-Hypatia")
+        .replace("adversarial_reviewer", "quality_auditor")
+        .replace("Reviewer-Hypatia", "Verifier-Hypatia")
         .replace(
-            "Run the one independent adversarial review.",
-            "Run the independent review.",
+            "Independently review the exact candidate against its acceptance criteria.",
+            "Audit the exact candidate against its acceptance criteria.",
         )
-        .replace("initial_adversarial_review", "initial_review")
+        .replace("initial_adversarial_review", "initial_quality_audit")
         .replace(
             "Run the initial adversarial review",
-            "Run the initial review",
+            "Run the candidate audit",
         );
 
-    let err = parse_workflow_yaml(&yaml).expect_err("adversarial work should remain required");
+    let err = parse_workflow_yaml(&yaml)
+        .expect_err("a workflow without a reviewer-agent/review-step pair must fail");
 
     assert_eq!(
-        "workflow spec is invalid: draft workflows must include adversarial work by at least one agent or one step",
+        "workflow spec is invalid: draft workflows must include at least one independent adversarial review run assigned to a reviewer agent",
         err.to_string()
+    );
+}
+
+#[test]
+fn rejects_unpaired_adversarial_reviewer() {
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
+        .replace("initial_adversarial_review", "final_quality_audit")
+        .replace(
+            "Run the initial adversarial review",
+            "Run the final quality audit",
+        );
+
+    let err = parse_workflow_yaml(&yaml)
+        .expect_err("declaring a reviewer without a review step is not a review run");
+
+    assert!(
+        err.to_string()
+            .contains("independent adversarial review run assigned to a reviewer agent"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_adversarial_step_owned_by_non_reviewer() {
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
+        .replace("adversarial_reviewer", "quality_auditor")
+        .replace("Reviewer-Hypatia", "Verifier-Hypatia")
+        .replace(
+            "Independently review the exact candidate against its acceptance criteria.",
+            "Audit the exact candidate against its acceptance criteria.",
+        );
+
+    let err = parse_workflow_yaml(&yaml)
+        .expect_err("a review-named step assigned to a non-reviewer is not independent review");
+
+    assert!(
+        err.to_string()
+            .contains("adversarial review step `initial_adversarial_review` must be assigned to a reviewer agent"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_adversarial_review_without_verifier() {
+    let verifier = r#"      verifiers:
+        - id: "finite_review_artifact_contract"
+          type: "artifact_contains"
+          artifact: "review.yaml"
+          must_contain:
+            - "candidate_identity:"
+            - "acceptance_criteria:"
+            - "verdict:"
+            - "blocking_p0_p1:"
+            - "non_blocking_p2_p3:"
+            - "remediation_cycle:"
+            - "remediation_cycle_cap: 2"
+"#;
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML.replace(verifier, "      verifiers: []\n");
+
+    let err = parse_workflow_yaml(&yaml)
+        .expect_err("the existing completion verifier gate must reject the review step");
+
+    assert!(
+        err.to_string()
+            .contains("step `initial_adversarial_review` must include at least one verifier"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_adversarial_review_without_finite_artifact_contract() {
+    let yaml =
+        SINGLE_REVIEWER_WORKFLOW_YAML.replace("remediation_cycle_cap: 2", "review_cycle_limit: 2");
+
+    let err = parse_workflow_yaml(&yaml)
+        .expect_err("a one-review workflow must deterministically verify its artifact contract");
+
+    assert!(
+        err.to_string().contains("finite review artifact contract"),
+        "unexpected error: {err}"
     );
 }
 

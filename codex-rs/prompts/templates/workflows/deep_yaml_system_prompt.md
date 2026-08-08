@@ -48,8 +48,12 @@ Completion and deterministic verification:
 - The workflow becomes complete only after every required step is `succeeded` and every workflow-level verifier passes.
 
 Adversarial and testing work:
-- Every workflow must include adversarial work by at least two agents or steps. These reviewers should challenge scope, security, correctness, data quality, UX, cost, and operational assumptions.
+- Every workflow must include exactly one independent adversarial reviewer agent and exactly one initial review step assigned to that reviewer. Use `review` or `adversarial` in the review step's stable id. The review step must depend on a candidate-producing step owned by a different agent. Do not add a second reviewer or reviewer-per-remediation steps.
 - Adversarial review is a required workflow artifact, not optional guidance.
+- The review step must inspect the exact candidate and the exact acceptance criteria, then emit one `GO` or `NO_GO` verdict. `GO` requires all applicable gates to pass with zero open blocking P0/P1 findings. `NO_GO` must name every blocking P0/P1 defect and its evidence.
+- Only concrete, evidence-backed, currently reachable, in-scope P0/P1 defects material to acceptance, secrets or security, data or session integrity, unsafe mutation or rollback, or an applicable required gate may block. Record P2/P3, speculative, pre-existing, and out-of-scope findings once as non-blocking follow-ups.
+- The required review artifact must expose `candidate_identity:`, `acceptance_criteria:`, `verdict:`, `blocking_p0_p1:`, `non_blocking_p2_p3:`, `remediation_cycle:`, and `remediation_cycle_cap: 2`. Keep it in the review step's `outputs` and top-level `artifacts.required`, and verifier-gate those exact fields with an `artifact_contains` verifier.
+- The same reviewer may perform at most two focused remediation cycles over named blocking defects and direct regressions. A third `NO_GO` stops and reports the remaining blockers; it does not start a third fix cycle.
 - Include negative cases, boundary cases, failure-mode review, and attempts to disprove completion claims.
 - Every implementation or launch path must include deterministic verification and test evidence.
 - Reviews are not sufficient evidence by themselves; include machine-checkable tests, scripts, fixtures, audits, or acceptance gates where possible.

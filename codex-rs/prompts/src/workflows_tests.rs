@@ -31,6 +31,34 @@ fn workflow_prompt_requires_deep_adversarial_verified_workflows() {
 }
 
 #[test]
+fn workflow_prompt_requires_one_bounded_independent_review() {
+    for required in [
+        "exactly one independent adversarial reviewer agent",
+        "review step assigned to that reviewer",
+        "exact candidate and the exact acceptance criteria",
+        "candidate_identity:",
+        "acceptance_criteria:",
+        "verdict:",
+        "blocking_p0_p1:",
+        "non_blocking_p2_p3:",
+        "remediation_cycle:",
+        "remediation_cycle_cap: 2",
+        "zero open blocking P0/P1 findings",
+        "at most two focused remediation cycles",
+        "A third `NO_GO` stops",
+    ] {
+        assert!(
+            WORKFLOW_YAML_SYSTEM_PROMPT.contains(required),
+            "missing bounded-review prompt fragment: {required}"
+        );
+    }
+    assert!(
+        !WORKFLOW_YAML_SYSTEM_PROMPT.contains("at least two agents or steps"),
+        "the generator must not require duplicate adversarial review"
+    );
+}
+
+#[test]
 fn workflow_prompt_requires_ancient_agent_names_and_model_routing() {
     for required in [
         "Ancient Greek or Roman",
