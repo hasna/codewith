@@ -605,7 +605,7 @@ SET
     updated_at_ms = ?
 WHERE assigned_thread_id = ?
   AND projected_goal_id = ?
-  AND status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'deferred')
+  AND status IN ('pending', 'active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'deferred')
   AND EXISTS (
       SELECT 1
       FROM thread_goal_plans plan

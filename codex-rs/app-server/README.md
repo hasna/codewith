@@ -154,7 +154,7 @@ Example with notification opt-out:
 - `thread/goalPlan/addGoal` — queue a new goal into the active goal plan, creating one from the current goal when needed. The runtime chooses append dependencies so existing terminal nodes remain prerequisites.
 - `thread/goalPlan/updateNode` — edit a pending or active goal-plan node's key, objective/prompt, title, priority, token budget, or dependencies. Completed nodes are immutable until marked pending again.
 - `thread/goalPlan/insertNode` — insert a new pending goal-plan node before, after, or at the end of an existing plan's display order. Dependencies remain explicit through `dependsOn`.
-- `thread/goalPlan/setNodeStatus` — mark a goal-plan node `complete` or `pending`; use `pending` to mark a completed node undone before editing it.
+- `thread/goalPlan/setNodeStatus` — mark a goal-plan node `complete` or `pending`; use `pending` to mark a completed node undone before editing it, or restore a deferred node to normal readiness.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goalPlan/updated` — notification emitted whenever a durable goal plan changes; includes the full plan snapshot with aggregate usage.

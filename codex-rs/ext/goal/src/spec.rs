@@ -503,7 +503,7 @@ pub fn create_set_goal_plan_node_status_tool() -> ToolSpec {
             JsonSchema::string_enum(
                 vec![json!("complete"), json!("pending")],
                 Some(
-                    "Required target status. Use complete to mark done and pending to mark undone."
+                    "Required target status. Use complete to mark done. Use pending to mark a completed node undone or restore a deferred node back to pending."
                         .to_string(),
                 ),
             ),
@@ -513,9 +513,9 @@ pub fn create_set_goal_plan_node_status_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME.to_string(),
         description: format!(
-            r#"Mark a goal-plan node done or undone.
+            r#"Mark a goal-plan node done or restore it to pending.
 Only complete and pending are supported here; use update_goal for the active goal's terminal lifecycle when you need normal completion accounting.
-Completed nodes cannot be edited until they are marked pending with this tool.
+Use pending to mark a completed node undone or restore a deferred node back to pending for normal readiness recalculation. Other lifecycle states cannot be restored with this tool.
 {ADVERSARIAL_GOAL_COMPLETION_REQUIREMENT}"#
         ),
         strict: false,
