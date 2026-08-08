@@ -128,6 +128,19 @@ def _validate_skill_name(name: str) -> None:
         raise InstallError("Invalid skill name.")
 
 
+def _remove_transaction_path(path: str, parent: str) -> None:
+    parent_root = os.path.realpath(parent)
+    path_parent = os.path.realpath(os.path.dirname(path))
+    if path_parent != parent_root:
+        raise InstallError("Refusing to remove a path outside the install transaction.")
+    if not os.path.lexists(path):
+        return
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+    else:
+        shutil.rmtree(path)
+
+
 def _git_sparse_checkout(repo_url: str, ref: str, paths: list[str], dest_dir: str) -> str:
     repo_dir = os.path.join(dest_dir, "repo")
     clone_cmd = [
@@ -144,23 +157,42 @@ def _git_sparse_checkout(repo_url: str, ref: str, paths: list[str], dest_dir: st
         repo_dir,
     ]
     try:
-        _run_git(clone_cmd)
+        try:
+            _run_git(clone_cmd)
+            _run_git(["git", "-C", repo_dir, "sparse-checkout", "set", *paths])
+            _run_git(["git", "-C", repo_dir, "checkout", ref])
+        except InstallError:
+            _remove_transaction_path(repo_dir, dest_dir)
+            _run_git(
+                [
+                    "git",
+                    "clone",
+                    "--filter=blob:none",
+                    "--depth",
+                    "1",
+                    "--sparse",
+                    "--no-checkout",
+                    repo_url,
+                    repo_dir,
+                ]
+            )
+            _run_git(["git", "-C", repo_dir, "sparse-checkout", "set", *paths])
+            _run_git(
+                [
+                    "git",
+                    "-C",
+                    repo_dir,
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    ref,
+                ]
+            )
+            _run_git(["git", "-C", repo_dir, "checkout", "--detach", "FETCH_HEAD"])
     except InstallError:
-        _run_git(
-            [
-                "git",
-                "clone",
-                "--filter=blob:none",
-                "--depth",
-                "1",
-                "--sparse",
-                "--single-branch",
-                repo_url,
-                repo_dir,
-            ]
-        )
-    _run_git(["git", "-C", repo_dir, "sparse-checkout", "set", *paths])
-    _run_git(["git", "-C", repo_dir, "checkout", ref])
+        _remove_transaction_path(repo_dir, dest_dir)
+        raise
     return repo_dir
 
 
@@ -174,9 +206,18 @@ def _validate_skill(path: str) -> None:
 
 def _copy_skill(src: str, dest_dir: str) -> None:
     os.makedirs(os.path.dirname(dest_dir), exist_ok=True)
-    if os.path.exists(dest_dir):
-        raise InstallError(f"Destination already exists: {dest_dir}")
-    shutil.copytree(src, dest_dir)
+    try:
+        os.mkdir(dest_dir)
+    except FileExistsError:
+        raise InstallError(f"Destination already exists: {dest_dir}") from None
+    try:
+        shutil.copytree(src, dest_dir, dirs_exist_ok=True)
+    except OSError as exc:
+        _remove_transaction_path(dest_dir, os.path.dirname(dest_dir))
+        raise InstallError(f"Failed to install {os.path.basename(dest_dir)}: {exc}") from exc
+    except BaseException:
+        _remove_transaction_path(dest_dir, os.path.dirname(dest_dir))
+        raise
 
 
 def _build_repo_url(owner: str, repo: str) -> str:
@@ -279,23 +320,33 @@ def main(argv: list[str]) -> int:
         for path in source.paths:
             _validate_relative_path(path)
         dest_root = args.dest or _default_dest()
+        install_plan = []
+        for path in source.paths:
+            skill_name = args.name if len(source.paths) == 1 else None
+            skill_name = skill_name or os.path.basename(path.rstrip("/"))
+            _validate_skill_name(skill_name)
+            if not skill_name:
+                raise InstallError("Unable to derive skill name.")
+            dest_dir = os.path.join(dest_root, skill_name)
+            if os.path.exists(dest_dir):
+                raise InstallError(f"Destination already exists: {dest_dir}")
+            install_plan.append((path, skill_name, dest_dir))
         tmp_dir = tempfile.mkdtemp(prefix="skill-install-", dir=_tmp_root())
         try:
             repo_root = _prepare_repo(source, args.method, tmp_dir)
-            installed = []
-            for path in source.paths:
-                skill_name = args.name if len(source.paths) == 1 else None
-                skill_name = skill_name or os.path.basename(path.rstrip("/"))
-                _validate_skill_name(skill_name)
-                if not skill_name:
-                    raise InstallError("Unable to derive skill name.")
-                dest_dir = os.path.join(dest_root, skill_name)
-                if os.path.exists(dest_dir):
-                    raise InstallError(f"Destination already exists: {dest_dir}")
+            for path, _skill_name, _dest_dir in install_plan:
                 skill_src = os.path.join(repo_root, path)
                 _validate_skill(skill_src)
-                _copy_skill(skill_src, dest_dir)
-                installed.append((skill_name, dest_dir))
+            installed = []
+            try:
+                for path, skill_name, dest_dir in install_plan:
+                    skill_src = os.path.join(repo_root, path)
+                    _copy_skill(skill_src, dest_dir)
+                    installed.append((skill_name, dest_dir))
+            except BaseException:
+                for _skill_name, dest_dir in reversed(installed):
+                    _remove_transaction_path(dest_dir, dest_root)
+                raise
         finally:
             if os.path.isdir(tmp_dir):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
