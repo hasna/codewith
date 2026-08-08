@@ -637,7 +637,29 @@ mod tests {
         )
         .await;
         assert_eq!(start["action"], "start");
-        assert_eq!(start["run"]["run"]["status"], "pending");
+        assert_eq!(start["run"]["run"]["status"], "running");
+        assert!(
+            start["run"]["run"]["activeStepCount"]
+                .as_i64()
+                .is_some_and(|count| count > 0),
+            "starting a workflow must admit at least one ready branch"
+        );
+        let run_id = start["run"]["run"]["runId"]
+            .as_str()
+            .expect("started run should include its id");
+        let persisted = state_db
+            .workflows()
+            .get_workflow_run_snapshot(run_id)
+            .await
+            .expect("workflow run should load")
+            .expect("workflow run should exist");
+        assert!(
+            persisted.steps.iter().any(|step| {
+                step.status == codex_state::WorkflowRunStepStatus::Active
+                    && step.background_agent_run_id.is_some()
+            }),
+            "starting a workflow must queue an independent background worker"
+        );
         assert_eq!(
             start["goalPlan"]["nodeCount"],
             start["run"]["run"]["pendingStepCount"]
