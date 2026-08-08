@@ -7,6 +7,7 @@ use codex_utils_cli::ApprovalModeCliArg;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::SharedCliOptions;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -48,6 +49,16 @@ pub struct Cli {
         conflicts_with = "ephemeral"
     )]
     pub durable: bool,
+
+    /// Stable Todos task UUID exposed in this process's argv for local liveness
+    /// accounting. This is an identity marker only; it grants no authority.
+    #[arg(
+        long = "task-marker",
+        value_name = "TASK_UUID",
+        global = true,
+        value_parser = parse_task_marker
+    )]
+    pub task_marker: Option<String>,
 
     /// Do not load `/config.toml`; auth still uses the Codewith home.
     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
@@ -131,6 +142,16 @@ impl Cli {
 
         None
     }
+}
+
+fn parse_task_marker(value: &str) -> Result<String, String> {
+    let parsed = Uuid::parse_str(value)
+        .map_err(|_| "task marker must be a canonical lowercase hyphenated UUID".to_string())?;
+    let canonical = parsed.hyphenated().to_string();
+    if value != canonical {
+        return Err("task marker must be a canonical lowercase hyphenated UUID".to_string());
+    }
+    Ok(canonical)
 }
 
 #[derive(Debug, Default)]

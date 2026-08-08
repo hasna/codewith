@@ -265,6 +265,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         skip_git_repo_check,
         ephemeral,
         durable,
+        task_marker: _task_marker,
         ignore_user_config,
         ignore_rules,
         removed_full_auto,

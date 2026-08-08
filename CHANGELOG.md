@@ -47,6 +47,29 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.85] - 2026-08-08
+
+Tag: `rust-v0.1.85`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.85>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.84...rust-v0.1.85>
+
+This release gives station-local coordination checks a stable, non-secret task
+identity in live `codewith exec` process arguments without changing task
+authority or execution behavior.
+
+### Added
+
+- Exec: add a global `--task-marker <TASK_UUID>` identity option that accepts
+  only canonical lowercase hyphenated Todos UUIDs and remains present in the
+  leaf process argv for local liveness accounting. The marker grants no task or
+  credential authority. (#507)
+
+### Fixed
+
+- Release packaging: reject unsigned-only macOS workflow artifacts before
+  downloading them for npm staging because they do not contain the required
+  Codex package archives. (#507)
+
 ## [0.1.84] - 2026-08-08
 
 Tag: `rust-v0.1.84`
