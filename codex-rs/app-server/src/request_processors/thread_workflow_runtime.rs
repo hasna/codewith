@@ -30,6 +30,7 @@ use tracing::warn;
 
 const WORKFLOW_RUNTIME_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const WORKFLOW_RUNTIME_RUN_LIMIT: u32 = 200;
+const MAX_VERIFIER_CAPTURE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 struct WorkflowRuntimeContext {
@@ -41,6 +42,11 @@ struct WorkflowRuntimeContext {
 struct VerifierExecution {
     outcome: WorkflowRunVerifierOutcomeStatus,
     summary: WorkflowRunVerifierResultSummary,
+}
+
+struct DrainedStream {
+    captured: Vec<u8>,
+    total_bytes: u64,
 }
 
 impl ThreadRequestProcessor {
@@ -322,6 +328,7 @@ async fn execute_command_verifier(
         .get("output_limit_bytes")
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow::anyhow!("command verifier is missing output_limit_bytes"))?;
+    let expected_stdout = definition.get("expected_stdout").and_then(Value::as_str);
     let expected_exit_code = definition
         .get("expected_exit_code")
         .and_then(Value::as_i64)
@@ -339,6 +346,11 @@ async fn execute_command_verifier(
     let mut output_bytes = 0_i64;
     let mut output_truncated = false;
     let mut timed_out = false;
+    let mut stdout_bytes = 0_u64;
+    let mut captured_stdout = Vec::new();
+    let stdout_capture_limit = expected_stdout
+        .map(|_| output_limit_bytes.min(MAX_VERIFIER_CAPTURE_BYTES))
+        .unwrap_or_default();
 
     for command in commands.iter().filter_map(Value::as_str) {
         command_count += 1;
@@ -349,7 +361,7 @@ async fn execute_command_verifier(
                 command.to_string(),
             ],
             absolute_cwd.clone(),
-            verifier_environment(),
+            verifier_environment(workspace_cwd),
             &permission_profile,
             &absolute_cwd,
             &context.codex_linux_sandbox_exe,
@@ -364,8 +376,8 @@ async fn execute_command_verifier(
             .stderr
             .take()
             .ok_or_else(|| anyhow::anyhow!("verifier stderr was not piped"))?;
-        let stdout_task = tokio::spawn(drain_stream(stdout, output_limit_bytes));
-        let stderr_task = tokio::spawn(drain_stream(stderr, output_limit_bytes));
+        let stdout_task = tokio::spawn(drain_stream(stdout, stdout_capture_limit));
+        let stderr_task = tokio::spawn(drain_stream(stderr, /* capture_limit_bytes */ 0));
         match tokio::time::timeout_at(deadline, child.wait()).await {
             Ok(status) => {
                 observed_exit_code = status?.code();
@@ -378,20 +390,36 @@ async fn execute_command_verifier(
         }
         let stdout_result = stdout_task.await??;
         let stderr_result = stderr_task.await??;
-        output_bytes = output_bytes
-            .saturating_add(stdout_result.0)
-            .saturating_add(stderr_result.0);
-        output_truncated |= stdout_result.1 || stderr_result.1;
+        stdout_bytes = stdout_bytes.saturating_add(stdout_result.total_bytes);
+        let remaining_capture = stdout_capture_limit
+            .saturating_sub(u64::try_from(captured_stdout.len()).unwrap_or(u64::MAX));
+        let append_len = usize::try_from(remaining_capture)
+            .unwrap_or(usize::MAX)
+            .min(stdout_result.captured.len());
+        captured_stdout.extend_from_slice(&stdout_result.captured[..append_len]);
+        let command_output_bytes = stdout_result
+            .total_bytes
+            .saturating_add(stderr_result.total_bytes);
+        output_bytes =
+            output_bytes.saturating_add(i64::try_from(command_output_bytes).unwrap_or(i64::MAX));
+        output_truncated |= u64::try_from(output_bytes).unwrap_or(u64::MAX) > output_limit_bytes;
         if timed_out || observed_exit_code != Some(expected_exit_code) {
             break;
         }
     }
 
     Ok(VerifierExecution {
-        outcome: if !timed_out
-            && command_count == i64::try_from(commands.len())?
-            && observed_exit_code == Some(expected_exit_code)
-        {
+        outcome: if command_verifier_passed(
+            timed_out,
+            command_count,
+            commands.len(),
+            observed_exit_code,
+            expected_exit_code,
+            expected_stdout,
+            &captured_stdout,
+            stdout_bytes > stdout_capture_limit,
+            output_truncated,
+        ) {
             WorkflowRunVerifierOutcomeStatus::Passed
         } else {
             WorkflowRunVerifierOutcomeStatus::Failed
@@ -406,6 +434,26 @@ async fn execute_command_verifier(
             output_truncated,
         },
     })
+}
+
+fn command_verifier_passed(
+    timed_out: bool,
+    command_count: i64,
+    expected_command_count: usize,
+    observed_exit_code: Option<i32>,
+    expected_exit_code: i32,
+    expected_stdout: Option<&str>,
+    captured_stdout: &[u8],
+    stdout_capture_truncated: bool,
+    output_truncated: bool,
+) -> bool {
+    !timed_out
+        && !output_truncated
+        && command_count == i64::try_from(expected_command_count).unwrap_or(i64::MAX)
+        && observed_exit_code == Some(expected_exit_code)
+        && expected_stdout.is_none_or(|expected| {
+            !stdout_capture_truncated && captured_stdout == expected.as_bytes()
+        })
 }
 
 fn verifier_definition(verifier: &WorkflowRunStepVerifier) -> &Value {
@@ -451,15 +499,20 @@ fn verifier_permission_profile(
     )
 }
 
-fn verifier_environment() -> HashMap<String, String> {
-    ["HOME", "PATH", "LANG", "LC_ALL", "TERM"]
+fn verifier_environment(workspace_cwd: &Path) -> HashMap<String, String> {
+    let mut environment = ["PATH", "LANG", "LC_ALL", "TERM"]
         .into_iter()
         .filter_map(|key| {
             std::env::var(key)
                 .ok()
                 .map(|value| (key.to_string(), value))
         })
-        .collect()
+        .collect::<HashMap<_, _>>();
+    environment.insert(
+        "HOME".to_string(),
+        workspace_cwd.to_string_lossy().into_owned(),
+    );
+    environment
 }
 
 fn canonical_directory(path: &Path) -> anyhow::Result<PathBuf> {
@@ -491,21 +544,27 @@ fn resolve_beneath(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
 
 async fn drain_stream(
     mut stream: impl AsyncRead + Unpin,
-    output_limit_bytes: u64,
-) -> io::Result<(i64, bool)> {
+    capture_limit_bytes: u64,
+) -> io::Result<DrainedStream> {
     let mut buffer = [0_u8; 8192];
     let mut total = 0_u64;
+    let capture_capacity = usize::try_from(capture_limit_bytes)
+        .unwrap_or(usize::MAX)
+        .min(MAX_VERIFIER_CAPTURE_BYTES as usize);
+    let mut captured = Vec::with_capacity(capture_capacity);
     loop {
         let read = stream.read(&mut buffer).await?;
         if read == 0 {
             break;
         }
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        let remaining = capture_capacity.saturating_sub(captured.len());
+        captured.extend_from_slice(&buffer[..read.min(remaining)]);
     }
-    Ok((
-        i64::try_from(total).unwrap_or(i64::MAX),
-        total > output_limit_bytes,
-    ))
+    Ok(DrainedStream {
+        captured,
+        total_bytes: total,
+    })
 }
 
 fn duration_millis(duration: Duration) -> i64 {
@@ -531,5 +590,128 @@ mod tests {
             "network": "disabled",
         });
         assert!(verifier_permission_profile(&definition, cwd.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn artifact_verifier_reports_pass_and_fail() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        std::fs::write(workspace.path().join("result.md"), "review complete")
+            .expect("artifact should write");
+        let now = chrono::Utc::now();
+        let verifier = |needle: &str| WorkflowRunStepVerifier {
+            verifier_run_id: "verifier-run".to_string(),
+            run_id: "run".to_string(),
+            step_id: "step".to_string(),
+            verifier_id: "artifact".to_string(),
+            verifier_type: "artifact_contains".to_string(),
+            status: WorkflowRunStepVerifierStatus::Running,
+            status_reason: None,
+            reason_code: None,
+            definition_json: serde_json::json!({
+                "data": {
+                    "artifact": "result.md",
+                    "must_contain": [needle],
+                },
+            }),
+            last_result_json: None,
+            attempt_count: 1,
+            max_attempts: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+        assert_eq!(
+            WorkflowRunVerifierOutcomeStatus::Passed,
+            execute_artifact_verifier(workspace.path(), &verifier("review"))
+                .await
+                .expect("matching artifact should verify")
+                .outcome
+        );
+        assert_eq!(
+            WorkflowRunVerifierOutcomeStatus::Failed,
+            execute_artifact_verifier(workspace.path(), &verifier("missing"))
+                .await
+                .expect("non-matching artifact should verify")
+                .outcome
+        );
+    }
+
+    #[test]
+    fn command_verifier_enforces_expected_stdout() {
+        assert!(command_verifier_passed(
+            false,
+            1,
+            1,
+            Some(0),
+            0,
+            Some(""),
+            b"",
+            false,
+            false,
+        ));
+        assert!(!command_verifier_passed(
+            false,
+            1,
+            1,
+            Some(0),
+            0,
+            Some(""),
+            b"dirty\n",
+            false,
+            false,
+        ));
+        assert!(!command_verifier_passed(
+            false,
+            1,
+            1,
+            Some(0),
+            0,
+            Some("expected"),
+            b"expected",
+            true,
+            false,
+        ));
+        assert!(!command_verifier_passed(
+            false,
+            1,
+            1,
+            Some(0),
+            0,
+            None,
+            b"",
+            false,
+            true,
+        ));
+    }
+
+    #[tokio::test]
+    async fn verifier_stream_capture_is_bounded() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let write = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer
+                .write_all(b"abcdef")
+                .await
+                .expect("write should work");
+        });
+        let drained = drain_stream(reader, 3).await.expect("stream should drain");
+        write.await.expect("writer task should finish");
+        assert_eq!(b"abc", drained.captured.as_slice());
+        assert_eq!(6, drained.total_bytes);
+    }
+
+    #[test]
+    fn verifier_environment_uses_workspace_home_and_whitelisted_keys() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let environment = verifier_environment(workspace.path());
+        assert_eq!(
+            Some(workspace.path().to_string_lossy().as_ref()),
+            environment.get("HOME").map(String::as_str)
+        );
+        assert!(
+            environment
+                .keys()
+                .all(|key| matches!(key.as_str(), "HOME" | "PATH" | "LANG" | "LC_ALL" | "TERM"))
+        );
     }
 }

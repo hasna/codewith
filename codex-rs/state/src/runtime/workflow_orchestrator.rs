@@ -996,6 +996,14 @@ WHERE run_id = ?
                 "backgroundAgentRunId": branch.background_agent_run_id.as_str(),
                 "branchStatus": branch.status.as_str(),
                 "reasonCode": reason_code,
+                "terminalReason": branch
+                    .status_payload_json
+                    .as_ref()
+                    .and_then(|payload| payload.get("terminalReason")),
+                "workspaceCwd": branch
+                    .status_payload_json
+                    .as_ref()
+                    .and_then(|payload| payload.get("cwd")),
             }),
             now_ms,
         },
@@ -2640,6 +2648,258 @@ WHERE plan_id = ? AND key = ?
         .expect("projected node should update");
     }
 
+    fn passing_verifier_summary(command_count: i64) -> WorkflowRunVerifierResultSummary {
+        WorkflowRunVerifierResultSummary {
+            command_count,
+            expected_exit_code: (command_count > 0).then_some(0),
+            observed_exit_code: (command_count > 0).then_some(0),
+            timed_out: false,
+            duration_ms: 1,
+            output_bytes: 0,
+            output_truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_start_and_successor_admission_are_exactly_once() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let marker = runtime.codex_home().join("two-step-marker");
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_two_step_exactly_once",
+            &marker,
+            /*include_second*/ true,
+        )
+        .await;
+        let owner_id = format!("workflow-manager:{thread_id}");
+
+        let started = runtime
+            .start_workflow_run_execution(WorkflowRunStartExecutionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(2),
+            })
+            .await
+            .expect("workflow should start")
+            .expect("workflow should be claimable");
+        assert_eq!(
+            vec!["adversarial_scope".to_string()],
+            started
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            crate::WorkflowRunStatus::Running,
+            started.snapshot.run.status
+        );
+        assert!(
+            started.lease_expires_at_ms > datetime_to_epoch_millis(started.snapshot.run.updated_at)
+        );
+
+        let duplicate_start = runtime
+            .start_workflow_run_execution(WorkflowRunStartExecutionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(2),
+            })
+            .await
+            .expect("duplicate start should succeed")
+            .expect("same owner should renew its claim");
+        assert!(duplicate_start.admitted.is_empty());
+        assert!(duplicate_start.generation > started.generation);
+        assert!(duplicate_start.lease_expires_at_ms >= started.lease_expires_at_ms);
+        let generation = duplicate_start.generation;
+        let first_branch_run_id = started.admitted[0].background_agent_run_id.clone();
+        assert_eq!(
+            1,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM background_agent_runs")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background run count should load")
+        );
+
+        runtime
+            .update_background_agent_run_status(
+                first_branch_run_id.as_str(),
+                BackgroundAgentRunStatus::Completed,
+                Some("first branch completed"),
+            )
+            .await
+            .expect("first branch should complete");
+        let first_reconciled = runtime
+            .reconcile_workflow_run_branches(WorkflowRunBranchReconcileParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+            })
+            .await
+            .expect("first branch should reconcile")
+            .expect("workflow should remain owned");
+        let first_verifier = first_reconciled
+            .snapshot
+            .verifiers
+            .iter()
+            .find(|verifier| verifier.step_id == "adversarial_scope")
+            .expect("first verifier should exist");
+        let first_verifier_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    first_verifier.verifier_run_id.clone(),
+                ),
+            })
+            .await
+            .expect("first verifier should claim")
+            .expect("first verifier should be ready");
+        runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+                verifier_run_id: first_verifier_claim.verifier.verifier_run_id,
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_verifier_summary(/*command_count*/ 1),
+            })
+            .await
+            .expect("first verifier result should record")
+            .expect("first verifier should update");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+            })
+            .await
+            .expect("successor should become ready")
+            .expect("workflow should remain owned");
+        let successor = runtime
+            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(2),
+            })
+            .await
+            .expect("successor admission should succeed")
+            .expect("workflow should remain owned");
+        assert_eq!(
+            vec!["adversarial_review".to_string()],
+            successor
+                .admitted
+                .iter()
+                .map(|branch| branch.step_id.clone())
+                .collect::<Vec<_>>()
+        );
+        let second_branch_run_id = successor.admitted[0].background_agent_run_id.clone();
+        assert_ne!(first_branch_run_id, second_branch_run_id);
+        let duplicate_successor = runtime
+            .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(2),
+            })
+            .await
+            .expect("duplicate successor admission should succeed")
+            .expect("workflow should remain owned");
+        assert!(duplicate_successor.admitted.is_empty());
+        assert_eq!(
+            2,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM background_agent_runs")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background run count should load")
+        );
+
+        runtime
+            .update_background_agent_run_status(
+                second_branch_run_id.as_str(),
+                BackgroundAgentRunStatus::Completed,
+                Some("second branch completed"),
+            )
+            .await
+            .expect("second branch should complete");
+        let second_reconciled = runtime
+            .reconcile_workflow_run_branches(WorkflowRunBranchReconcileParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+            })
+            .await
+            .expect("second branch should reconcile")
+            .expect("workflow should remain owned");
+        let second_verifier = second_reconciled
+            .snapshot
+            .verifiers
+            .iter()
+            .find(|verifier| verifier.step_id == "adversarial_review")
+            .expect("second verifier should exist");
+        let second_verifier_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: owner_id.clone(),
+                generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    second_verifier.verifier_run_id.clone(),
+                ),
+            })
+            .await
+            .expect("second verifier should claim")
+            .expect("second verifier should be ready");
+        let completed = runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id,
+                owner_id,
+                generation,
+                verifier_run_id: second_verifier_claim.verifier.verifier_run_id,
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_verifier_summary(/*command_count*/ 0),
+            })
+            .await
+            .expect("second verifier result should record")
+            .expect("second verifier should update");
+        assert_eq!(
+            crate::WorkflowRunStatus::Completed,
+            completed.snapshot.run.status
+        );
+        assert_eq!(
+            2,
+            completed
+                .snapshot
+                .steps
+                .iter()
+                .filter(|step| step.status == crate::WorkflowRunStepStatus::Succeeded)
+                .count()
+        );
+        assert!(
+            !marker.exists(),
+            "state orchestration must not run commands"
+        );
+    }
+
     #[tokio::test]
     async fn workflow_claim_fences_stale_owner_generation() {
         let runtime = test_runtime().await;
@@ -2704,7 +2964,7 @@ WHERE plan_id = ? AND key = ?
     }
 
     #[tokio::test]
-    async fn workflow_advance_blocks_verifiers_without_executing_commands() {
+    async fn workflow_advance_readies_verifiers_without_executing_commands() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
@@ -2776,6 +3036,16 @@ WHERE plan_id = ? AND key = ?
             crate::WorkflowRunStepVerifierStatus::Pending,
             scope_verifier.status
         );
+        assert_eq!(
+            Some(VERIFIER_READY_REASON_CODE),
+            advanced.snapshot.run.reason_code.as_deref()
+        );
+        assert!(!advanced.snapshot.events.iter().any(|event| {
+            event
+                .event_payload_json
+                .to_string()
+                .contains("verifier_executor_pending")
+        }));
         assert!(
             !marker.exists(),
             "orchestrator skeleton must not execute verifier commands"
@@ -3584,20 +3854,17 @@ WHERE run_id = ?
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
-        let run = create_unprojected_run(
-            &runtime,
-            thread_id,
+        let workflow_yaml = parallel_branch_workflow_yaml(
             "wf_branch_complete",
-            parallel_branch_workflow_yaml(
-                "wf_branch_complete",
-                /*step_count*/ 2,
-                /*max_parallel_steps*/ 1,
-                /*max_agents*/ 2,
-                /*max_worktrees*/ 1,
-                "no-secret",
-            ),
+            /*step_count*/ 2,
+            /*max_parallel_steps*/ 1,
+            /*max_agents*/ 2,
+            /*max_worktrees*/ 1,
+            "no-secret",
         )
-        .await;
+        .replace("  required: []", "  required:\n    - \"branch-0.md\"");
+        let run =
+            create_unprojected_run(&runtime, thread_id, "wf_branch_complete", workflow_yaml).await;
         let claim = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
@@ -3640,6 +3907,22 @@ WHERE run_id = ?
             )
             .await
             .expect("branch status should update");
+        runtime
+            .upsert_background_agent_status_snapshot(&crate::BackgroundAgentStatusSnapshotParams {
+                run_id: admitted.admitted[0].background_agent_run_id.clone(),
+                seq: 2,
+                status: BackgroundAgentRunStatus::Completed,
+                desired_state: crate::BackgroundAgentDesiredState::Running,
+                summary: Some("completed".to_string()),
+                pending_interaction_count: 0,
+                last_event_seq: 1,
+                payload_json: json!({
+                    "cwd": "/tmp/workflow-branch",
+                    "finalResult": "terminal result recorded",
+                }),
+            })
+            .await
+            .expect("terminal status evidence should persist");
 
         let reconciled = runtime
             .reconcile_workflow_run_branches(WorkflowRunBranchReconcileParams {
@@ -3659,6 +3942,133 @@ WHERE run_id = ?
         assert_eq!(
             crate::WorkflowRunStepVerifierStatus::Pending,
             reconciled.snapshot.verifiers[0].status
+        );
+        assert_eq!(
+            "branch-0.md",
+            reconciled.snapshot.run.artifacts_json["data"]["required"][0]
+        );
+        let completion_event = reconciled
+            .snapshot
+            .events
+            .iter()
+            .find(|event| event.event_type == "branch_completed")
+            .expect("branch completion evidence should persist");
+        assert_eq!(
+            "terminal result recorded",
+            completion_event.event_payload_json["data"]["terminalResult"]
+        );
+        assert_eq!(
+            "/tmp/workflow-branch",
+            completion_event.event_payload_json["data"]["workspaceCwd"]
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_branch_failure_persists_terminal_evidence() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_branch_failure_evidence",
+            parallel_branch_workflow_yaml(
+                "wf_branch_failure_evidence",
+                /*step_count*/ 1,
+                /*max_parallel_steps*/ 1,
+                /*max_agents*/ 1,
+                /*max_worktrees*/ 1,
+                "no-secret",
+            ),
+        )
+        .await;
+        let claim = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("run should claim");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "owner".to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("advance should succeed")
+            .expect("run should advance");
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "owner".to_string(),
+                generation: claim.generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(10),
+            },
+        )
+        .await
+        .expect("admission should succeed")
+        .expect("run should be owned");
+        let branch_run_id = admitted.admitted[0].background_agent_run_id.clone();
+        runtime
+            .update_background_agent_run_status(
+                branch_run_id.as_str(),
+                BackgroundAgentRunStatus::Failed,
+                Some("test failed"),
+            )
+            .await
+            .expect("branch status should update");
+        runtime
+            .upsert_background_agent_status_snapshot(&crate::BackgroundAgentStatusSnapshotParams {
+                run_id: branch_run_id,
+                seq: 2,
+                status: BackgroundAgentRunStatus::Failed,
+                desired_state: crate::BackgroundAgentDesiredState::Running,
+                summary: Some("failed".to_string()),
+                pending_interaction_count: 0,
+                last_event_seq: 1,
+                payload_json: json!({
+                    "cwd": "/tmp/workflow-failed-branch",
+                    "terminalReason": "terminal failure recorded",
+                }),
+            })
+            .await
+            .expect("terminal failure evidence should persist");
+
+        let reconciled = runtime
+            .reconcile_workflow_run_branches(WorkflowRunBranchReconcileParams {
+                run_id: run.run.run_id,
+                owner_id: "owner".to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("reconcile should succeed")
+            .expect("run should be owned");
+
+        assert_eq!(
+            crate::WorkflowRunStatus::Failed,
+            reconciled.snapshot.run.status
+        );
+        let failure_event = reconciled
+            .snapshot
+            .events
+            .iter()
+            .find(|event| event.event_type == "branch_failed")
+            .expect("branch failure evidence should persist");
+        assert_eq!(
+            "terminal failure recorded",
+            failure_event.event_payload_json["data"]["terminalReason"]
+        );
+        assert_eq!(
+            "/tmp/workflow-failed-branch",
+            failure_event.event_payload_json["data"]["workspaceCwd"]
         );
     }
 
