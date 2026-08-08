@@ -44,6 +44,7 @@ const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON: &str =
     "OpenRouter workflow branch requires OPENROUTER_API_KEY before admission";
 const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE: &str =
     "workflow_branch_provider_env_missing";
+const WORKFLOW_BRANCH_RECOVERY_POLICY: &str = "abort_mid_turn_resume_at_safe_boundary";
 const WORKFLOW_BRANCH_SOURCE: &str = "workflow";
 const WORKFLOW_BRANCH_THREAD_STORE_KIND: &str = "background-agent";
 
@@ -1371,6 +1372,7 @@ async fn create_background_branch_run_if_missing_in_tx(
         "prompt": prompt,
         "promptSnapshotRef": prompt_snapshot_ref,
     });
+    let recovery_policy = WORKFLOW_BRANCH_RECOVERY_POLICY;
     let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: background_agent_run_id.to_string(),
         snapshot_kind: "initial_execution_context".to_string(),
@@ -1381,8 +1383,9 @@ async fn create_background_branch_run_if_missing_in_tx(
             workspace_json,
             provisioned_workspace,
             params,
+            recovery_policy,
         ),
-        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        recovery_policy: recovery_policy.to_string(),
         config_fingerprint: params.config_fingerprint.clone(),
     };
     let admission_identity_sha256 = background_agent_admission_identity_sha256(
@@ -1523,6 +1526,7 @@ fn branch_execution_payload(
     workspace_json: Option<&Value>,
     provisioned_workspace: &ProvisionedWorkflowWorkspace,
     params: &WorkflowRunBranchAdmissionParams,
+    recovery_policy: &str,
 ) -> Value {
     json!({
         "snapshotSource": "workflow/branch_admission",
@@ -1549,6 +1553,7 @@ fn branch_execution_payload(
         "configFingerprint": params.config_fingerprint,
         "versionFingerprint": params.version_fingerprint,
         "packageFingerprint": params.runtime_package_fingerprint,
+        "recoveryPolicy": recovery_policy,
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
     })
 }
@@ -3644,6 +3649,18 @@ WHERE plan_id = ? AND key = ?
                 .payload_json
                 .get("packageFingerprint")
                 .and_then(Value::as_str)
+        );
+        assert_eq!(
+            "abort_mid_turn_resume_at_safe_boundary",
+            execution_snapshot.recovery_policy
+        );
+        assert_eq!(
+            Some(execution_snapshot.recovery_policy.as_str()),
+            execution_snapshot
+                .payload_json
+                .get("recoveryPolicy")
+                .and_then(Value::as_str),
+            "the worker payload recovery policy must match the persisted execution envelope"
         );
         let mut isolated_paths = Vec::new();
         for branch in &admitted.admitted {

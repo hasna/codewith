@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,6 +49,97 @@ use tokio_util::sync::CancellationToken;
 
 const WORKFLOW_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const WORKFLOW_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(target_os = "linux")]
+const VERIFIER_SANDBOX_SUPPORT_ENV_VARS: [&str; 5] = [
+    "CARGO_BIN_EXE_bwrap",
+    "RUNFILES_DIR",
+    "TEST_SRCDIR",
+    "RUNFILES_MANIFEST_FILE",
+    "TEST_WORKSPACE",
+];
+
+#[cfg(target_os = "linux")]
+fn verifier_sandbox_support_env() -> HashMap<String, String> {
+    verifier_sandbox_support_env_from(|key| std::env::var(key).ok())
+}
+
+#[cfg(target_os = "linux")]
+fn verifier_sandbox_support_env_from(
+    mut read_var: impl FnMut(&str) -> Option<String>,
+) -> HashMap<String, String> {
+    VERIFIER_SANDBOX_SUPPORT_ENV_VARS
+        .into_iter()
+        .filter_map(|key| read_var(key).map(|value| (key.to_string(), value)))
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verifier_sandbox_support_env() -> HashMap<String, String> {
+    HashMap::new()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowStateOperation {
+    CreateRun,
+    ProjectGoalPlan,
+    ListThreadRuns,
+    LoadSnapshot,
+    ClaimRun,
+    HeartbeatRun,
+    AdvanceRun,
+    ReconcileBranches,
+    AdmitBranches,
+    ClaimVerifier,
+    CheckVerifierFence,
+    RecordVerifierResult,
+}
+
+impl WorkflowStateOperation {
+    #[cfg(test)]
+    const ALL: [Self; 12] = [
+        Self::CreateRun,
+        Self::ProjectGoalPlan,
+        Self::ListThreadRuns,
+        Self::LoadSnapshot,
+        Self::ClaimRun,
+        Self::HeartbeatRun,
+        Self::AdvanceRun,
+        Self::ReconcileBranches,
+        Self::AdmitBranches,
+        Self::ClaimVerifier,
+        Self::CheckVerifierFence,
+        Self::RecordVerifierResult,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::CreateRun => "create workflow run",
+            Self::ProjectGoalPlan => "project workflow run to goal plan",
+            Self::ListThreadRuns => "list active thread workflow runs",
+            Self::LoadSnapshot => "load workflow run snapshot",
+            Self::ClaimRun => "claim workflow run",
+            Self::HeartbeatRun => "heartbeat workflow run",
+            Self::AdvanceRun => "advance workflow run",
+            Self::ReconcileBranches => "reconcile workflow run branches",
+            Self::AdmitBranches => "admit workflow run branches",
+            Self::ClaimVerifier => "claim workflow run verifier",
+            Self::CheckVerifierFence => "check workflow verifier fence",
+            Self::RecordVerifierResult => "record workflow verifier result",
+        }
+    }
+}
+
+async fn retry_workflow_state<T, F, Fut>(
+    operation: WorkflowStateOperation,
+    f: F,
+) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    retry_on_busy(operation.label(), f).await
+}
 
 #[derive(Debug, Clone)]
 pub struct WorkflowActivationConfig {
@@ -114,7 +206,7 @@ impl WorkflowActivationService {
             idempotency_key: request.idempotency_key.clone(),
         };
         let snapshot = if create_params.idempotency_key.is_some() {
-            retry_on_busy("create workflow run", || {
+            retry_workflow_state(WorkflowStateOperation::CreateRun, || {
                 self.state_db
                     .workflows()
                     .create_workflow_run(create_params.clone())
@@ -131,7 +223,7 @@ impl WorkflowActivationService {
             thread_id: request.source_thread_id,
             idempotency_key: request.idempotency_key,
         };
-        let goal_plan = retry_on_busy("project workflow run to goal plan", || {
+        let goal_plan = retry_workflow_state(WorkflowStateOperation::ProjectGoalPlan, || {
             self.state_db
                 .project_workflow_run_to_goal_plan(projection_params.clone())
         })
@@ -151,15 +243,14 @@ impl WorkflowActivationService {
     ) -> anyhow::Result<()> {
         let mut cursor = None;
         loop {
-            let page = self
-                .state_db
-                .workflows()
-                .list_thread_workflow_runs_page(
+            let page = retry_workflow_state(WorkflowStateOperation::ListThreadRuns, || {
+                self.state_db.workflows().list_thread_workflow_runs_page(
                     thread_id,
                     cursor,
                     codex_state::DEFAULT_THREAD_WORKFLOW_RUN_LIST_LIMIT,
                 )
-                .await?;
+            })
+            .await?;
             for snapshot in page.data {
                 if !snapshot.run.status.is_terminal()
                     && snapshot.run.status != WorkflowRunStatus::Paused
@@ -208,11 +299,10 @@ impl WorkflowActivationService {
         config: WorkflowActivationConfig,
     ) -> anyhow::Result<()> {
         loop {
-            let Some(snapshot) = self
-                .state_db
-                .workflows()
-                .get_workflow_run_snapshot(run_id)
-                .await?
+            let Some(snapshot) = retry_workflow_state(WorkflowStateOperation::LoadSnapshot, || {
+                self.state_db.workflows().get_workflow_run_snapshot(run_id)
+            })
+            .await?
             else {
                 return Ok(());
             };
@@ -224,14 +314,15 @@ impl WorkflowActivationService {
                 continue;
             }
 
-            let Some(claim) = self
-                .state_db
-                .claim_workflow_run(WorkflowRunClaimParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    lease_duration_ms: None,
-                })
-                .await?
+            let claim_params = WorkflowRunClaimParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                lease_duration_ms: None,
+            };
+            let Some(claim) = retry_workflow_state(WorkflowStateOperation::ClaimRun, || {
+                self.state_db.claim_workflow_run(claim_params.clone())
+            })
+            .await?
             else {
                 tokio::time::sleep(WORKFLOW_SUPERVISOR_POLL_INTERVAL).await;
                 continue;
@@ -252,28 +343,31 @@ impl WorkflowActivationService {
                 anyhow::anyhow!("failed to serialize workflow permission profile: {err}")
             })?;
         loop {
-            if self
-                .state_db
-                .heartbeat_workflow_run(WorkflowRunHeartbeatParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
-                    lease_duration_ms: None,
-                })
-                .await?
-                .is_none()
+            let heartbeat_params = WorkflowRunHeartbeatParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                generation,
+                lease_duration_ms: None,
+            };
+            if retry_workflow_state(WorkflowStateOperation::HeartbeatRun, || {
+                self.state_db
+                    .heartbeat_workflow_run(heartbeat_params.clone())
+            })
+            .await?
+            .is_none()
             {
                 return Ok(());
             }
 
-            let Some(advanced) = self
-                .state_db
-                .advance_workflow_run(WorkflowRunAdvanceParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
-                })
-                .await?
+            let advance_params = WorkflowRunAdvanceParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                generation,
+            };
+            let Some(advanced) = retry_workflow_state(WorkflowStateOperation::AdvanceRun, || {
+                self.state_db.advance_workflow_run(advance_params.clone())
+            })
+            .await?
             else {
                 return Ok(());
             };
@@ -283,12 +377,15 @@ impl WorkflowActivationService {
                 return Ok(());
             }
 
-            let Some(reconciled) = self
-                .state_db
-                .reconcile_workflow_run_branches(WorkflowRunBranchReconcileParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
+            let reconcile_params = WorkflowRunBranchReconcileParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                generation,
+            };
+            let Some(reconciled) =
+                retry_workflow_state(WorkflowStateOperation::ReconcileBranches, || {
+                    self.state_db
+                        .reconcile_workflow_run_branches(reconcile_params.clone())
                 })
                 .await?
             else {
@@ -301,23 +398,24 @@ impl WorkflowActivationService {
             }
 
             let fingerprint = activation_config_fingerprint(config)?;
-            let Some(admitted) = self
-                .state_db
-                .admit_workflow_run_branches(WorkflowRunBranchAdmissionParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
-                    auth_profile_ref: config.auth_profile_ref.clone(),
-                    config_fingerprint: Some(fingerprint),
-                    version_fingerprint: Some(
-                        BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
-                    ),
-                    runtime_package_fingerprint: Some(
-                        BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT.to_string(),
-                    ),
-                    permission_profile_json: permission_profile_json.clone(),
-                    parent_agent_run_id: None,
-                    max_active_background_agent_runs: config.max_active_background_agent_runs,
+            let admission_params = WorkflowRunBranchAdmissionParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                generation,
+                auth_profile_ref: config.auth_profile_ref.clone(),
+                config_fingerprint: Some(fingerprint),
+                version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
+                runtime_package_fingerprint: Some(
+                    BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT.to_string(),
+                ),
+                permission_profile_json: permission_profile_json.clone(),
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: config.max_active_background_agent_runs,
+            };
+            let Some(admitted) =
+                retry_workflow_state(WorkflowStateOperation::AdmitBranches, || {
+                    self.state_db
+                        .admit_workflow_run_branches(admission_params.clone())
                 })
                 .await?
             else {
@@ -329,13 +427,16 @@ impl WorkflowActivationService {
                 return Ok(());
             }
 
-            if let Some(claimed_verifier) = self
-                .state_db
-                .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
-                    selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
+            let verifier_claim_params = WorkflowRunVerifierClaimParams {
+                run_id: run_id.to_string(),
+                owner_id: self.owner_instance_id.to_string(),
+                generation,
+                selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
+            };
+            if let Some(claimed_verifier) =
+                retry_workflow_state(WorkflowStateOperation::ClaimVerifier, || {
+                    self.state_db
+                        .claim_workflow_run_verifier(verifier_claim_params.clone())
                 })
                 .await?
             {
@@ -478,7 +579,11 @@ impl WorkflowActivationService {
                         cancellation: cancellation.clone(),
                     },
                     capture_policy: ExecCapturePolicy::ShellTool,
-                    env: HashMap::new(),
+                    // Verifier commands otherwise run with an empty environment.
+                    // Preserve that credential-zero boundary while forwarding
+                    // only Bazel's non-secret runfile paths so the Linux sandbox
+                    // helper can locate the bundled bwrap binary in hosted tests.
+                    env: verifier_sandbox_support_env(),
                     network: None,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     windows_sandbox_level: config.windows_sandbox_level,
@@ -529,42 +634,46 @@ impl WorkflowActivationService {
 
         cancellation.cancel();
         let _ = heartbeat.await;
+        let fence_params = WorkflowRunFenceParams {
+            run_id: run_id.to_string(),
+            owner_id: self.owner_instance_id.to_string(),
+            generation,
+        };
         if fence_lost.load(Ordering::Relaxed)
-            || !self
-                .state_db
-                .workflow_run_fence_is_current(WorkflowRunFenceParams {
-                    run_id: run_id.to_string(),
-                    owner_id: self.owner_instance_id.to_string(),
-                    generation,
-                })
-                .await?
+            || !retry_workflow_state(WorkflowStateOperation::CheckVerifierFence, || {
+                self.state_db
+                    .workflow_run_fence_is_current(fence_params.clone())
+            })
+            .await?
         {
             return Ok(false);
         }
 
-        let recorded = self
-            .state_db
-            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
-                run_id: run_id.to_string(),
-                owner_id: self.owner_instance_id.to_string(),
-                generation,
-                verifier_run_id: claimed.verifier.verifier_run_id,
-                outcome: if passed {
-                    WorkflowRunVerifierOutcomeStatus::Passed
-                } else {
-                    WorkflowRunVerifierOutcomeStatus::Failed
-                },
-                summary: WorkflowRunVerifierResultSummary {
-                    command_count,
-                    expected_exit_code: Some(expected_exit_code),
-                    observed_exit_code,
-                    timed_out,
-                    duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-                    output_bytes: i64::try_from(output_bytes).unwrap_or(i64::MAX),
-                    output_truncated,
-                },
-            })
-            .await?;
+        let record_params = WorkflowRunVerifierRecordResultParams {
+            run_id: run_id.to_string(),
+            owner_id: self.owner_instance_id.to_string(),
+            generation,
+            verifier_run_id: claimed.verifier.verifier_run_id,
+            outcome: if passed {
+                WorkflowRunVerifierOutcomeStatus::Passed
+            } else {
+                WorkflowRunVerifierOutcomeStatus::Failed
+            },
+            summary: WorkflowRunVerifierResultSummary {
+                command_count,
+                expected_exit_code: Some(expected_exit_code),
+                observed_exit_code,
+                timed_out,
+                duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+                output_bytes: i64::try_from(output_bytes).unwrap_or(i64::MAX),
+                output_truncated,
+            },
+        };
+        let recorded = retry_workflow_state(WorkflowStateOperation::RecordVerifierResult, || {
+            self.state_db
+                .record_workflow_run_verifier_result(record_params.clone())
+        })
+        .await?;
         Ok(recorded.is_some())
     }
 
@@ -576,25 +685,27 @@ impl WorkflowActivationService {
         started: std::time::Instant,
         expected_exit_code: Option<i32>,
     ) -> anyhow::Result<bool> {
-        let recorded = self
-            .state_db
-            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
-                run_id: run_id.to_string(),
-                owner_id: self.owner_instance_id.to_string(),
-                generation,
-                verifier_run_id: claimed.verifier.verifier_run_id,
-                outcome: WorkflowRunVerifierOutcomeStatus::Failed,
-                summary: WorkflowRunVerifierResultSummary {
-                    command_count: 0,
-                    expected_exit_code,
-                    observed_exit_code: None,
-                    timed_out: false,
-                    duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-                    output_bytes: 0,
-                    output_truncated: false,
-                },
-            })
-            .await?;
+        let record_params = WorkflowRunVerifierRecordResultParams {
+            run_id: run_id.to_string(),
+            owner_id: self.owner_instance_id.to_string(),
+            generation,
+            verifier_run_id: claimed.verifier.verifier_run_id,
+            outcome: WorkflowRunVerifierOutcomeStatus::Failed,
+            summary: WorkflowRunVerifierResultSummary {
+                command_count: 0,
+                expected_exit_code,
+                observed_exit_code: None,
+                timed_out: false,
+                duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+                output_bytes: 0,
+                output_truncated: false,
+            },
+        };
+        let recorded = retry_workflow_state(WorkflowStateOperation::RecordVerifierResult, || {
+            self.state_db
+                .record_workflow_run_verifier_result(record_params.clone())
+        })
+        .await?;
         Ok(recorded.is_some())
     }
 
@@ -613,14 +724,16 @@ impl WorkflowActivationService {
                     _ = cancellation.cancelled() => return,
                     _ = tokio::time::sleep(WORKFLOW_HEARTBEAT_INTERVAL) => {}
                 }
-                match state_db
-                    .heartbeat_workflow_run(WorkflowRunHeartbeatParams {
-                        run_id: run_id.clone(),
-                        owner_id: owner_instance_id.to_string(),
-                        generation,
-                        lease_duration_ms: None,
-                    })
-                    .await
+                let heartbeat_params = WorkflowRunHeartbeatParams {
+                    run_id: run_id.clone(),
+                    owner_id: owner_instance_id.to_string(),
+                    generation,
+                    lease_duration_ms: None,
+                };
+                match retry_workflow_state(WorkflowStateOperation::HeartbeatRun, || {
+                    state_db.heartbeat_workflow_run(heartbeat_params.clone())
+                })
+                .await
                 {
                     Ok(Some(_)) => {}
                     Ok(None) | Err(_) => {
@@ -739,5 +852,113 @@ fn verifier_shell_command(command: &str) -> Vec<String> {
         ShellType::Zsh | ShellType::Bash | ShellType::Sh => {
             vec![shell_path, "-lc".to_string(), command.to_string()]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn workflow_state_operation_labels_cover_every_activation_boundary() {
+        assert_eq!(
+            [
+                "create workflow run",
+                "project workflow run to goal plan",
+                "list active thread workflow runs",
+                "load workflow run snapshot",
+                "claim workflow run",
+                "heartbeat workflow run",
+                "advance workflow run",
+                "reconcile workflow run branches",
+                "admit workflow run branches",
+                "claim workflow run verifier",
+                "check workflow verifier fence",
+                "record workflow verifier result",
+            ],
+            WorkflowStateOperation::ALL.map(WorkflowStateOperation::label)
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_state_retry_survives_busy_and_busy_snapshot_contention() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed_attempts = Arc::clone(&attempts);
+        let result = retry_workflow_state(WorkflowStateOperation::AdmitBranches, move || {
+            let observed_attempts = Arc::clone(&observed_attempts);
+            async move {
+                match observed_attempts.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(anyhow::anyhow!(
+                        "error returned from database: (code: 5) database is locked"
+                    )),
+                    1 => Err(anyhow::anyhow!(
+                        "error returned from database: (code: 517) database is locked"
+                    )),
+                    _ => Ok("admitted"),
+                }
+            }
+        })
+        .await
+        .expect("activation state operation should retry transient contention");
+
+        assert_eq!("admitted", result);
+        assert_eq!(3, attempts.load(Ordering::SeqCst));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verifier_sandbox_support_env_forwards_only_bazel_bwrap_runtime_paths() {
+        let ambient = HashMap::from([
+            (
+                "CARGO_BIN_EXE_bwrap".to_string(),
+                "/tmp/bazel-bin/codex-rs/bwrap/bwrap".to_string(),
+            ),
+            (
+                "RUNFILES_DIR".to_string(),
+                "/tmp/app-server.runfiles".to_string(),
+            ),
+            (
+                "TEST_SRCDIR".to_string(),
+                "/tmp/app-server.runfiles".to_string(),
+            ),
+            (
+                "RUNFILES_MANIFEST_FILE".to_string(),
+                "/tmp/app-server.runfiles/MANIFEST".to_string(),
+            ),
+            ("TEST_WORKSPACE".to_string(), "_main".to_string()),
+            (
+                "UNRELATED_ENV".to_string(),
+                "must-not-reach-verifier".to_string(),
+            ),
+        ]);
+
+        let env = verifier_sandbox_support_env_from(|key| ambient.get(key).cloned());
+
+        assert_eq!(
+            HashMap::from([
+                (
+                    "CARGO_BIN_EXE_bwrap".to_string(),
+                    "/tmp/bazel-bin/codex-rs/bwrap/bwrap".to_string(),
+                ),
+                (
+                    "RUNFILES_DIR".to_string(),
+                    "/tmp/app-server.runfiles".to_string(),
+                ),
+                (
+                    "TEST_SRCDIR".to_string(),
+                    "/tmp/app-server.runfiles".to_string(),
+                ),
+                (
+                    "RUNFILES_MANIFEST_FILE".to_string(),
+                    "/tmp/app-server.runfiles/MANIFEST".to_string(),
+                ),
+                ("TEST_WORKSPACE".to_string(), "_main".to_string()),
+            ]),
+            env
+        );
+        assert!(!env.contains_key("UNRELATED_ENV"));
     }
 }
