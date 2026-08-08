@@ -34,6 +34,7 @@ use codex_utils_output_truncation::approx_token_count;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
+use super::EXEC_COMMAND_TOOL_NAME;
 use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
 use super::get_command;
@@ -74,7 +75,7 @@ impl ExecCommandHandler {
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("exec_command")
+        ToolName::plain(EXEC_COMMAND_TOOL_NAME)
     }
 
     fn spec(&self) -> ToolSpec {

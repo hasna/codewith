@@ -26,6 +26,7 @@ use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::unified_exec::EXEC_COMMAND_TOOL_NAME;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
@@ -107,6 +108,11 @@ impl CodeModeService {
 
     pub(crate) fn finish_cell_dispatch(&self, cell_id: &CellId) {
         self.dispatch_broker.close_cell(cell_id);
+    }
+
+    fn track_live_process(&self, cell_id: CellId, session: &Arc<Session>, process_id: u32) {
+        self.dispatch_broker
+            .track_process(cell_id, Arc::downgrade(session), process_id);
     }
 
     pub(crate) fn start_turn_worker(
@@ -256,6 +262,7 @@ async fn call_nested_tool(
         Ok(payload) => payload,
         Err(error) => return Err(FunctionCallError::RespondToModel(error)),
     };
+    let creates_process = tool_name.namespace.is_none() && tool_name.name == EXEC_COMMAND_TOOL_NAME;
 
     let call = ToolCall {
         tool_name,
@@ -272,7 +279,15 @@ async fn call_nested_tool(
             cancellation_token,
         )
         .await?;
-    Ok(result.code_mode_result())
+    let (result, live_process_id) = result.code_mode_result_with_live_process_id();
+    if creates_process && let Some(process_id) = live_process_id {
+        exec.session.services.code_mode_service.track_live_process(
+            cell_id,
+            &exec.session,
+            process_id,
+        );
+    }
+    Ok(result)
 }
 
 fn build_nested_tool_payload(

@@ -367,6 +367,30 @@ impl UnifiedExecProcessManager {
         }
     }
 
+    pub(crate) async fn wait_for_process_exit(&self, process_id: u32) {
+        let exit_token = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .get(&process_id)
+                .map(|entry| entry.process.cancellation_token())
+        };
+        if let Some(exit_token) = exit_token {
+            exit_token.cancelled().await;
+        }
+    }
+
+    pub(crate) async fn terminate_process(&self, process_id: u32) {
+        let removed = {
+            let mut store = self.process_store.lock().await;
+            store.remove(process_id)
+        };
+        if let Some(entry) = removed {
+            entry.process.terminate();
+            unregister_network_approval_for_entry(&entry).await;
+        }
+    }
+
     pub(crate) async fn exec_command(
         &self,
         request: ExecCommandRequest,

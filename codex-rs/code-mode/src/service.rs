@@ -41,6 +41,7 @@ pub type CodeModeSessionProviderFuture<'a> =
 pub type ToolInvocationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<JsonValue, String>> + Send + 'a>>;
 pub type NotificationFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type CellLifecycleFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct CellId(String);
@@ -96,6 +97,12 @@ pub trait CodeModeSessionDelegate: Send + Sync {
         cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a>;
 
+    /// Waits until resources created by nested tools in this cell are terminal.
+    fn wait_for_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a>;
+
+    /// Terminates resources created by nested tools in this cell.
+    fn terminate_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a>;
+
     /// Releases delegate state associated with a cell after it reaches a terminal state.
     fn cell_closed(&self, cell_id: &CellId);
 }
@@ -121,6 +128,14 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
         _text: String,
         _cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn terminate_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
         Box::pin(async { Ok(()) })
     }
 
@@ -548,6 +563,15 @@ fn send_yield_response(
     }
 }
 
+fn move_pending_result_content(
+    pending_result: &mut Option<PendingResult>,
+    content_items: &mut Vec<FunctionCallOutputContentItem>,
+) {
+    if let Some(result) = pending_result.as_mut() {
+        content_items.append(&mut result.content_items);
+    }
+}
+
 async fn run_cell_control(
     inner: Arc<Inner>,
     context: CellControlContext,
@@ -567,6 +591,8 @@ async fn run_cell_control(
     let mut content_items = Vec::new();
     let mut pending_tool_call_ids = Vec::new();
     let mut pending_result: Option<PendingResult> = None;
+    let mut result_ready = false;
+    let mut completion_task = None;
     let mut response_tx = Some(initial_response_tx);
     let mut termination_requested = false;
     let mut runtime_closed = false;
@@ -607,6 +633,7 @@ async fn run_cell_control(
                         ) {
                             break;
                         }
+                        result_ready = true;
                     }
                     continue;
                 };
@@ -699,7 +726,6 @@ async fn run_cell_control(
                         stored_value_writes,
                         error_text,
                     } => {
-                        yield_timer = None;
                         if termination_requested {
                             if let Some(response_tx) = response_tx.take() {
                                 let response = RuntimeResponse::Terminated {
@@ -716,18 +742,29 @@ async fn run_cell_control(
                             .lock()
                             .await
                             .extend(stored_value_writes);
-                        let result = PendingResult {
+                        let runtime_failed = error_text.is_some();
+                        pending_result = Some(PendingResult {
                             content_items: std::mem::take(&mut content_items),
                             error_text,
-                        };
-                        if send_or_buffer_result(
-                            &cell_id,
-                            result,
-                            &mut response_tx,
-                            &mut pending_result,
-                        ) {
-                            break;
+                        });
+                        if runtime_failed {
+                            let delegate = Arc::clone(&inner.delegate);
+                            if let Err(err) = delegate
+                                .terminate_cell_dependencies(cell_id.clone())
+                                .await
+                            {
+                                warn!(
+                                    "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                                );
+                            }
                         }
+                        let delegate = Arc::clone(&inner.delegate);
+                        let completion_cell_id = cell_id.clone();
+                        completion_task = Some(tokio::spawn(async move {
+                            delegate
+                                .wait_for_cell_dependencies(completion_cell_id)
+                                .await
+                        }));
                     }
                 }
             }
@@ -736,6 +773,46 @@ async fn run_cell_control(
                     && !err.is_cancelled()
                 {
                     warn!("code mode notification task failed: {err}");
+                }
+            }
+            completion = async {
+                match completion_task.as_mut() {
+                    Some(completion_task) => completion_task.await,
+                    None => std::future::pending().await,
+                }
+            }, if completion_task.is_some() => {
+                completion_task = None;
+                result_ready = true;
+                let error_text = match completion {
+                    Ok(Ok(())) => None,
+                    Ok(Err(err)) => Some(err),
+                    Err(err) => Some(format!("code mode dependency wait failed: {err}")),
+                };
+                if let Some(error_text) = error_text
+                    && let Some(result) = pending_result.as_mut()
+                    && result.error_text.is_none()
+                {
+                    result.error_text = Some(error_text);
+                }
+                if termination_requested {
+                    move_pending_result_content(&mut pending_result, &mut content_items);
+                    if let Some(response_tx) = response_tx.take() {
+                        let response = RuntimeResponse::Terminated {
+                            cell_id: cell_id.clone(),
+                            content_items: std::mem::take(&mut content_items),
+                        };
+                        send_terminal_response(response_tx, response);
+                    }
+                    break;
+                }
+                if let Some(response_tx) = response_tx.take()
+                    && let Some(result) = pending_result.take()
+                {
+                    send_terminal_response(
+                        response_tx,
+                        pending_result_response(&cell_id, result),
+                    );
+                    break;
                 }
             }
             maybe_command = control_rx.recv() => {
@@ -747,7 +824,9 @@ async fn run_cell_control(
                         yield_time_ms,
                         response_tx: next_response_tx,
                     } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let _ = next_response_tx.send(pending_result_response(&cell_id, result));
                             break;
                         }
@@ -758,7 +837,9 @@ async fn run_cell_control(
                     CellControlCommand::PollToPending {
                         response_tx: next_response_tx,
                     } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let response = pending_result_response(&cell_id, result);
                             let _ = next_response_tx
                                 .send(ExecuteToPendingOutcome::Completed(response));
@@ -770,7 +851,9 @@ async fn run_cell_control(
                         resume_paused_runtime(&runtime_control_tx, pending_mode);
                     }
                     CellControlCommand::Terminate { response_tx: next_response_tx } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let _ = next_response_tx.send(pending_result_response(&cell_id, result));
                             break;
                         }
@@ -782,6 +865,15 @@ async fn run_cell_control(
                         let _ = runtime_tx.send(RuntimeCommand::Terminate);
                         terminate_paused_runtime(&runtime_control_tx, pending_mode);
                         let _ = runtime_terminate_handle.terminate_execution();
+                        let delegate = Arc::clone(&inner.delegate);
+                        if let Err(err) = delegate
+                            .terminate_cell_dependencies(cell_id.clone())
+                            .await
+                        {
+                            warn!(
+                                "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                            );
+                        }
                         if runtime_closed {
                             if let Some(response_tx) = response_tx.take() {
                                 let response = RuntimeResponse::Terminated {
@@ -805,6 +897,7 @@ async fn run_cell_control(
                 }
             } => {
                 yield_timer = None;
+                move_pending_result_content(&mut pending_result, &mut content_items);
                 send_yield_response(&cell_id, &mut content_items, &mut response_tx);
             }
         }

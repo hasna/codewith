@@ -182,10 +182,15 @@ impl AnyToolResult {
     }
 
     pub(crate) fn code_mode_result(self) -> serde_json::Value {
+        self.code_mode_result_with_live_process_id().0
+    }
+
+    pub(crate) fn code_mode_result_with_live_process_id(self) -> (serde_json::Value, Option<u32>) {
         let Self {
             payload, result, ..
         } = self;
-        result.code_mode_result(&payload)
+        let live_process_id = result.code_mode_live_process_id();
+        (result.code_mode_result(&payload), live_process_id)
     }
 }
 
@@ -209,6 +214,10 @@ impl ToolOutput for PostToolUseFeedbackOutput {
 
     fn code_mode_result(&self, payload: &ToolPayload) -> Value {
         self.original.code_mode_result(payload)
+    }
+
+    fn code_mode_live_process_id(&self) -> Option<u32> {
+        self.original.code_mode_live_process_id()
     }
 }
 

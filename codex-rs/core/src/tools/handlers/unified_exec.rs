@@ -24,6 +24,8 @@ pub use exec_command::ExecCommandHandler;
 pub(crate) use exec_command::ExecCommandHandlerOptions;
 pub use write_stdin::WriteStdinHandler;
 
+pub(crate) const EXEC_COMMAND_TOOL_NAME: &str = "exec_command";
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ExecCommandArgs {
     cmd: String,
