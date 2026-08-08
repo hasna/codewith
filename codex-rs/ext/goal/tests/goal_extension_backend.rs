@@ -372,7 +372,10 @@ async fn set_pending_restores_deferred_node_for_later_activation() -> anyhow::Re
     );
     let output = set_status_tool.handle(restore.clone()).await?;
     let result = output.code_mode_result(&restore.payload);
-    assert_eq!(result["goal"]["objective"], "Consolidate independent results");
+    assert_eq!(
+        result["goal"]["objective"],
+        "Consolidate independent results"
+    );
     assert_eq!(result["goal"]["status"], "active");
     assert_eq!(
         result["goalPlans"][0]["nodes"][0]["nodeId"],
@@ -380,10 +383,7 @@ async fn set_pending_restores_deferred_node_for_later_activation() -> anyhow::Re
     );
     assert_eq!(result["goalPlans"][0]["nodes"][0]["status"], "pending");
     assert_eq!(result["goalPlans"][0]["nodes"][0]["tokensUsed"], 9);
-    assert_eq!(
-        result["goalPlans"][0]["nodes"][0]["timeUsedSeconds"],
-        4
-    );
+    assert_eq!(result["goalPlans"][0]["nodes"][0]["timeUsedSeconds"], 4);
     assert_eq!(result["goalPlans"][0]["nodes"][0]["linesAdded"], 13);
     assert_eq!(result["goalPlans"][0]["nodes"][0]["linesDeleted"], 2);
     assert_eq!(
