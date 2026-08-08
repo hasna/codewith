@@ -1418,17 +1418,27 @@ async fn multi_agent_v2_spawn_inherits_live_session_auth_profile_for_every_fork_
             )
             .await
             .expect("spawned task name should resolve");
-        let snapshot = manager
+        let child_thread = manager
             .get_thread(child_thread_id)
             .await
-            .expect("spawned agent thread should exist")
-            .config_snapshot()
-            .await;
+            .expect("spawned agent thread should exist");
+        let snapshot = child_thread.config_snapshot().await;
 
         assert_eq!(
             snapshot.selected_auth_profile.as_deref(),
             Some("healthy-selected"),
             "fork_turns={fork_turns} must use the live parent session profile"
+        );
+        assert_eq!(
+            child_thread
+                .codex
+                .session
+                .services
+                .auth_manager
+                .selected_auth_profile()
+                .as_deref(),
+            Some("healthy-selected"),
+            "fork_turns={fork_turns} must bind the child auth manager to the live parent profile"
         );
     }
 }
@@ -1484,14 +1494,23 @@ async fn multi_agent_v2_spawn_does_not_substitute_stale_turn_profile() {
         )
         .await
         .expect("spawned task name should resolve");
-    let snapshot = manager
+    let child_thread = manager
         .get_thread(child_thread_id)
         .await
-        .expect("spawned agent thread should exist")
-        .config_snapshot()
-        .await;
+        .expect("spawned agent thread should exist");
+    let snapshot = child_thread.config_snapshot().await;
 
     assert_eq!(snapshot.selected_auth_profile, None);
+    assert_eq!(
+        child_thread
+            .codex
+            .session
+            .services
+            .auth_manager
+            .selected_auth_profile(),
+        None,
+        "child auth manager must not invent a profile that the parent session did not select"
+    );
 }
 
 #[tokio::test]

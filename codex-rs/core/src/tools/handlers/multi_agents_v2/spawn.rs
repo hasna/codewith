@@ -81,6 +81,7 @@ async fn handle_spawn_agent(
         .await;
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+    config.selected_auth_profile = session.selected_auth_profile().await;
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
@@ -158,6 +159,7 @@ async fn handle_spawn_agent(
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                 fork_mode,
+                initial_task_message_id: Some(call_id.clone()),
                 parent_thread_id: Some(session.thread_id),
                 environments: Some(turn.environments.to_selections()),
             },

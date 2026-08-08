@@ -1358,7 +1358,9 @@ async fn multi_agent_v2_spawn_preserves_large_initial_task_for_every_fork_mode()
         let child_request_log = mount_sse_once_match(
             &server,
             move |req: &wiremock::Request| {
-                body_contains(req, child_task_path.as_str()) && !body_contains(req, SPAWN_CALL_ID)
+                body_contains(req, child_task_path.as_str())
+                    && body_contains(req, "\"type\":\"agent_message\"")
+                    && !body_contains(req, SPAWN_CALL_ID)
             },
             sse(vec![
                 ev_response_created("resp-child-1"),
@@ -1391,13 +1393,14 @@ async fn multi_agent_v2_spawn_preserves_large_initial_task_for_every_fork_mode()
 
         test.submit_turn(TURN_1_PROMPT).await?;
 
+        let request_description = format!("large initial task for fork_turns={fork_turns}");
         let child_request = wait_for_matching_request(
             &child_request_log,
-            format!("large initial task for fork_turns={fork_turns}").as_str(),
+            request_description.as_str(),
             |request| request.body_contains_text(initial_task.as_str()),
         )
         .await?;
-        assert!(child_request.body_contains_text("agent_message"));
+        assert!(child_request.body_contains_text("\"type\":\"agent_message\""));
         assert!(child_request.body_contains_text("encrypted_content"));
         assert_eq!(
             child_request

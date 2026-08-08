@@ -346,8 +346,20 @@ impl AgentControl {
         )
         .await;
 
-        self.send_input(new_thread.thread_id, initial_operation)
-            .await?;
+        match (options.initial_task_message_id, initial_operation) {
+            (Some(initial_task_message_id), Op::InterAgentCommunication { communication }) => {
+                self.send_initial_agent_task(
+                    new_thread.thread_id,
+                    initial_task_message_id,
+                    communication,
+                )
+                .await?;
+            }
+            (_, initial_operation) => {
+                self.send_input(new_thread.thread_id, initial_operation)
+                    .await?;
+            }
+        }
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path

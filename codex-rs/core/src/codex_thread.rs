@@ -273,6 +273,20 @@ impl CodexThread {
         Ok(())
     }
 
+    /// Queues a spawned agent's initial task with a stable id for exact-once model delivery.
+    pub async fn enqueue_initial_agent_task_with_id(
+        &self,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
+        if !self.is_running() {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        crate::session::enqueue_initial_agent_task(&self.codex.session, message_id, communication)
+            .await?;
+        Ok(())
+    }
+
     pub async fn queued_mailbox_messages(&self) -> Vec<QueuedMailboxMessage> {
         self.codex.session.input_queue.list_mailbox_messages().await
     }
