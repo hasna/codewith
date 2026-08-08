@@ -86,7 +86,8 @@ async fn exec_command_with_tty(
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
     let process = manager.allocate_process().await;
-    exec_command_with_process_and_tty(session, turn, cmd, yield_time_ms, workdir, process, tty).await
+    exec_command_with_process_and_tty(session, turn, cmd, yield_time_ms, workdir, process, tty)
+        .await
 }
 
 async fn exec_command_with_process_and_tty(
