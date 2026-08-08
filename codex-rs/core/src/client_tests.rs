@@ -192,11 +192,7 @@ fn workflow_provider_call_guard_is_two_sided_and_fails_before_call() {
     let provider_calls = AtomicUsize::new(0);
 
     client
-        .enforce_workflow_provider_attempt(
-            &test_model_info(),
-            Some(&ReasoningEffort::Medium),
-            None,
-        )
+        .enforce_workflow_provider_attempt(&test_model_info(), Some(&ReasoningEffort::Medium), None)
         .expect("the exact admitted request must pass");
     provider_calls.fetch_add(1, Ordering::SeqCst);
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
@@ -204,11 +200,7 @@ fn workflow_provider_call_guard_is_two_sided_and_fails_before_call() {
     let mut mismatched_model = test_model_info();
     mismatched_model.slug = "gpt-other".to_string();
     let error = client
-        .enforce_workflow_provider_attempt(
-            &mismatched_model,
-            Some(&ReasoningEffort::Medium),
-            None,
-        )
+        .enforce_workflow_provider_attempt(&mismatched_model, Some(&ReasoningEffort::Medium), None)
         .expect_err("a mismatched provider request must fail before the call");
     assert!(error.to_string().contains("workflow_route_model_mismatch"));
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);

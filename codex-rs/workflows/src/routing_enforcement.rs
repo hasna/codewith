@@ -585,10 +585,7 @@ fn decimal_scale(value: &str) -> Option<usize> {
         || whole.is_empty()
         || !whole.chars().all(|character| character.is_ascii_digit())
         || fraction.is_some_and(|fraction| {
-            fraction.is_empty()
-                || !fraction
-                    .chars()
-                    .all(|character| character.is_ascii_digit())
+            fraction.is_empty() || !fraction.chars().all(|character| character.is_ascii_digit())
         })
     {
         return None;
@@ -605,7 +602,10 @@ fn decimal_at_scale(value: &str, scale: usize) -> Option<u128> {
     let mut digits = String::with_capacity(whole.len().saturating_add(scale));
     digits.push_str(whole);
     digits.push_str(fraction);
-    digits.extend(std::iter::repeat_n('0', scale.saturating_sub(fraction.len())));
+    digits.extend(std::iter::repeat_n(
+        '0',
+        scale.saturating_sub(fraction.len()),
+    ));
     digits.parse::<u128>().ok()
 }
 
