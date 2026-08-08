@@ -559,7 +559,6 @@ text(JSON.stringify(background));
     let first_items = custom_tool_output_items(&first_completion.single_request(), "call-1");
     assert_eq!(first_items.len(), 1);
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
-    fs_wait::wait_for_path_exists(&nested_result_path, Duration::from_secs(5)).await?;
 
     responses::mount_sse_once(
         &server,
@@ -570,7 +569,7 @@ text(JSON.stringify(background));
                 "wait",
                 &serde_json::to_string(&serde_json::json!({
                     "cell_id": cell_id.clone(),
-                    "yield_time_ms": 250,
+                    "yield_time_ms": 500,
                 }))?,
             ),
             ev_completed("resp-3"),
@@ -590,6 +589,7 @@ text(JSON.stringify(background));
         .await?;
 
     let second_items = function_tool_output_items(&second_completion.single_request(), "call-2");
+    fs_wait::wait_for_path_exists(&nested_result_path, Duration::from_secs(5)).await?;
     fs::write(&release_path, "release")?;
     fs_wait::wait_for_path_exists(&nested_exit_path, Duration::from_secs(5)).await?;
 
