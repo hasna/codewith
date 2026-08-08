@@ -231,13 +231,23 @@ def select_target_artifacts(
         artifact.name: artifact for artifact in list_workflow_artifacts(workflow_id)
     }
     selected_artifacts: list[WorkflowArtifact] = []
+    requires_codex_package = CODEX_PACKAGE_COMPONENT in components
     for target in BINARY_TARGETS:
-        for artifact_name in [target, f"{target}-unsigned"]:
+        artifact_names = [target]
+        if not requires_codex_package:
+            artifact_names.append(f"{target}-unsigned")
+
+        for artifact_name in artifact_names:
             artifact = artifacts_by_name.get(artifact_name)
             if artifact is not None:
                 selected_artifacts.append(artifact)
                 break
         else:
+            if requires_codex_package and f"{target}-unsigned" in artifacts_by_name:
+                raise FileNotFoundError(
+                    "codex-package requires signed workflow artifact "
+                    f"{target}; {target}-unsigned contains individual binaries only"
+                )
             raise FileNotFoundError(
                 f"Expected workflow artifact not found for target {target}"
             )

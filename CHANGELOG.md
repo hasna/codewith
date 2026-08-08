@@ -64,6 +64,12 @@ authority or execution behavior.
   leaf process argv for local liveness accounting. The marker grants no task or
   credential authority. (#507)
 
+### Fixed
+
+- Release packaging: reject unsigned-only macOS workflow artifacts before
+  downloading them for npm staging because they do not contain the required
+  Codex package archives. (#507)
+
 ## [0.1.84] - 2026-08-08
 
 Tag: `rust-v0.1.84`
