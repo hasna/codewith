@@ -1,6 +1,7 @@
 use codex_extension_api::ExtensionData;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
@@ -44,6 +45,30 @@ impl Session {
                 })
                 .await;
         }
+    }
+
+    pub(crate) async fn evaluate_turn_completion_lifecycle(
+        &self,
+        turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        let mut continuation_items = Vec::new();
+        for contributor in self.services.extensions.turn_lifecycle_contributors() {
+            match contributor
+                .on_turn_completion(codex_extension_api::TurnCompletionInput {
+                    turn_id: turn_context.sub_id.as_str(),
+                    session_store: &self.services.session_extension_data,
+                    thread_store: &self.services.thread_extension_data,
+                    turn_store: turn_context.extension_data.as_ref(),
+                })
+                .await
+            {
+                codex_extension_api::TurnCompletionDecision::Allow => {}
+                codex_extension_api::TurnCompletionDecision::Continue(mut items) => {
+                    continuation_items.append(&mut items);
+                }
+            }
+        }
+        continuation_items
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self) {

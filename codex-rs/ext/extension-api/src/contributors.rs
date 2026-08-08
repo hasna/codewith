@@ -31,6 +31,8 @@ pub use tool_lifecycle::ToolWorktreeMutationSignal;
 pub use turn_input::TurnInputContext;
 pub use turn_input::TurnInputEnvironment;
 pub use turn_lifecycle::TurnAbortInput;
+pub use turn_lifecycle::TurnCompletionDecision;
+pub use turn_lifecycle::TurnCompletionInput;
 pub use turn_lifecycle::TurnErrorInput;
 pub use turn_lifecycle::TurnStartInput;
 pub use turn_lifecycle::TurnStopInput;
@@ -79,6 +81,12 @@ pub trait TurnLifecycleContributor: Send + Sync {
     /// Called after turn-scoped extension stores are created, before the task
     /// for the turn starts running.
     async fn on_turn_start(&self, _input: TurnStartInput<'_>) {}
+
+    /// Called after the model proposes a terminal response but before the host
+    /// accepts the turn as complete.
+    async fn on_turn_completion(&self, _input: TurnCompletionInput<'_>) -> TurnCompletionDecision {
+        TurnCompletionDecision::Allow
+    }
 
     /// Called before the host drops the completed turn runtime and turn store.
     async fn on_turn_stop(&self, _input: TurnStopInput<'_>) {}

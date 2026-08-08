@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use codex_core::ThreadManager;
@@ -21,6 +23,8 @@ use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnCompletionDecision;
+use codex_extension_api::TurnCompletionInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
@@ -52,7 +56,13 @@ use crate::spec::SET_GOAL_PLAN_NODE_STATUS_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_PLAN_NODE_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
 use crate::steering::budget_limit_steering_item;
+use crate::steering::plan_completion_guard_steering_item;
 use crate::tool::GoalToolExecutor;
+
+#[derive(Default)]
+struct GoalPlanTerminationGuardState {
+    continuation_requested: AtomicBool,
+}
 
 #[derive(Clone, Debug)]
 pub struct GoalExtensionConfig {
@@ -268,6 +278,107 @@ impl<C> TurnLifecycleContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
+    async fn on_turn_completion(&self, input: TurnCompletionInput<'_>) -> TurnCompletionDecision {
+        let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+            return TurnCompletionDecision::Allow;
+        };
+        if !runtime.tools_visible() {
+            return TurnCompletionDecision::Allow;
+        }
+
+        match self
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(runtime.thread_id())
+            .await
+        {
+            Ok(Some(goal))
+                if matches!(
+                    goal.status,
+                    codex_state::ThreadGoalStatus::Active
+                        | codex_state::ThreadGoalStatus::Paused
+                        | codex_state::ThreadGoalStatus::Blocked
+                        | codex_state::ThreadGoalStatus::UsageLimited
+                        | codex_state::ThreadGoalStatus::BudgetLimited
+                        | codex_state::ThreadGoalStatus::Cancelled
+                ) =>
+            {
+                return TurnCompletionDecision::Allow;
+            }
+            Ok(Some(_)) | Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    "failed to inspect current goal at turn completion for {}: {err}",
+                    runtime.thread_id()
+                );
+                return TurnCompletionDecision::Allow;
+            }
+        }
+
+        match crate::pending_interaction::has_active_thread_wait(
+            self.state_dbs.as_ref(),
+            runtime.thread_id(),
+        )
+        .await
+        {
+            Ok(true) => return TurnCompletionDecision::Allow,
+            Ok(false) => {}
+            Err(err) => tracing::warn!(
+                "failed to inspect pending interactions at turn completion for {}: {err}",
+                runtime.thread_id()
+            ),
+        }
+
+        let plans = match self
+            .state_dbs
+            .thread_goals()
+            .list_thread_goal_plans(runtime.thread_id())
+            .await
+        {
+            Ok(plans) => plans,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to inspect goal plans at turn completion for {}: {err}",
+                    runtime.thread_id()
+                );
+                return TurnCompletionDecision::Allow;
+            }
+        };
+        let Some(plan) = plans
+            .into_iter()
+            .find(|plan| active_plan_requires_guard(plan, runtime.thread_id()))
+        else {
+            return TurnCompletionDecision::Allow;
+        };
+
+        let guard_state = input
+            .turn_store
+            .get_or_init::<GoalPlanTerminationGuardState>(GoalPlanTerminationGuardState::default);
+        if !guard_state
+            .continuation_requested
+            .swap(true, Ordering::AcqRel)
+        {
+            return TurnCompletionDecision::Continue(vec![plan_completion_guard_steering_item(
+                &plan,
+            )]);
+        }
+
+        if let Err(err) = crate::pending_interaction::record_goal_plan_termination_wait(
+            self.state_dbs.as_ref(),
+            runtime.thread_id(),
+            input.turn_id,
+            &plan,
+        )
+        .await
+        {
+            tracing::warn!(
+                "failed to record goal-plan termination wait for {}: {err}",
+                runtime.thread_id()
+            );
+        }
+        TurnCompletionDecision::Allow
+    }
+
     async fn on_turn_start(&self, input: TurnStartInput<'_>) {
         let Some(runtime) = goal_runtime_handle(input.thread_store) else {
             return;
@@ -664,6 +775,24 @@ pub fn install_with_backend<C>(
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());
     registry.tool_contributor(extension);
+}
+
+fn active_plan_requires_guard(
+    plan: &codex_state::ThreadGoalPlanSnapshot,
+    thread_id: ThreadId,
+) -> bool {
+    if plan.plan.thread_id != thread_id
+        || plan.plan.status != codex_state::ThreadGoalPlanStatus::Active
+    {
+        return false;
+    }
+    let summary = plan.usage_summary();
+    summary.active_node_count == 0
+        && summary.paused_node_count == 0
+        && summary.blocked_node_count == 0
+        && summary.usage_limited_node_count == 0
+        && summary.budget_limited_node_count == 0
+        && summary.pending_node_count + summary.deferred_node_count > 0
 }
 
 fn goal_runtime_handle(thread_store: &ExtensionData) -> Option<Arc<GoalRuntimeHandle>> {

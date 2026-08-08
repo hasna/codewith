@@ -46,6 +46,25 @@ pub(crate) fn continuation_steering_item(goal: &ThreadGoal) -> ResponseItem {
     goal_context_input_item(continuation_prompt(goal))
 }
 
+pub(crate) fn plan_completion_guard_steering_item(
+    plan: &codex_state::ThreadGoalPlanSnapshot,
+) -> ResponseItem {
+    let summary = plan.usage_summary();
+    goal_context_input_item(format!(
+        "<goal_plan_termination_guard>\n\
+The active goal plan `{plan_id}` is unfinished, so this turn cannot end yet.\n\
+Current plan counts: completed={completed}, pending={pending}, deferred={deferred}, ready={ready}, active={active}.\n\
+Inspect the plan with `get_goal_plan`, then continue a safe ready node or restore a deferred node to pending and activate it. If work must intentionally wait, record that through the supported paused, blocked, usage-limited, budget-limited, or user-input state. If the plan is genuinely done or cancelled, update its durable state before returning a final response.\n\
+</goal_plan_termination_guard>",
+        plan_id = plan.plan.plan_id,
+        completed = summary.completed_node_count,
+        pending = summary.pending_node_count,
+        deferred = summary.deferred_node_count,
+        ready = summary.ready_node_count,
+        active = summary.active_node_count,
+    ))
+}
+
 fn goal_context_input_item(prompt: String) -> ResponseItem {
     ContextualUserFragment::into(InternalModelContextFragment::new(
         InternalContextSource::from_static("goal"),
