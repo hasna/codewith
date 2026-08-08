@@ -155,7 +155,26 @@ fn read_secret_from_command_with_timeout(
     secret_name: &str,
     timeout: Duration,
 ) -> Option<String> {
-    let output = secret_command_output(command, secret_name, timeout)?;
+    // `secrets get` redacts by default since @hasna/secrets 0.2.9 and refuses to
+    // print plaintext when stdout is not a TTY (exit 1, empty stdout) — which is
+    // always the case when spawned from here with piped stdout. `--show` is the
+    // CLI's explicit escape hatch for consuming the plaintext value
+    // programmatically, so try that first, and fall back to the bare form for
+    // older secrets CLIs that predate `--show` and print plaintext by default.
+    let command = command.as_ref();
+    if let Some(secret) = secret_value_from_command(command, secret_name, &["--show"], timeout) {
+        return Some(secret);
+    }
+    secret_value_from_command(command, secret_name, &[], timeout)
+}
+
+fn secret_value_from_command(
+    command: impl AsRef<OsStr>,
+    secret_name: &str,
+    extra_args: &[&str],
+    timeout: Duration,
+) -> Option<String> {
+    let output = secret_command_output(command, secret_name, extra_args, timeout)?;
     if !output.status.success() {
         return None;
     }
@@ -172,11 +191,13 @@ fn secret_from_stdout(stdout: Vec<u8>) -> Option<String> {
 fn secret_command_output(
     command: impl AsRef<OsStr>,
     secret_name: &str,
+    extra_args: &[&str],
     timeout: Duration,
 ) -> Option<Output> {
     let mut child = Command::new(command)
         .arg("get")
         .arg(secret_name)
+        .args(extra_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -497,6 +518,89 @@ fi
                 Duration::from_secs(1),
             ),
             Some("secret-token".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_command_with_timeout_uses_show_flag_for_redacting_clis() {
+        // @hasna/secrets >= 0.2.9 redacts `get` by default and refuses to print
+        // plaintext when stdout is not a TTY (exit 1, empty stdout) — which is
+        // always the case when spawned from here. The value is only printed when
+        // the explicit `--show` escape hatch is passed. Measured on station01,
+        // 2026-08-08: bare `get` -> rc=1, 0 bytes; `get --show` -> rc=0, value.
+        let temp_dir = temp_test_dir("redacting");
+        let command = write_fake_secret_command(
+            &temp_dir,
+            "redacting-secrets",
+            r#"#!/bin/sh
+if [ "$1" = "get" ] && [ "$2" = "deepseek/api_key" ] && [ "$3" = "--show" ]; then
+  printf 'vault-token\n'
+  exit 0
+fi
+echo 'Refusing to print the value to captured output.' >&2
+exit 1
+"#,
+        );
+
+        assert_eq!(
+            read_secret_from_command_with_timeout(
+                command,
+                "deepseek/api_key",
+                Duration::from_secs(1),
+            ),
+            Some("vault-token".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_command_with_timeout_falls_back_to_bare_get_for_legacy_clis() {
+        // secrets CLIs older than 0.2.9 print plaintext on bare `get` and do not
+        // understand `--show`; the fallback keeps those working.
+        let temp_dir = temp_test_dir("legacy");
+        let command = write_fake_secret_command(
+            &temp_dir,
+            "legacy-secrets",
+            r#"#!/bin/sh
+if [ "$1" = "get" ] && [ "$2" = "deepseek/api_key" ] && [ -z "$3" ]; then
+  printf 'legacy-token\n'
+  exit 0
+fi
+echo 'unknown flag' >&2
+exit 2
+"#,
+        );
+
+        assert_eq!(
+            read_secret_from_command_with_timeout(
+                command,
+                "deepseek/api_key",
+                Duration::from_secs(1),
+            ),
+            Some("legacy-token".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_command_with_timeout_returns_none_when_both_forms_fail() {
+        let temp_dir = temp_test_dir("both-fail");
+        let command = write_fake_secret_command(
+            &temp_dir,
+            "failing-secrets",
+            r#"#!/bin/sh
+exit 1
+"#,
+        );
+
+        assert_eq!(
+            read_secret_from_command_with_timeout(
+                command,
+                "deepseek/api_key",
+                Duration::from_secs(1),
+            ),
+            None
         );
     }
 
