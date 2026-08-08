@@ -2468,7 +2468,6 @@ mod tests {
         );
     }
 
-    #[path = "occurrence_tests.rs"]
     mod occurrence_tests;
 
     #[tokio::test]
