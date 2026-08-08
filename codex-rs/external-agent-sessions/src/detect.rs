@@ -393,6 +393,10 @@ mod tests {
             "session.jsonl",
             &[record("user", "hello there", project_root.as_path())],
         );
+        let imported_modified_at = std::fs::metadata(&session_path)
+            .expect("session metadata")
+            .modified()
+            .expect("session modified time");
         record_imported_session(root.path(), &session_path, ThreadId::new())
             .expect("record import");
 
@@ -404,6 +408,7 @@ mod tests {
             ]),
         )
         .expect("update session");
+        set_modified_at(&session_path, imported_modified_at);
 
         let sessions = detect_recent_sessions(&external_agent_home, root.path()).expect("detect");
         assert_eq!(
