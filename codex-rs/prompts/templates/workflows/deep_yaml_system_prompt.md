@@ -48,7 +48,7 @@ Completion and deterministic verification:
 - The workflow becomes complete only after every required step is `succeeded` and every workflow-level verifier passes.
 
 Adversarial and testing work:
-- Every workflow must include exactly one independent adversarial reviewer agent and exactly one initial review step assigned to that reviewer. Use `review` or `adversarial` in the review step's stable id. The review step must depend on a candidate-producing step owned by a different agent. Do not add a second reviewer or reviewer-per-remediation steps.
+- Every workflow must include adversarial work through exactly one independent adversarial reviewer agent and exactly one initial review step assigned to that reviewer. Use `review` or `adversarial` in the review step's stable id. The review step must depend on a candidate-producing step owned by a different agent. Do not add a second reviewer or reviewer-per-remediation steps.
 - Adversarial review is a required workflow artifact, not optional guidance.
 - The review step must inspect the exact candidate and the exact acceptance criteria, then emit one `GO` or `NO_GO` verdict. `GO` requires all applicable gates to pass with zero open blocking P0/P1 findings. `NO_GO` must name every blocking P0/P1 defect and its evidence.
 - Only concrete, evidence-backed, currently reachable, in-scope P0/P1 defects material to acceptance, secrets or security, data or session integrity, unsafe mutation or rollback, or an applicable required gate may block. Record P2/P3, speculative, pre-existing, and out-of-scope findings once as non-blocking follow-ups.
