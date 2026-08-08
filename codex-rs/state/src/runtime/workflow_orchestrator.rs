@@ -9,6 +9,7 @@ use crate::runtime::background_agents::insert_background_agent_worktree_lease_in
 use crate::runtime::background_agents::recover_or_validate_background_agent_initial_state_in_tx;
 use crate::runtime::background_agents::validate_existing_background_agent_admission_in_tx;
 use crate::runtime::workflow_automation::arm_workflow_timers_for_succeeded_step_in_tx;
+use crate::runtime::workflow_verifiers::requeue_running_workflow_verifiers_for_takeover_in_tx;
 use crate::runtime::workflows::WorkflowRunEventAppend;
 use crate::runtime::workflows::append_workflow_run_event_in_tx;
 use crate::runtime::workflows::maybe_snapshot_workflow_run_in_tx;
@@ -194,6 +195,12 @@ RETURNING generation
             return Ok(None);
         };
         let generation: i64 = row.try_get("generation")?;
+        let requeued_verifier_count = requeue_running_workflow_verifiers_for_takeover_in_tx(
+            &mut tx,
+            params.run_id.as_str(),
+            now_ms,
+        )
+        .await?;
         append_workflow_run_event_in_tx(
             &mut tx,
             params.run_id.as_str(),
@@ -207,6 +214,7 @@ RETURNING generation
                 payload: json!({
                     "generation": generation,
                     "leaseExpiresAtMs": lease_expires_at_ms,
+                    "requeuedVerifierCount": requeued_verifier_count,
                 }),
                 now_ms,
             },
@@ -267,6 +275,11 @@ RETURNING lease_expires_at_ms
         .transpose()
     }
 
+    /// Checks the current lease for pre-launch or diagnostic decisions.
+    ///
+    /// This read-only result must not authorize an external effect because it can become
+    /// stale immediately after return. Use
+    /// [`StateRuntime::publish_workflow_run_verifier_effect`] at publication time.
     pub async fn workflow_run_fence_is_current(
         &self,
         params: WorkflowRunFenceParams,
@@ -2633,7 +2646,7 @@ fn workflow_run_reason_for_status(
     }
 }
 
-fn validate_owner_id(owner_id: &str) -> anyhow::Result<()> {
+pub(super) fn validate_owner_id(owner_id: &str) -> anyhow::Result<()> {
     if owner_id.trim().is_empty() {
         anyhow::bail!("workflow run owner_id must not be empty");
     }
@@ -3150,12 +3163,12 @@ WHERE plan_id = ? AND key = ?
     }
 
     #[tokio::test]
-    async fn overlapping_long_verifier_effect_is_fenced_to_one_generation() {
+    async fn checked_before_takeover_effect_is_atomically_fenced_at_publication() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
         let marker = runtime.codex_home().join("verifier-external-effect");
-        let (run, _) = create_projected_run(
+        let (run, projection) = create_projected_run(
             &runtime,
             thread_id,
             "wf_long_verifier_fence",
@@ -3173,47 +3186,88 @@ WHERE plan_id = ? AND key = ?
             .expect("first verifier claim should succeed")
             .expect("first verifier claim should be current");
         let first_generation = first.generation;
-        assert!(
-            runtime
-                .workflow_run_fence_is_current(WorkflowRunFenceParams {
-                    run_id: run.run.run_id.clone(),
-                    owner_id: "verifier-owner".to_string(),
-                    generation: first_generation,
-                })
-                .await
-                .expect("pre-launch fence should evaluate"),
-            "the original verifier may launch only while its lease is current"
-        );
-        let result_barrier = Arc::new(tokio::sync::Barrier::new(3));
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: first_generation,
+            })
+            .await
+            .expect("workflow should advance to ready")
+            .expect("workflow should remain current");
+        mark_projected_node_complete(&runtime, &projection, "adversarial_scope").await;
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: first_generation,
+            })
+            .await
+            .expect("workflow should advance to verifier")
+            .expect("workflow should remain current");
+        let first_verifier = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: first_generation,
+                selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
+            })
+            .await
+            .expect("first verifier claim should succeed")
+            .expect("first verifier should claim");
+        let verifier_run_id = first_verifier.verifier.verifier_run_id;
+        let precondition_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let stale_release = Arc::new(tokio::sync::Notify::new());
+        let effect_key = format!("verifier-external-effect:{verifier_run_id}");
         let stale_worker = {
             let runtime = runtime.clone();
-            let barrier = result_barrier.clone();
+            let precondition_barrier = precondition_barrier.clone();
+            let stale_release = stale_release.clone();
             let marker = marker.clone();
             let run_id = run.run.run_id.clone();
+            let verifier_run_id = verifier_run_id.clone();
+            let effect_key = effect_key.clone();
             tokio::spawn(async move {
-                barrier.wait().await;
-                let current = runtime
+                let cached_current = runtime
                     .workflow_run_fence_is_current(WorkflowRunFenceParams {
-                        run_id,
+                        run_id: run_id.clone(),
                         owner_id: "verifier-owner".to_string(),
                         generation: first_generation,
                     })
                     .await
-                    .expect("stale result fence should evaluate");
-                if current {
-                    writeln!(
-                        std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(marker)
-                            .expect("stale marker should open"),
-                        "stale-generation"
+                    .expect("stale precondition fence should evaluate");
+                assert!(
+                    cached_current,
+                    "generation one must pass its precondition before takeover"
+                );
+                precondition_barrier.wait().await;
+                stale_release.notified().await;
+                runtime
+                    .publish_workflow_run_verifier_effect(
+                        WorkflowRunVerifierEffectPublishParams {
+                            run_id,
+                            owner_id: "verifier-owner".to_string(),
+                            generation: first_generation,
+                            verifier_run_id,
+                            effect_key,
+                        },
+                        || {
+                            writeln!(
+                                std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(marker)
+                                    .expect("stale marker should open"),
+                                "stale-generation"
+                            )?;
+                            Ok(())
+                        },
                     )
-                    .expect("stale marker should write");
-                }
-                current
+                    .await
+                    .expect("stale publication fence should evaluate")
             })
         };
+        precondition_barrier.wait().await;
 
         sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = 0 WHERE run_id = ?")
             .bind(run.run.run_id.as_str())
@@ -3236,42 +3290,33 @@ WHERE plan_id = ? AND key = ?
             .expect("takeover claim should succeed")
             .expect("expired verifier lease should be claimable");
         let takeover_generation = takeover.generation;
-
-        let stale_launch = runtime
-            .workflow_run_fence_is_current(WorkflowRunFenceParams {
-                run_id: run.run.run_id.clone(),
-                owner_id: "verifier-owner".to_string(),
-                generation: first_generation,
-            })
-            .await
-            .expect("stale launch fence should evaluate");
-        assert!(!stale_launch);
-
-        let current_launch = takeover_runtime
-            .workflow_run_fence_is_current(WorkflowRunFenceParams {
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Blocked,
+            takeover.snapshot.verifiers[0].status
+        );
+        takeover_runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "verifier-owner".to_string(),
                 generation: takeover_generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    verifier_run_id.clone(),
+                ),
             })
             .await
-            .expect("takeover launch fence should evaluate");
-        assert!(current_launch);
-        let current_worker = {
-            let runtime = takeover_runtime.clone();
-            let barrier = result_barrier.clone();
-            let marker = marker.clone();
-            let run_id = run.run.run_id;
-            tokio::spawn(async move {
-                barrier.wait().await;
-                let current = runtime
-                    .workflow_run_fence_is_current(WorkflowRunFenceParams {
-                        run_id,
-                        owner_id: "verifier-owner".to_string(),
-                        generation: takeover_generation,
-                    })
-                    .await
-                    .expect("takeover result fence should evaluate");
-                if current {
+            .expect("takeover verifier claim should succeed")
+            .expect("takeover verifier should reclaim");
+
+        let current_publication = takeover_runtime
+            .publish_workflow_run_verifier_effect(
+                WorkflowRunVerifierEffectPublishParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "verifier-owner".to_string(),
+                    generation: takeover_generation,
+                    verifier_run_id: verifier_run_id.clone(),
+                    effect_key: effect_key.clone(),
+                },
+                || {
                     writeln!(
                         std::fs::OpenOptions::new()
                             .create(true)
@@ -3279,21 +3324,33 @@ WHERE plan_id = ? AND key = ?
                             .open(marker)
                             .expect("current marker should open"),
                         "current-generation"
-                    )
-                    .expect("current marker should write");
-                }
-                current
-            })
-        };
-        result_barrier.wait().await;
-        assert!(
-            !stale_worker.await.expect("stale worker should join"),
-            "the overlapping old verifier must be fenced before result publication"
+                    )?;
+                    Ok(())
+                },
+            )
+            .await
+            .expect("takeover publication fence should evaluate");
+        assert_eq!(
+            Some(()),
+            current_publication,
+            "the takeover generation must consume the effect token and publish"
         );
-        assert!(
-            current_worker.await.expect("current worker should join"),
-            "the takeover verifier must remain current through result publication"
+        stale_release.notify_one();
+        assert_eq!(
+            None,
+            stale_worker.await.expect("stale worker should join"),
+            "the cached generation-one precondition must not survive takeover at publication"
         );
+        let published_generations: Vec<i64> = sqlx::query_scalar(
+            "SELECT generation FROM workflow_run_verifier_effect_publications WHERE run_id = ? AND verifier_run_id = ? AND effect_key = ?",
+        )
+        .bind(run.run.run_id.as_str())
+        .bind(verifier_run_id)
+        .bind(effect_key)
+        .fetch_all(runtime.pool.as_ref())
+        .await
+        .expect("effect publications should query");
+        assert_eq!(vec![takeover_generation], published_generations);
         assert_eq!(
             "current-generation\n",
             std::fs::read_to_string(&marker).expect("one verifier marker should exist")

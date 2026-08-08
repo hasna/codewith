@@ -15,6 +15,9 @@ const VERIFIER_FAILED_REASON: &str = "deterministic verifier failed";
 const VERIFIER_FAILED_REASON_CODE: &str = "verifier_failed";
 const VERIFIER_RETRY_PENDING_REASON: &str = "deterministic verifier retry is pending";
 const VERIFIER_RETRY_PENDING_REASON_CODE: &str = "verifier_retry_pending";
+const VERIFIER_TAKEOVER_PENDING_REASON: &str =
+    "deterministic verifier was interrupted by workflow owner takeover";
+const VERIFIER_TAKEOVER_PENDING_REASON_CODE: &str = "verifier_takeover_pending";
 const VERIFIER_RUNNING_LEASE_EXTENSION_MS: i64 = 31 * 60 * 1000;
 const MAX_VERIFIER_RETRY_ATTEMPTS: i64 = 5;
 
@@ -295,6 +298,35 @@ WHERE run_id = ?
     }
 }
 
+pub(super) async fn requeue_running_workflow_verifiers_for_takeover_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    now_ms: i64,
+) -> anyhow::Result<u64> {
+    sqlx::query(
+        r#"
+UPDATE workflow_run_step_verifiers
+SET
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    updated_at_ms = ?,
+    completed_at_ms = NULL
+WHERE run_id = ?
+  AND status = 'running'
+        "#,
+    )
+    .bind(crate::WorkflowRunStepVerifierStatus::Blocked.as_str())
+    .bind(VERIFIER_TAKEOVER_PENDING_REASON)
+    .bind(VERIFIER_TAKEOVER_PENDING_REASON_CODE)
+    .bind(now_ms)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await
+    .map(|result| result.rows_affected())
+    .map_err(anyhow::Error::from)
+}
+
 async fn claim_next_run_commands_verifier_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
@@ -360,7 +392,11 @@ WHERE verifier_run_id = (
       AND verifier.status IN ('pending', 'blocked')
       AND (
           verifier.reason_code IS NULL
-          OR verifier.reason_code IN ('verifier_executor_pending', 'verifier_retry_pending')
+          OR verifier.reason_code IN (
+              'verifier_executor_pending',
+              'verifier_retry_pending',
+              'verifier_takeover_pending'
+          )
       )
       AND step.status = 'waiting_verifier'
 {selection_predicate}
@@ -904,6 +940,7 @@ mod tests {
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use pretty_assertions::assert_eq;
+    use std::io::Write;
     use std::sync::Arc;
 
     async fn test_runtime() -> Arc<StateRuntime> {
@@ -1100,6 +1137,20 @@ WHERE run_id = ?
     trigger_step: "scope"
 artifacts:"#,
         )
+    }
+
+    fn verifier_workflow_yaml_with_timeout(
+        workflow_id: &str,
+        command: &str,
+        timeout_seconds: u64,
+    ) -> String {
+        let timeout_line = format!("timeout_seconds: {timeout_seconds}");
+        verifier_workflow_yaml(workflow_id, command)
+            .replace(
+                "max_step_runtime_seconds: 120",
+                "max_step_runtime_seconds: 3600",
+            )
+            .replace("timeout_seconds: 30", timeout_line.as_str())
     }
 
     fn passing_summary() -> WorkflowRunVerifierResultSummary {
@@ -1369,50 +1420,188 @@ artifacts:"#,
     }
 
     #[tokio::test]
-    async fn stale_generation_cannot_record_verifier_result() {
+    async fn expired_generation_requeues_running_verifier_for_takeover() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
-        let (run, generation) =
-            create_claimed_waiting_run(&runtime, thread_id, "wf_verifier_stale", "true").await;
-        let claim = runtime
+        let timeout_seconds = 32_u64 * 60;
+        let timeout_ms = i64::try_from(timeout_seconds).expect("timeout should fit in i64") * 1000;
+        assert!(
+            timeout_ms > VERIFIER_RUNNING_LEASE_EXTENSION_MS,
+            "the regression must use a valid verifier timeout above the fixed lease extension"
+        );
+        let (run, first_generation) = create_claimed_waiting_run_from_yaml(
+            &runtime,
+            thread_id,
+            "wf_verifier_takeover",
+            verifier_workflow_yaml_with_timeout("wf_verifier_takeover", "true", timeout_seconds),
+        )
+        .await;
+        let first_claim = runtime
             .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "verifier-owner".to_string(),
-                generation,
+                generation: first_generation,
                 selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
             })
             .await
             .expect("verifier claim should succeed")
             .expect("verifier should claim");
-        sqlx::query("UPDATE workflow_runs SET generation = generation + 1 WHERE run_id = ?")
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            first_claim.verifier.status
+        );
+        let verifier_run_id = first_claim.verifier.verifier_run_id;
+        let effect_key = format!("verifier-effect:{verifier_run_id}");
+        let marker = runtime.codex_home().join("takeover-verifier-effect");
+
+        sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = 0 WHERE run_id = ?")
             .bind(run.run.run_id.as_str())
             .execute(runtime.pool.as_ref())
             .await
-            .expect("generation should advance");
+            .expect("first verifier lease should expire");
+        let takeover_runtime = StateRuntime::init(
+            runtime.codex_home().to_path_buf(),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("takeover runtime should initialize");
+        let takeover = takeover_runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("takeover claim should succeed")
+            .expect("expired workflow run should be reclaimable");
+        assert_eq!(first_generation + 1, takeover.generation);
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Blocked,
+            takeover.snapshot.verifiers[0].status
+        );
+        assert_eq!(
+            Some(VERIFIER_TAKEOVER_PENDING_REASON_CODE),
+            takeover.snapshot.verifiers[0].reason_code.as_deref()
+        );
+        assert_eq!(
+            first_claim.verifier.attempt_count,
+            takeover.snapshot.verifiers[0].attempt_count
+        );
+        let takeover_verifier = takeover_runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: takeover.generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    verifier_run_id.clone(),
+                ),
+            })
+            .await
+            .expect("takeover verifier claim should succeed")
+            .expect("running verifier should be requeued for the current generation");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            takeover_verifier.verifier.status
+        );
+        assert_eq!(
+            first_claim.verifier.attempt_count + 1,
+            takeover_verifier.verifier.attempt_count
+        );
 
-        let stale_record = runtime
+        let stale_publication = runtime
+            .publish_workflow_run_verifier_effect(
+                WorkflowRunVerifierEffectPublishParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "verifier-owner".to_string(),
+                    generation: first_generation,
+                    verifier_run_id: verifier_run_id.clone(),
+                    effect_key: effect_key.clone(),
+                },
+                || {
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&marker)
+                            .expect("stale marker should open"),
+                        "stale-generation"
+                    )?;
+                    Ok(())
+                },
+            )
+            .await
+            .expect("stale publication fence should evaluate");
+        assert_eq!(None, stale_publication);
+        let stale_result = runtime
             .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
                 run_id: run.run.run_id.clone(),
                 owner_id: "verifier-owner".to_string(),
-                generation,
-                verifier_run_id: claim.verifier.verifier_run_id,
+                generation: first_generation,
+                verifier_run_id: verifier_run_id.clone(),
                 outcome: WorkflowRunVerifierOutcomeStatus::Passed,
                 summary: passing_summary(),
             })
             .await
             .expect("stale record should not error");
-        assert_eq!(None, stale_record);
+        assert_eq!(None, stale_result);
 
-        let snapshot = runtime
-            .workflows()
-            .get_workflow_run_snapshot(run.run.run_id.as_str())
+        let current_publication = takeover_runtime
+            .publish_workflow_run_verifier_effect(
+                WorkflowRunVerifierEffectPublishParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "verifier-owner".to_string(),
+                    generation: takeover.generation,
+                    verifier_run_id: verifier_run_id.clone(),
+                    effect_key: effect_key.clone(),
+                },
+                || {
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&marker)
+                            .expect("current marker should open"),
+                        "current-generation"
+                    )?;
+                    Ok(())
+                },
+            )
             .await
-            .expect("workflow run should reload")
-            .expect("workflow run should exist");
+            .expect("current publication fence should evaluate");
+        assert_eq!(Some(()), current_publication);
+        let recorded = takeover_runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: takeover.generation,
+                verifier_run_id,
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_summary(),
+            })
+            .await
+            .expect("takeover verifier result should record")
+            .expect("takeover verifier result should update");
         assert_eq!(
-            crate::WorkflowRunStepVerifierStatus::Running,
-            snapshot.verifiers[0].status
+            crate::WorkflowRunStatus::Completed,
+            recorded.snapshot.run.status
         );
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Passed,
+            recorded.snapshot.verifiers[0].status
+        );
+        assert_eq!(
+            "current-generation\n",
+            std::fs::read_to_string(&marker).expect("one verifier marker should exist")
+        );
+        let publication_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workflow_run_verifier_effect_publications WHERE run_id = ? AND effect_key = ?",
+        )
+        .bind(run.run.run_id.as_str())
+        .bind(effect_key)
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("effect publication count should query");
+        assert_eq!(1, publication_count);
     }
 }
