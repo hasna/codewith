@@ -1604,7 +1604,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "once input",
             now,
             Duration::from_secs(300),
@@ -2024,7 +2024,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "long running input",
             now,
             Duration::from_secs(300),
@@ -2086,7 +2086,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "stale input",
             now,
             Duration::from_secs(30),
@@ -2503,7 +2503,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "terminal race input",
             now,
             Duration::from_secs(30),
@@ -2627,7 +2627,7 @@ mod tests {
         let replacement_run = enqueue_and_start_claim(
             &runtime,
             &recovered,
-            None,
+            /*goal_id*/ None,
             "recovered waiting input",
             replacement_started_at,
             Duration::from_secs(30),
@@ -2782,7 +2782,7 @@ mod tests {
             enqueue_and_start_claim(
                 &runtime,
                 &complete_claim,
-                None,
+                /*goal_id*/ None,
                 "late complete input",
                 now,
                 Duration::from_secs(300),
@@ -2844,7 +2844,7 @@ mod tests {
             enqueue_and_start_claim(
                 &runtime,
                 &defer_claim,
-                None,
+                /*goal_id*/ None,
                 "late defer input",
                 now,
                 Duration::from_secs(300),
@@ -2961,7 +2961,7 @@ mod tests {
         let running = enqueue_and_start_claim(
             &runtime,
             &completed_claim,
-            None,
+            /*goal_id*/ None,
             "completed input",
             now,
             Duration::from_secs(300),
@@ -3046,7 +3046,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &failed_claim,
-            None,
+            /*goal_id*/ None,
             "failed input",
             now,
             Duration::from_secs(300),
@@ -3133,7 +3133,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "resume failure input",
             now,
             Duration::from_secs(300),
@@ -3197,7 +3197,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "update failure input",
             now,
             Duration::from_secs(300),
@@ -3421,7 +3421,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim_one,
-            None,
+            /*goal_id*/ None,
             "completed stats input",
             now,
             Duration::from_secs(300),
@@ -3479,7 +3479,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim_three,
-            None,
+            /*goal_id*/ None,
             "failed stats input",
             third_run_at,
             Duration::from_secs(300),
@@ -3632,7 +3632,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &claim,
-            None,
+            /*goal_id*/ None,
             "live input",
             now,
             Duration::from_secs(300),
@@ -3743,7 +3743,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &paused_claim,
-            None,
+            /*goal_id*/ None,
             "paused input",
             now,
             Duration::from_secs(300),
@@ -3792,7 +3792,7 @@ mod tests {
         enqueue_and_start_claim(
             &runtime,
             &expiring_claim,
-            None,
+            /*goal_id*/ None,
             "expiring input",
             now,
             Duration::from_secs(30),

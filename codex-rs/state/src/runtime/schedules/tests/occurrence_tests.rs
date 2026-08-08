@@ -48,7 +48,7 @@ started_at_ms
     let run = enqueue_and_start_claim(
         &runtime,
         &claim,
-        None,
+        /*goal_id*/ None,
         "new runtime input",
         now,
         Duration::from_secs(30),
@@ -99,7 +99,7 @@ async fn legacy_schedule_hold_cannot_resurrect_a_pending_occurrence_after_roll_f
             enqueue_and_start_claim(
                 &runtime,
                 &claim,
-                None,
+                /*goal_id*/ None,
                 "started before downgrade",
                 now,
                 Duration::from_secs(300),
@@ -221,7 +221,7 @@ async fn terminal_once_occurrence_survives_the_legacy_schedule_hold_trigger() {
     enqueue_and_start_claim(
         &runtime,
         &claim,
-        None,
+        /*goal_id*/ None,
         "once trigger fencing",
         now,
         Duration::from_secs(30),
@@ -236,8 +236,8 @@ async fn terminal_once_occurrence_survives_the_legacy_schedule_hold_trigger() {
                 claim.run.run_id.as_str(),
                 claim.run.lease_id.as_str(),
                 completed_at,
-                None,
-                None,
+                /*expected_goal_id*/ None,
+                /*error*/ None,
             )
             .await
             .expect("terminal outcome should persist")
@@ -297,7 +297,7 @@ async fn claim_due_thread_schedule_recovers_started_occurrence_without_duplicate
     enqueue_and_start_claim(
         &runtime,
         &original_claim,
-        None,
+        /*goal_id*/ None,
         "restart input",
         now,
         Duration::from_secs(30),
@@ -567,7 +567,15 @@ async fn terminal_recovery_finalizes_interval_cron_and_once_cadence_once() {
             .await
             .expect("schedule should claim")
             .expect("schedule should be due");
-        enqueue_and_start_claim(&runtime, &claim, None, name, now, Duration::from_secs(30)).await;
+        enqueue_and_start_claim(
+            &runtime,
+            &claim,
+            /*goal_id*/ None,
+            name,
+            now,
+            Duration::from_secs(30),
+        )
+        .await;
         let completed_at = now + chrono::Duration::seconds(1);
         assert!(
             runtime
@@ -577,8 +585,8 @@ async fn terminal_recovery_finalizes_interval_cron_and_once_cadence_once() {
                     claim.run.run_id.as_str(),
                     claim.run.lease_id.as_str(),
                     completed_at,
-                    None,
-                    None,
+                    /*expected_goal_id*/ None,
+                    /*error*/ None,
                 )
                 .await
                 .expect("terminal outcome should persist")
@@ -621,7 +629,7 @@ async fn terminal_recovery_finalizes_interval_cron_and_once_cadence_once() {
                     recovered.run.lease_id.as_str(),
                     completed_at,
                     next_run_at,
-                    None,
+                    /*expected_goal_id*/ None,
                 )
                 .await
                 .expect("terminal finalization should succeed")
@@ -635,7 +643,7 @@ async fn terminal_recovery_finalizes_interval_cron_and_once_cadence_once() {
                     recovered.run.lease_id.as_str(),
                     completed_at,
                     next_run_at,
-                    None,
+                    /*expected_goal_id*/ None,
                 )
                 .await
                 .expect("replayed finalization should be idempotent")
@@ -682,7 +690,7 @@ async fn fatal_pre_start_failure_creates_one_failed_terminal_run() {
                 claim.run.run_id.as_str(),
                 claim.run.lease_id.as_str(),
                 completed_at,
-                None,
+                /*goal_id*/ None,
                 "prompt source unavailable".to_string(),
             )
             .await
@@ -697,7 +705,7 @@ async fn fatal_pre_start_failure_creates_one_failed_terminal_run() {
                 claim.run.lease_id.as_str(),
                 completed_at,
                 Some(now + chrono::Duration::minutes(5)),
-                None,
+                /*expected_goal_id*/ None,
             )
             .await
             .expect("failed terminal should finalize")
