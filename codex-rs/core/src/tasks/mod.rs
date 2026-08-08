@@ -454,7 +454,6 @@ impl Session {
             let ctx = Arc::clone(&turn_context);
             let task_for_run = Arc::clone(&task);
             let task_input = input;
-            let task_turn_state = Arc::clone(&turn_state);
             let (start_tx, start_rx) = oneshot::channel();
             let task_cancellation_token = cancellation_token.child_token();
             // Task-owned turn spans keep a core-owned span open for the
@@ -486,34 +485,6 @@ impl Session {
                         return;
                     }
                     let sess = session_ctx.clone_session();
-                    let started_at = Instant::now();
-                    let turn_started_at_unix_ms = ctx
-                        .turn_timing_state
-                        .mark_turn_started(started_at)
-                        .await;
-                    ctx.turn_metadata_state
-                        .set_turn_started_at_unix_ms(turn_started_at_unix_ms);
-                    let token_usage_at_turn_start =
-                        sess.total_token_usage().await.unwrap_or_default();
-                    sess.services
-                        .guardian_rejection_circuit_breaker
-                        .lock()
-                        .await
-                        .clear_turn(&ctx.sub_id);
-                    let pending_items = sess
-                        .input_queue
-                        .get_pending_input_for_turn_state(task_turn_state.as_ref())
-                        .await;
-                    task_turn_state.lock().await.token_usage_at_turn_start =
-                        token_usage_at_turn_start.clone();
-                    sess.input_queue
-                        .extend_pending_input_for_turn_state(
-                            task_turn_state.as_ref(),
-                            pending_items,
-                        )
-                        .await;
-                    sess.emit_turn_start_lifecycle(ctx.as_ref(), &token_usage_at_turn_start)
-                        .await;
                     if task_cancellation_token.is_cancelled() {
                         done_clone.notify_one();
                         return;
@@ -575,6 +546,34 @@ impl Session {
                 }
             };
             if installed {
+                // Finish the start snapshot before releasing the worker or returning: callers may
+                // enqueue trigger mail immediately after `spawn_task`, and that mail belongs to the
+                // next turn rather than the one that was just installed.
+                let started_at = Instant::now();
+                let turn_started_at_unix_ms = turn_context
+                    .turn_timing_state
+                    .mark_turn_started(started_at)
+                    .await;
+                turn_context
+                    .turn_metadata_state
+                    .set_turn_started_at_unix_ms(turn_started_at_unix_ms);
+                let token_usage_at_turn_start = self.total_token_usage().await.unwrap_or_default();
+                self.services
+                    .guardian_rejection_circuit_breaker
+                    .lock()
+                    .await
+                    .clear_turn(&turn_context.sub_id);
+                let pending_items = self
+                    .input_queue
+                    .get_pending_input_for_turn_state(turn_state.as_ref())
+                    .await;
+                turn_state.lock().await.token_usage_at_turn_start =
+                    token_usage_at_turn_start.clone();
+                self.input_queue
+                    .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
+                    .await;
+                self.emit_turn_start_lifecycle(turn_context.as_ref(), &token_usage_at_turn_start)
+                    .await;
                 let _ = start_tx.send(());
             }
             installed
