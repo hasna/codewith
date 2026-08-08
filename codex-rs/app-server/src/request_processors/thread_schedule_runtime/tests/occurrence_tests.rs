@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn idle_rejection_reuses_one_pending_occurrence_without_counting_a_run() {
@@ -88,7 +89,7 @@ async fn idle_rejection_reuses_one_pending_occurrence_without_counting_a_run() {
             lease_id: None,
             lease_expires_at: None,
             updated_at: deferred_schedule.updated_at,
-            ..schedule
+            ..schedule.clone()
         },
         deferred_schedule
     );

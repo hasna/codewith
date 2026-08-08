@@ -38,6 +38,7 @@ mod tests {
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use pretty_assertions::assert_eq;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn non_affecting_error_keeps_scheduled_run_running_until_turn_complete() {

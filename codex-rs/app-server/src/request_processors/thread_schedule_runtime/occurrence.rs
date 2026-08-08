@@ -6,6 +6,7 @@ mod execution;
 mod terminal;
 
 pub(super) use terminal::PersistedScheduledTurnTerminal;
+#[cfg(test)]
 pub(super) use terminal::ScheduledTurnFinish;
 pub(in super::super) use terminal::default_thread_schedule_expires_at;
 pub(in super::super) use terminal::finish_scheduled_run_after_turn;
@@ -14,6 +15,7 @@ pub(in super::super) use terminal::next_thread_schedule_run_at;
 pub(in super::super) use terminal::normalize_schedule_timezone;
 pub(super) use terminal::persisted_scheduled_turn_terminal;
 pub(in super::super) use terminal::recover_scheduled_run_for_terminal_turn;
+#[cfg(test)]
 pub(super) use terminal::scheduled_turn_finish;
 
 impl ThreadScheduleRuntime {
