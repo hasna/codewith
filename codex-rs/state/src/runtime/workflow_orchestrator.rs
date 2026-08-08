@@ -1528,10 +1528,10 @@ fn workflow_branch_execution_identity(
     {
         config_fingerprint.to_string()
     } else {
-        let auth_profile_identity_sha256 =
-            params.auth_profile_ref.as_deref().map(|profile| {
-                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
-            });
+        let auth_profile_identity_sha256 = params
+            .auth_profile_ref
+            .as_deref()
+            .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes()));
         let config_identity = json!({
             "snapshotSource": "workflow/branch_admission",
             "workflowRunId": run.run_id.as_str(),

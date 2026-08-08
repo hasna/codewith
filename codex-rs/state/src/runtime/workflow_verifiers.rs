@@ -1352,7 +1352,10 @@ artifacts:"#,
             .await
             .expect("replacement verifier result should record")
             .expect("replacement verifier result should update");
-        assert_eq!(crate::WorkflowRunStatus::Completed, recorded.snapshot.run.status);
+        assert_eq!(
+            crate::WorkflowRunStatus::Completed,
+            recorded.snapshot.run.status
+        );
         assert_eq!(
             1,
             recorded
