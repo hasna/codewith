@@ -623,6 +623,16 @@ mod tests {
             )
             .await
             .expect("thread metadata should insert");
+        let source_goal = state_db
+            .insert_thread_goal(
+                thread_id,
+                "keep the source goal active",
+                codex_state::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("source goal should insert")
+            .expect("source goal should be active");
         let tool =
             ManageWorkflowTool::new(Arc::new(AtomicBool::new(true)), state_db.clone(), thread_id);
 
@@ -680,7 +690,7 @@ mod tests {
                 .get_thread_goal(thread_id)
                 .await
                 .expect("source goal should load"),
-            None,
+            Some(source_goal),
             "workflow execution must not replace the source thread goal"
         );
         let first_branch_ids = persisted
