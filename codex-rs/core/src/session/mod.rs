@@ -1089,6 +1089,7 @@ impl Session {
             Self::build_model_client_beta_features_header(config),
             self.services.attestation_provider.clone(),
         )
+        .with_workflow_route_receipt(config.workflow_route_receipt.clone())
         .with_prompt_cache_key_override(
             crate::guardian::prompt_cache_key_override_for_review_session(
                 &session_configuration.session_source,

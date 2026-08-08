@@ -1154,6 +1154,8 @@ Use `thread/workflow/get` to read one saved workflow metadata record, or `thread
 
 Use `thread/workflow/run/start` to start a saved workflow for the same thread. The response includes sanitized run state and the projected goal plan when projection succeeds. Use run list/get for inspection and pause/resume/cancel for lifecycle control.
 
+Workflow execution treats the saved model route as an immutable admission contract. Before the run, goal projection, worktree, background worker, verifier, or provider process can start, the server checks the configured gateway, provider, model, reasoning effort, optional service tier and auth/approval/permission profiles, worktree mode, context ceiling, and fallback decision against every route constraint. The requested and effective route receipt is persisted with branch execution state and is checked again for retries, recovered workers, descendants, and verifier attempts; a mismatch returns a stable `workflow_route_*` error instead of selecting another route. An `agent/start` request whose `parentAgentRunId` identifies a workflow worker inherits that exact receipt, must use an isolated worktree when the receipt requires one, and is rejected before admission if the configured descendant route differs. Finite `budget_usd` routes require a provider-backed pre-launch credit reservation plus terminal usage readback. The current background-agent provider path has no such controller, so it rejects finite budgets with `workflow_route_credit_ceiling_unavailable` before billed work rather than applying a caller estimate after launch.
+
 ```json
 { "method": "thread/workflow/run/start", "id": 36, "params": {
     "threadId": "thr_123",

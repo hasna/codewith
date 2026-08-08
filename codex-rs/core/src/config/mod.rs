@@ -1242,6 +1242,10 @@ pub struct Config {
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
+    /// Immutable workflow route contract for provider-call enforcement.
+    /// Set only by the admitted workflow worker path after snapshot revalidation.
+    pub workflow_route_receipt: Option<codex_workflows::WorkflowRouteReceipt>,
+
     /// Optionally specify the personality of the model
     pub personality: Option<Personality>,
 
@@ -4654,6 +4658,7 @@ impl Config {
             model_provider_id,
             model_gateway_id,
             model_provider,
+            workflow_route_receipt: None,
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

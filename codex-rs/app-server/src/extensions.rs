@@ -114,6 +114,26 @@ pub(crate) fn workflow_activation_config(
     codex_workflows_extension::WorkflowActivationConfig {
         auth_profile_ref: config.selected_auth_profile.clone(),
         permission_profile: config.permissions.permission_profile().clone(),
+        route_runtime: codex_workflows::WorkflowRouteRuntime {
+            model_gateway: Some(config.model_gateway_id.clone()),
+            provider: Some(config.model_provider_id.clone()),
+            model: config.model.clone(),
+            reasoning: config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+            service_tier: config.service_tier.clone(),
+            auth_profile: config.selected_auth_profile.clone(),
+            approval_policy: Some(config.permissions.approval_policy.value().to_string()),
+            permission_profile: config
+                .permissions
+                .active_permission_profile()
+                .map(|profile| profile.id),
+            context_window_tokens: config
+                .model_context_window
+                .and_then(|tokens| u64::try_from(tokens).ok()),
+            credit_control: codex_workflows::WorkflowProviderCreditControl::Unavailable,
+        },
         codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
         use_legacy_landlock: config.features.use_legacy_landlock(),
         windows_sandbox_level: windows_sandbox_level_from_config(config),
