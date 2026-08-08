@@ -47,6 +47,69 @@ Known evidence gaps:
 
 ## [Unreleased]
 
+## [0.1.84] - 2026-08-08
+
+Tag: `rust-v0.1.84`
+npm: <https://www.npmjs.com/package/@hasna/codewith/v/0.1.84>
+Compare: <https://github.com/hasna/codewith/compare/rust-v0.1.83...rust-v0.1.84>
+
+This release hardens authentication and provider-error handling, durable-worker
+and workflow execution, unified exec sessions, and goal-plan continuity. It
+also makes review and release automation safer while improving release metadata
+and CI coverage.
+
+### Added
+
+- Durable workers: validate admission before spawning a background worker,
+  including the persisted evidence and external-system checks needed to reject
+  an unsafe or ambiguous launch. (#469)
+- Workflow isolation: add an inert safety foundation for later isolated
+  execution without changing current runtime behavior. (#496)
+
+### Fixed
+
+- Model configuration: reject a configured reasoning effort that the selected
+  model does not support instead of starting a session with an invalid
+  combination. (#473)
+- Login: fail a forced API-versus-ChatGPT method mismatch without deleting
+  shared root authentication or clearing the active-profile marker. (#487)
+- Provider errors: remove reflected credential fragments from HTTP and
+  Responses WebSocket authentication failures before they can reach logs,
+  retries, protocol events, JSONL, or stderr, while preserving safe diagnostics
+  such as status, request ID, and allowlisted provider codes. (#488)
+- Unified exec: carry process and session IDs as unsigned 32-bit values so
+  `write_stdin` accepts valid live IDs above `i32::MAX`; signed exit codes and
+  the allocator range remain unchanged. (#492)
+- Durable workers: require model attestation before a background agent starts.
+  (#499)
+- Skill installation: make retries transactional, preserving prior
+  destinations and cleaning failed clone state. (#498)
+- Workflow verification: fence verifier effects by run generation and allow a
+  successor to reclaim expired verifier ownership safely. (#500)
+- PR babysitting: keep signed CI capability URLs out of transcripts while
+  preserving URL-free status and rerun controls. (#502)
+- Unified exec: keep code cells live while nested descendant sessions are
+  still running. (#501)
+- Goal plans: restore deferred nodes to pending when a durable plan resumes.
+  (#505)
+- Goal plans: prevent an unfinished active plan from ending on a terminal
+  response while allowing completed delegate sessions to stop. (#506)
+
+### Changed
+
+- Review workflows: accept one independent adversarial reviewer and retain
+  same-reviewer focused remediation semantics. (#494)
+- npm metadata: add searchable keywords to the published `@hasna/codewith`
+  package. (#485)
+- CI: name receipt-cursor literal arguments and make the required
+  argument-comment lint include manually declared Rust test binaries instead
+  of relying only on the `//codex-rs/...` wildcard. (#490, #491)
+- Release process: route Codewith releases through the hosted workflow, reject
+  unsafe tag movement, and verify the installer that owns the active
+  executable. (`49be67a`)
+- Dependencies: update `async-trait` to 0.1.91, `diffy` to 0.5.1,
+  `predicates` to 3.1.4, and `socket2` to 0.6.5. (#479, #482, #483, #484)
+
 ## [0.1.83] - 2026-08-01
 
 Tag: `rust-v0.1.83`
