@@ -1193,8 +1193,12 @@ text("cell result ready");
         .await?;
 
     let cell_waited_items = function_tool_output_items(&cell_waited.single_request(), "call-5");
-    assert_eq!(cell_waited_items.len(), 1);
-    let cell_waited_text = text_item(&cell_waited_items, /*index*/ 0).to_string();
+    assert_eq!(cell_waited_items.len(), 2);
+    let cell_waited_header = text_item(&cell_waited_items, /*index*/ 0).to_string();
+    assert_eq!(
+        text_item(&cell_waited_items, /*index*/ 1),
+        "cell result ready"
+    );
 
     responses::mount_sse_once(
         &server,
@@ -1239,10 +1243,9 @@ text("cell result ready");
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n",
-            r"cell result ready\n\z"
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
-        &cell_waited_text,
+        &cell_waited_header,
     );
 
     Ok(())
