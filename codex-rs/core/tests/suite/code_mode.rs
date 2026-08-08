@@ -1004,12 +1004,10 @@ async fn code_mode_stale_borrowed_process_generation_does_not_wait_on_reused_id(
     let second_exit_path = test.workspace_path("code-mode-reused-id-second.exit");
     let first_release_path_quoted =
         shlex::try_join([first_release_path.to_string_lossy().as_ref()])?;
-    let first_exit_path_quoted =
-        shlex::try_join([first_exit_path.to_string_lossy().as_ref()])?;
+    let first_exit_path_quoted = shlex::try_join([first_exit_path.to_string_lossy().as_ref()])?;
     let second_release_path_quoted =
         shlex::try_join([second_release_path.to_string_lossy().as_ref()])?;
-    let second_exit_path_quoted =
-        shlex::try_join([second_exit_path.to_string_lossy().as_ref()])?;
+    let second_exit_path_quoted = shlex::try_join([second_exit_path.to_string_lossy().as_ref()])?;
     let first_command = format!(
         "read -r ignored; while [ ! -f {first_release_path_quoted} ]; do sleep 0.05; done; \
          printf first-exited > {first_exit_path_quoted}"
@@ -1047,8 +1045,7 @@ async fn code_mode_stale_borrowed_process_generation_does_not_wait_on_reused_id(
 
     test.submit_turn("start the first reusable process").await?;
 
-    let first_started_items =
-        function_tool_output_items(&first_started.single_request(), "call-1");
+    let first_started_items = function_tool_output_items(&first_started.single_request(), "call-1");
     assert_eq!(first_started_items.len(), 1);
     let first_process_id =
         extract_running_process_id(text_item(&first_started_items, /*index*/ 0));

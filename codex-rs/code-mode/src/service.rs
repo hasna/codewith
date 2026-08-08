@@ -962,18 +962,18 @@ mod tests {
     use codex_protocol::ToolName;
     use pretty_assertions::assert_eq;
     use tokio::sync::Mutex;
-    use tokio::sync::mpsc;
     use tokio::sync::Notify;
+    use tokio::sync::mpsc;
     use tokio::sync::oneshot;
 
-    use super::CellLifecycleFuture;
     use super::CellControlCommand;
     use super::CellControlContext;
     use super::CellId;
+    use super::CellLifecycleFuture;
     use super::CellResponseSender;
     use super::CodeModeNestedToolCall;
-    use super::CodeModeSessionDelegate;
     use super::CodeModeService;
+    use super::CodeModeSessionDelegate;
     use super::Inner;
     use super::NoopCodeModeSessionDelegate;
     use super::NotificationFuture;

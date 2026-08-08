@@ -74,12 +74,9 @@ impl CodeModeDispatchBroker {
             Err(poisoned) => poisoned.into_inner(),
         };
         let cell_processes = tracked_processes.entry(cell_id).or_default();
-        if let Some(tracked) = cell_processes
-            .iter_mut()
-            .find(|tracked| {
-                tracked.process.same_generation(&process) && tracked.session.ptr_eq(&session)
-            })
-        {
+        if let Some(tracked) = cell_processes.iter_mut().find(|tracked| {
+            tracked.process.same_generation(&process) && tracked.session.ptr_eq(&session)
+        }) {
             tracked.terminate_on_cell_cancel |= terminate_on_cell_cancel;
             return;
         }
