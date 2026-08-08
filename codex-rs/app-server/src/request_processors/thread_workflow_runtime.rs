@@ -30,7 +30,6 @@ use tracing::warn;
 
 const WORKFLOW_RUNTIME_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const WORKFLOW_RUNTIME_RUN_LIMIT: u32 = 200;
-const MAX_VERIFIER_CAPTURE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
 struct WorkflowRuntimeContext {
@@ -45,8 +44,8 @@ struct VerifierExecution {
 }
 
 struct DrainedStream {
-    captured: Vec<u8>,
     total_bytes: u64,
+    expected_stdout_matches: bool,
 }
 
 impl ThreadRequestProcessor {
@@ -347,10 +346,9 @@ async fn execute_command_verifier(
     let mut output_truncated = false;
     let mut timed_out = false;
     let mut stdout_bytes = 0_u64;
-    let mut captured_stdout = Vec::new();
-    let stdout_capture_limit = expected_stdout
-        .map(|_| output_limit_bytes.min(MAX_VERIFIER_CAPTURE_BYTES))
-        .unwrap_or_default();
+    let mut stdout_matches = true;
+    let expected_stdout_bytes =
+        expected_stdout.map(|expected| Arc::<[u8]>::from(expected.as_bytes()));
 
     for command in commands.iter().filter_map(Value::as_str) {
         command_count += 1;
@@ -376,8 +374,14 @@ async fn execute_command_verifier(
             .stderr
             .take()
             .ok_or_else(|| anyhow::anyhow!("verifier stderr was not piped"))?;
-        let stdout_task = tokio::spawn(drain_stream(stdout, stdout_capture_limit));
-        let stderr_task = tokio::spawn(drain_stream(stderr, /* capture_limit_bytes */ 0));
+        let stdout_task = tokio::spawn(drain_stream(
+            stdout,
+            expected_stdout_bytes.clone(),
+            stdout_bytes,
+        ));
+        let stderr_task = tokio::spawn(drain_stream(
+            stderr, /* expected_stdout */ None, /* expected_offset */ 0,
+        ));
         match tokio::time::timeout_at(deadline, child.wait()).await {
             Ok(status) => {
                 observed_exit_code = status?.code();
@@ -390,13 +394,8 @@ async fn execute_command_verifier(
         }
         let stdout_result = stdout_task.await??;
         let stderr_result = stderr_task.await??;
+        stdout_matches &= stdout_result.expected_stdout_matches;
         stdout_bytes = stdout_bytes.saturating_add(stdout_result.total_bytes);
-        let remaining_capture = stdout_capture_limit
-            .saturating_sub(u64::try_from(captured_stdout.len()).unwrap_or(u64::MAX));
-        let append_len = usize::try_from(remaining_capture)
-            .unwrap_or(usize::MAX)
-            .min(stdout_result.captured.len());
-        captured_stdout.extend_from_slice(&stdout_result.captured[..append_len]);
         let command_output_bytes = stdout_result
             .total_bytes
             .saturating_add(stderr_result.total_bytes);
@@ -416,8 +415,8 @@ async fn execute_command_verifier(
             observed_exit_code,
             expected_exit_code,
             expected_stdout,
-            &captured_stdout,
-            stdout_bytes > stdout_capture_limit,
+            stdout_matches,
+            stdout_bytes,
             output_truncated,
         ) {
             WorkflowRunVerifierOutcomeStatus::Passed
@@ -443,8 +442,8 @@ fn command_verifier_passed(
     observed_exit_code: Option<i32>,
     expected_exit_code: i32,
     expected_stdout: Option<&str>,
-    captured_stdout: &[u8],
-    stdout_capture_truncated: bool,
+    stdout_matches: bool,
+    stdout_bytes: u64,
     output_truncated: bool,
 ) -> bool {
     !timed_out
@@ -452,7 +451,7 @@ fn command_verifier_passed(
         && command_count == i64::try_from(expected_command_count).unwrap_or(i64::MAX)
         && observed_exit_code == Some(expected_exit_code)
         && expected_stdout.is_none_or(|expected| {
-            !stdout_capture_truncated && captured_stdout == expected.as_bytes()
+            stdout_matches && stdout_bytes == u64::try_from(expected.len()).unwrap_or(u64::MAX)
         })
 }
 
@@ -544,26 +543,31 @@ fn resolve_beneath(root: &Path, relative: &str) -> anyhow::Result<PathBuf> {
 
 async fn drain_stream(
     mut stream: impl AsyncRead + Unpin,
-    capture_limit_bytes: u64,
+    expected_stdout: Option<Arc<[u8]>>,
+    expected_offset: u64,
 ) -> io::Result<DrainedStream> {
     let mut buffer = [0_u8; 8192];
     let mut total = 0_u64;
-    let capture_capacity = usize::try_from(capture_limit_bytes)
-        .unwrap_or(usize::MAX)
-        .min(MAX_VERIFIER_CAPTURE_BYTES as usize);
-    let mut captured = Vec::with_capacity(capture_capacity);
+    let mut expected_stdout_matches = true;
     loop {
         let read = stream.read(&mut buffer).await?;
         if read == 0 {
             break;
         }
+        if expected_stdout_matches && let Some(expected_stdout) = expected_stdout.as_deref() {
+            let start = expected_offset.saturating_add(total);
+            let end = start.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+            expected_stdout_matches = usize::try_from(start)
+                .ok()
+                .zip(usize::try_from(end).ok())
+                .and_then(|(start, end)| expected_stdout.get(start..end))
+                .is_some_and(|expected| expected == &buffer[..read]);
+        }
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        let remaining = capture_capacity.saturating_sub(captured.len());
-        captured.extend_from_slice(&buffer[..read.min(remaining)]);
     }
     Ok(DrainedStream {
-        captured,
         total_bytes: total,
+        expected_stdout_matches,
     })
 }
 
@@ -645,8 +649,8 @@ mod tests {
             Some(0),
             0,
             Some(""),
-            b"",
-            false,
+            true,
+            0,
             false,
         ));
         assert!(!command_verifier_passed(
@@ -656,8 +660,8 @@ mod tests {
             Some(0),
             0,
             Some(""),
-            b"dirty\n",
             false,
+            6,
             false,
         ));
         assert!(!command_verifier_passed(
@@ -667,8 +671,8 @@ mod tests {
             Some(0),
             0,
             Some("expected"),
-            b"expected",
-            true,
+            false,
+            8,
             false,
         ));
         assert!(!command_verifier_passed(
@@ -678,14 +682,14 @@ mod tests {
             Some(0),
             0,
             None,
-            b"",
-            false,
+            true,
+            0,
             true,
         ));
     }
 
     #[tokio::test]
-    async fn verifier_stream_capture_is_bounded() {
+    async fn verifier_stream_compares_without_retaining_output() {
         let (mut writer, reader) = tokio::io::duplex(64);
         let write = tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
@@ -694,9 +698,11 @@ mod tests {
                 .await
                 .expect("write should work");
         });
-        let drained = drain_stream(reader, 3).await.expect("stream should drain");
+        let drained = drain_stream(reader, Some(Arc::from(&b"abc"[..])), 0)
+            .await
+            .expect("stream should drain");
         write.await.expect("writer task should finish");
-        assert_eq!(b"abc", drained.captured.as_slice());
+        assert!(!drained.expected_stdout_matches);
         assert_eq!(6, drained.total_bytes);
     }
 
