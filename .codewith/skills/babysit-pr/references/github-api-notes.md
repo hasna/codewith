@@ -10,20 +10,20 @@ Used to resolve PR number, URL, branch, head SHA, and closed/merged state.
 
 ### PR checks summary
 
-- `gh pr checks --json name,state,bucket,link,workflow,event,startedAt,completedAt`
+- `gh pr checks --json name,state,bucket`
 
 Used to compute pending/failed/passed counts and whether the current CI round is terminal.
 
 ### Workflow runs for head SHA
 
-- `gh api repos/{owner}/{repo}/actions/runs -X GET -f head_sha=<sha> -f per_page=100`
+- `gh api repos/{owner}/{repo}/actions/runs -X GET -f head_sha=<sha> -f per_page=100 --jq '[.workflow_runs[] | {id, name, status, conclusion, head_sha}]'`
 
 Used to discover failed workflow runs and rerunnable run IDs.
 
 ### Failed log inspection
 
-- `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
-- `gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs -X GET -f per_page=100`
+- `gh run view <run-id> --json name,workflowName,conclusion,status,headSha`
+- `gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs -X GET -f per_page=100 --jq '[.jobs[] | {id, name, status, conclusion}]'`
 - `gh api repos/{owner}/{repo}/actions/jobs/{job_id}/logs > /tmp/codex-gh-job-{job_id}-logs.zip`
 - `gh run view <run-id> --log-failed`
 
@@ -46,6 +46,8 @@ Reruns only failed jobs (and dependencies) for a workflow run.
 
 ## JSON fields consumed by the watcher
 
+Check, workflow-run, and job metadata is projected at the helper boundary. Never request or emit `statusCheckRollup`, `detailsUrl`, `link`, `url`, or `html_url` for those surfaces; use only the allowlisted fields below. Run and job IDs plus the relative logs endpoint preserve diagnosis and rerun behavior without carrying capability-bearing URLs.
+
 ### `gh pr view`
 
 - `number`
@@ -58,11 +60,9 @@ Reruns only failed jobs (and dependencies) for a workflow run.
 
 ### `gh pr checks`
 
-- `bucket` (`pass`, `fail`, `pending`, `skipping`)
-- `state`
 - `name`
-- `workflow`
-- `link`
+- `state`
+- `bucket` (`pass`, `fail`, `pending`, `skipping`)
 
 ### Actions runs API (`workflow_runs[]`)
 
@@ -70,7 +70,6 @@ Reruns only failed jobs (and dependencies) for a workflow run.
 - `name`
 - `status`
 - `conclusion`
-- `html_url`
 - `head_sha`
 
 ### Actions run jobs API (`jobs[]`)
@@ -79,4 +78,3 @@ Reruns only failed jobs (and dependencies) for a workflow run.
 - `name`
 - `status`
 - `conclusion`
-- `html_url`
