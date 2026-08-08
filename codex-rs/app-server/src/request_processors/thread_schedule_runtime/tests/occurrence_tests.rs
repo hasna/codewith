@@ -337,7 +337,14 @@ async fn stale_started_owner_cannot_submit_after_same_occurrence_is_reclaimed() 
         .await
         .expect("claim should succeed")
         .expect("schedule should claim");
-    enqueue_and_start_claim(&state_db, &claim, None, now, Duration::from_secs(30)).await;
+    enqueue_and_start_claim(
+        &state_db,
+        &claim,
+        /*goal_id*/ None,
+        now,
+        Duration::from_secs(30),
+    )
+    .await;
 
     let contender = codex_state::StateRuntime::init(
         temp_dir.path().to_path_buf(),
@@ -452,7 +459,7 @@ fn persisted_completed_scheduled_turn_is_terminal_for_the_matching_turn_only() {
     let history = resumed_history_with_turn_events(
         thread_id,
         [
-            turn_started("turn-scheduled", 1_700_000_000),
+            turn_started("turn-scheduled", /*started_at*/ 1_700_000_000),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-scheduled".to_string(),
                 last_agent_message: Some("done".to_string()),
@@ -486,7 +493,7 @@ fn persisted_failed_scheduled_turn_keeps_the_replayed_failure() {
     let history = resumed_history_with_turn_events(
         thread_id,
         [
-            turn_started("turn-scheduled", 1_700_000_000),
+            turn_started("turn-scheduled", /*started_at*/ 1_700_000_000),
             EventMsg::Error(ErrorEvent {
                 message: "model failed".to_string(),
                 codex_error_info: None,
@@ -520,7 +527,7 @@ fn persisted_aborted_scheduled_turn_is_an_explicit_failure() {
     let history = resumed_history_with_turn_events(
         thread_id,
         [
-            turn_started("turn-scheduled", 1_700_000_000),
+            turn_started("turn-scheduled", /*started_at*/ 1_700_000_000),
             EventMsg::TurnAborted(TurnAbortedEvent {
                 turn_id: Some("turn-scheduled".to_string()),
                 reason: TurnAbortReason::Interrupted,
@@ -575,7 +582,7 @@ fn persisted_in_progress_scheduled_turn_is_not_terminal() {
     let history = resumed_history_with_turn_events(
         thread_id,
         [
-            turn_started("turn-scheduled", 1_700_000_000),
+            turn_started("turn-scheduled", /*started_at*/ 1_700_000_000),
             EventMsg::Error(ErrorEvent {
                 message: "rollback request failed".to_string(),
                 codex_error_info: Some(CoreCodexErrorInfo::ThreadRollbackFailed),
