@@ -14,7 +14,7 @@ pub(crate) struct PersistedScheduledTurnTerminal {
     pub(crate) error: Option<String>,
 }
 
-pub(super) fn persisted_scheduled_turn_terminal(
+pub(in super::super) fn persisted_scheduled_turn_terminal(
     history: &InitialHistory,
     turn_id: &str,
     fallback_completed_at: DateTime<Utc>,
@@ -85,7 +85,7 @@ pub(super) fn persisted_scheduled_turn_terminal(
     })
 }
 
-pub(super) fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
+pub(in super::super) fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
     match event {
         EventMsg::TurnComplete(completed)
             if completed
@@ -108,11 +108,13 @@ pub(super) fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFin
     }
 }
 
-pub(super) fn default_thread_schedule_expires_at(now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+pub(in super::super::super) fn default_thread_schedule_expires_at(
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
     now.checked_add_signed(ChronoDuration::days(DEFAULT_SCHEDULE_EXPIRATION_DAYS))
 }
 
-pub(super) fn next_thread_schedule_run_at(
+pub(in super::super::super) fn next_thread_schedule_run_at(
     schedule: &codex_state::ThreadScheduleSpec,
     timezone: &str,
     after: DateTime<Utc>,
@@ -143,7 +145,7 @@ pub(super) fn next_thread_schedule_run_at(
     Ok(next)
 }
 
-pub(super) fn next_thread_schedule_run_after_completion(
+pub(in super::super) fn next_thread_schedule_run_after_completion(
     schedule: &codex_state::ThreadScheduleSpec,
     timezone: &str,
     scheduled_for: Option<DateTime<Utc>>,
@@ -191,11 +193,13 @@ pub(super) fn next_thread_schedule_run_after_completion(
     next_thread_schedule_run_at(schedule, timezone, completed_at)
 }
 
-pub(super) fn normalize_schedule_timezone(timezone: &str) -> anyhow::Result<String> {
+pub(in super::super::super) fn normalize_schedule_timezone(
+    timezone: &str,
+) -> anyhow::Result<String> {
     parse_schedule_timezone(timezone).map(|timezone| timezone.name().to_string())
 }
 
-pub(super) async fn finish_scheduled_run_after_turn(
+pub(in super::super::super) async fn finish_scheduled_run_after_turn(
     thread_id: ThreadId,
     scheduled_run: crate::thread_state::ScheduledThreadScheduleRun,
     event: &EventMsg,
@@ -247,7 +251,7 @@ pub(super) async fn finish_scheduled_run_after_turn(
     }
 }
 
-pub(super) async fn recover_scheduled_run_for_terminal_turn(
+pub(in super::super::super) async fn recover_scheduled_run_for_terminal_turn(
     state_db: &StateDbHandle,
     thread_id: ThreadId,
     turn_id: &str,
