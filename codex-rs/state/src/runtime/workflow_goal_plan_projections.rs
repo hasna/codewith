@@ -766,7 +766,7 @@ steps:
       approval_policy: "never-ask"
       permission_profile: "root-everything"
     workspace:
-      mode: "shared"
+      mode: "shared_repository"
     depends_on: []
     outputs:
       - "scope.md"

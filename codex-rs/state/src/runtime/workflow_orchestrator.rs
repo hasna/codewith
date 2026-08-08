@@ -3555,7 +3555,7 @@ WHERE plan_id = ? AND key = ?
                 .expect("branch worktree lease should exist");
             assert_eq!(BackgroundAgentWorkspaceMode::IsolatedWorktree, lease.mode);
             assert_eq!(
-                source_repo.to_string_lossy().as_ref(),
+                crate::runtime::managed_worktrees::path_to_db_string(source_repo.as_path()),
                 lease.base_repo_path.as_str()
             );
             assert!(
@@ -4293,24 +4293,16 @@ WHERE worktree_id = ?
         .expect("admission should succeed")
         .expect("run should be owned");
         let branch_run_id = admitted.admitted[0].background_agent_run_id.clone();
-        let repo = unique_temp_dir().join("repo");
-        let worktree = repo.join(".git").join("worktrees").join("branch-lease");
-        runtime
-            .create_background_agent_worktree_lease(&BackgroundAgentWorktreeLeaseCreateParams {
-                id: "branch-lease".to_string(),
-                run_id: branch_run_id.clone(),
-                identity: "branch-lease".to_string(),
-                mode: BackgroundAgentWorkspaceMode::IsolatedWorktree,
-                base_repo_path: repo,
-                worktree_path: worktree,
-                branch: Some("codewith/branch-lease".to_string()),
-                head_sha: Some("abc123".to_string()),
-                status_snapshot_json: json!({"dirty": true, "paths": ["src/user-work.rs"]}),
-                dirty: true,
-                cleanup_after: None,
-            })
+        let branch_lease_id = admitted.admitted[0].managed_worktree_id.clone();
+        let status_updated = runtime
+            .update_background_agent_worktree_lease_status(
+                branch_lease_id.as_str(),
+                /*dirty*/ true,
+                &json!({"dirty": true, "paths": ["src/user-work.rs"]}),
+            )
             .await
-            .expect("branch worktree lease should create");
+            .expect("admitted branch worktree lease status should update");
+        assert!(status_updated, "admitted branch worktree lease must exist");
         runtime
             .request_workflow_run_cancel(WorkflowRunCancelParams {
                 run_id: run.run.run_id.clone(),
@@ -4352,7 +4344,7 @@ FROM managed_worktree_assignments
 WHERE worktree_id = ? AND detached_at_ms IS NULL
             "#,
         )
-        .bind("branch-lease")
+        .bind(branch_lease_id.as_str())
         .fetch_one(runtime.pool.as_ref())
         .await
         .expect("assignment count should load");
@@ -4365,11 +4357,11 @@ WHERE worktree_id = ? AND detached_at_ms IS NULL
         assert!(
             cleanup_candidates
                 .iter()
-                .any(|worktree| worktree.worktree_id == "branch-lease")
+                .any(|worktree| worktree.worktree_id == branch_lease_id)
         );
         let cleanup_candidate = cleanup_candidates
             .iter()
-            .find(|worktree| worktree.worktree_id == "branch-lease")
+            .find(|worktree| worktree.worktree_id == branch_lease_id)
             .expect("dirty branch lease should be a cleanup candidate");
         assert!(cleanup_candidate.dirty);
         let tombstone: (i64, String) = sqlx::query_as(
