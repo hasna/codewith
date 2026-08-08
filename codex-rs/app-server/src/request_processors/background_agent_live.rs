@@ -387,6 +387,12 @@ impl ThreadRequestProcessor {
                     })?);
             }
         }
+        let inherited_workflow_route = self
+            .workflow_descendant_route_receipt(
+                params.parent_agent_run_id.as_deref(),
+                managed_worktree.as_ref(),
+            )
+            .await?;
         let response = self
             .background_agent_state_processor()
             .agent_start_inner(
@@ -394,6 +400,7 @@ impl ThreadRequestProcessor {
                 managed_worktree
                     .as_ref()
                     .map(|worktree| worktree.worktree_id.as_str()),
+                inherited_workflow_route.as_ref(),
             )
             .await?;
         if let Some(worktree) = managed_worktree.as_ref() {
@@ -1800,6 +1807,54 @@ impl ThreadRequestProcessor {
         context.provider = Some(self.config.model_provider_id.clone());
         context.service_tier = self.config.service_tier.clone();
         params.auth_profile_ref = self.config.selected_auth_profile.clone();
+    }
+
+    async fn workflow_descendant_route_receipt(
+        &self,
+        parent_agent_run_id: Option<&str>,
+        managed_worktree: Option<&AgentStartManagedWorktree>,
+    ) -> Result<Option<WorkflowRouteReceipt>, JSONRPCErrorError> {
+        let Some(parent_agent_run_id) = parent_agent_run_id else {
+            return Ok(None);
+        };
+        let state_db = self
+            .state_db
+            .as_ref()
+            .ok_or_else(|| internal_error("background agent state store is unavailable"))?;
+        let parent = state_db
+            .get_background_agent_run(parent_agent_run_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to load parent agent run: {err}")))?
+            .ok_or_else(|| invalid_params("parentAgentRunId does not identify an admitted run"))?;
+        let snapshot = state_db
+            .get_background_agent_initial_execution_snapshot(parent_agent_run_id)
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to load parent agent execution snapshot: {err}"))
+            })?
+            .ok_or_else(|| {
+                invalid_params("parentAgentRunId has no initial execution snapshot")
+            })?;
+        let Some(receipt) = validate_workflow_route_snapshot(&parent, &snapshot)
+            .map_err(workflow_route_admission_error)?
+        else {
+            return Ok(None);
+        };
+        let worktree_mode = if managed_worktree.is_some() {
+            "isolated"
+        } else {
+            "in_place"
+        };
+        let effective = effective_workflow_route_from_config(
+            self.config.as_ref(),
+            &receipt,
+            worktree_mode,
+        )
+        .map_err(workflow_route_admission_error)?;
+        receipt
+            .enforce_descendant(&effective)
+            .map_err(workflow_route_admission_error)?;
+        Ok(Some(receipt))
     }
 
     fn spawn_background_agent_reconcile(&self, only_run_id: Option<String>) {
@@ -3918,7 +3973,7 @@ fn validate_workflow_route_snapshot(
     run: &BackgroundAgentRun,
     snapshot: &BackgroundAgentExecutionSnapshot,
 ) -> anyhow::Result<Option<WorkflowRouteReceipt>> {
-    if run.source != "workflow" {
+    if run.source != "workflow" && run.source != "workflow-descendant" {
         return Ok(None);
     }
     let receipt_value = snapshot.payload_json.get("routeReceipt").ok_or_else(|| {
@@ -4025,7 +4080,32 @@ fn enforce_workflow_route_config(
             .model_auto_compact_token_limit
             .map(|limit| limit.min(context_ceiling_tokens));
     }
-    let effective = WorkflowEffectiveModelRoute {
+    let effective = effective_workflow_route_from_config(
+        config,
+        &receipt,
+        receipt.effective.worktree_mode.as_str(),
+    )?;
+    receipt.enforce_provider_attempt(&effective)?;
+    config.workflow_route_receipt = Some(receipt);
+    Ok(())
+}
+
+fn effective_workflow_route_from_config(
+    config: &codex_core::config::Config,
+    receipt: &WorkflowRouteReceipt,
+    worktree_mode: &str,
+) -> anyhow::Result<WorkflowEffectiveModelRoute> {
+    let configured_context_window = config
+        .model_context_window
+        .and_then(|tokens| u64::try_from(tokens).ok());
+    if let Some(required_ceiling) = receipt.effective.context_ceiling_tokens
+        && configured_context_window.is_none_or(|available| available < required_ceiling)
+    {
+        anyhow::bail!(
+            "workflow_route_context_ceiling_unavailable: configured model context is smaller than the inherited ceiling"
+        );
+    }
+    Ok(WorkflowEffectiveModelRoute {
         model_gateway: config.model_gateway_id.clone(),
         provider: config.model_provider_id.clone(),
         model: config.model.clone().ok_or_else(|| {
@@ -4047,16 +4127,26 @@ fn enforce_workflow_route_config(
             .permissions
             .active_permission_profile()
             .map(|profile| profile.id),
-        worktree_mode: receipt.effective.worktree_mode.clone(),
-        context_ceiling_tokens: config
-            .model_context_window
-            .and_then(|tokens| u64::try_from(tokens).ok()),
+        worktree_mode: worktree_mode.to_string(),
+        context_ceiling_tokens: receipt.effective.context_ceiling_tokens,
         fallback_used: receipt.effective.fallback_used,
         credit_control: WorkflowProviderCreditControl::NotRequested,
-    };
-    receipt.enforce_provider_attempt(&effective)?;
-    config.workflow_route_receipt = Some(receipt);
-    Ok(())
+    })
+}
+
+fn workflow_route_admission_error(err: impl std::fmt::Display) -> JSONRPCErrorError {
+    let message = err.to_string();
+    let code = message
+        .split(':')
+        .next()
+        .unwrap_or("workflow_route_invalid")
+        .to_string();
+    let mut error = invalid_request(message);
+    error.data = Some(json!({
+        "errorCode": code,
+        "retriable": false,
+    }));
+    error
 }
 
 async fn insert_initial_goal_for_background_thread(

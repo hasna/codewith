@@ -95,6 +95,7 @@ use codex_rollout::StateDbHandle;
 use codex_state::ManagedWorktreeAssignmentTarget;
 use codex_state::ManagedWorktreeAttachParams;
 use codex_state::ManagedWorktreeDetachParams;
+use codex_workflows::WorkflowRouteReceipt;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
@@ -122,6 +123,7 @@ impl BackgroundAgentRequestProcessor {
         &self,
         mut params: AgentStartParams,
         required_managed_worktree_id: Option<&str>,
+        inherited_workflow_route: Option<&WorkflowRouteReceipt>,
     ) -> Result<AgentStartResponse, JSONRPCErrorError> {
         let state_db = self.state_db()?;
         normalize_agent_start_schema(&mut params)?;
@@ -181,7 +183,11 @@ impl BackgroundAgentRequestProcessor {
                 .unwrap_or_else(|| agent_id.clone());
             format!("inline:{identity}:prompt")
         });
-        let source = source.unwrap_or_else(|| "app-server".to_string());
+        let source = if inherited_workflow_route.is_some() {
+            "workflow-descendant".to_string()
+        } else {
+            source.unwrap_or_else(|| "app-server".to_string())
+        };
         let thread_store_kind = thread_store_kind.unwrap_or_else(|| "background-agent".to_string());
         validate_agent_start_rollout_path(
             state_db.as_ref(),
@@ -201,6 +207,7 @@ impl BackgroundAgentRequestProcessor {
                     initial_goal_objective.as_deref(),
                     auth_profile_ref.as_deref(),
                     execution_context.as_ref(),
+                    inherited_workflow_route,
                 )
                 .map_err(|err| {
                     internal_error(format!(
@@ -219,6 +226,7 @@ impl BackgroundAgentRequestProcessor {
                 required_managed_worktree_id,
                 config_fingerprint: config_fingerprint.as_deref(),
                 version_fingerprint: version_fingerprint.as_deref(),
+                inherited_workflow_route,
             });
         let requested_model = execution_context
             .as_ref()
@@ -245,15 +253,30 @@ impl BackgroundAgentRequestProcessor {
             status_reason: Some("queued for background-agent supervisor".to_string()),
             config_fingerprint: config_fingerprint.clone(),
             version_fingerprint,
-            model_attestation: Some(BackgroundAgentModelAttestationCreateParams {
-                requested_model,
-                requested_configuration: json!({
-                    "executionContext": execution_context.as_ref(),
-                }),
-                applied_model,
-                applied_configuration: json!({
-                    "executionContext": execution_payload,
-                }),
+            model_attestation: Some(if let Some(receipt) = inherited_workflow_route {
+                BackgroundAgentModelAttestationCreateParams {
+                    requested_model: Some(receipt.requested.model.clone()),
+                    requested_configuration: json!({
+                        "executionContext": execution_context.as_ref(),
+                        "routeReceipt": receipt,
+                    }),
+                    applied_model: Some(receipt.effective.model.clone()),
+                    applied_configuration: json!({
+                        "executionContext": execution_payload,
+                        "routeReceipt": receipt,
+                    }),
+                }
+            } else {
+                BackgroundAgentModelAttestationCreateParams {
+                    requested_model,
+                    requested_configuration: json!({
+                        "executionContext": execution_context.as_ref(),
+                    }),
+                    applied_model,
+                    applied_configuration: json!({
+                        "executionContext": execution_payload,
+                    }),
+                }
             }),
         };
         let prompt_sha256 = format!("{:x}", Sha256::digest(prompt.as_bytes()));
@@ -1130,12 +1153,13 @@ struct InitialExecutionSnapshotPayloadParams<'a> {
     required_managed_worktree_id: Option<&'a str>,
     config_fingerprint: Option<&'a str>,
     version_fingerprint: Option<&'a str>,
+    inherited_workflow_route: Option<&'a WorkflowRouteReceipt>,
 }
 
 fn initial_execution_snapshot_payload(
     params: InitialExecutionSnapshotPayloadParams<'_>,
 ) -> serde_json::Value {
-    json!({
+    let mut payload = json!({
         "snapshotSource": "agent/start",
         "cwd": params.cwd,
         "initialGoalObjective": params.initial_goal_objective,
@@ -1191,7 +1215,45 @@ fn initial_execution_snapshot_payload(
         "packageFingerprint": BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
         "recoveryPolicy": params.recovery_policy,
         "midTurnCrashSemantics": "abort_mid_turn_resume_at_safe_boundary",
-    })
+    });
+    if let Some(receipt) = params.inherited_workflow_route {
+        let payload = payload
+            .as_object_mut()
+            .expect("initial execution snapshot payload is an object");
+        payload.insert(
+            "modelGateway".to_string(),
+            json!(receipt.effective.model_gateway),
+        );
+        payload.insert("provider".to_string(), json!(receipt.effective.provider));
+        payload.insert("model".to_string(), json!(receipt.effective.model));
+        payload.insert("reasoning".to_string(), json!(receipt.effective.reasoning));
+        payload.insert(
+            "serviceTier".to_string(),
+            json!(receipt.effective.service_tier),
+        );
+        payload.insert(
+            "approvalPolicy".to_string(),
+            json!(receipt.effective.approval_policy),
+        );
+        payload.insert(
+            "permissionProfile".to_string(),
+            json!(receipt.effective.permission_profile),
+        );
+        payload.insert("routeReceipt".to_string(), json!(receipt));
+        payload.insert(
+            "contextCeilingTokens".to_string(),
+            json!(receipt.effective.context_ceiling_tokens),
+        );
+        payload.insert(
+            "creditAccounting".to_string(),
+            json!(receipt.terminal_credit_accounting()),
+        );
+        payload.insert(
+            "workspace".to_string(),
+            json!({"mode": receipt.effective.worktree_mode}),
+        );
+    }
+    payload
 }
 
 fn background_agent_config_fingerprint(
@@ -1199,12 +1261,14 @@ fn background_agent_config_fingerprint(
     initial_goal_objective: Option<&str>,
     auth_profile_ref: Option<&str>,
     execution_context: Option<&AgentExecutionContextParams>,
+    inherited_workflow_route: Option<&WorkflowRouteReceipt>,
 ) -> anyhow::Result<String> {
     let config_identity = json!({
         "cwd": cwd,
         "initialGoalObjective": initial_goal_objective,
         "authProfileRef": auth_profile_ref,
         "executionContext": execution_context,
+        "routeReceipt": inherited_workflow_route,
     });
     Ok(format!(
         "{:x}",
@@ -1832,7 +1896,80 @@ fn api_lifecycle_effect_from_runtime(effect: LifecycleEffect) -> AgentLifecycleE
 mod tests {
     use super::*;
     use chrono::Utc;
+    use codex_workflows::WorkflowEffectiveModelRoute;
+    use codex_workflows::WorkflowModelRoute;
+    use codex_workflows::WorkflowProviderCreditControl;
     use tempfile::TempDir;
+
+    #[test]
+    fn descendant_snapshot_persists_the_immutable_parent_route_receipt() {
+        let receipt = WorkflowRouteReceipt {
+            requested: WorkflowModelRoute {
+                model_gateway: "openrouter".to_string(),
+                provider: "openrouter".to_string(),
+                model: "openai/gpt-5.6-sol".to_string(),
+                reasoning: "high".to_string(),
+                service_tier: Some("priority".to_string()),
+                approval_policy: Some("never".to_string()),
+                permission_profile: Some("workspace-write".to_string()),
+                routing: None,
+            },
+            effective: WorkflowEffectiveModelRoute {
+                model_gateway: "openrouter".to_string(),
+                provider: "openrouter".to_string(),
+                model: "openai/gpt-5.6-sol".to_string(),
+                reasoning: "high".to_string(),
+                service_tier: Some("priority".to_string()),
+                auth_profile: Some("account007".to_string()),
+                approval_policy: Some("never".to_string()),
+                permission_profile: Some("workspace-write".to_string()),
+                worktree_mode: "isolated".to_string(),
+                context_ceiling_tokens: Some(128_000),
+                fallback_used: false,
+                credit_control: WorkflowProviderCreditControl::NotRequested,
+            },
+        };
+        let payload = initial_execution_snapshot_payload(InitialExecutionSnapshotPayloadParams {
+            cwd: Some("/tmp/worktree"),
+            initial_goal_objective: None,
+            execution_context: None,
+            recovery_policy: "abort_mid_turn_resume_at_safe_boundary",
+            auth_profile_ref: Some("account007"),
+            required_managed_worktree_id: Some("worktree-1"),
+            config_fingerprint: Some("cfg-1"),
+            version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION),
+            inherited_workflow_route: Some(&receipt),
+        });
+
+        assert_eq!(payload.get("routeReceipt"), Some(&json!(receipt)));
+        assert_eq!(payload.get("modelGateway"), Some(&json!("openrouter")));
+        assert_eq!(payload.get("reasoning"), Some(&json!("high")));
+        assert_eq!(
+            payload.pointer("/workspace/mode"),
+            Some(&json!("isolated"))
+        );
+        assert_eq!(
+            payload.get("creditAccounting"),
+            Some(&json!({"status": "not_requested"}))
+        );
+    }
+
+    #[test]
+    fn ordinary_agent_snapshot_does_not_claim_a_workflow_route_receipt() {
+        let payload = initial_execution_snapshot_payload(InitialExecutionSnapshotPayloadParams {
+            cwd: None,
+            initial_goal_objective: None,
+            execution_context: None,
+            recovery_policy: "abort_mid_turn_resume_at_safe_boundary",
+            auth_profile_ref: None,
+            required_managed_worktree_id: None,
+            config_fingerprint: Some("cfg-1"),
+            version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION),
+            inherited_workflow_route: None,
+        });
+
+        assert_eq!(payload.get("routeReceipt"), None);
+    }
 
     #[tokio::test]
     async fn agent_stop_with_active_pending_interaction_keeps_snapshot_in_sync()
