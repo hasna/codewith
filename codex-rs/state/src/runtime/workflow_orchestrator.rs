@@ -23,8 +23,8 @@ use uuid::Uuid;
 const DEFAULT_WORKFLOW_LEASE_DURATION_MS: i64 = 60_000;
 const OPENROUTER_API_KEY_ENV_VAR: &str = "OPENROUTER_API_KEY";
 const OPENROUTER_PROVIDER_ID: &str = "openrouter";
-const VERIFIER_EXECUTOR_PENDING_REASON: &str = "deterministic verifier executor is not enabled";
-const VERIFIER_EXECUTOR_PENDING_REASON_CODE: &str = "verifier_executor_pending";
+const VERIFIER_READY_REASON: &str = "deterministic verifier is ready";
+const VERIFIER_READY_REASON_CODE: &str = "verifier_ready";
 const WORKFLOW_BRANCH_ADMITTED_REASON: &str = "workflow branch admitted";
 const WORKFLOW_BRANCH_ADMITTED_REASON_CODE: &str = "workflow_branch_admitted";
 const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON: &str =
@@ -888,8 +888,8 @@ WHERE step_run_id = ?
         "#,
     )
     .bind(crate::WorkflowRunStepStatus::WaitingVerifier.as_str())
-    .bind(VERIFIER_EXECUTOR_PENDING_REASON)
-    .bind(VERIFIER_EXECUTOR_PENDING_REASON_CODE)
+    .bind(VERIFIER_READY_REASON)
+    .bind(VERIFIER_READY_REASON_CODE)
     .bind(now_ms)
     .bind(branch.step_run_id.as_str())
     .execute(&mut **tx)
@@ -924,8 +924,6 @@ WHERE step_run_id = ?
         },
     )
     .await?;
-    block_pending_step_verifiers_in_tx(tx, run_id, branch.step_id.as_str(), owner_id, now_ms)
-        .await?;
     Ok(true)
 }
 
@@ -1612,8 +1610,8 @@ RETURNING step_run_id
             "#,
         )
         .bind(crate::WorkflowRunStepStatus::WaitingVerifier.as_str())
-        .bind(VERIFIER_EXECUTOR_PENDING_REASON)
-        .bind(VERIFIER_EXECUTOR_PENDING_REASON_CODE)
+        .bind(VERIFIER_READY_REASON)
+        .bind(VERIFIER_READY_REASON_CODE)
         .bind(now_ms)
         .bind(run_id)
         .bind(step_id.as_str())
@@ -1636,73 +1634,14 @@ RETURNING step_run_id
                 visibility: "internal",
                 payload: json!({
                     "stepId": step_id,
-                    "reasonCode": VERIFIER_EXECUTOR_PENDING_REASON_CODE,
+                    "reasonCode": VERIFIER_READY_REASON_CODE,
                 }),
                 now_ms,
             },
         )
         .await?;
-        changed |=
-            block_pending_step_verifiers_in_tx(tx, run_id, step_id, owner_id, now_ms).await?;
     }
     Ok(changed)
-}
-
-async fn block_pending_step_verifiers_in_tx(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-    run_id: &str,
-    step_id: &str,
-    owner_id: &str,
-    now_ms: i64,
-) -> anyhow::Result<bool> {
-    let rows = sqlx::query(
-        r#"
-UPDATE workflow_run_step_verifiers
-SET
-    status = ?,
-    status_reason = ?,
-    reason_code = ?,
-    updated_at_ms = ?
-WHERE run_id = ?
-  AND step_id = ?
-  AND status = 'pending'
-RETURNING verifier_run_id, verifier_id, verifier_type
-        "#,
-    )
-    .bind(crate::WorkflowRunStepVerifierStatus::Blocked.as_str())
-    .bind(VERIFIER_EXECUTOR_PENDING_REASON)
-    .bind(VERIFIER_EXECUTOR_PENDING_REASON_CODE)
-    .bind(now_ms)
-    .bind(run_id)
-    .bind(step_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    for row in &rows {
-        let verifier_run_id: String = row.try_get("verifier_run_id")?;
-        let verifier_id: String = row.try_get("verifier_id")?;
-        let verifier_type: String = row.try_get("verifier_type")?;
-        append_workflow_run_event_in_tx(
-            tx,
-            run_id,
-            WorkflowRunEventAppend {
-                event_type: "verifier_blocked",
-                actor_kind: "orchestrator",
-                actor_id: Some(owner_id.to_string()),
-                step_run_id: None,
-                verifier_run_id: Some(verifier_run_id),
-                visibility: "internal",
-                payload: json!({
-                    "stepId": step_id,
-                    "verifierId": verifier_id,
-                    "verifierType": verifier_type,
-                    "reasonCode": VERIFIER_EXECUTOR_PENDING_REASON_CODE,
-                }),
-                now_ms,
-            },
-        )
-        .await?;
-    }
-    Ok(!rows.is_empty())
 }
 
 async fn promote_verified_steps_in_tx(
@@ -2335,8 +2274,8 @@ fn workflow_run_reason_for_status(
 ) -> (Option<&'static str>, Option<&'static str>) {
     match status {
         crate::WorkflowRunStatus::Waiting => (
-            Some(VERIFIER_EXECUTOR_PENDING_REASON),
-            Some(VERIFIER_EXECUTOR_PENDING_REASON_CODE),
+            Some(VERIFIER_READY_REASON),
+            Some(VERIFIER_READY_REASON_CODE),
         ),
         crate::WorkflowRunStatus::Blocked => {
             (Some("workflow run is blocked"), Some("workflow_blocked"))
@@ -2834,7 +2773,7 @@ WHERE plan_id = ? AND key = ?
             .find(|verifier| verifier.step_id == "adversarial_scope")
             .expect("scope verifier should exist");
         assert_eq!(
-            crate::WorkflowRunStepVerifierStatus::Blocked,
+            crate::WorkflowRunStepVerifierStatus::Pending,
             scope_verifier.status
         );
         assert!(
@@ -3718,7 +3657,7 @@ WHERE run_id = ?
             reconciled.snapshot.steps[0].status
         );
         assert_eq!(
-            crate::WorkflowRunStepVerifierStatus::Blocked,
+            crate::WorkflowRunStepVerifierStatus::Pending,
             reconciled.snapshot.verifiers[0].status
         );
     }

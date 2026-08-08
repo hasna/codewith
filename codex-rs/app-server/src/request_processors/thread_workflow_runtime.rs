@@ -372,7 +372,7 @@ async fn execute_command_verifier(
             }
             Err(_) => {
                 timed_out = true;
-                child.kill().await?;
+                codex_utils_pty::process_group::kill_child_process_group(&mut child)?;
                 let _ = child.wait().await;
             }
         }

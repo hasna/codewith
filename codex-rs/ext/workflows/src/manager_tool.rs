@@ -624,6 +624,7 @@ mod tests {
             .await
             .expect("thread metadata should insert");
         let source_goal = state_db
+            .thread_goals()
             .insert_thread_goal(
                 thread_id,
                 "keep the source goal active",
@@ -687,6 +688,7 @@ mod tests {
         );
         assert_eq!(
             state_db
+                .thread_goals()
                 .get_thread_goal(thread_id)
                 .await
                 .expect("source goal should load"),
@@ -727,8 +729,8 @@ mod tests {
             "duplicate start must not queue duplicate workflow branches"
         );
         assert_eq!(
-            start["goalPlan"]["nodeCount"],
-            start["run"]["run"]["pendingStepCount"]
+            start["goalPlan"]["nodeCount"].as_u64(),
+            u64::try_from(persisted.steps.len()).ok()
         );
         let run_id = start["run"]["run"]["runId"]
             .as_str()
