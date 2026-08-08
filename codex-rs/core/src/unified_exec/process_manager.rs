@@ -177,7 +177,6 @@ struct PreparedProcessHandles {
     session: Option<Arc<crate::session::session::Session>>,
     network_approval: Option<DeferredNetworkApproval>,
     hook_command: String,
-    process_id: u32,
     tty: bool,
 }
 
@@ -709,7 +708,6 @@ impl UnifiedExecProcessManager {
             session,
             network_approval,
             hook_command,
-            process_id: _,
             tty,
             ..
         } = self
@@ -917,7 +915,6 @@ impl UnifiedExecProcessManager {
             session,
             network_approval: entry.network_approval.clone(),
             hook_command: entry.hook_command.clone(),
-            process_id: entry.process_handle.process_id(),
             tty: entry.tty,
         })
     }
