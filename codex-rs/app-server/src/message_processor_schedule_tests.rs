@@ -440,6 +440,38 @@ impl ScheduleHarness {
             })
             .await?
             .expect("schedule should claim for seeded failure");
+        let turn_id = claim
+            .run
+            .turn_id
+            .as_deref()
+            .expect("claimed occurrence should have a stable turn id");
+        self.state_db
+            .thread_schedules()
+            .enqueue_thread_schedule_run(codex_state::ThreadScheduleRunEnqueueParams {
+                schedule_id,
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                goal_id: None,
+                auth_profile_recorded: false,
+                auth_profile: None,
+                turn_input: "seeded app-server schedule failure",
+                now,
+            })
+            .await?
+            .expect("seeded failure occurrence should enqueue");
+        self.state_db
+            .thread_schedules()
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id,
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id,
+                goal_id: None,
+                now,
+                lease_duration: std::time::Duration::from_secs(300),
+            })
+            .await?
+            .expect("seeded failure occurrence should start");
         self.state_db
             .thread_schedules()
             .fail_thread_schedule_run(

@@ -247,6 +247,8 @@ pub use runtime::ThreadScheduleClaim;
 pub use runtime::ThreadScheduleCreateParams;
 pub use runtime::ThreadScheduleDueClaimParams;
 pub use runtime::ThreadScheduleNowClaimParams;
+pub use runtime::ThreadScheduleOccurrenceState;
+pub use runtime::ThreadScheduleRunEnqueueParams;
 pub use runtime::ThreadScheduleRunForGoalFinishParams;
 pub use runtime::ThreadScheduleRunLeaseParams;
 pub use runtime::ThreadScheduleRunStartParams;

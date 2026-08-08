@@ -918,6 +918,47 @@ mod tests {
             .expect("schedule should be created")
     }
 
+    async fn enqueue_and_start_claim(
+        runtime: &codex_state::StateRuntime,
+        claim: &codex_state::ThreadScheduleClaim,
+        now: DateTime<Utc>,
+    ) {
+        let turn_id = claim
+            .run
+            .turn_id
+            .as_deref()
+            .expect("claimed occurrence should have a stable turn id");
+        runtime
+            .thread_schedules()
+            .enqueue_thread_schedule_run(codex_state::ThreadScheduleRunEnqueueParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                goal_id: None,
+                auth_profile_recorded: false,
+                auth_profile: None,
+                turn_input: "schedule-control test input",
+                now,
+            })
+            .await
+            .expect("claimed occurrence should enqueue")
+            .expect("claimed occurrence should retain its lease");
+        runtime
+            .thread_schedules()
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id,
+                goal_id: None,
+                now,
+                lease_duration: std::time::Duration::from_secs(60),
+            })
+            .await
+            .expect("enqueued occurrence should start")
+            .expect("enqueued occurrence should retain its lease");
+    }
+
     #[tokio::test]
     async fn create_adds_one_time_schedule() {
         let (_temp_dir, runtime) = test_runtime().await;
@@ -1122,6 +1163,7 @@ mod tests {
             .await
             .expect("schedule claim should succeed")
             .expect("schedule should be due");
+        enqueue_and_start_claim(&runtime, &claim, at(/*seconds*/ 1_700_000_301)).await;
         runtime
             .thread_schedules()
             .fail_thread_schedule_run(

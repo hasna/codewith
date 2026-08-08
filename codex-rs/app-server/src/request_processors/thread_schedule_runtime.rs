@@ -13,6 +13,22 @@ use croner::Cron;
 use std::fmt::Write as _;
 use std::str::FromStr;
 
+mod occurrence;
+#[cfg(test)]
+use occurrence::PersistedScheduledTurnTerminal;
+#[cfg(test)]
+use occurrence::ScheduledTurnFinish;
+pub(super) use occurrence::default_thread_schedule_expires_at;
+pub(super) use occurrence::finish_scheduled_run_after_turn;
+use occurrence::next_thread_schedule_run_after_completion;
+pub(super) use occurrence::next_thread_schedule_run_at;
+pub(super) use occurrence::normalize_schedule_timezone;
+#[cfg(test)]
+use occurrence::persisted_scheduled_turn_terminal;
+pub(super) use occurrence::recover_scheduled_run_for_terminal_turn;
+#[cfg(test)]
+use occurrence::scheduled_turn_finish;
+
 const SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const SCHEDULE_LEASE_DURATION: Duration = Duration::from_secs(10 * 60);
 const SCHEDULE_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -171,281 +187,6 @@ impl ThreadScheduleRuntime {
             };
             self.execute_claim(state_db.clone(), claim).await;
         }
-    }
-
-    async fn execute_claim(
-        &self,
-        state_db: StateDbHandle,
-        claim: codex_state::ThreadScheduleClaim,
-    ) {
-        let thread_id = claim.schedule.thread_id;
-        self.emit_schedule_run_updated(thread_id, claim.run.clone())
-            .await;
-
-        let result = match self
-            .resolve_claim_prompt(&state_db, thread_id, &claim.schedule)
-            .await
-        {
-            Ok(prompt) => {
-                let scheduled_goal_objective =
-                    scheduled_goal_objective(&prompt).map(str::to_string);
-                self.submit_claimed_schedule(
-                    thread_id,
-                    state_db.clone(),
-                    &claim,
-                    prompt,
-                    scheduled_goal_objective,
-                )
-                .await
-            }
-            Err(error) => Err(ScheduleSubmitError {
-                error,
-                goal_id: None,
-            }),
-        };
-        if let Err(ScheduleSubmitError { error, goal_id }) = result {
-            warn!(
-                schedule_id = %claim.schedule.schedule_id,
-                thread_id = %thread_id,
-                "failed to submit scheduled thread run: {error}"
-            );
-            if let Some(wait) = error.downcast_ref::<ScheduleUsageProfileWait>() {
-                self.defer_claimed_run_for_usage_profile_wait(state_db, claim, wait.clone())
-                    .await;
-                return;
-            }
-            if let Some(deferral) = error.downcast_ref::<ScheduleRunDeferral>() {
-                self.defer_claimed_run(state_db, claim, deferral.clone())
-                    .await;
-                return;
-            }
-            self.fail_claimed_run_after_submit_error(
-                state_db,
-                claim,
-                goal_id,
-                schedule_submit_error(&error),
-            )
-            .await;
-        }
-    }
-
-    async fn submit_claimed_schedule(
-        &self,
-        thread_id: ThreadId,
-        state_db: StateDbHandle,
-        claim: &codex_state::ThreadScheduleClaim,
-        prompt: String,
-        scheduled_goal_objective: Option<String>,
-    ) -> Result<(), ScheduleSubmitError> {
-        let claim_auth_profile = self
-            .claim_auth_profile(&state_db, thread_id, &claim.schedule)
-            .await;
-        let broker_decision = super::usage_profile_broker::resolve_dispatch_auth_profile(
-            &self.auth_manager,
-            &self.config,
-            claim_auth_profile.clone(),
-        )
-        .await;
-        let claim_auth_profile = match schedule_auth_profile_after_broker_decision(
-            claim_auth_profile,
-            broker_decision,
-            self.config.usage_self_heal.reset_retry_buffer_secs,
-            Utc::now(),
-        ) {
-            Ok(resolved) => resolved,
-            Err(wait) => {
-                return Err(ScheduleSubmitError {
-                    error: anyhow::Error::new(wait),
-                    goal_id: None,
-                });
-            }
-        };
-        let thread = self
-            .load_or_resume_thread(thread_id, claim_auth_profile.clone())
-            .await
-            .map_err(|error| ScheduleSubmitError {
-                error,
-                goal_id: None,
-            })?;
-        self.ensure_schedule_listener(thread_id, thread.clone())
-            .await
-            .map_err(|error| ScheduleSubmitError {
-                error,
-                goal_id: None,
-            })?;
-        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
-        let listener_command_tx = {
-            let thread_state = thread_state.lock().await;
-            thread_state.listener_command_tx()
-        };
-        let (turn_prompt, scheduled_goal_id) =
-            if let Some(objective) = scheduled_goal_objective.as_deref() {
-                let scheduled_goal_id = self
-                    .prepare_scheduled_goal(
-                        thread_id,
-                        &state_db,
-                        objective,
-                        listener_command_tx.clone(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        let goal_id = error
-                            .downcast_ref::<ScheduledGoalHeld>()
-                            .map(|held| held.goal_id.clone());
-                        ScheduleSubmitError { error, goal_id }
-                    })?;
-                (
-                    scheduled_goal_thread_prompt(
-                        objective,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                        &claim.schedule,
-                    ),
-                    Some(scheduled_goal_id),
-                )
-            } else {
-                (
-                    scheduled_thread_prompt(
-                        &prompt,
-                        &claim.schedule,
-                        claim.run.run_id.as_str(),
-                        claim.run.scheduled_for,
-                    ),
-                    None,
-                )
-            };
-        let thread_settings = scheduled_thread_settings_from_snapshot(
-            thread.config_snapshot().await,
-            claim_auth_profile,
-        );
-        let turn_id = Uuid::now_v7().to_string();
-
-        let run_start = state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: claim.schedule.schedule_id.as_str(),
-                run_id: claim.run.run_id.as_str(),
-                lease_id: claim.run.lease_id.as_str(),
-                turn_id: turn_id.as_str(),
-                goal_id: scheduled_goal_id.as_deref(),
-                now: Utc::now(),
-                lease_duration: SCHEDULE_LEASE_DURATION,
-            })
-            .await;
-        let run = match run_start {
-            Ok(Some(run)) => run,
-            Ok(None) => {
-                return Err(ScheduleSubmitError {
-                    error: anyhow::anyhow!(
-                        "claimed schedule run {} no longer owns the current unexpired lease",
-                        claim.run.run_id
-                    ),
-                    goal_id: scheduled_goal_id,
-                });
-            }
-            Err(error) => {
-                return Err(ScheduleSubmitError {
-                    error,
-                    goal_id: scheduled_goal_id,
-                });
-            }
-        };
-        let ownership_lost = match self.start_lease_heartbeat(state_db.clone(), &run).await {
-            Ok(Some(ownership_lost)) => ownership_lost,
-            Ok(None) => {
-                return Err(ScheduleSubmitError {
-                    error: anyhow::anyhow!(
-                        "claimed schedule run {} lost lease ownership before dispatch readiness",
-                        claim.run.run_id
-                    ),
-                    goal_id: scheduled_goal_id,
-                });
-            }
-            Err(error) => {
-                return Err(ScheduleSubmitError {
-                    error,
-                    goal_id: scheduled_goal_id,
-                });
-            }
-        };
-        {
-            let mut thread_state = thread_state.lock().await;
-            thread_state.track_scheduled_run(
-                turn_id.clone(),
-                crate::thread_state::ScheduledThreadScheduleRun {
-                    schedule_id: run.schedule_id.clone(),
-                    run_id: run.run_id.clone(),
-                    lease_id: run.lease_id.clone(),
-                    goal_id: run.goal_id.clone(),
-                    state_db: state_db.clone(),
-                },
-            );
-        }
-        let start_result = match submit_scheduled_turn_if_owned(
-            &state_db,
-            codex_state::ThreadScheduleRunLeaseParams {
-                schedule_id: run.schedule_id.as_str(),
-                run_id: run.run_id.as_str(),
-                lease_id: run.lease_id.as_str(),
-                now: Utc::now(),
-                lease_duration: SCHEDULE_LEASE_DURATION,
-            },
-            &ownership_lost,
-            thread.try_start_user_input_turn_if_idle(
-                turn_id.clone(),
-                vec![CoreInputItem::Text {
-                    text: turn_prompt,
-                    text_elements: Vec::new(),
-                }],
-                Default::default(),
-                thread_settings,
-            ),
-        )
-        .await
-        {
-            Ok(Some(start_result)) => start_result,
-            Ok(None) => {
-                thread_state
-                    .lock()
-                    .await
-                    .take_scheduled_run(turn_id.as_str());
-                return Err(ScheduleSubmitError {
-                    error: anyhow::anyhow!(
-                        "claimed schedule run {} lost lease ownership before turn submission",
-                        claim.run.run_id
-                    ),
-                    goal_id: scheduled_goal_id,
-                });
-            }
-            Err(error) => {
-                thread_state
-                    .lock()
-                    .await
-                    .take_scheduled_run(turn_id.as_str());
-                return Err(ScheduleSubmitError {
-                    error,
-                    goal_id: scheduled_goal_id,
-                });
-            }
-        };
-        if let Err(err) = start_result {
-            thread_state
-                .lock()
-                .await
-                .take_scheduled_run(turn_id.as_str());
-            if let Some(deferral) = schedule_deferral_for_idle_rejection(&err, Utc::now()) {
-                return Err(ScheduleSubmitError {
-                    error: anyhow::Error::new(deferral),
-                    goal_id: scheduled_goal_id,
-                });
-            }
-            return Err(ScheduleSubmitError {
-                error: anyhow::anyhow!("failed to start scheduled prompt: {err}"),
-                goal_id: scheduled_goal_id,
-            });
-        }
-        self.emit_schedule_run_updated(thread_id, run).await;
-        Ok(())
     }
 
     async fn prepare_scheduled_goal(
@@ -727,6 +468,62 @@ impl ThreadScheduleRuntime {
         goal_id: Option<String>,
         error: String,
     ) {
+        let completed_at = Utc::now();
+        match finish_scheduled_run_state(
+            &state_db,
+            &claim.schedule.schedule_id,
+            &claim.run.run_id,
+            &claim.run.lease_id,
+            goal_id.as_deref(),
+            Some(error.clone()),
+            completed_at,
+        )
+        .await
+        {
+            Ok(Some((schedule, run))) => {
+                self.emit_schedule_updated(claim.schedule.thread_id, schedule)
+                    .await;
+                self.emit_schedule_run_updated(claim.schedule.thread_id, run)
+                    .await;
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(
+                    schedule_id = %claim.schedule.schedule_id,
+                    "failed to finish started scheduled occurrence after submit error: {err}"
+                );
+                return;
+            }
+        }
+        if matches!(
+            claim.occurrence_state,
+            codex_state::ThreadScheduleOccurrenceState::WaitingIdle
+                | codex_state::ThreadScheduleOccurrenceState::Enqueued
+        ) {
+            match state_db
+                .thread_schedules()
+                .fail_thread_schedule_occurrence_before_start(
+                    claim.schedule.schedule_id.as_str(),
+                    claim.run.run_id.as_str(),
+                    claim.run.lease_id.as_str(),
+                    completed_at,
+                    goal_id.as_deref(),
+                    error.clone(),
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(err) => {
+                    warn!(
+                        schedule_id = %claim.schedule.schedule_id,
+                        "failed to persist pre-start scheduled occurrence failure: {err}"
+                    );
+                    return;
+                }
+            }
+        }
         match finish_scheduled_run_state(
             &state_db,
             &claim.schedule.schedule_id,
@@ -734,7 +531,7 @@ impl ThreadScheduleRuntime {
             &claim.run.lease_id,
             goal_id.as_deref(),
             Some(error),
-            Utc::now(),
+            completed_at,
         )
         .await
         {
@@ -820,6 +617,7 @@ impl ThreadScheduleRuntime {
             state_db,
             claim,
             ScheduleRunDeferral {
+                kind: ScheduleRunDeferralKind::Capacity,
                 retry_at: wait.retry_at,
                 error: wait.to_string(),
             },
@@ -833,6 +631,21 @@ impl ThreadScheduleRuntime {
         claim: codex_state::ThreadScheduleClaim,
         deferral: ScheduleRunDeferral,
     ) {
+        if deferral.kind == ScheduleRunDeferralKind::IdleAdmission {
+            match wait_scheduled_run_for_idle_state(&state_db, &claim, &deferral, Utc::now()).await
+            {
+                Ok(Some(schedule)) => {
+                    self.emit_schedule_updated(claim.schedule.thread_id, schedule)
+                        .await;
+                }
+                Ok(None) => {}
+                Err(err) => warn!(
+                    schedule_id = %claim.schedule.schedule_id,
+                    "failed to preserve scheduled occurrence while waiting for idle: {err}"
+                ),
+            }
+            return;
+        }
         match defer_scheduled_run_state(&state_db, &claim, &deferral, Utc::now()).await {
             Ok(Some((schedule, run))) => {
                 self.emit_schedule_updated(claim.schedule.thread_id, schedule)
@@ -879,6 +692,7 @@ impl ThreadScheduleRuntime {
     }
 }
 
+#[cfg(test)]
 async fn submit_scheduled_turn_if_owned<T>(
     state_db: &StateDbHandle,
     lease: codex_state::ThreadScheduleRunLeaseParams<'_>,
@@ -960,14 +774,17 @@ fn scheduled_goal_objective(prompt: &str) -> Option<&str> {
 }
 
 fn scheduled_goal_is_held(goal: &codex_state::ThreadGoal, objective: &str) -> bool {
-    goal.objective == objective
-        && matches!(
-            goal.status,
-            codex_state::ThreadGoalStatus::Paused
-                | codex_state::ThreadGoalStatus::Blocked
-                | codex_state::ThreadGoalStatus::UsageLimited
-                | codex_state::ThreadGoalStatus::BudgetLimited
-        )
+    goal.objective == objective && scheduled_goal_status_is_held(goal.status)
+}
+
+fn scheduled_goal_status_is_held(status: codex_state::ThreadGoalStatus) -> bool {
+    matches!(
+        status,
+        codex_state::ThreadGoalStatus::Paused
+            | codex_state::ThreadGoalStatus::Blocked
+            | codex_state::ThreadGoalStatus::UsageLimited
+            | codex_state::ThreadGoalStatus::BudgetLimited
+    )
 }
 
 fn scheduled_goal_thread_prompt(
@@ -1011,195 +828,6 @@ fn scheduled_loop_nesting_guidance(schedule: &codex_state::ThreadSchedule) -> St
     }
 }
 
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-enum ScheduledTurnFinish {
-    Complete,
-    Failed(String),
-}
-
-fn scheduled_turn_finish(event: &EventMsg) -> Option<ScheduledTurnFinish> {
-    match event {
-        EventMsg::TurnComplete(completed)
-            if completed
-                .last_agent_message
-                .as_deref()
-                .is_some_and(|message| !message.trim().is_empty()) =>
-        {
-            Some(ScheduledTurnFinish::Complete)
-        }
-        EventMsg::TurnComplete(_) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
-            "scheduled turn completed without a final assistant message",
-        ))),
-        EventMsg::TurnAborted(aborted) => Some(ScheduledTurnFinish::Failed(schedule_run_error(
-            format!("scheduled turn aborted: {:?}", aborted.reason),
-        ))),
-        EventMsg::Error(error) => Some(ScheduledTurnFinish::Failed(schedule_turn_event_error(
-            error,
-        ))),
-        _ => None,
-    }
-}
-
-pub(super) fn default_thread_schedule_expires_at(now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    now.checked_add_signed(ChronoDuration::days(DEFAULT_SCHEDULE_EXPIRATION_DAYS))
-}
-
-pub(super) fn next_thread_schedule_run_at(
-    schedule: &codex_state::ThreadScheduleSpec,
-    timezone: &str,
-    after: DateTime<Utc>,
-) -> anyhow::Result<Option<DateTime<Utc>>> {
-    let next = match schedule {
-        codex_state::ThreadScheduleSpec::Once => None,
-        codex_state::ThreadScheduleSpec::Dynamic => {
-            after.checked_add_signed(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
-        }
-        codex_state::ThreadScheduleSpec::Interval(interval) => {
-            let amount = interval.amount;
-            let duration = match interval.unit {
-                codex_state::ThreadScheduleIntervalUnit::Minutes => ChronoDuration::minutes(amount),
-                codex_state::ThreadScheduleIntervalUnit::Hours => ChronoDuration::hours(amount),
-                codex_state::ThreadScheduleIntervalUnit::Days => ChronoDuration::days(amount),
-            };
-            after.checked_add_signed(duration)
-        }
-        codex_state::ThreadScheduleSpec::Cron { expression } => {
-            let timezone = parse_schedule_timezone(timezone)?;
-            let cron = Cron::from_str(expression)
-                .map_err(|err| anyhow::anyhow!("invalid cron expression `{expression}`: {err}"))?;
-            let local_after = after.with_timezone(&timezone);
-            let next = cron.find_next_occurrence(&local_after, /*inclusive*/ false)?;
-            Some(next.with_timezone(&Utc))
-        }
-    };
-    Ok(next)
-}
-
-fn next_thread_schedule_run_after_completion(
-    schedule: &codex_state::ThreadScheduleSpec,
-    timezone: &str,
-    scheduled_for: Option<DateTime<Utc>>,
-    completed_at: DateTime<Utc>,
-) -> anyhow::Result<Option<DateTime<Utc>>> {
-    let interval_duration = match schedule {
-        codex_state::ThreadScheduleSpec::Dynamic => {
-            Some(ChronoDuration::minutes(DEFAULT_DYNAMIC_INTERVAL_MINUTES))
-        }
-        codex_state::ThreadScheduleSpec::Interval(interval) => {
-            let amount = interval.amount;
-            Some(match interval.unit {
-                codex_state::ThreadScheduleIntervalUnit::Minutes => ChronoDuration::minutes(amount),
-                codex_state::ThreadScheduleIntervalUnit::Hours => ChronoDuration::hours(amount),
-                codex_state::ThreadScheduleIntervalUnit::Days => ChronoDuration::days(amount),
-            })
-        }
-        codex_state::ThreadScheduleSpec::Once | codex_state::ThreadScheduleSpec::Cron { .. } => {
-            None
-        }
-    };
-
-    if let (Some(interval_duration), Some(scheduled_for)) = (interval_duration, scheduled_for) {
-        let Some(next_run_at) = scheduled_for.checked_add_signed(interval_duration) else {
-            return Ok(None);
-        };
-        if next_run_at > completed_at {
-            return Ok(Some(next_run_at));
-        }
-        let duration_ms = interval_duration.num_milliseconds();
-        if duration_ms <= 0 {
-            return Ok(None);
-        }
-        let elapsed_ms = completed_at
-            .signed_duration_since(scheduled_for)
-            .num_milliseconds();
-        let periods_elapsed = elapsed_ms.div_euclid(duration_ms).saturating_add(1);
-        return Ok(duration_ms
-            .checked_mul(periods_elapsed)
-            .and_then(|advance_ms| {
-                scheduled_for.checked_add_signed(ChronoDuration::milliseconds(advance_ms))
-            }));
-    }
-
-    next_thread_schedule_run_at(schedule, timezone, completed_at)
-}
-
-pub(super) fn normalize_schedule_timezone(timezone: &str) -> anyhow::Result<String> {
-    parse_schedule_timezone(timezone).map(|timezone| timezone.name().to_string())
-}
-
-pub(super) async fn finish_scheduled_run_after_turn(
-    thread_id: ThreadId,
-    scheduled_run: crate::thread_state::ScheduledThreadScheduleRun,
-    event: &EventMsg,
-    turn_error: Option<codex_app_server_protocol::TurnError>,
-    outgoing: &Arc<OutgoingMessageSender>,
-) {
-    let completed_at = Utc::now();
-    let error = match (scheduled_turn_finish(event), turn_error) {
-        (Some(_), Some(error)) => Some(schedule_turn_error(&error)),
-        (Some(ScheduledTurnFinish::Complete), None) => None,
-        (Some(ScheduledTurnFinish::Failed(error)), None) => Some(error),
-        (None, _) => return,
-    };
-    match finish_scheduled_run_state(
-        &scheduled_run.state_db,
-        scheduled_run.schedule_id.as_str(),
-        scheduled_run.run_id.as_str(),
-        scheduled_run.lease_id.as_str(),
-        scheduled_run.goal_id.as_deref(),
-        error,
-        completed_at,
-    )
-    .await
-    {
-        Ok(Some((schedule, run))) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadScheduleUpdated(
-                    ThreadScheduleUpdatedNotification {
-                        thread_id: thread_id.to_string(),
-                        schedule: api_thread_schedule_from_state(schedule),
-                    },
-                ))
-                .await;
-            outgoing
-                .send_server_notification(ServerNotification::ThreadScheduleRunUpdated(
-                    ThreadScheduleRunUpdatedNotification {
-                        thread_id: thread_id.to_string(),
-                        run: api_thread_schedule_run_from_state(run),
-                    },
-                ))
-                .await;
-        }
-        Ok(None) => {}
-        Err(err) => warn!(
-            schedule_id = %scheduled_run.schedule_id,
-            thread_id = %thread_id,
-            "failed to finish scheduled thread run: {err}"
-        ),
-    }
-}
-
-pub(super) async fn recover_scheduled_run_for_terminal_turn(
-    state_db: &StateDbHandle,
-    thread_id: ThreadId,
-    turn_id: &str,
-) -> anyhow::Result<Option<crate::thread_state::ScheduledThreadScheduleRun>> {
-    let Some(run) = state_db
-        .thread_schedules()
-        .get_running_thread_schedule_run_for_turn(thread_id, turn_id)
-        .await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(crate::thread_state::ScheduledThreadScheduleRun {
-        schedule_id: run.schedule_id,
-        run_id: run.run_id,
-        lease_id: run.lease_id,
-        goal_id: run.goal_id,
-        state_db: state_db.clone(),
-    }))
-}
-
 /// Maximum consecutive failed runs before a recurring schedule stops
 /// re-arming itself (circuit breaker). The streak resets after a success.
 const MAX_CONSECUTIVE_SCHEDULE_FAILURES: i64 = 10;
@@ -1221,11 +849,6 @@ fn schedule_failure_backoff_run_at(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScheduleUsageProfileWait {
     retry_at: DateTime<Utc>,
-}
-
-struct ScheduleSubmitError {
-    error: anyhow::Error,
-    goal_id: Option<String>,
 }
 
 impl std::fmt::Display for ScheduleUsageProfileWait {
@@ -1277,8 +900,15 @@ impl std::error::Error for ScheduledGoalHeld {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScheduleRunDeferral {
+    kind: ScheduleRunDeferralKind,
     retry_at: DateTime<Utc>,
     error: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduleRunDeferralKind {
+    IdleAdmission,
+    Capacity,
 }
 
 impl std::fmt::Display for ScheduleRunDeferral {
@@ -1309,6 +939,7 @@ fn schedule_deferral_for_idle_rejection(
         codex_core::TryStartTurnIfIdleRejectionReason::PlanMode => return None,
     };
     Some(ScheduleRunDeferral {
+        kind: ScheduleRunDeferralKind::IdleAdmission,
         retry_at: now + ChronoDuration::seconds(SCHEDULE_IDLE_RETRY_DELAY_SECONDS),
         error,
     })
@@ -1497,12 +1128,38 @@ async fn defer_scheduled_run_for_usage_profile_wait_state(
         state_db,
         claim,
         &ScheduleRunDeferral {
+            kind: ScheduleRunDeferralKind::Capacity,
             retry_at: wait.retry_at,
             error: wait.to_string(),
         },
         completed_at,
     )
     .await
+}
+
+async fn wait_scheduled_run_for_idle_state(
+    state_db: &StateDbHandle,
+    claim: &codex_state::ThreadScheduleClaim,
+    deferral: &ScheduleRunDeferral,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Option<codex_state::ThreadSchedule>> {
+    let updated = state_db
+        .thread_schedules()
+        .wait_thread_schedule_run_for_idle(
+            claim.schedule.schedule_id.as_str(),
+            claim.run.run_id.as_str(),
+            claim.run.lease_id.as_str(),
+            deferral.retry_at,
+            now,
+        )
+        .await?;
+    if !updated {
+        return Ok(None);
+    }
+    state_db
+        .thread_schedules()
+        .get_thread_schedule(&claim.schedule.schedule_id)
+        .await
 }
 
 async fn defer_scheduled_run_state(
@@ -2053,8 +1710,11 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TurnAbortReason;
+    use codex_protocol::protocol::TurnAbortedEvent;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnContextItem;
+    use codex_protocol::protocol::TurnStartedEvent;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
     use std::sync::atomic::AtomicBool;
@@ -2062,6 +1722,49 @@ mod tests {
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp")
+    }
+
+    async fn enqueue_and_start_claim(
+        state_db: &codex_state::StateRuntime,
+        claim: &codex_state::ThreadScheduleClaim,
+        goal_id: Option<&str>,
+        now: DateTime<Utc>,
+        lease_duration: Duration,
+    ) -> codex_state::ThreadScheduleRun {
+        let turn_id = claim
+            .run
+            .turn_id
+            .as_deref()
+            .expect("claimed occurrence should have a stable turn id");
+        state_db
+            .thread_schedules()
+            .enqueue_thread_schedule_run(codex_state::ThreadScheduleRunEnqueueParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                goal_id,
+                auth_profile_recorded: false,
+                auth_profile: None,
+                turn_input: "app-server schedule test input",
+                now,
+            })
+            .await
+            .expect("claimed occurrence should enqueue")
+            .expect("claimed occurrence should retain its lease");
+        state_db
+            .thread_schedules()
+            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
+                schedule_id: claim.schedule.schedule_id.as_str(),
+                run_id: claim.run.run_id.as_str(),
+                lease_id: claim.run.lease_id.as_str(),
+                turn_id,
+                goal_id,
+                now,
+                lease_duration,
+            })
+            .await
+            .expect("enqueued occurrence should start")
+            .expect("enqueued occurrence should retain its lease")
     }
 
     fn prompt_test_schedule(nesting_depth: i64) -> codex_state::ThreadSchedule {
@@ -2159,6 +1862,27 @@ mod tests {
                 }),
             ],
             rollout_path: None,
+        })
+    }
+
+    fn resumed_history_with_turn_events(
+        thread_id: ThreadId,
+        events: impl IntoIterator<Item = EventMsg>,
+    ) -> InitialHistory {
+        InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: events.into_iter().map(RolloutItem::EventMsg).collect(),
+            rollout_path: None,
+        })
+    }
+
+    fn turn_started(turn_id: &str, started_at: i64) -> EventMsg {
+        EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: Some(started_at),
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
         })
     }
 
@@ -2709,6 +2433,7 @@ mod tests {
 
         assert_eq!(
             Some(ScheduleRunDeferral {
+                kind: ScheduleRunDeferralKind::IdleAdmission,
                 retry_at: at(/*seconds*/ 1_700_000_030),
                 error: "scheduled thread is busy".to_string(),
             }),
@@ -2721,6 +2446,7 @@ mod tests {
         );
         assert_eq!(
             Some(ScheduleRunDeferral {
+                kind: ScheduleRunDeferralKind::IdleAdmission,
                 retry_at: at(/*seconds*/ 1_700_000_030),
                 error: "scheduled thread has pending mailbox trigger-turn work".to_string(),
             }),
@@ -2742,88 +2468,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn idle_rejection_deferral_rearms_without_incrementing_failure_count() {
-        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-        let state_db = codex_state::StateRuntime::init(
-            temp_dir.path().to_path_buf(),
-            "fallback-provider".to_string(),
-        )
-        .await
-        .expect("state db should initialize");
-        let thread_id = ThreadId::new();
-        let mut builder = ThreadMetadataBuilder::new(
-            thread_id,
-            temp_dir.path().join("thread.jsonl"),
-            at(/*seconds*/ 1_700_000_000),
-            SessionSource::Cli,
-        );
-        builder.cwd = temp_dir.path().join("workspace");
-        state_db
-            .upsert_thread(&builder.build("fallback-provider"))
-            .await
-            .expect("thread metadata should persist");
-        let now = at(/*seconds*/ 1_700_000_000);
-        let schedule = state_db
-            .thread_schedules()
-            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt: "wait until the thread is idle".to_string(),
-                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule: codex_state::ThreadScheduleSpec::Interval(
-                    codex_state::ThreadScheduleInterval {
-                        amount: 5,
-                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
-                    },
-                ),
-                timezone: "UTC".to_string(),
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at: Some(now),
-                expires_at: None,
-            })
-            .await
-            .expect("schedule should create");
-        let claim = state_db
-            .thread_schedules()
-            .claim_due_thread_schedule(now, "lease-busy", Duration::from_secs(300))
-            .await
-            .expect("claim should succeed")
-            .expect("schedule should claim");
-        let completed_at = now + chrono::Duration::seconds(5);
-        let deferral = ScheduleRunDeferral {
-            retry_at: now + chrono::Duration::seconds(SCHEDULE_IDLE_RETRY_DELAY_SECONDS),
-            error: "scheduled thread is busy".to_string(),
-        };
-
-        let (deferred_schedule, deferred_run) =
-            defer_scheduled_run_state(&state_db, &claim, &deferral, completed_at)
-                .await
-                .expect("idle rejection should defer")
-                .expect("deferred rows should load");
-
-        assert_eq!(
-            codex_state::ThreadSchedule {
-                next_run_at: Some(deferral.retry_at),
-                last_run_at: Some(completed_at),
-                failure_count: 0,
-                lease_id: None,
-                lease_expires_at: None,
-                updated_at: deferred_schedule.updated_at,
-                ..schedule
-            },
-            deferred_schedule
-        );
-        assert_eq!(
-            codex_state::ThreadScheduleRun {
-                status: codex_state::ThreadScheduleRunStatus::Deferred,
-                turn_id: None,
-                error: Some(deferral.error),
-                completed_at: Some(completed_at),
-                ..claim.run
-            },
-            deferred_run
-        );
-    }
+    mod occurrence_tests;
 
     #[tokio::test]
     async fn usage_profile_wait_defers_claim_without_incrementing_failure_count() {
@@ -2986,6 +2631,14 @@ mod tests {
             .expect("retry should claim deferred schedule");
         assert_eq!(Some(wait.retry_at), retry_claim.run.scheduled_for);
         let completed_at = wait.retry_at + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &retry_claim,
+            /*goal_id*/ None,
+            wait.retry_at,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -3069,6 +2722,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            /*goal_id*/ None,
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -3164,6 +2825,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            Some(goal.goal_id.as_str()),
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -3255,20 +2924,19 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
-        state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: schedule.schedule_id.as_str(),
-                run_id: claim.run.run_id.as_str(),
-                lease_id: claim.run.lease_id.as_str(),
-                turn_id: "turn-after-restart",
-                goal_id: Some(goal.goal_id.as_str()),
-                now: scheduled_for,
-                lease_duration: Duration::from_secs(300),
-            })
-            .await
-            .expect("run start should persist")
-            .expect("run should still exist");
+        let turn_id = claim
+            .run
+            .turn_id
+            .clone()
+            .expect("claimed occurrence should have a stable turn id");
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            Some(goal.goal_id.as_str()),
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
         drop(state_db);
 
         let reopened = codex_state::StateRuntime::init(
@@ -3278,7 +2946,7 @@ mod tests {
         .await
         .expect("state db should reopen");
         let recovered =
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart")
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, turn_id.as_str())
                 .await
                 .expect("run recovery should succeed")
                 .expect("running schedule should recover after restart");
@@ -3307,7 +2975,7 @@ mod tests {
         );
         assert_eq!(Some(completed_at), finished.1.completed_at);
         assert!(
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart",)
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, turn_id.as_str())
                 .await
                 .expect("completed run lookup should succeed")
                 .is_none()
@@ -3333,156 +3001,6 @@ mod tests {
                 .is_none(),
             "terminal recovery must not leave a lease-generated duplicate run"
         );
-    }
-
-    #[tokio::test]
-    async fn stale_started_run_cannot_submit_after_reaper_replacement() {
-        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
-        let state_db = codex_state::StateRuntime::init(
-            temp_dir.path().to_path_buf(),
-            "fallback-provider".to_string(),
-        )
-        .await
-        .expect("state db should initialize");
-        let thread_id = ThreadId::new();
-        let mut builder = ThreadMetadataBuilder::new(
-            thread_id,
-            temp_dir.path().join("thread.jsonl"),
-            at(/*seconds*/ 1_700_000_000),
-            SessionSource::Cli,
-        );
-        builder.cwd = temp_dir.path().join("workspace");
-        state_db
-            .upsert_thread(&builder.build("fallback-provider"))
-            .await
-            .expect("thread metadata should persist");
-        let now = at(/*seconds*/ 1_700_000_000);
-        let schedule = state_db
-            .thread_schedules()
-            .create_thread_schedule(codex_state::ThreadScheduleCreateParams {
-                thread_id,
-                prompt: "never submit stale work".to_string(),
-                prompt_source: codex_state::ThreadSchedulePromptSource::Inline,
-                schedule: codex_state::ThreadScheduleSpec::Interval(
-                    codex_state::ThreadScheduleInterval {
-                        amount: 1,
-                        unit: codex_state::ThreadScheduleIntervalUnit::Minutes,
-                    },
-                ),
-                timezone: "UTC".to_string(),
-                status: codex_state::ThreadScheduleStatus::Active,
-                next_run_at: Some(now),
-                expires_at: None,
-            })
-            .await
-            .expect("schedule should create");
-        let claim = state_db
-            .thread_schedules()
-            .claim_due_thread_schedule(now, "lease-suspended", Duration::from_secs(30))
-            .await
-            .expect("claim should succeed")
-            .expect("schedule should claim");
-        state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: schedule.schedule_id.as_str(),
-                run_id: claim.run.run_id.as_str(),
-                lease_id: claim.run.lease_id.as_str(),
-                turn_id: "turn-suspended",
-                goal_id: None,
-                now,
-                lease_duration: Duration::from_secs(30),
-            })
-            .await
-            .expect("run start should persist")
-            .expect("run should still own the lease before suspension");
-
-        let contender = codex_state::StateRuntime::init(
-            temp_dir.path().to_path_buf(),
-            "fallback-provider".to_string(),
-        )
-        .await
-        .expect("contending state db should initialize");
-        let resumed_at = now + chrono::Duration::seconds(31);
-        let replacement = contender
-            .thread_schedules()
-            .claim_due_thread_schedule(resumed_at, "lease-replacement", Duration::from_secs(30))
-            .await
-            .expect("expired lease reaper should not error")
-            .expect("expired started run should be replaced");
-        let submitted = Arc::new(AtomicBool::new(false));
-        let submission_observer = Arc::clone(&submitted);
-        let ownership_lost = CancellationToken::new();
-
-        let submission = submit_scheduled_turn_if_owned(
-            &state_db,
-            codex_state::ThreadScheduleRunLeaseParams {
-                schedule_id: schedule.schedule_id.as_str(),
-                run_id: claim.run.run_id.as_str(),
-                lease_id: claim.run.lease_id.as_str(),
-                now: resumed_at,
-                lease_duration: Duration::from_secs(30),
-            },
-            &ownership_lost,
-            async move {
-                submission_observer.store(true, Ordering::SeqCst);
-            },
-        )
-        .await
-        .expect("stale dispatch validation should not error");
-
-        assert_eq!(None, submission);
-        assert!(!submitted.load(Ordering::SeqCst));
-        assert_eq!(
-            codex_state::ThreadScheduleRunStatus::Failed,
-            state_db
-                .thread_schedules()
-                .get_thread_schedule_run(claim.run.run_id.as_str())
-                .await
-                .expect("old run should load")
-                .expect("old run should exist")
-                .status
-        );
-        assert_eq!(
-            codex_state::ThreadScheduleRunStatus::Leased,
-            replacement.run.status
-        );
-
-        let replacement_started_at = resumed_at + chrono::Duration::seconds(1);
-        state_db
-            .thread_schedules()
-            .mark_thread_schedule_run_started(codex_state::ThreadScheduleRunStartParams {
-                schedule_id: schedule.schedule_id.as_str(),
-                run_id: replacement.run.run_id.as_str(),
-                lease_id: replacement.run.lease_id.as_str(),
-                turn_id: "turn-replacement",
-                goal_id: None,
-                now: replacement_started_at,
-                lease_duration: Duration::from_secs(30),
-            })
-            .await
-            .expect("replacement start should persist")
-            .expect("replacement should start");
-        ownership_lost.cancel();
-        let cancelled_submission_observer = Arc::clone(&submitted);
-        let cancelled_submission = submit_scheduled_turn_if_owned(
-            &state_db,
-            codex_state::ThreadScheduleRunLeaseParams {
-                schedule_id: schedule.schedule_id.as_str(),
-                run_id: replacement.run.run_id.as_str(),
-                lease_id: replacement.run.lease_id.as_str(),
-                now: replacement_started_at + chrono::Duration::seconds(1),
-                lease_duration: Duration::from_secs(30),
-            },
-            &ownership_lost,
-            async move {
-                cancelled_submission_observer.store(true, Ordering::SeqCst);
-            },
-        )
-        .await
-        .expect("cancelled dispatch validation should not error");
-        assert_eq!(None, cancelled_submission);
-        assert!(!submitted.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -3544,6 +3062,14 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            Some(goal.goal_id.as_str()),
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -3632,6 +3158,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            /*goal_id*/ None,
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -4003,37 +3537,6 @@ mod tests {
         );
         assert!(once_prompt.contains("cannot be used as a nested-loop parent"));
         assert!(!once_prompt.contains("parent_schedule_id set to schedule-123"));
-    }
-
-    #[test]
-    fn scheduled_turn_without_agent_message_fails() {
-        let finish = scheduled_turn_finish(&EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: None,
-            completed_at: None,
-            duration_ms: None,
-            time_to_first_token_ms: None,
-        }));
-
-        assert_eq!(
-            Some(ScheduledTurnFinish::Failed(
-                "scheduled turn completed without a final assistant message".to_string()
-            )),
-            finish
-        );
-    }
-
-    #[test]
-    fn scheduled_turn_with_agent_message_completes() {
-        let finish = scheduled_turn_finish(&EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id: "turn-1".to_string(),
-            last_agent_message: Some("done".to_string()),
-            completed_at: None,
-            duration_ms: None,
-            time_to_first_token_ms: None,
-        }));
-
-        assert_eq!(Some(ScheduledTurnFinish::Complete), finish);
     }
 
     #[test]
