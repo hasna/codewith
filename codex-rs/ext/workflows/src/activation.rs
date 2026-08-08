@@ -368,7 +368,13 @@ impl WorkflowActivationService {
                     "workflow verifier definition is invalid: {err}"
                 );
                 return self
-                    .record_failed_verifier_setup(run_id, generation, claimed, started, None)
+                    .record_failed_verifier_setup(
+                        run_id,
+                        generation,
+                        claimed,
+                        started,
+                        /*expected_exit_code*/ None,
+                    )
                     .await;
             }
         };
@@ -484,7 +490,7 @@ impl WorkflowActivationService {
                 std::slice::from_ref(&execution_root),
                 &config.codex_linux_sandbox_exe,
                 config.use_legacy_landlock,
-                None,
+                /*stdout_stream*/ None,
             )
             .await;
             let output = match output {

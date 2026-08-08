@@ -566,7 +566,6 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&config),
             state_db.clone(),
-            workflow_activation_service.clone(),
         );
         thread_monitor_runtime.start();
         let thread_monitor_processor = ThreadMonitorRequestProcessor::new(
