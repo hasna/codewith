@@ -34,6 +34,7 @@ pub(super) struct CodeModeDispatchBroker {
 struct TrackedProcess {
     session: Weak<crate::session::session::Session>,
     process_id: u32,
+    terminate_on_cell_cancel: bool,
 }
 
 impl CodeModeDispatchBroker {
@@ -65,18 +66,25 @@ impl CodeModeDispatchBroker {
         cell_id: CellId,
         session: Weak<crate::session::session::Session>,
         process_id: u32,
+        terminate_on_cell_cancel: bool,
     ) {
         let mut tracked_processes = match self.tracked_processes.lock() {
             Ok(tracked_processes) => tracked_processes,
             Err(poisoned) => poisoned.into_inner(),
         };
-        tracked_processes
-            .entry(cell_id)
-            .or_default()
-            .push(TrackedProcess {
-                session,
-                process_id,
-            });
+        let cell_processes = tracked_processes.entry(cell_id).or_default();
+        if let Some(tracked) = cell_processes
+            .iter_mut()
+            .find(|tracked| tracked.process_id == process_id && tracked.session.ptr_eq(&session))
+        {
+            tracked.terminate_on_cell_cancel |= terminate_on_cell_cancel;
+            return;
+        }
+        cell_processes.push(TrackedProcess {
+            session,
+            process_id,
+            terminate_on_cell_cancel,
+        });
     }
 
     fn tracked_processes(&self, cell_id: &CellId) -> Vec<TrackedProcess> {
@@ -307,6 +315,9 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
     fn terminate_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a> {
         Box::pin(async move {
             for tracked in self.take_tracked_processes(&cell_id) {
+                if !tracked.terminate_on_cell_cancel {
+                    continue;
+                }
                 if let Some(session) = tracked.session.upgrade() {
                     session
                         .services

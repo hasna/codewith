@@ -110,9 +110,19 @@ impl CodeModeService {
         self.dispatch_broker.close_cell(cell_id);
     }
 
-    fn track_live_process(&self, cell_id: CellId, session: &Arc<Session>, process_id: u32) {
-        self.dispatch_broker
-            .track_process(cell_id, Arc::downgrade(session), process_id);
+    fn track_live_process(
+        &self,
+        cell_id: CellId,
+        session: &Arc<Session>,
+        process_id: u32,
+        terminate_on_cell_cancel: bool,
+    ) {
+        self.dispatch_broker.track_process(
+            cell_id,
+            Arc::downgrade(session),
+            process_id,
+            terminate_on_cell_cancel,
+        );
     }
 
     pub(crate) fn start_turn_worker(
@@ -262,7 +272,8 @@ async fn call_nested_tool(
         Ok(payload) => payload,
         Err(error) => return Err(FunctionCallError::RespondToModel(error)),
     };
-    let creates_process = tool_name.namespace.is_none() && tool_name.name == EXEC_COMMAND_TOOL_NAME;
+    let terminate_on_cell_cancel =
+        tool_name.namespace.is_none() && tool_name.name == EXEC_COMMAND_TOOL_NAME;
 
     let call = ToolCall {
         tool_name,
@@ -280,11 +291,12 @@ async fn call_nested_tool(
         )
         .await?;
     let (result, live_process_id) = result.code_mode_result_with_live_process_id();
-    if creates_process && let Some(process_id) = live_process_id {
+    if let Some(process_id) = live_process_id {
         exec.session.services.code_mode_service.track_live_process(
             cell_id,
             &exec.session,
             process_id,
+            terminate_on_cell_cancel,
         );
     }
     Ok(result)

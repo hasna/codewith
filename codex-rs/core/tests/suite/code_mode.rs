@@ -106,6 +106,14 @@ fn extract_running_cell_id(text: &str) -> String {
         .to_string()
 }
 
+fn extract_running_process_id(text: &str) -> u32 {
+    text.lines()
+        .find_map(|line| line.strip_prefix("Process running with session ID "))
+        .expect("exec output should contain a live process session ID")
+        .parse()
+        .expect("process session ID should be numeric")
+}
+
 fn repeated_output_body(output: &str) -> &str {
     output
         .strip_prefix("Total output lines: 1\n\n")
@@ -646,6 +654,215 @@ text(JSON.stringify(background));
         ),
         text_item(&third_items, /*index*/ 0),
     );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_wait_stays_live_for_nested_write_stdin_session() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+    let release_path = test.workspace_path("code-mode-write-stdin.release");
+    let exit_path = test.workspace_path("code-mode-write-stdin-exit.ready");
+    let release_path_quoted = shlex::try_join([release_path.to_string_lossy().as_ref()])?;
+    let exit_path_quoted = shlex::try_join([exit_path.to_string_lossy().as_ref()])?;
+    let child_command = format!(
+        "while [ ! -f {release_path_quoted} ]; do sleep 0.05; done; \
+         printf nested-write-stdin-finished; printf done > {exit_path_quoted}"
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            responses::ev_function_call(
+                "call-1",
+                "exec_command",
+                &serde_json::to_string(&serde_json::json!({
+                    "cmd": child_command,
+                    "yield_time_ms": 100,
+                }))?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let process_started = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "process started"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start an external background process")
+        .await?;
+
+    let process_started_request = process_started.single_request();
+    let process_started_items = function_tool_output_items(&process_started_request, "call-1");
+    assert_eq!(process_started_items.len(), 1);
+    let process_id =
+        extract_running_process_id(text_item(&process_started_items, /*index*/ 0));
+    let code = format!(
+        r#"// @exec: {{"yield_time_ms": 25}}
+text(JSON.stringify(await tools.write_stdin({{
+  session_id: {process_id},
+  yield_time_ms: 100,
+}})));
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_custom_tool_call("call-2", "exec", &code),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let code_started = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "polling"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("poll the process from code mode").await?;
+
+    let code_started_items = custom_tool_output_items(&code_started.single_request(), "call-2");
+    assert_eq!(code_started_items.len(), 1);
+    let cell_id = extract_running_cell_id(text_item(&code_started_items, /*index*/ 0));
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-5"),
+            responses::ev_function_call(
+                "call-3",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id.clone(),
+                    "yield_time_ms": 500,
+                }))?,
+            ),
+            ev_completed("resp-5"),
+        ]),
+    )
+    .await;
+    let still_running = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-3", "still running"),
+            ev_completed("resp-6"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait while the external process is live")
+        .await?;
+
+    let still_running_items = function_tool_output_items(&still_running.single_request(), "call-3");
+    fs::write(&release_path, "release")?;
+    fs_wait::wait_for_path_exists(&exit_path, Duration::from_secs(5)).await?;
+
+    assert_eq!(still_running_items.len(), 2);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&still_running_items, /*index*/ 0),
+    );
+    let nested_result: Value =
+        serde_json::from_str(text_item(&still_running_items, /*index*/ 1))?;
+    assert_eq!(
+        nested_result.get("session_id").and_then(Value::as_u64),
+        Some(u64::from(process_id)),
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-7"),
+            responses::ev_function_call(
+                "call-4",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id,
+                    "yield_time_ms": 2_000,
+                }))?,
+            ),
+            ev_completed("resp-7"),
+        ]),
+    )
+    .await;
+    let code_completed = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-4", "code complete"),
+            ev_completed("resp-8"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("finish the code-mode wait").await?;
+
+    let code_completed_items =
+        function_tool_output_items(&code_completed.single_request(), "call-4");
+    assert_eq!(code_completed_items.len(), 1);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&code_completed_items, /*index*/ 0),
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-9"),
+            responses::ev_function_call(
+                "call-5",
+                "write_stdin",
+                &serde_json::to_string(&serde_json::json!({
+                    "chars": "",
+                    "session_id": process_id,
+                    "yield_time_ms": 2_000,
+                }))?,
+            ),
+            ev_completed("resp-9"),
+        ]),
+    )
+    .await;
+    let process_completed = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-5", "process complete"),
+            ev_completed("resp-10"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("collect the external process result")
+        .await?;
+
+    let process_completed_items =
+        function_tool_output_items(&process_completed.single_request(), "call-5");
+    assert_eq!(process_completed_items.len(), 1);
+    let process_completed_text = text_item(&process_completed_items, /*index*/ 0);
+    assert!(process_completed_text.contains("Process exited with code 0"));
+    assert!(process_completed_text.contains("nested-write-stdin-finished"));
 
     Ok(())
 }
