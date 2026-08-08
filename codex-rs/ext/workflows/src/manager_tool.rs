@@ -47,6 +47,7 @@ enum ManageWorkflowRuntime {
 }
 
 impl ManageWorkflowTool {
+    #[cfg(test)]
     pub(crate) fn new(
         enabled: Arc<AtomicBool>,
         state_db: Arc<StateRuntime>,

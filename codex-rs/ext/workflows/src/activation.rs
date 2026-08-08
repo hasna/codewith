@@ -247,6 +247,10 @@ impl WorkflowActivationService {
         generation: i64,
         config: &WorkflowActivationConfig,
     ) -> anyhow::Result<()> {
+        let permission_profile_json =
+            serde_json::to_value(&config.permission_profile).map_err(|err| {
+                anyhow::anyhow!("failed to serialize workflow permission profile: {err}")
+            })?;
         loop {
             if self
                 .state_db
@@ -311,6 +315,7 @@ impl WorkflowActivationService {
                     runtime_package_fingerprint: Some(
                         BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT.to_string(),
                     ),
+                    permission_profile_json: permission_profile_json.clone(),
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: config.max_active_background_agent_runs,
                 })
