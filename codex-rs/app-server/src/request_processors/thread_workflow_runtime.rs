@@ -355,7 +355,7 @@ async fn execute_command_verifier(
         let mut child = codex_core::exec::spawn_streaming_command_under_sandbox(
             vec![
                 "/bin/bash".to_string(),
-                "-lc".to_string(),
+                "-c".to_string(),
                 command.to_string(),
             ],
             absolute_cwd.clone(),
