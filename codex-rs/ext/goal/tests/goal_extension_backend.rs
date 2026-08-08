@@ -300,6 +300,101 @@ async fn unfinished_active_goal_plan_blocks_terminal_turn_completion() -> anyhow
 }
 
 #[tokio::test]
+async fn completed_delegate_does_not_guard_unfinished_owner_plan() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let owner_thread_id = test_thread_id()?;
+    let delegate_thread_id = ThreadId::new();
+    seed_thread_metadata(runtime.as_ref(), owner_thread_id).await?;
+    seed_thread_metadata(runtime.as_ref(), delegate_thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), delegate_thread_id).await?;
+
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id: owner_thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            max_tokens: None,
+            nodes: vec![
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "delegate".to_string(),
+                    objective: "finish delegated work".to_string(),
+                    assigned_thread_id: Some(delegate_thread_id),
+                    title: None,
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                },
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "owner".to_string(),
+                    objective: "finish owner work".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: vec!["delegate".to_string()],
+                },
+            ],
+        })
+        .await?;
+    let delegate_node_id = created.snapshot.nodes[0].node_id.clone();
+    let activated = runtime
+        .thread_goals()
+        .activate_thread_goal_plan_node(delegate_thread_id, delegate_node_id.as_str())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("delegate goal should activate"))?;
+    let delegate_goal = activated
+        .activated_goal
+        .ok_or_else(|| anyhow::anyhow!("delegate goal should exist"))?;
+    let completed_goal = runtime
+        .thread_goals()
+        .update_thread_goal(
+            delegate_thread_id,
+            codex_state::GoalUpdate {
+                objective: None,
+                title: None,
+                status: Some(codex_state::ThreadGoalStatus::Complete),
+                token_budget: None,
+                expected_goal_id: Some(delegate_goal.goal_id),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("delegate goal should complete"))?;
+    let outcome = runtime
+        .thread_goals()
+        .complete_goal_plan_node_and_maybe_advance(
+            delegate_thread_id,
+            &completed_goal,
+            codex_state::ThreadGoalPlanAutoExecute::Off,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("owner plan should remain active"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Active,
+        outcome.snapshot.plan.status
+    );
+    assert_eq!(1, outcome.snapshot.usage_summary().pending_node_count);
+
+    assert!(matches!(
+        harness.turn_completion_decision("turn-delegate").await,
+        TurnCompletionDecision::Allow
+    ));
+    let waits = runtime
+        .list_thread_pending_interactions(codex_state::PendingInteractionListParams {
+            thread_id: Some(delegate_thread_id),
+            statuses: vec![
+                codex_state::PendingInteractionStatus::Pending,
+                codex_state::PendingInteractionStatus::Delivered,
+            ],
+            kinds: Vec::new(),
+            cursor: None,
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(Vec::new(), waits.data);
+    Ok(())
+}
+
+#[tokio::test]
 async fn terminal_or_waiting_goal_plan_allows_terminal_turn_completion() -> anyhow::Result<()> {
     for status in [
         codex_state::ThreadGoalStatus::Paused,

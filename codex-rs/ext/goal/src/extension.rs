@@ -344,7 +344,10 @@ where
                 return TurnCompletionDecision::Allow;
             }
         };
-        let Some(plan) = plans.into_iter().find(active_plan_requires_guard) else {
+        let Some(plan) = plans
+            .into_iter()
+            .find(|plan| active_plan_requires_guard(plan, runtime.thread_id()))
+        else {
             return TurnCompletionDecision::Allow;
         };
 
@@ -774,8 +777,13 @@ pub fn install_with_backend<C>(
     registry.tool_contributor(extension);
 }
 
-fn active_plan_requires_guard(plan: &codex_state::ThreadGoalPlanSnapshot) -> bool {
-    if plan.plan.status != codex_state::ThreadGoalPlanStatus::Active {
+fn active_plan_requires_guard(
+    plan: &codex_state::ThreadGoalPlanSnapshot,
+    thread_id: ThreadId,
+) -> bool {
+    if plan.plan.thread_id != thread_id
+        || plan.plan.status != codex_state::ThreadGoalPlanStatus::Active
+    {
         return false;
     }
     let summary = plan.usage_summary();
