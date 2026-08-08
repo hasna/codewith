@@ -532,7 +532,7 @@ INSERT INTO thread_schedule_occurrences (
         }))
     }
 
-    async fn occurrence_run(
+    pub(super) async fn occurrence_run(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         occurrence: &ThreadScheduleOccurrenceRow,
         lease_id: &str,
@@ -556,7 +556,10 @@ INSERT INTO thread_schedule_occurrences (
             turn_id: Some(occurrence.turn_id.clone()),
             goal_id: occurrence.goal_id.clone(),
             error: None,
-            scheduled_for: optional_epoch_millis_to_datetime(occurrence.scheduled_for_ms)?,
+            scheduled_for: occurrence
+                .scheduled_for_ms
+                .map(epoch_millis_to_datetime)
+                .transpose()?,
             started_at: epoch_millis_to_datetime(occurrence.created_at_ms)?,
             completed_at: None,
         })

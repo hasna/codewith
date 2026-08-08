@@ -192,6 +192,92 @@ WHERE schedule_id = ?
 }
 
 #[tokio::test]
+async fn terminal_once_occurrence_survives_the_legacy_schedule_hold_trigger() {
+    let runtime = test_runtime().await;
+    let thread_id = test_thread_id(/*id*/ 57);
+    upsert_test_thread(&runtime, thread_id).await;
+    let now = at(/*seconds*/ 1_700_000_000);
+    let schedule = runtime
+        .thread_schedules()
+        .create_thread_schedule(ThreadScheduleCreateParams {
+            thread_id,
+            prompt: "once trigger fencing".to_string(),
+            prompt_source: crate::ThreadSchedulePromptSource::Inline,
+            schedule: crate::ThreadScheduleSpec::Once,
+            timezone: "UTC".to_string(),
+            status: crate::ThreadScheduleStatus::Active,
+            next_run_at: Some(now),
+            expires_at: None,
+        })
+        .await
+        .expect("once schedule should create");
+    let claim = runtime
+        .thread_schedules()
+        .claim_due_thread_schedule(now, "lease-once-trigger", Duration::from_secs(30))
+        .await
+        .expect("once schedule should claim")
+        .expect("once schedule should be due");
+    enqueue_and_start_claim(
+        &runtime,
+        &claim,
+        None,
+        "once trigger fencing",
+        now,
+        Duration::from_secs(30),
+    )
+    .await;
+    let completed_at = now + chrono::Duration::seconds(1);
+    assert!(
+        runtime
+            .thread_schedules()
+            .record_thread_schedule_run_terminal(
+                schedule.schedule_id.as_str(),
+                claim.run.run_id.as_str(),
+                claim.run.lease_id.as_str(),
+                completed_at,
+                None,
+                None,
+            )
+            .await
+            .expect("terminal outcome should persist")
+    );
+
+    let result = sqlx::query(
+        r#"
+UPDATE thread_schedules
+SET status = 'expired',
+    lease_id = NULL,
+    lease_expires_at_ms = NULL,
+    last_run_at_ms = ?,
+    next_run_at_ms = NULL,
+    updated_at_ms = ?
+WHERE schedule_id = ? AND lease_id = ?
+        "#,
+    )
+    .bind(datetime_to_epoch_millis(completed_at))
+    .bind(datetime_to_epoch_millis(completed_at))
+    .bind(schedule.schedule_id.as_str())
+    .bind(claim.run.lease_id.as_str())
+    .execute(runtime.pool.as_ref())
+    .await
+    .expect("new-runtime once finalization step should update the schedule");
+    assert_eq!(1, result.rows_affected());
+
+    let occurrence_state: Option<String> = sqlx::query_scalar(
+        "SELECT state FROM thread_schedule_occurrences WHERE occurrence_id = ?",
+    )
+    .bind(claim.run.run_id.as_str())
+    .fetch_optional(runtime.pool.as_ref())
+    .await
+    .expect("terminal occurrence should load");
+    assert_eq!(
+        Some("terminal".to_string()),
+        occurrence_state,
+        "the compatibility trigger must leave terminal work for fenced runtime finalization"
+    );
+}
+
+#[tokio::test]
 async fn claim_due_thread_schedule_recovers_started_occurrence_without_duplicate_run() {
     let codex_home = unique_temp_dir();
     let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
