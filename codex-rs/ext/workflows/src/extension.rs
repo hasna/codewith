@@ -14,19 +14,26 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_state::StateRuntime;
 
+use crate::WorkflowActivationConfig;
+use crate::WorkflowActivationService;
 use crate::manager_tool::ManageWorkflowTool;
 use crate::tool::ValidateWorkflowYamlTool;
 
 #[derive(Clone)]
 struct WorkflowExtension<C> {
     workflows_enabled: Arc<dyn Fn(&C) -> bool + Send + Sync>,
+    activation_config: Arc<dyn Fn(&C) -> WorkflowActivationConfig + Send + Sync>,
     state_db: Option<Arc<StateRuntime>>,
+    activation_service: Option<Arc<WorkflowActivationService>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WorkflowExtensionConfig {
     enabled: bool,
 }
+
+#[derive(Clone)]
+struct WorkflowExtensionActivationConfig(WorkflowActivationConfig);
 
 struct WorkflowExtensionState {
     enabled: Arc<AtomicBool>,
@@ -75,11 +82,20 @@ impl WorkflowExtensionState {
 impl<C> WorkflowExtension<C> {
     fn new(
         state_db: Option<Arc<StateRuntime>>,
+        activation_service: Option<Arc<WorkflowActivationService>>,
         workflows_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+        activation_config: impl Fn(&C) -> WorkflowActivationConfig + Send + Sync + 'static,
     ) -> Self {
+        let activation_service = activation_service.or_else(|| {
+            state_db
+                .as_ref()
+                .map(|state_db| Arc::new(WorkflowActivationService::new(Arc::clone(state_db))))
+        });
         Self {
             workflows_enabled: Arc::new(workflows_enabled),
+            activation_config: Arc::new(activation_config),
             state_db,
+            activation_service,
         }
     }
 
@@ -87,6 +103,10 @@ impl<C> WorkflowExtension<C> {
         WorkflowExtensionConfig {
             enabled: (self.workflows_enabled)(config),
         }
+    }
+
+    fn activation_config(&self, config: &C) -> WorkflowActivationConfig {
+        (self.activation_config)(config)
     }
 }
 
@@ -97,6 +117,7 @@ where
 {
     async fn on_thread_start(&self, input: ThreadStartInput<'_, C>) {
         let config = self.config(input.config);
+        let activation_config = self.activation_config(input.config);
         let tools_available_for_thread = input.persistent_thread_state_available
             && !matches!(
                 input.session_source,
@@ -104,11 +125,27 @@ where
             );
         let thread_id = ThreadId::from_string(input.thread_store.level_id()).ok();
         input.thread_store.insert(config);
+        input
+            .thread_store
+            .insert(WorkflowExtensionActivationConfig(activation_config.clone()));
         let state = input.thread_store.get_or_init(|| {
             WorkflowExtensionState::new(config.enabled, tools_available_for_thread, thread_id)
         });
         state.set_enabled(config.enabled);
         state.set_thread_context(tools_available_for_thread, thread_id);
+        if config.enabled
+            && tools_available_for_thread
+            && let (Some(activation_service), Some(thread_id)) =
+                (&self.activation_service, thread_id)
+            && let Err(err) = activation_service
+                .activate_thread_runs(thread_id, activation_config)
+                .await
+        {
+            tracing::warn!(
+                %thread_id,
+                "failed to recover active workflow runs for materialized thread: {err}"
+            );
+        }
     }
 }
 
@@ -124,7 +161,9 @@ where
         new_config: &C,
     ) {
         let config = self.config(new_config);
+        let activation_config = self.activation_config(new_config);
         thread_store.insert(config);
+        thread_store.insert(WorkflowExtensionActivationConfig(activation_config));
         thread_store
             .get_or_init(|| {
                 WorkflowExtensionState::new(
@@ -149,6 +188,10 @@ where
         let Some(state) = thread_store.get::<WorkflowExtensionState>() else {
             return Vec::new();
         };
+        let activation_config = thread_store
+            .get::<WorkflowExtensionActivationConfig>()
+            .map(|config| config.0.clone())
+            .unwrap_or_default();
         if !state.is_enabled() {
             return Vec::new();
         }
@@ -164,11 +207,19 @@ where
             )
         } else {
             match (&self.state_db, state.thread_id()) {
-                (Some(state_db), Some(thread_id)) => ManageWorkflowTool::new(
-                    Arc::clone(&state.enabled),
-                    Arc::clone(state_db),
-                    thread_id,
-                ),
+                (Some(state_db), Some(thread_id)) => match &self.activation_service {
+                    Some(activation_service) => ManageWorkflowTool::new_with_activation(
+                        Arc::clone(&state.enabled),
+                        Arc::clone(state_db),
+                        thread_id,
+                        Arc::clone(activation_service),
+                        activation_config,
+                    ),
+                    None => ManageWorkflowTool::unavailable(
+                        Arc::clone(&state.enabled),
+                        "workflow management is unavailable because the activation service is not initialized",
+                    ),
+                },
                 (None, _) => ManageWorkflowTool::unavailable(
                     Arc::clone(&state.enabled),
                     "workflow management is unavailable because the workflow state store is not initialized",
@@ -191,7 +242,30 @@ pub fn install<C>(
 ) where
     C: Send + Sync + 'static,
 {
-    let extension = Arc::new(WorkflowExtension::new(state_db, workflows_enabled));
+    install_with_activation(
+        registry,
+        state_db,
+        /*activation_service*/ None,
+        workflows_enabled,
+        |_| WorkflowActivationConfig::default(),
+    );
+}
+
+pub fn install_with_activation<C>(
+    registry: &mut ExtensionRegistryBuilder<C>,
+    state_db: Option<Arc<StateRuntime>>,
+    activation_service: Option<Arc<WorkflowActivationService>>,
+    workflows_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
+    activation_config: impl Fn(&C) -> WorkflowActivationConfig + Send + Sync + 'static,
+) where
+    C: Send + Sync + 'static,
+{
+    let extension = Arc::new(WorkflowExtension::new(
+        state_db,
+        activation_service,
+        workflows_enabled,
+        activation_config,
+    ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.tool_contributor(extension);

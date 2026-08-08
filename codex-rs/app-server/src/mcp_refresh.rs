@@ -181,6 +181,9 @@ mod tests {
             .await
             .expect("refresh tests require state db");
         let thread_store = thread_store_from_config(&good_config, Some(state_db.clone()));
+        let workflow_activation_service = Arc::new(
+            codex_workflows_extension::WorkflowActivationService::new(state_db.clone()),
+        );
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             ThreadManager::new(
                 &good_config,
@@ -194,6 +197,7 @@ mod tests {
                     Some(state_db.clone()),
                     thread_manager.clone(),
                     Arc::new(codex_goal_extension::GoalService::new()),
+                    Some(Arc::clone(&workflow_activation_service)),
                 ),
                 /*analytics_events_client*/ None,
                 Arc::clone(&thread_store),

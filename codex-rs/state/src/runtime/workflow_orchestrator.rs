@@ -21,6 +21,7 @@ use codex_git_utils::delete_local_git_branch;
 use codex_git_utils::get_git_worktree_status_snapshot;
 use codex_git_utils::remove_linked_git_worktree;
 use codex_git_utils::resolve_git_ref;
+use codex_protocol::models::PermissionProfile;
 use codex_workflows::WorkflowBranchPrompt;
 use codex_workflows::WorkflowWorkspace;
 use codex_workflows::WorkflowWorkspaceMode;
@@ -43,6 +44,7 @@ const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON: &str =
     "OpenRouter workflow branch requires OPENROUTER_API_KEY before admission";
 const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE: &str =
     "workflow_branch_provider_env_missing";
+const WORKFLOW_BRANCH_RECOVERY_POLICY: &str = "abort_mid_turn_resume_at_safe_boundary";
 const WORKFLOW_BRANCH_SOURCE: &str = "workflow";
 const WORKFLOW_BRANCH_THREAD_STORE_KIND: &str = "background-agent";
 
@@ -101,6 +103,8 @@ pub struct WorkflowRunBranchAdmissionParams {
     pub auth_profile_ref: Option<String>,
     pub config_fingerprint: Option<String>,
     pub version_fingerprint: Option<String>,
+    pub runtime_package_fingerprint: Option<String>,
+    pub permission_profile_json: Value,
     pub parent_agent_run_id: Option<String>,
     pub max_active_background_agent_runs: Option<i64>,
 }
@@ -397,6 +401,7 @@ WHERE run_id = ?
         provider_env_key_present: impl Fn(&str) -> bool,
     ) -> anyhow::Result<Option<WorkflowRunBranchAdmissionOutcome>> {
         validate_owner_id(&params.owner_id)?;
+        validate_workflow_permission_profile_json(&params.permission_profile_json)?;
         if params
             .max_active_background_agent_runs
             .is_some_and(|limit| limit <= 0)
@@ -1367,6 +1372,7 @@ async fn create_background_branch_run_if_missing_in_tx(
         "prompt": prompt,
         "promptSnapshotRef": prompt_snapshot_ref,
     });
+    let recovery_policy = WORKFLOW_BRANCH_RECOVERY_POLICY;
     let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: background_agent_run_id.to_string(),
         snapshot_kind: "initial_execution_context".to_string(),
@@ -1377,8 +1383,9 @@ async fn create_background_branch_run_if_missing_in_tx(
             workspace_json,
             provisioned_workspace,
             params,
+            recovery_policy,
         ),
-        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
+        recovery_policy: recovery_policy.to_string(),
         config_fingerprint: params.config_fingerprint.clone(),
     };
     let admission_identity_sha256 = background_agent_admission_identity_sha256(
@@ -1519,6 +1526,7 @@ fn branch_execution_payload(
     workspace_json: Option<&Value>,
     provisioned_workspace: &ProvisionedWorkflowWorkspace,
     params: &WorkflowRunBranchAdmissionParams,
+    recovery_policy: &str,
 ) -> Value {
     json!({
         "snapshotSource": "workflow/branch_admission",
@@ -1535,15 +1543,34 @@ fn branch_execution_payload(
         "reasoning": model_route_json.get("reasoning"),
         "serviceTier": model_route_json.get("service_tier"),
         "approvalPolicy": model_route_json.get("approval_policy"),
-        "permissionProfile": model_route_json.get("permission_profile"),
+        "permissionProfile": params.permission_profile_json.clone(),
         "authProfileIdentitySha256": params
             .auth_profile_ref
             .as_deref()
             .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes())),
         "workspace": workspace_json,
         "envSnapshotPolicy": "inherit-minimal",
+        "configFingerprint": params.config_fingerprint,
+        "versionFingerprint": params.version_fingerprint,
+        "packageFingerprint": params.runtime_package_fingerprint,
+        "recoveryPolicy": recovery_policy,
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
     })
+}
+
+fn validate_workflow_permission_profile_json(
+    permission_profile_json: &Value,
+) -> anyhow::Result<()> {
+    if !permission_profile_json.is_object() {
+        anyhow::bail!(
+            "workflow branch admission permission profile must be a canonical typed object"
+        );
+    }
+    serde_json::from_value::<PermissionProfile>(permission_profile_json.clone())
+        .map(|_| ())
+        .map_err(|err| {
+            anyhow::anyhow!("workflow branch admission permission profile is invalid: {err}")
+        })
 }
 
 fn workflow_background_workspace_mode(mode: WorkflowWorkspaceMode) -> BackgroundAgentWorkspaceMode {
@@ -2876,7 +2903,7 @@ cleanup:
       model: "openai/gpt-oss-120b"
       reasoning: "xhigh"
       service_tier: "priority"
-      permission_profile: "workspace-write"
+      permission_profile: "read-only"
 "#
                     .to_string()
                 } else {
@@ -3014,6 +3041,11 @@ cleanup:
         runtime
             .admit_workflow_run_branches_with_provider_env_check(params, |_| true)
             .await
+    }
+
+    fn read_only_permission_profile_json() -> Value {
+        serde_json::to_value(PermissionProfile::read_only())
+            .expect("read-only permission profile should serialize")
     }
 
     async fn mark_projected_node_complete(
@@ -3502,6 +3534,8 @@ WHERE plan_id = ? AND key = ?
                 auth_profile_ref: Some("profile:workflow".to_string()),
                 config_fingerprint: Some("cfg-workflow".to_string()),
                 version_fingerprint: Some("version-workflow".to_string()),
+                runtime_package_fingerprint: Some("package-workflow".to_string()),
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3595,6 +3629,39 @@ WHERE plan_id = ? AND key = ?
                 .get("managedWorktreeId")
                 .and_then(Value::as_str)
         );
+        assert_eq!(
+            Some("cfg-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("configFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("version-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("versionFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some("package-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("packageFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            "abort_mid_turn_resume_at_safe_boundary",
+            execution_snapshot.recovery_policy
+        );
+        assert_eq!(
+            Some(execution_snapshot.recovery_policy.as_str()),
+            execution_snapshot
+                .payload_json
+                .get("recoveryPolicy")
+                .and_then(Value::as_str),
+            "the worker payload recovery policy must match the persisted execution envelope"
+        );
         let mut isolated_paths = Vec::new();
         for branch in &admitted.admitted {
             let branch_run = runtime
@@ -3646,6 +3713,161 @@ WHERE worktree_id = ?
             get_git_worktree_status_snapshot(source_repo.as_path())
                 .expect("source checkout status should remain readable"),
             "workflow worktree allocation must not mutate the source checkout"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_branch_admission_uses_typed_permission_profile_not_route_label() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_branch_typed_permission_profile",
+            parallel_branch_workflow_yaml(
+                "wf_branch_typed_permission_profile",
+                /*step_count*/ 1,
+                /*max_parallel_steps*/ 1,
+                /*max_agents*/ 1,
+                /*max_worktrees*/ 1,
+                "typed-permission-profile",
+            ),
+        )
+        .await;
+        let owner_id = "typed-permission-owner";
+        let generation = claim_and_advance(&runtime, run.run.run_id.as_str(), owner_id).await;
+        let permission_profile_json = read_only_permission_profile_json();
+
+        let admitted = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
+                run_id: run.run.run_id,
+                owner_id: owner_id.to_string(),
+                generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: permission_profile_json.clone(),
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(10),
+            },
+        )
+        .await
+        .expect("typed permission profile branch admission should succeed")
+        .expect("workflow run should still be owned");
+        let branch = &admitted.admitted[0];
+        assert_eq!(
+            Some("read-only"),
+            branch
+                .model_route_json
+                .get("permission_profile")
+                .and_then(Value::as_str)
+        );
+        let execution_snapshot = runtime
+            .get_latest_background_agent_execution_snapshot(branch.background_agent_run_id.as_str())
+            .await
+            .expect("execution snapshot should load")
+            .expect("execution snapshot should exist");
+        let persisted_permission_profile = execution_snapshot
+            .payload_json
+            .get("permissionProfile")
+            .expect("initial execution snapshot should include permissionProfile");
+        assert_eq!(&permission_profile_json, persisted_permission_profile);
+        assert!(persisted_permission_profile.is_object());
+        assert_ne!(
+            branch.model_route_json.get("permission_profile"),
+            Some(persisted_permission_profile),
+            "route labels must not become background-agent permission payloads"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_branch_admission_rejects_missing_or_invalid_permission_profile_payload() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_branch_invalid_permission_profile",
+            parallel_branch_workflow_yaml(
+                "wf_branch_invalid_permission_profile",
+                /*step_count*/ 1,
+                /*max_parallel_steps*/ 1,
+                /*max_agents*/ 1,
+                /*max_worktrees*/ 1,
+                "invalid-permission-profile",
+            ),
+        )
+        .await;
+        let owner_id = "invalid-permission-owner";
+        let generation = claim_and_advance(&runtime, run.run.run_id.as_str(), owner_id).await;
+
+        for (permission_profile_json, expected_error) in [
+            (
+                Value::Null,
+                "permission profile must be a canonical typed object",
+            ),
+            (
+                Value::String("read-only".to_string()),
+                "permission profile must be a canonical typed object",
+            ),
+            (
+                json!({ "type": "unsupported" }),
+                "permission profile is invalid",
+            ),
+        ] {
+            let error = admit_test_workflow_run_branches(
+                &runtime,
+                WorkflowRunBranchAdmissionParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: owner_id.to_string(),
+                    generation,
+                    auth_profile_ref: None,
+                    config_fingerprint: None,
+                    version_fingerprint: None,
+                    runtime_package_fingerprint: None,
+                    permission_profile_json,
+                    parent_agent_run_id: None,
+                    max_active_background_agent_runs: Some(10),
+                },
+            )
+            .await
+            .expect_err("missing or string permission profiles must fail closed");
+            assert!(error.to_string().contains(expected_error));
+        }
+
+        let snapshot = runtime
+            .workflows()
+            .get_workflow_run_snapshot(run.run.run_id.as_str())
+            .await
+            .expect("workflow snapshot should load")
+            .expect("workflow run should still exist");
+        assert_eq!(
+            crate::WorkflowRunStepStatus::Ready,
+            snapshot.steps[0].status
+        );
+        assert_eq!(
+            0,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM background_agent_runs")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background AgentRun count should load")
+        );
+        assert_eq!(
+            0,
+            runtime
+                .managed_worktrees()
+                .list_managed_worktrees_page(
+                    /*base_repo_path*/ None, /*include_deleted*/ true,
+                    /*cursor*/ None, /*limit*/ 10,
+                )
+                .await
+                .expect("managed worktrees should list")
+                .data
+                .len()
         );
     }
 
@@ -3718,6 +3940,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3852,6 +4076,8 @@ WHERE worktree_id = ?
                     auth_profile_ref: None,
                     config_fingerprint: None,
                     version_fingerprint: None,
+                    runtime_package_fingerprint: None,
+                    permission_profile_json: read_only_permission_profile_json(),
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
@@ -3987,6 +4213,8 @@ WHERE worktree_id = ?
                     auth_profile_ref: None,
                     config_fingerprint: None,
                     version_fingerprint: None,
+                    runtime_package_fingerprint: None,
+                    permission_profile_json: read_only_permission_profile_json(),
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
@@ -4046,6 +4274,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4091,6 +4321,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4127,6 +4359,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4225,6 +4459,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4242,6 +4478,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4275,6 +4513,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4343,6 +4583,8 @@ WHERE worktree_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4496,6 +4738,8 @@ WHERE run_id = ?
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4999,6 +5243,8 @@ cleanup:
                 auth_profile_ref: None,
                 config_fingerprint: None,
                 version_fingerprint: None,
+                runtime_package_fingerprint: None,
+                permission_profile_json: read_only_permission_profile_json(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             })

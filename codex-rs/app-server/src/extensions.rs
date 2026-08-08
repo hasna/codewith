@@ -13,6 +13,7 @@ use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::GoalAutoExecuteMode;
 use codex_core::config::PostGoalContextAction;
+use codex_core::windows_sandbox::windows_sandbox_level_from_config;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
 use codex_extension_api::ExtensionEventSink;
@@ -40,6 +41,7 @@ pub(crate) fn thread_extensions<S>(
     state_db: Option<StateDbHandle>,
     thread_manager: Weak<ThreadManager>,
     goal_service: Arc<GoalService>,
+    workflow_activation_service: Option<Arc<codex_workflows_extension::WorkflowActivationService>>,
 ) -> Arc<ExtensionRegistry<Config>>
 where
     S: AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> + 'static,
@@ -96,10 +98,30 @@ where
     assert!(
         builder.assign_host_tool_capability(&image_generation, HostToolCapability::ImageGeneration)
     );
-    codex_workflows_extension::install(&mut builder, workflow_state_db, |config: &Config| {
-        config.features.enabled(codex_features::Feature::Workflows)
-    });
+    codex_workflows_extension::install_with_activation(
+        &mut builder,
+        workflow_state_db,
+        workflow_activation_service,
+        |config: &Config| config.features.enabled(codex_features::Feature::Workflows),
+        workflow_activation_config,
+    );
     Arc::new(builder.build())
+}
+
+pub(crate) fn workflow_activation_config(
+    config: &Config,
+) -> codex_workflows_extension::WorkflowActivationConfig {
+    codex_workflows_extension::WorkflowActivationConfig {
+        auth_profile_ref: config.selected_auth_profile.clone(),
+        permission_profile: config.permissions.permission_profile().clone(),
+        codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
+        use_legacy_landlock: config.features.use_legacy_landlock(),
+        windows_sandbox_level: windows_sandbox_level_from_config(config),
+        windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
+        max_active_background_agent_runs: config
+            .agent_max_threads
+            .and_then(|limit| i64::try_from(limit).ok()),
+    }
 }
 
 fn post_goal_context_action(action: PostGoalContextAction) -> codex_state::PostGoalContextAction {

@@ -2,6 +2,9 @@ use anyhow::Result;
 use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_rollout;
+use app_test_support::create_fake_rollout_with_cwd;
+use app_test_support::create_final_assistant_message_sse_response;
+use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use app_test_support::write_mock_provider_models_cache;
@@ -30,10 +33,13 @@ use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::path::Path;
+use std::process::Command;
 use tempfile::TempDir;
+use tokio::time::sleep;
 use tokio::time::timeout;
 
 const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 const RAW_SENTINEL: &str = "RAW_WORKFLOW_SECRET_SHOULD_NOT_LEAK";
 const COMMAND_SENTINEL: &str = "WORKFLOW_COMMAND_SHOULD_NOT_RUN_OR_LEAK";
 
@@ -388,7 +394,15 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
     let list = to_response::<ThreadWorkflowRunListResponse>(list_resp)?;
     assert_eq!(1, list.data.len());
     assert_eq!(started.run.run.run_id, list.data[0].run_id);
-    assert_eq!(ThreadWorkflowRunStatus::Pending, list.data[0].status);
+    assert!(
+        matches!(
+            list.data[0].status,
+            ThreadWorkflowRunStatus::Pending
+                | ThreadWorkflowRunStatus::Running
+                | ThreadWorkflowRunStatus::Waiting
+        ),
+        "activation should keep the workflow in a live nonterminal state before pause"
+    );
 
     let get_id = mcp
         .send_raw_request(
@@ -460,6 +474,159 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
         cancelled.run.as_ref().map(|run| run.run.status)
     );
     assert!(!marker.exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workflow_start_activates_one_real_worker_and_one_verifier() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let source_repo = TempDir::new()?;
+    init_git_repo(source_repo.path())?;
+    let source_head = git_output(source_repo.path(), &["rev-parse", "HEAD"])?;
+    let source_status = git_output(source_repo.path(), &["status", "--short"])?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "workflow worker done",
+        )?])
+        .await;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread_with_cwd(
+        codex_home.path(),
+        "workflow actual worker",
+        source_repo.path(),
+    )?;
+    let yaml = actual_worker_workflow_yaml();
+    codex_workflows::parse_workflow_yaml(&yaml)?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "idempotencyKey": "actual-worker-activation",
+            })),
+        )
+        .await?;
+    let start_resp = read_response(&mut mcp, start_id).await?;
+    let started = to_response::<ThreadWorkflowRunStartResponse>(start_resp)?;
+    let run_id = started.run.run.run_id;
+    let runtime = open_state_runtime(codex_home.path()).await?;
+    let snapshot = timeout(ACTIVATION_TIMEOUT, async {
+        loop {
+            let snapshot = runtime
+                .workflows()
+                .get_workflow_run_snapshot(run_id.as_str())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("workflow run {run_id} disappeared"))?;
+            if snapshot.run.status.is_terminal() {
+                return Result::<_, anyhow::Error>::Ok(snapshot);
+            }
+            sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+
+    assert_eq!(
+        codex_state::WorkflowRunStatus::Completed,
+        snapshot.run.status
+    );
+    assert_eq!(1, snapshot.steps.len());
+    assert_eq!(
+        codex_state::WorkflowRunStepStatus::Succeeded,
+        snapshot.steps[0].status
+    );
+    assert_eq!(1, snapshot.verifiers.len());
+    assert_eq!(
+        codex_state::WorkflowRunStepVerifierStatus::Passed,
+        snapshot.verifiers[0].status
+    );
+    for event_type in ["branch_admitted", "verifier_started", "verifier_passed"] {
+        assert_eq!(
+            1,
+            snapshot
+                .events
+                .iter()
+                .filter(|event| event.event_type == event_type)
+                .count(),
+            "workflow should record exactly one {event_type} event"
+        );
+    }
+
+    let step = &snapshot.steps[0];
+    let agent_run_id = step
+        .background_agent_run_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("workflow step has no background AgentRun"))?;
+    let managed_worktree_id = step
+        .branch_admission_json
+        .as_ref()
+        .and_then(|value| value.pointer("/data/managedWorktreeId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("workflow branch admission has no managedWorktreeId"))?;
+    let agent_run = runtime
+        .get_background_agent_run(agent_run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("workflow AgentRun {agent_run_id} was not persisted"))?;
+    assert_eq!(
+        codex_state::BackgroundAgentRunStatus::Completed,
+        agent_run.status
+    );
+    assert_eq!(
+        Some(managed_worktree_id),
+        agent_run.worktree_lease_id.as_deref()
+    );
+    assert_eq!(
+        Some(step.agent_id.as_str()),
+        agent_run
+            .spawn_linkage_json
+            .as_ref()
+            .and_then(|value| value.get("agentId"))
+            .and_then(serde_json::Value::as_str)
+    );
+    assert_eq!(1, runtime.list_background_agent_runs(Some(10)).await?.len());
+
+    let managed_worktree = runtime
+        .managed_worktrees()
+        .get_managed_worktree(managed_worktree_id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("workflow managed worktree {managed_worktree_id} was not persisted")
+        })?;
+    assert_eq!(
+        codex_state::ManagedWorktreeMode::IsolatedWorktree,
+        managed_worktree.mode
+    );
+    assert_eq!(
+        std::fs::canonicalize(source_repo.path())?,
+        std::fs::canonicalize(&managed_worktree.base_repo_path)?
+    );
+    assert_ne!(
+        std::fs::canonicalize(source_repo.path())?,
+        std::fs::canonicalize(&managed_worktree.worktree_path)?
+    );
+    assert_eq!(
+        Some(agent_run_id),
+        managed_worktree.owner_agent_run_id.as_deref()
+    );
+
+    assert_eq!(
+        source_head,
+        git_output(source_repo.path(), &["rev-parse", "HEAD"])?
+    );
+    assert_eq!(
+        source_status,
+        git_output(source_repo.path(), &["status", "--short"])?
+    );
 
     Ok(())
 }
@@ -612,6 +779,22 @@ fn create_materialized_thread(codex_home: &Path, preview: &str) -> Result<String
     )
 }
 
+fn create_materialized_thread_with_cwd(
+    codex_home: &Path,
+    preview: &str,
+    cwd: &Path,
+) -> Result<String> {
+    create_fake_rollout_with_cwd(
+        codex_home,
+        "2026-01-02T03-04-05",
+        "2026-01-02T03:04:05Z",
+        preview,
+        Some("mock_provider"),
+        /*git_info*/ None,
+        cwd,
+    )
+}
+
 fn create_config_toml(
     codex_home: &Path,
     server_uri: &str,
@@ -675,6 +858,78 @@ fn invalid_fenced_yaml(raw_sentinel: &str, marker: &Path) -> String {
         "```yaml\nsource_prompt: \"{raw_sentinel}\"\ncommands:\n  - {}\n```",
         yaml_single_quoted(&format!("touch {} # {COMMAND_SENTINEL}", marker.display()))
     )
+}
+
+fn actual_worker_workflow_yaml() -> String {
+    r#"schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_app_server_actual_worker"
+display_name: "Actual Worker Activation"
+source_prompt: "Run one real adversarial worker and verify its isolated checkout."
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "mock_provider"
+  model: "mock-model"
+  reasoning: "high"
+  approval_policy: "never"
+  permission_profile: "read-only"
+limits:
+  max_parallel_steps: 1
+  max_agents: 1
+  max_worktrees: 1
+  max_runtime_seconds: 120
+  max_step_runtime_seconds: 60
+  max_tokens: 10000
+  max_tool_calls: 20
+approvals:
+  required_before: []
+agents:
+  - id: "adversarial_worker"
+    display_name: "Adversary-Hypatia"
+    role: "Adversarially verify actual workflow worker activation."
+    model:
+      model_gateway: "hasna"
+      provider: "mock_provider"
+      model: "mock-model"
+      reasoning: "high"
+      approval_policy: "never"
+      permission_profile: "read-only"
+steps:
+  - id: "adversarial_actual_worker"
+    title: "Run the actual adversarial worker"
+    agent: "adversarial_worker"
+    model:
+      model_gateway: "hasna"
+      provider: "mock_provider"
+      model: "mock-model"
+      reasoning: "high"
+      approval_policy: "never"
+      permission_profile: "read-only"
+    workspace:
+      mode: "isolated_worktree"
+    depends_on: []
+    outputs: []
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "worktree_git_status"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "read-only"
+          network: "disabled"
+          timeout_seconds: 5
+          output_limit_bytes: 1024
+          commands:
+            - "git status --short"
+          expected_exit_code: 0
+artifacts:
+  retention: "preserve_evidence"
+  required: []
+cleanup:
+  on_cancel: []
+  on_complete: []
+"#
+    .to_string()
 }
 
 fn valid_workflow_yaml(marker: &Path, workflow_id: &str) -> String {
@@ -805,4 +1060,31 @@ cleanup:
 
 fn yaml_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn init_git_repo(repo_path: &Path) -> Result<()> {
+    git(repo_path, &["init"])?;
+    git(repo_path, &["config", "core.autocrlf", "false"])?;
+    git(repo_path, &["config", "user.email", "codewith@example.com"])?;
+    git(repo_path, &["config", "user.name", "Codewith Test"])?;
+    std::fs::write(repo_path.join("README.md"), "workflow worktree test\n")?;
+    git(repo_path, &["add", "README.md"])?;
+    git(repo_path, &["commit", "-m", "initial"])?;
+    Ok(())
+}
+
+fn git(cwd: &Path, args: &[&str]) -> Result<()> {
+    git_output(cwd, args).map(|_| ())
+}
+
+fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").current_dir(cwd).args(args).output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }

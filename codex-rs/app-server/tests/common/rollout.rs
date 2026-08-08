@@ -54,6 +54,29 @@ pub fn create_fake_rollout(
     )
 }
 
+/// Create a minimal rollout file with an explicit persisted cwd.
+pub fn create_fake_rollout_with_cwd(
+    codex_home: &Path,
+    filename_ts: &str,
+    meta_rfc3339: &str,
+    preview: &str,
+    model_provider: Option<&str>,
+    git_info: Option<GitInfo>,
+    cwd: &Path,
+) -> Result<String> {
+    create_fake_rollout_with_source_and_parent_thread_id(
+        codex_home,
+        filename_ts,
+        meta_rfc3339,
+        preview,
+        model_provider,
+        git_info,
+        SessionSource::Cli,
+        /*parent_thread_id*/ None,
+        cwd.to_path_buf(),
+    )
+}
+
 /// Creates a minimal rollout whose history includes a persisted token usage event.
 ///
 /// Resume and fork tests use this fixture to verify lifecycle replay of restored
@@ -130,6 +153,7 @@ pub fn create_fake_rollout_with_source(
         git_info,
         source,
         /*parent_thread_id*/ None,
+        PathBuf::from("/"),
     )
 }
 
@@ -154,6 +178,7 @@ pub fn create_fake_parented_rollout_with_source(
         git_info,
         source,
         Some(parent_thread_id),
+        PathBuf::from("/"),
     )
 }
 
@@ -167,6 +192,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
     git_info: Option<GitInfo>,
     source: SessionSource,
     parent_thread_id: Option<ThreadId>,
+    cwd: PathBuf,
 ) -> Result<String> {
     let uuid = Uuid::new_v4();
     let uuid_str = uuid.to_string();
@@ -184,7 +210,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
         forked_from_id: None,
         parent_thread_id,
         timestamp: meta_rfc3339.to_string(),
-        cwd: PathBuf::from("/"),
+        cwd,
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source,

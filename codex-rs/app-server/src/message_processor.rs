@@ -384,6 +384,11 @@ impl MessageProcessor {
         let thread_store = codex_core::thread_store_from_config(config.as_ref(), state_db.clone());
         let environment_manager_for_requests = Arc::clone(&environment_manager);
         let goal_service = Arc::new(GoalService::new());
+        let workflow_activation_service = state_db.as_ref().map(|state_db| {
+            Arc::new(codex_workflows_extension::WorkflowActivationService::new(
+                Arc::clone(state_db),
+            ))
+        });
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             ThreadManager::new(
                 config.as_ref(),
@@ -401,6 +406,7 @@ impl MessageProcessor {
                     state_db.clone(),
                     thread_manager.clone(),
                     Arc::clone(&goal_service),
+                    workflow_activation_service.clone(),
                 ),
                 Some(analytics_events_client.clone()),
                 Arc::clone(&thread_store),
@@ -573,6 +579,7 @@ impl MessageProcessor {
             Arc::clone(&thread_manager),
             Arc::clone(&config),
             state_db.clone(),
+            workflow_activation_service,
         );
         let webhook_processor = WebhookRequestProcessor::new(state_db.clone());
         let thread_processor = ThreadRequestProcessor::new(

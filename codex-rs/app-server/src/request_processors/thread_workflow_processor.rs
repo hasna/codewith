@@ -8,6 +8,7 @@ pub(crate) struct ThreadWorkflowRequestProcessor {
     thread_manager: Arc<ThreadManager>,
     config: Arc<Config>,
     state_db: Option<StateDbHandle>,
+    activation_service: Option<Arc<codex_workflows_extension::WorkflowActivationService>>,
 }
 
 impl ThreadWorkflowRequestProcessor {
@@ -15,11 +16,13 @@ impl ThreadWorkflowRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
         state_db: Option<StateDbHandle>,
+        activation_service: Option<Arc<codex_workflows_extension::WorkflowActivationService>>,
     ) -> Self {
         Self {
             thread_manager,
             config,
             state_db,
+            activation_service,
         }
     }
 
@@ -277,48 +280,31 @@ impl ThreadWorkflowRequestProcessor {
         if workflow.is_none() {
             return Err(invalid_request("workflow not found for thread"));
         }
-        let create_run_params = codex_state::WorkflowRunCreateParams {
+        let activation_service = self
+            .activation_service
+            .as_ref()
+            .ok_or_else(|| internal_error("workflow activation service is not initialized"))?;
+        let start_request = codex_workflows_extension::WorkflowStartRequest {
             workflow_record_id,
-            source_thread_id: Some(thread_id),
+            source_thread_id: thread_id,
             idempotency_key: idempotency_key.clone(),
+            activation_config: crate::extensions::workflow_activation_config(&self.config),
         };
-        let create_run_result = if create_run_params.idempotency_key.is_some() {
-            retry_transient_sqlite_busy("start thread workflow run", || {
-                state_db
-                    .workflows()
-                    .create_workflow_run(create_run_params.clone())
-            })
+        let outcome = activation_service
+            .start_workflow_run(start_request)
             .await
-        } else {
-            state_db
-                .workflows()
-                .create_workflow_run(create_run_params)
-                .await
-        };
-        let snapshot = create_run_result.map_err(|err| {
-            if is_transient_sqlite_busy(&err) {
-                internal_error(format!("failed to start thread workflow run: {err}"))
-            } else {
-                invalid_request(format!("failed to start thread workflow run: {err}"))
-            }
-        })?;
-        let projection_params = codex_state::WorkflowGoalPlanProjectionParams {
-            workflow_run_id: snapshot.run.run_id.clone(),
-            thread_id,
-            idempotency_key,
-        };
-        let goal_plan = retry_transient_sqlite_busy("project workflow run to goal plan", || {
-            state_db.project_workflow_run_to_goal_plan(projection_params.clone())
-        })
-        .await
-        .map_err(|err| {
-            internal_error(format!(
-                "failed to project workflow run into task plan: {err}"
-            ))
-        })?
-        .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
+            .map_err(|err| {
+                if is_transient_sqlite_busy(&err) {
+                    internal_error(format!("failed to start thread workflow run: {err}"))
+                } else {
+                    invalid_request(format!("failed to start thread workflow run: {err}"))
+                }
+            })?;
+        let goal_plan = outcome
+            .goal_plan
+            .map(|outcome| api_thread_goal_plan_from_state(outcome.snapshot));
         Ok(ThreadWorkflowRunStartResponse {
-            run: api_thread_workflow_run_snapshot_from_state(snapshot),
+            run: api_thread_workflow_run_snapshot_from_state(outcome.snapshot),
             goal_plan,
         })
     }
@@ -358,14 +344,27 @@ impl ThreadWorkflowRequestProcessor {
         if !workflow_run_belongs_to_thread(&state_db, thread_id, params.run_id.as_str()).await? {
             return Ok(ThreadWorkflowRunResumeResponse { run: None });
         }
+        let run_id = params.run_id;
         let resume_params = codex_state::WorkflowRunResumeParams {
-            run_id: params.run_id,
+            run_id: run_id.clone(),
         };
         let run = state_db
             .resume_workflow_run(resume_params)
             .await
             .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
+        if run.is_some() {
+            let activation_service = self
+                .activation_service
+                .as_ref()
+                .ok_or_else(|| internal_error("workflow activation service is not initialized"))?;
+            activation_service
+                .activate(
+                    run_id,
+                    crate::extensions::workflow_activation_config(&self.config),
+                )
+                .await;
+        }
         Ok(ThreadWorkflowRunResumeResponse { run })
     }
 

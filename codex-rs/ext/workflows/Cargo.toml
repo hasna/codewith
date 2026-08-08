@@ -15,13 +15,21 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+codex-background-agent = { workspace = true }
+codex-core = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
+codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
 codex-tools = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
 codex-workflows = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
