@@ -1,4 +1,5 @@
 use super::*;
+use crate::function_tool::FunctionCallError;
 use crate::shell::ShellType;
 use crate::shell::default_user_shell;
 use codex_exec_server::Environment;
@@ -16,6 +17,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolExecutor;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use tokio::sync::Mutex;
 
@@ -277,6 +279,33 @@ async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
         }),
         None
     );
+}
+
+#[tokio::test]
+async fn write_stdin_routes_full_u32_session_id_domain_to_process_lookup() {
+    const REPRO_SESSION_ID: u32 = 4_147_572_478;
+
+    for session_id in [
+        1_000,
+        i32::MAX as u32 + 1,
+        REPRO_SESSION_ID,
+        u32::MAX,
+    ] {
+        let payload = ToolPayload::Function {
+            arguments: serde_json::json!({ "session_id": session_id }).to_string(),
+        };
+        let invocation = invocation_for_payload("write_stdin", "write-stdin-boundary", payload).await;
+        let Err(error) = WriteStdinHandler.handle(invocation).await else {
+            panic!("missing session {session_id} should fail after process lookup");
+        };
+
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(format!(
+                "write_stdin failed: Unknown process id {session_id}"
+            ))
+        );
+    }
 }
 
 #[tokio::test]
