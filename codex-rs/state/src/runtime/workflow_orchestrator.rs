@@ -3974,9 +3974,9 @@ WHERE run_id = ?
             "wf_branch_failure_evidence",
             parallel_branch_workflow_yaml(
                 "wf_branch_failure_evidence",
-                /*step_count*/ 1,
+                /*step_count*/ 2,
                 /*max_parallel_steps*/ 1,
-                /*max_agents*/ 1,
+                /*max_agents*/ 2,
                 /*max_worktrees*/ 1,
                 "no-secret",
             ),
