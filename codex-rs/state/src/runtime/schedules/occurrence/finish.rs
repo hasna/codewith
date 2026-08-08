@@ -34,6 +34,7 @@ WHERE schedule_id = ?
       FROM thread_schedules
       WHERE thread_schedules.schedule_id = thread_schedule_runs.schedule_id
         AND thread_schedules.lease_id = ?
+        AND thread_schedules.lease_expires_at_ms > ?
   )
   AND EXISTS (
       SELECT 1
@@ -52,6 +53,7 @@ WHERE schedule_id = ?
         .bind(expected_goal_id)
         .bind(expected_goal_id)
         .bind(lease_id)
+        .bind(completed_at_ms)
         .execute(&mut *tx)
         .await?;
         if run_result.rows_affected() == 0 {
@@ -70,6 +72,7 @@ SELECT EXISTS(
       AND thread_schedule_runs.status IN ('completed', 'failed')
       AND thread_schedule_occurrences.state = 'terminal'
       AND thread_schedules.lease_id = ?
+      AND thread_schedules.lease_expires_at_ms > ?
       AND (? IS NULL OR thread_schedule_runs.goal_id IS NULL OR thread_schedule_runs.goal_id = ?)
 )
                 "#,
@@ -78,6 +81,7 @@ SELECT EXISTS(
             .bind(run_id)
             .bind(lease_id)
             .bind(lease_id)
+            .bind(completed_at_ms)
             .bind(expected_goal_id)
             .bind(expected_goal_id)
             .fetch_one(&mut *tx)

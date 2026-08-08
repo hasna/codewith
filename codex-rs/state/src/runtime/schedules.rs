@@ -2514,26 +2514,27 @@ mod tests {
             .await
             .expect("contending state runtime should initialize");
         let retry_at = now + chrono::Duration::seconds(31);
-        let completion = runtime.thread_schedules().complete_thread_schedule_run(
-            &schedule.schedule_id,
-            &claim.run.run_id,
-            "lease-terminal-race",
-            retry_at,
-            Some(now + chrono::Duration::hours(1)),
+        let completion = runtime
+            .thread_schedules()
+            .complete_thread_schedule_run(
+                &schedule.schedule_id,
+                &claim.run.run_id,
+                "lease-terminal-race",
+                retry_at,
+                Some(now + chrono::Duration::hours(1)),
+            )
+            .await
+            .expect("late completion should not error");
+        assert!(
+            !completion,
+            "a terminal event at or after lease expiry must be fenced out"
         );
-        let replacement = contender.thread_schedules().claim_due_thread_schedule(
-            retry_at,
-            "lease-reaper-race",
-            Duration::from_secs(30),
-        );
-        let (completion, replacement) = tokio::join!(completion, replacement);
-        let completion = completion.expect("late completion should not error");
-        let replacement = replacement.expect("expired lease reaper should not error");
-        assert_ne!(
-            completion,
-            replacement.is_some(),
-            "either the terminal event or the reaper may own the old lease, never both"
-        );
+        let replacement = contender
+            .thread_schedules()
+            .claim_due_thread_schedule(retry_at, "lease-reaper-race", Duration::from_secs(30))
+            .await
+            .expect("expired lease reaper should not error")
+            .expect("expired lease reaper should reclaim the original occurrence");
 
         let original_run = runtime
             .thread_schedules()
@@ -2541,25 +2542,15 @@ mod tests {
             .await
             .expect("original run should load")
             .expect("original run should exist");
-        assert_eq!(
-            if completion {
-                crate::ThreadScheduleRunStatus::Completed
-            } else {
-                crate::ThreadScheduleRunStatus::Running
-            },
-            original_run.status,
-            "the same run is either terminalized or reclaimed without replacement"
-        );
-        if let Some(replacement) = replacement.as_ref() {
-            assert_eq!(claim.run.run_id, replacement.run.run_id);
-            assert_eq!(claim.run.turn_id, replacement.run.turn_id);
-        }
+        assert_eq!(crate::ThreadScheduleRunStatus::Running, original_run.status);
+        assert_eq!(claim.run.run_id, replacement.run.run_id);
+        assert_eq!(claim.run.turn_id, replacement.run.turn_id);
         let stats = runtime
             .thread_schedules()
             .get_thread_schedule_stats(&schedule.schedule_id)
             .await
             .expect("schedule stats should load");
-        assert_eq!(i64::from(replacement.is_some()), stats.running_runs);
+        assert_eq!(1, stats.running_runs);
         assert_eq!(0, stats.leased_runs);
         assert_eq!(1, stats.total_runs);
     }
