@@ -273,7 +273,9 @@ async fn unfinished_active_goal_plan_blocks_terminal_turn_completion() -> anyhow
     assert_eq!(1, outcome.snapshot.usage_summary().pending_node_count);
     assert_eq!(1, outcome.snapshot.usage_summary().deferred_node_count);
 
-    let decisions = harness.turn_completion_decisions("turn-1", 2).await;
+    let decisions = harness
+        .turn_completion_decisions("turn-1", /*count*/ 2)
+        .await;
     assert!(
         matches!(decisions[0], TurnCompletionDecision::Continue(_)),
         "an unfinished active plan must reject terminal completion"
@@ -6019,7 +6021,7 @@ impl GoalExtensionHarness {
     }
 
     async fn turn_completion_decision(&self, turn_id: &str) -> TurnCompletionDecision {
-        self.turn_completion_decisions(turn_id, 1)
+        self.turn_completion_decisions(turn_id, /*count*/ 1)
             .await
             .into_iter()
             .next()
