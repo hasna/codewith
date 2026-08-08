@@ -47,7 +47,7 @@ impl Session {
         }
     }
 
-    pub(super) async fn evaluate_turn_completion_lifecycle(
+    pub(crate) async fn evaluate_turn_completion_lifecycle(
         &self,
         turn_context: &TurnContext,
     ) -> Vec<ResponseItem> {
