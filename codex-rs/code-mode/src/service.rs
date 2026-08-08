@@ -41,6 +41,7 @@ pub type CodeModeSessionProviderFuture<'a> =
 pub type ToolInvocationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<JsonValue, String>> + Send + 'a>>;
 pub type NotificationFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+/// A host lifecycle operation for resources owned by one code-mode cell.
 pub type CellLifecycleFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -98,10 +99,14 @@ pub trait CodeModeSessionDelegate: Send + Sync {
     ) -> NotificationFuture<'a>;
 
     /// Waits until resources created by nested tools in this cell are terminal.
-    fn wait_for_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a>;
+    fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Terminates resources created by nested tools in this cell.
-    fn terminate_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a>;
+    fn terminate_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Releases delegate state associated with a cell after it reaches a terminal state.
     fn cell_closed(&self, cell_id: &CellId);
@@ -128,14 +133,6 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
         _text: String,
         _cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn terminate_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
         Box::pin(async { Ok(()) })
     }
 
@@ -611,6 +608,7 @@ async fn run_cell_control(
                 let Some(event) = maybe_event else {
                     runtime_closed = true;
                     if termination_requested {
+                        move_pending_result_content(&mut pending_result, &mut content_items);
                         if let Some(response_tx) = response_tx.take() {
                             let response = RuntimeResponse::Terminated {
                                 cell_id: cell_id.clone(),
@@ -621,6 +619,15 @@ async fn run_cell_control(
                         break;
                     }
                     if pending_result.is_none() {
+                        let delegate = Arc::clone(&inner.delegate);
+                        if let Err(err) = delegate
+                            .terminate_cell_dependencies(cell_id.clone())
+                            .await
+                        {
+                            warn!(
+                                "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                            );
+                        }
                         let result = PendingResult {
                             content_items: std::mem::take(&mut content_items),
                             error_text: Some("exec runtime ended unexpectedly".to_string()),
@@ -875,6 +882,7 @@ async fn run_cell_control(
                             );
                         }
                         if runtime_closed {
+                            move_pending_result_content(&mut pending_result, &mut content_items);
                             if let Some(response_tx) = response_tx.take() {
                                 let response = RuntimeResponse::Terminated {
                                     cell_id: cell_id.clone(),
