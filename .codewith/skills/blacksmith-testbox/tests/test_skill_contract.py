@@ -5,7 +5,18 @@ import unittest
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+def find_repo_root() -> Path:
+    candidates = (Path.cwd(), *Path(__file__).resolve().parents)
+    for candidate in candidates:
+        if (
+            candidate.joinpath(".codewith/CODEWITH.md").is_file()
+            and candidate.joinpath(".github/workflows/blacksmith-testbox.yml").is_file()
+        ):
+            return candidate
+    raise RuntimeError("run this contract test from a hasna/codewith checkout")
+
+
+REPO_ROOT = find_repo_root()
 SKILL_PATH = REPO_ROOT / ".codewith/skills/blacksmith-testbox/SKILL.md"
 POLICY_PATH = REPO_ROOT / ".codewith/CODEWITH.md"
 WORKFLOW_PATH = REPO_ROOT / ".github/workflows/blacksmith-testbox.yml"
