@@ -65,11 +65,11 @@ pub struct WorkflowModelRoute {
     pub routing: Option<WorkflowModelRoutingContract>,
 }
 
-/// Policy-free contract that a future open-router integration can satisfy.
+/// Policy-free routing contract enforced by workflow activation and provider attempts.
 ///
-/// The surrounding [`WorkflowModelRoute`] remains exact and executable today.
-/// This contract only records the request/decision boundary so Codewith
-/// workflow specs can be validated without embedding provider ranking policy.
+/// The surrounding [`WorkflowModelRoute`] and requested-versus-effective receipt stay exact
+/// across retries, recovery, descendants, and verifier attempts. Routing policy remains outside
+/// the spec, while unsupported enforcement surfaces fail closed before external effects.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowModelRoutingContract {
