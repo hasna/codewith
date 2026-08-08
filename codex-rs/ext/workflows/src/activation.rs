@@ -40,11 +40,11 @@ use codex_state::WorkflowRunVerifierRecordResultParams;
 use codex_state::WorkflowRunVerifierResultSummary;
 use codex_state::busy_retry::retry_on_busy;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_workflows::WorkflowVerifier;
-use codex_workflows::WorkflowProviderCreditControl;
 use codex_workflows::WorkflowModelRoute;
+use codex_workflows::WorkflowProviderCreditControl;
 use codex_workflows::WorkflowRouteReceipt;
 use codex_workflows::WorkflowRouteRuntime;
+use codex_workflows::WorkflowVerifier;
 use codex_workflows::WorkflowWorkspaceMode;
 use codex_workflows::admit_workflow_model_route_for_runtime;
 use codex_workflows::parse_workflow_yaml;
@@ -808,9 +808,8 @@ fn validate_verifier_route(
     let requested_value = claimed.step.model_route_json.as_ref().ok_or_else(|| {
         anyhow::anyhow!("workflow_route_receipt_missing: verifier step has no model route")
     })?;
-    let requested = serde_json::from_value::<WorkflowModelRoute>(
-        workflow_state_data(requested_value).clone(),
-    )?;
+    let requested =
+        serde_json::from_value::<WorkflowModelRoute>(workflow_state_data(requested_value).clone())?;
     let admitted_value = claimed
         .step
         .branch_admission_json
@@ -874,7 +873,9 @@ fn validate_workflow_routes_before_effects(
         let workspace_mode = step
             .workspace
             .as_ref()
-            .map_or(WorkflowWorkspaceMode::SharedRepository, |workspace| workspace.mode);
+            .map_or(WorkflowWorkspaceMode::SharedRepository, |workspace| {
+                workspace.mode
+            });
         let worktree_mode = match workspace_mode {
             WorkflowWorkspaceMode::IsolatedWorktree => "isolated_worktree",
             WorkflowWorkspaceMode::SharedRepository => "shared_repository",
@@ -984,6 +985,105 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+
+    const ROUTE_ACTIVATION_WORKFLOW_YAML: &str = r#"
+schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_route_activation"
+display_name: "Route activation"
+source_prompt: "Prove route admission happens before workflow effects."
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "openai"
+  model: "gpt-5.4"
+  reasoning: "high"
+limits:
+  max_parallel_steps: 1
+  max_agents: 1
+  max_worktrees: 1
+  max_runtime_seconds: 300
+  max_step_runtime_seconds: 120
+  max_tokens: 1000
+  max_tool_calls: 10
+approvals:
+  required_before: []
+agents:
+  - id: "worker"
+    display_name: "Worker"
+    role: "Prove route activation."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+steps:
+  - id: "run"
+    title: "Run exact route"
+    agent: "worker"
+    depends_on: []
+    outputs:
+      - "result.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "result_present"
+          type: "artifact_contains"
+          artifact: "result.md"
+          must_contain:
+            - "done"
+artifacts:
+  retention: "until_workflow_complete"
+  required:
+    - "result.md"
+cleanup:
+  on_cancel: []
+  on_complete: []
+"#;
+
+    fn supported_route_runtime() -> WorkflowRouteRuntime {
+        WorkflowRouteRuntime {
+            model_gateway: Some("hasna".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            reasoning: Some("high".to_string()),
+            service_tier: None,
+            auth_profile: None,
+            approval_policy: Some("never".to_string()),
+            permission_profile: Some("read-only".to_string()),
+            context_window_tokens: Some(256_000),
+            credit_control: WorkflowProviderCreditControl::Unavailable,
+        }
+    }
+
+    #[test]
+    fn activation_route_gate_accepts_supported_exact_route_and_rejects_before_effects() {
+        let spec = parse_workflow_yaml(ROUTE_ACTIVATION_WORKFLOW_YAML)
+            .expect("activation workflow should parse");
+        let supported = supported_route_runtime();
+
+        validate_workflow_routes_before_effects(&spec, &supported)
+            .expect("exact supported route should reach activation");
+
+        let mut unavailable = supported.clone();
+        unavailable.provider = None;
+        let unavailable_error = validate_workflow_routes_before_effects(&spec, &unavailable)
+            .expect_err("missing provider must fail before activation effects");
+        assert!(
+            unavailable_error
+                .to_string()
+                .contains("workflow_route_provider_unavailable")
+        );
+
+        let mut mismatched = supported;
+        mismatched.model = Some("gpt-5.3".to_string());
+        let mismatch_error = validate_workflow_routes_before_effects(&spec, &mismatched)
+            .expect_err("mismatched model must fail before activation effects");
+        assert!(
+            mismatch_error
+                .to_string()
+                .contains("workflow_route_model_mismatch")
+        );
+    }
 
     #[test]
     fn workflow_state_operation_labels_cover_every_activation_boundary() {

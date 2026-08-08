@@ -118,14 +118,14 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
-use codex_workflows::WorkflowProviderCreditControl;
-use codex_workflows::WorkflowEffectiveModelRoute;
-use codex_workflows::WorkflowRouteReceipt;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::StateDbHandle;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_workflows::WorkflowEffectiveModelRoute;
+use codex_workflows::WorkflowProviderCreditControl;
+use codex_workflows::WorkflowRouteReceipt;
 use futures::future::join_all;
 use serde_json::Value;
 use serde_json::json;
@@ -3921,10 +3921,11 @@ fn validate_workflow_route_snapshot(
     if run.source != "workflow" {
         return Ok(None);
     }
-    let receipt_value = snapshot
-        .payload_json
-        .get("routeReceipt")
-        .ok_or_else(|| anyhow::anyhow!("workflow_route_receipt_missing: workflow execution snapshot has no route receipt"))?;
+    let receipt_value = snapshot.payload_json.get("routeReceipt").ok_or_else(|| {
+        anyhow::anyhow!(
+            "workflow_route_receipt_missing: workflow execution snapshot has no route receipt"
+        )
+    })?;
     let receipt = serde_json::from_value::<WorkflowRouteReceipt>(receipt_value.clone())
         .map_err(|err| anyhow::anyhow!("workflow_route_receipt_invalid: {err}"))?;
     receipt.enforce_provider_attempt(&receipt.effective)?;
@@ -3957,15 +3958,19 @@ fn validate_workflow_route_snapshot(
         );
     }
     let payload = snapshot.payload_json.as_object().ok_or_else(|| {
-        anyhow::anyhow!("workflow_route_receipt_invalid: workflow execution snapshot is not an object")
+        anyhow::anyhow!(
+            "workflow_route_receipt_invalid: workflow execution snapshot is not an object"
+        )
     })?;
     let scalar_matches = |key: &str, expected: Option<&str>| {
         payload
             .get(key)
             .map_or(expected.is_none(), |value| value.as_str() == expected)
     };
-    if !scalar_matches("modelGateway", Some(receipt.effective.model_gateway.as_str()))
-        || !scalar_matches("provider", Some(receipt.effective.provider.as_str()))
+    if !scalar_matches(
+        "modelGateway",
+        Some(receipt.effective.model_gateway.as_str()),
+    ) || !scalar_matches("provider", Some(receipt.effective.provider.as_str()))
         || !scalar_matches("model", Some(receipt.effective.model.as_str()))
         || !scalar_matches("reasoning", Some(receipt.effective.reasoning.as_str()))
         || !scalar_matches("serviceTier", receipt.effective.service_tier.as_deref())
@@ -3979,7 +3984,9 @@ fn validate_workflow_route_snapshot(
         );
     }
     if payload.get("contextCeilingTokens")
-        != Some(&serde_json::to_value(receipt.effective.context_ceiling_tokens)?)
+        != Some(&serde_json::to_value(
+            receipt.effective.context_ceiling_tokens,
+        )?)
         || payload.get("creditAccounting")
             != Some(&serde_json::to_value(receipt.terminal_credit_accounting())?)
     {

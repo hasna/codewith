@@ -226,7 +226,10 @@ pub fn admit_workflow_model_route(
                 "effective fallback decision does not match the persisted routing decision",
             ));
         }
-        if constraints.fallback_required && !effective.fallback_used {
+        if constraints.fallback_required
+            && (decision.status != WorkflowModelRoutingDecisionStatus::Fallback
+                || !effective.fallback_used)
+        {
             return Err(route_error(
                 "workflow_route_required_fallback_missing",
                 "routing requires an explicit fallback decision",
@@ -543,7 +546,7 @@ fn enforce_exact(
     expected: &str,
     actual: &str,
 ) -> Result<(), WorkflowRouteEnforcementError> {
-    if expected.is_none() || expected == actual {
+    if expected == actual {
         Ok(())
     } else {
         Err(route_error(
@@ -559,7 +562,7 @@ fn enforce_optional_exact(
     expected: Option<&str>,
     actual: Option<&str>,
 ) -> Result<(), WorkflowRouteEnforcementError> {
-    if expected == actual {
+    if expected.is_none() || expected == actual {
         Ok(())
     } else {
         Err(route_error(
@@ -591,7 +594,8 @@ fn enforce_optional_list(
     actual: Option<&str>,
     allowed: &[String],
 ) -> Result<(), WorkflowRouteEnforcementError> {
-    if allowed.is_empty() || actual.is_some_and(|actual| allowed.iter().any(|value| value == actual))
+    if allowed.is_empty()
+        || actual.is_some_and(|actual| allowed.iter().any(|value| value == actual))
     {
         Ok(())
     } else {
@@ -620,6 +624,8 @@ fn required_runtime_value(
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
     use crate::WorkflowEffectiveModelRoute;
     use crate::WorkflowModelRoute;
@@ -634,6 +640,7 @@ mod tests {
     use crate::WorkflowModelRoutingRequest;
     use crate::WorkflowProviderCreditControl;
     use crate::admit_workflow_model_route;
+    use crate::admit_workflow_model_route_for_runtime;
 
     fn exact_route() -> WorkflowModelRoute {
         WorkflowModelRoute {
@@ -713,6 +720,32 @@ mod tests {
         }
     }
 
+    fn runtime() -> crate::WorkflowRouteRuntime {
+        crate::WorkflowRouteRuntime {
+            model_gateway: Some("openrouter".to_string()),
+            provider: Some("openrouter".to_string()),
+            model: Some("openai/gpt-5.4".to_string()),
+            reasoning: Some("high".to_string()),
+            service_tier: Some("priority".to_string()),
+            auth_profile: Some("account007".to_string()),
+            approval_policy: Some("never".to_string()),
+            permission_profile: Some(":workspace".to_string()),
+            context_window_tokens: Some(256_000),
+            credit_control: WorkflowProviderCreditControl::NotRequested,
+        }
+    }
+
+    fn invoke_provider_after_route_admission(
+        requested: &WorkflowModelRoute,
+        effective: &WorkflowEffectiveModelRoute,
+        provider_calls: &AtomicUsize,
+    ) -> Result<(), crate::WorkflowRouteEnforcementError> {
+        let receipt = admit_workflow_model_route(requested, effective)?;
+        receipt.enforce_provider_attempt(effective)?;
+        provider_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     #[test]
     fn fully_supported_exact_route_persists_immutable_requested_and_effective_receipt() {
         let route = exact_route();
@@ -728,6 +761,10 @@ mod tests {
             receipt.terminal_credit_accounting(),
             crate::WorkflowProviderCreditTerminalAccounting::NotRequested
         );
+        let provider_calls = AtomicUsize::new(0);
+        invoke_provider_after_route_admission(&route, &effective, &provider_calls)
+            .expect("fully supported route can invoke the provider");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -744,23 +781,97 @@ mod tests {
     #[test]
     fn every_disallowed_or_mismatched_route_dimension_fails_closed() {
         let cases: Vec<(&str, Box<dyn FnOnce(&mut WorkflowEffectiveModelRoute)>)> = vec![
-            ("workflow_route_gateway_mismatch", Box::new(|route| route.model_gateway = "direct".to_string())),
-            ("workflow_route_provider_mismatch", Box::new(|route| route.provider = "openai".to_string())),
-            ("workflow_route_model_mismatch", Box::new(|route| route.model = "openai/gpt-4.1".to_string())),
-            ("workflow_route_reasoning_mismatch", Box::new(|route| route.reasoning = "medium".to_string())),
-            ("workflow_route_service_tier_mismatch", Box::new(|route| route.service_tier = Some("default".to_string()))),
-            ("workflow_route_auth_profile_mismatch", Box::new(|route| route.auth_profile = Some("account008".to_string()))),
-            ("workflow_route_approval_profile_mismatch", Box::new(|route| route.approval_policy = Some("on-request".to_string()))),
-            ("workflow_route_permission_profile_mismatch", Box::new(|route| route.permission_profile = Some(":read-only".to_string()))),
-            ("workflow_route_worktree_mode_mismatch", Box::new(|route| route.worktree_mode = "shared_repository".to_string())),
-            ("workflow_route_context_ceiling_exceeded", Box::new(|route| route.context_ceiling_tokens = Some(128_001))),
+            (
+                "workflow_route_gateway_mismatch",
+                Box::new(|route| route.model_gateway = "direct".to_string()),
+            ),
+            (
+                "workflow_route_provider_mismatch",
+                Box::new(|route| route.provider = "openai".to_string()),
+            ),
+            (
+                "workflow_route_model_mismatch",
+                Box::new(|route| route.model = "openai/gpt-4.1".to_string()),
+            ),
+            (
+                "workflow_route_reasoning_mismatch",
+                Box::new(|route| route.reasoning = "medium".to_string()),
+            ),
+            (
+                "workflow_route_service_tier_mismatch",
+                Box::new(|route| route.service_tier = Some("default".to_string())),
+            ),
+            (
+                "workflow_route_auth_profile_mismatch",
+                Box::new(|route| route.auth_profile = Some("account008".to_string())),
+            ),
+            (
+                "workflow_route_approval_profile_mismatch",
+                Box::new(|route| route.approval_policy = Some("on-request".to_string())),
+            ),
+            (
+                "workflow_route_permission_profile_mismatch",
+                Box::new(|route| route.permission_profile = Some(":read-only".to_string())),
+            ),
+            (
+                "workflow_route_worktree_mode_mismatch",
+                Box::new(|route| route.worktree_mode = "shared_repository".to_string()),
+            ),
+            (
+                "workflow_route_context_ceiling_exceeded",
+                Box::new(|route| route.context_ceiling_tokens = Some(128_001)),
+            ),
         ];
 
         for (expected_code, mutate) in cases {
             let mut effective = effective_route();
             mutate(&mut effective);
-            let error = admit_workflow_model_route(&exact_route(), &effective)
+            let provider_calls = AtomicUsize::new(0);
+            let error = invoke_provider_after_route_admission(
+                &exact_route(),
+                &effective,
+                &provider_calls,
+            )
                 .expect_err("mismatched route must fail closed");
+            assert_eq!(error.code(), expected_code);
+            assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn unavailable_required_runtime_dimensions_fail_before_provider_attempt() {
+        let cases: Vec<(&str, Box<dyn FnOnce(&mut crate::WorkflowRouteRuntime)>)> = vec![
+            (
+                "workflow_route_gateway_unavailable",
+                Box::new(|runtime| runtime.model_gateway = None),
+            ),
+            (
+                "workflow_route_provider_unavailable",
+                Box::new(|runtime| runtime.provider = None),
+            ),
+            (
+                "workflow_route_model_unavailable",
+                Box::new(|runtime| runtime.model = None),
+            ),
+            (
+                "workflow_route_reasoning_unavailable",
+                Box::new(|runtime| runtime.reasoning = None),
+            ),
+            (
+                "workflow_route_context_ceiling_unavailable",
+                Box::new(|runtime| runtime.context_window_tokens = None),
+            ),
+        ];
+
+        for (expected_code, mutate) in cases {
+            let mut runtime = runtime();
+            mutate(&mut runtime);
+            let error = admit_workflow_model_route_for_runtime(
+                &exact_route(),
+                &runtime,
+                "isolated_worktree",
+            )
+            .expect_err("unavailable runtime dimension must fail closed");
             assert_eq!(error.code(), expected_code);
         }
     }
@@ -776,9 +887,15 @@ mod tests {
             .constraints
             .fallback_required = true;
 
-        let error = admit_workflow_model_route(&route, &effective_route())
+        let provider_calls = AtomicUsize::new(0);
+        let error = invoke_provider_after_route_admission(
+            &route,
+            &effective_route(),
+            &provider_calls,
+        )
             .expect_err("required fallback cannot be ignored");
         assert_eq!(error.code(), "workflow_route_required_fallback_missing");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -794,9 +911,11 @@ mod tests {
         let mut effective = effective_route();
         effective.credit_control = WorkflowProviderCreditControl::Unavailable;
 
-        let error = admit_workflow_model_route(&route, &effective)
+        let provider_calls = AtomicUsize::new(0);
+        let error = invoke_provider_after_route_admission(&route, &effective, &provider_calls)
             .expect_err("finite budgets require a provider reservation");
         assert_eq!(error.code(), "workflow_route_credit_ceiling_unavailable");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -818,9 +937,11 @@ mod tests {
             exhausted: true,
         };
 
-        let error = admit_workflow_model_route(&route, &effective)
+        let provider_calls = AtomicUsize::new(0);
+        let error = invoke_provider_after_route_admission(&route, &effective, &provider_calls)
             .expect_err("an exhausted reservation cannot admit provider work");
         assert_eq!(error.code(), "workflow_route_credit_ceiling_exhausted");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

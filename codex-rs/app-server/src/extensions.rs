@@ -118,7 +118,10 @@ pub(crate) fn workflow_activation_config(
             model_gateway: Some(config.model_gateway_id.clone()),
             provider: Some(config.model_provider_id.clone()),
             model: config.model.clone(),
-            reasoning: config.model_reasoning_effort.as_ref().map(ToString::to_string),
+            reasoning: config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
             service_tier: config.service_tier.clone(),
             auth_profile: config.selected_auth_profile.clone(),
             approval_policy: Some(config.permissions.approval_policy.value().to_string()),

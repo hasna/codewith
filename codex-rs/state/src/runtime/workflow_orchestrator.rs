@@ -1630,10 +1630,7 @@ fn workflow_branch_route_receipt(
             )
         })?;
     let worktree_mode = match workflow_workspace_mode(workspace_json).map_err(|err| {
-        WorkflowRouteEnforcementError::new(
-            "workflow_route_worktree_mode_invalid",
-            err.to_string(),
-        )
+        WorkflowRouteEnforcementError::new("workflow_route_worktree_mode_invalid", err.to_string())
     })? {
         WorkflowWorkspaceMode::IsolatedWorktree => "isolated_worktree",
         WorkflowWorkspaceMode::SharedRepository => "shared_repository",
@@ -4189,9 +4186,9 @@ WHERE worktree_id = ?
                     config_fingerprint: None,
                     version_fingerprint: None,
                     runtime_package_fingerprint: None,
-                permission_profile_json: read_only_permission_profile_json(),
-                route_runtime: openrouter_workflow_route_runtime(),
-                parent_agent_run_id: None,
+                    permission_profile_json: read_only_permission_profile_json(),
+                    route_runtime: openrouter_workflow_route_runtime(),
+                    parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
                 |env_key| {
@@ -4327,9 +4324,9 @@ WHERE worktree_id = ?
                     config_fingerprint: None,
                     version_fingerprint: None,
                     runtime_package_fingerprint: None,
-                permission_profile_json: read_only_permission_profile_json(),
-                route_runtime: openrouter_workflow_route_runtime(),
-                parent_agent_run_id: None,
+                    permission_profile_json: read_only_permission_profile_json(),
+                    route_runtime: openrouter_workflow_route_runtime(),
+                    parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
                 |_| true,
