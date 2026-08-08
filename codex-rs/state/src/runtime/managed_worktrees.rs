@@ -2185,6 +2185,7 @@ WHERE worktree_id = ?
                 status_reason: Some("worktree owner".to_string()),
                 config_fingerprint: None,
                 version_fingerprint: None,
+                model_attestation: None,
             })
             .await?;
         let repo = repo_path("/repo");

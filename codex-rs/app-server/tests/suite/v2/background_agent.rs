@@ -173,12 +173,64 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
     );
     let completed =
         wait_for_agent_status(&mut mcp, agent_id.as_str(), AgentRunStatus::Completed).await?;
-    assert!(
-        completed
-            .agent
-            .expect("completed agent")
-            .thread_id
-            .is_some()
+    let completed_agent = completed.agent.as_ref().expect("completed agent");
+    assert!(completed_agent.thread_id.is_some());
+
+    let idempotency_key_sha256 =
+        format!("{:x}", Sha256::digest("durable-start-list-read".as_bytes()));
+    let start_agent_json = serde_json::to_value(&start.agent)?;
+    let start_attestation = start_agent_json
+        .get("modelAttestation")
+        .expect("start response should expose model attestation");
+    assert_eq!(start_attestation.get("agentId"), Some(&json!(agent_id)));
+    assert_eq!(
+        start_attestation.get("idempotencyKeySha256"),
+        Some(&json!(idempotency_key_sha256))
+    );
+    assert_eq!(
+        start_attestation.get("configFingerprint"),
+        Some(&json!("cfg-test"))
+    );
+    assert_eq!(
+        start_attestation.get("requestedModel"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        start_attestation.pointer("/requestedConfiguration/executionContext/model"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        start_attestation.get("appliedModel"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        start_attestation.pointer("/appliedConfiguration/executionContext/model"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        start_attestation.get("boundRuntimeModel"),
+        Some(&JsonValue::Null)
+    );
+
+    let completed_agent_json = serde_json::to_value(completed_agent)?;
+    assert_eq!(
+        completed_agent_json.pointer("/modelAttestation/boundRuntimeModel"),
+        Some(&json!("mock-model"))
+    );
+    let retry = start_agent(
+        &mut mcp,
+        start_params(
+            "build the background agent plan",
+            Some("durable-start-list-read".to_string()),
+            codex_home.path(),
+        ),
+    )
+    .await?;
+    assert_eq!(retry.agent.agent_id, agent_id);
+    assert_eq!(
+        serde_json::to_value(&retry.agent)?.get("modelAttestation"),
+        completed_agent_json.get("modelAttestation"),
+        "same-key retry must return the same durable bound-model attestation"
     );
     let state_db = init_state_db(codex_home.path()).await?;
     state_db
@@ -197,12 +249,26 @@ async fn agent_start_list_read_and_events_survive_app_server_restart() -> Result
 
     let mut restarted = init_mcp(codex_home.path()).await?;
     let read = agent_read(&mut restarted, &agent_id).await?;
-    assert_eq!(read.agent.expect("agent after restart").agent_id, agent_id);
+    let read_agent = read.agent.expect("agent after restart");
+    assert_eq!(read_agent.agent_id, agent_id);
+    let read_agent_json = serde_json::to_value(&read_agent)?;
+    assert_eq!(
+        read_agent_json.pointer("/modelAttestation/boundRuntimeModel"),
+        Some(&json!("mock-model"))
+    );
+    assert_eq!(
+        read_agent_json.pointer("/modelAttestation/idempotencyKeySha256"),
+        Some(&json!(idempotency_key_sha256))
+    );
     let execution_snapshot = read
         .execution_snapshot
         .expect("execution snapshot after restart");
     assert_eq!(execution_snapshot.snapshot_kind, "worker_thread_bound");
     assert!(execution_snapshot.payload.get("threadId").is_some());
+    assert_eq!(
+        execution_snapshot.payload.get("boundRuntimeModel"),
+        Some(&json!("mock-model"))
+    );
     assert_eq!(
         read.status_snapshot.expect("snapshot after restart").status,
         AgentRunStatus::Completed
@@ -3566,6 +3632,7 @@ async fn seed_queued_agent_run(
                 status_reason: Some("queued by quota test".to_string()),
                 config_fingerprint: Some("cfg-test".to_string()),
                 version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
+                model_attestation: None,
             },
             &start_event_payload,
             &execution_snapshot_params,

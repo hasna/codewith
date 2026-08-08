@@ -1114,6 +1114,16 @@
             "string",
             "null"
           ]
+        },
+        "modelAttestation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentModelAttestation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -24818,6 +24828,51 @@
         "okOverridden"
       ],
       "type": "string"
+    },
+    "AgentModelAttestation": {
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "appliedConfiguration": true,
+        "appliedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "boundRuntimeModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "configFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKeySha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requestedConfiguration": true,
+        "requestedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agentId",
+        "requestedConfiguration",
+        "appliedConfiguration"
+      ],
+      "type": "object"
     }
   },
   "title": "CodexAppServerProtocolV2",

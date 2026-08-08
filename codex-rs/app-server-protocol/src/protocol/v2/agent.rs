@@ -89,6 +89,25 @@ pub enum AgentLifecycleEffect {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct AgentModelAttestation {
+    pub agent_id: String,
+    #[ts(type = "string | null")]
+    pub idempotency_key_sha256: Option<String>,
+    #[ts(type = "string | null")]
+    pub config_fingerprint: Option<String>,
+    #[ts(type = "string | null")]
+    pub requested_model: Option<String>,
+    pub requested_configuration: JsonValue,
+    #[ts(type = "string | null")]
+    pub applied_model: Option<String>,
+    pub applied_configuration: JsonValue,
+    #[ts(type = "string | null")]
+    pub bound_runtime_model: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct AgentRun {
     pub agent_id: String,
     // Stable identity of the admitted idempotency key, not the key itself:
@@ -128,6 +147,7 @@ pub struct AgentRun {
     pub config_fingerprint: Option<String>,
     #[ts(type = "string | null")]
     pub version_fingerprint: Option<String>,
+    pub model_attestation: Option<AgentModelAttestation>,
     pub retention_state: AgentRetentionState,
     #[ts(type = "number | null")]
     pub archive_after: Option<i64>,

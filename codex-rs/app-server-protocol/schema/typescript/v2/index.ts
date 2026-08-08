@@ -30,6 +30,7 @@ export type { AgentExecutionContextParams } from "./AgentExecutionContextParams"
 export type { AgentExecutionSnapshot } from "./AgentExecutionSnapshot";
 export type { AgentLifecycleEffect } from "./AgentLifecycleEffect";
 export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
+export type { AgentModelAttestation } from "./AgentModelAttestation";
 export type { AgentPendingInteraction } from "./AgentPendingInteraction";
 export type { AgentPendingInteractionKind } from "./AgentPendingInteractionKind";
 export type { AgentPendingInteractionStatus } from "./AgentPendingInteractionStatus";

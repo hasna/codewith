@@ -1,6 +1,7 @@
 use super::*;
 use crate::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 use crate::BackgroundAgentExecutionHandleParams;
+use crate::BackgroundAgentModelAttestationCreateParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
@@ -49,6 +50,7 @@ async fn create_run(runtime: &StateRuntime) -> anyhow::Result<BackgroundAgentRun
             status_reason: Some("created".to_string()),
             config_fingerprint: Some("cfg-1".to_string()),
             version_fingerprint: Some("version-1".to_string()),
+            model_attestation: None,
         })
         .await
 }
@@ -76,6 +78,7 @@ async fn create_run_with_id(
             status_reason: Some("created".to_string()),
             config_fingerprint: Some("cfg-1".to_string()),
             version_fingerprint: Some("version-1".to_string()),
+            model_attestation: None,
         })
         .await
 }
@@ -103,6 +106,16 @@ fn admission_params(
         status_reason: Some("queued by admission test".to_string()),
         config_fingerprint: Some("config-v1".to_string()),
         version_fingerprint: Some("codewith.background-agent.admission.v1".to_string()),
+        model_attestation: Some(BackgroundAgentModelAttestationCreateParams {
+            requested_model: Some("model-a".to_string()),
+            requested_configuration: json!({
+                "executionContext": {"model": "model-a"},
+            }),
+            applied_model: Some("model-a".to_string()),
+            applied_configuration: json!({
+                "executionContext": {"model": "model-a"},
+            }),
+        }),
     }
 }
 
@@ -189,6 +202,7 @@ async fn background_agent_run_create_is_idempotent() -> anyhow::Result<()> {
             status_reason: None,
             config_fingerprint: Some("cfg-1".to_string()),
             version_fingerprint: Some("version-1".to_string()),
+            model_attestation: None,
         })
         .await?;
 
@@ -208,6 +222,20 @@ async fn background_agent_admission_create_or_adopt_is_atomic_and_receipted() ->
     let (first, created) =
         admit_run(runtime.as_ref(), &first_params, /*max_active_runs*/ 2).await?;
     assert!(created);
+    let initial_attestation = first
+        .model_attestation
+        .as_ref()
+        .expect("model attestation should be persisted at admission");
+    assert_eq!(initial_attestation.agent_id, first.id);
+    assert_eq!(
+        initial_attestation.requested_model.as_deref(),
+        Some("model-a")
+    );
+    assert_eq!(
+        initial_attestation.applied_model.as_deref(),
+        Some("model-a")
+    );
+    assert_eq!(initial_attestation.bound_runtime_model, None);
 
     let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
     let (retry, created) =
@@ -398,8 +426,20 @@ async fn background_agent_admission_retry_uses_immutable_identity_after_thread_b
                 thread_store_kind: "thread-store".to_string(),
                 thread_store_id: Some("bound-thread".to_string()),
                 rollout_path: Some("/tmp/bound-rollout.jsonl".to_string()),
+                bound_runtime_model: "model-a".to_string(),
             })
             .await?
+    );
+    let bound = runtime
+        .get_background_agent_run(first.id.as_str())
+        .await?
+        .expect("bound run");
+    assert_eq!(
+        bound
+            .model_attestation
+            .as_ref()
+            .and_then(|attestation| attestation.bound_runtime_model.as_deref()),
+        Some("model-a")
     );
 
     let retry_params = admission_params("admitted-retry", "admission-key", "profile-a");
@@ -407,6 +447,7 @@ async fn background_agent_admission_retry_uses_immutable_identity_after_thread_b
         admit_run(runtime.as_ref(), &retry_params, /*max_active_runs*/ 2).await?;
     assert!(!created);
     assert_eq!(retry.id, first.id);
+    assert_eq!(retry.model_attestation, bound.model_attestation);
 
     let mut conflicting_params = retry_params;
     conflicting_params.prompt_snapshot_ref = "inline:different:prompt".to_string();
@@ -421,6 +462,87 @@ async fn background_agent_admission_retry_uses_immutable_identity_after_thread_b
         error
             .to_string()
             .contains("background_agent_admission_identity_mismatch")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_agent_binding_rejects_session_configured_model_mismatch() -> anyhow::Result<()>
+{
+    let runtime = StateRuntime::init(unique_temp_dir(), "test-provider".to_string()).await?;
+    let mut params = admission_params("model-mismatch", "model-mismatch-key", "profile-a");
+    params.thread_id = None;
+    params.thread_store_id = None;
+    let (run, created) = admit_run(runtime.as_ref(), &params, /*max_active_runs*/ 2).await?;
+    assert!(created);
+    let generation = runtime
+        .claim_background_agent_supervisor_compatible(
+            run.id.as_str(),
+            "model-supervisor",
+            "model-process-lease",
+            "codewith.background-agent.admission.v1",
+            "codex-state:test",
+        )
+        .await?
+        .expect("admitted run should be claimable");
+
+    let error = runtime
+        .bind_background_agent_thread(&BackgroundAgentThreadBindingParams {
+            run_id: run.id.clone(),
+            supervisor_id: "model-supervisor".to_string(),
+            generation,
+            thread_id: "foreign-model-thread".to_string(),
+            thread_store_kind: "thread-store".to_string(),
+            thread_store_id: Some("foreign-model-session".to_string()),
+            rollout_path: Some("/tmp/foreign-model.jsonl".to_string()),
+            bound_runtime_model: "model-b".to_string(),
+        })
+        .await
+        .expect_err("a foreign SessionConfiguredEvent model must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("background_agent_model_attestation_mismatch"),
+        "unexpected mismatch error: {error}"
+    );
+    let rejected = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("rejected run");
+    assert_eq!(rejected.thread_id, None);
+    assert_eq!(
+        rejected
+            .model_attestation
+            .as_ref()
+            .and_then(|attestation| attestation.bound_runtime_model.as_deref()),
+        None
+    );
+
+    assert!(
+        runtime
+            .bind_background_agent_thread(&BackgroundAgentThreadBindingParams {
+                run_id: run.id.clone(),
+                supervisor_id: "model-supervisor".to_string(),
+                generation,
+                thread_id: "accepted-model-thread".to_string(),
+                thread_store_kind: "thread-store".to_string(),
+                thread_store_id: Some("accepted-model-session".to_string()),
+                rollout_path: Some("/tmp/accepted-model.jsonl".to_string()),
+                bound_runtime_model: "model-a".to_string(),
+            })
+            .await?
+    );
+    let accepted = runtime
+        .get_background_agent_run(run.id.as_str())
+        .await?
+        .expect("accepted run");
+    assert_eq!(accepted.thread_id.as_deref(), Some("accepted-model-thread"));
+    assert_eq!(
+        accepted
+            .model_attestation
+            .as_ref()
+            .and_then(|attestation| attestation.bound_runtime_model.as_deref()),
+        Some("model-a")
     );
     Ok(())
 }
@@ -1505,6 +1627,7 @@ async fn legacy_thread_and_agent_job_rows_do_not_populate_background_agent_roste
             status_reason: Some("explicit background-agent run".to_string()),
             config_fingerprint: None,
             version_fingerprint: None,
+            model_attestation: None,
         })
         .await?;
 

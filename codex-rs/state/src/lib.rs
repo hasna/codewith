@@ -64,6 +64,8 @@ pub use model::BackgroundAgentEvent;
 pub use model::BackgroundAgentExecutionHandleParams;
 pub use model::BackgroundAgentExecutionSnapshot;
 pub use model::BackgroundAgentExecutionSnapshotParams;
+pub use model::BackgroundAgentModelAttestation;
+pub use model::BackgroundAgentModelAttestationCreateParams;
 pub use model::BackgroundAgentPendingInteraction;
 pub use model::BackgroundAgentPendingInteractionCreateParams;
 pub use model::BackgroundAgentPendingInteractionKind;

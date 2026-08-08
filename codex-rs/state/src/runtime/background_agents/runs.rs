@@ -1,4 +1,5 @@
 use super::*;
+use crate::BackgroundAgentModelAttestation;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -6,6 +7,8 @@ const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
     "background_agent_admission_capacity_exceeded";
 const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
     "background_agent_admission_identity_mismatch";
+const BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH: &str =
+    "background_agent_model_attestation_mismatch";
 const BACKGROUND_AGENT_RUNTIME_INCOMPATIBLE_REASON: &str =
     "background agent runtime package is incompatible with the installed build";
 
@@ -37,6 +40,27 @@ struct BackgroundAgentDeleteState {
     status: String,
     retention_state: String,
     status_reason: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ExistingBackgroundAgentAdmissionRow {
+    id: String,
+    request_id: Option<String>,
+    source: String,
+    prompt_snapshot_ref: String,
+    input_snapshot_ref: Option<String>,
+    thread_id: Option<String>,
+    thread_store_kind: String,
+    thread_store_id: Option<String>,
+    rollout_path: Option<String>,
+    parent_thread_id: Option<String>,
+    parent_agent_run_id: Option<String>,
+    spawn_linkage_json: Option<String>,
+    auth_profile_ref: Option<String>,
+    config_fingerprint: Option<String>,
+    version_fingerprint: Option<String>,
+    model_attestation_json: Option<String>,
+    admission_identity_sha256: Option<String>,
 }
 
 pub(in crate::runtime) enum ExistingBackgroundAgentAdmissionIdentity<'a> {
@@ -273,6 +297,7 @@ SELECT
     status_reason,
     config_fingerprint,
     version_fingerprint,
+    model_attestation_json,
     retention_state,
     archive_after,
     delete_after,
@@ -341,6 +366,7 @@ SELECT
     status_reason,
     config_fingerprint,
     version_fingerprint,
+    model_attestation_json,
     retention_state,
     archive_after,
     delete_after,
@@ -786,6 +812,71 @@ WHERE run_id = ? AND status IN (?, ?)
         params: &BackgroundAgentThreadBindingParams,
     ) -> anyhow::Result<bool> {
         let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let stored = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+            r#"
+SELECT idempotency_key, config_fingerprint, model_attestation_json
+FROM background_agent_runs
+WHERE
+    id = ?
+    AND supervisor_id = ?
+    AND generation = ?
+    AND status IN ('starting', 'running', 'waiting_on_approval', 'waiting_on_user')
+            "#,
+        )
+        .bind(params.run_id.as_str())
+        .bind(params.supervisor_id.as_str())
+        .bind(params.generation)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((idempotency_key_sha256, config_fingerprint, model_attestation_json)) = stored
+        else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        let bound_runtime_model = redact_state_string(params.bound_runtime_model.as_str());
+        if bound_runtime_model.is_empty() {
+            anyhow::bail!(
+                "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: bound runtime model is empty"
+            );
+        }
+        let model_attestation_json = model_attestation_json
+            .map(|value| {
+                let mut attestation =
+                    serde_json::from_str::<BackgroundAgentModelAttestation>(value.as_str())?;
+                if attestation.agent_id != params.run_id
+                    || attestation.idempotency_key_sha256 != idempotency_key_sha256
+                    || attestation.config_fingerprint != config_fingerprint
+                {
+                    anyhow::bail!(
+                        "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: persisted model attestation identity does not match the admitted run"
+                    );
+                }
+                if let Some(applied_model) = attestation.applied_model.as_deref()
+                    && applied_model != bound_runtime_model
+                {
+                    anyhow::bail!(
+                        "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: SessionConfiguredEvent model `{bound_runtime_model}` does not match applied model `{applied_model}`"
+                    );
+                }
+                if let Some(previously_bound_model) = attestation.bound_runtime_model.as_deref()
+                    && previously_bound_model != bound_runtime_model
+                {
+                    anyhow::bail!(
+                        "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: SessionConfiguredEvent model `{bound_runtime_model}` does not match previously bound model `{previously_bound_model}`"
+                    );
+                }
+                if attestation.applied_model.is_none() {
+                    set_background_agent_configuration_model(
+                        &mut attestation.applied_configuration,
+                        bound_runtime_model.as_str(),
+                    )?;
+                    attestation.applied_model = Some(bound_runtime_model.clone());
+                }
+                attestation.bound_runtime_model = Some(bound_runtime_model.clone());
+                redact_state_json_string(&serde_json::to_value(attestation)?)
+            })
+            .transpose()?;
         let result = sqlx::query(
             r#"
 UPDATE background_agent_runs
@@ -794,6 +885,7 @@ SET
     thread_store_kind = ?,
     thread_store_id = ?,
     rollout_path = ?,
+    model_attestation_json = ?,
     updated_at = ?
 WHERE
     id = ?
@@ -808,12 +900,14 @@ WHERE
         .bind(redact_state_string(params.thread_store_kind.as_str()))
         .bind(params.thread_store_id.as_deref().map(redact_state_string))
         .bind(params.rollout_path.as_deref().map(redact_state_string))
+        .bind(model_attestation_json.as_deref())
         .bind(now)
         .bind(params.run_id.as_str())
         .bind(params.supervisor_id.as_str())
         .bind(params.generation)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -2149,6 +2243,7 @@ SELECT
     status_reason,
     config_fingerprint,
     version_fingerprint,
+    model_attestation_json,
     retention_state,
     archive_after,
     delete_after,
@@ -2274,6 +2369,7 @@ struct RedactedBackgroundAgentRunColumns {
     status_reason: Option<String>,
     config_fingerprint: Option<String>,
     version_fingerprint: Option<String>,
+    model_attestation_json: Option<String>,
 }
 
 impl RedactedBackgroundAgentRunColumns {
@@ -2314,8 +2410,87 @@ impl RedactedBackgroundAgentRunColumns {
                 .version_fingerprint
                 .as_deref()
                 .map(redact_state_string),
+            model_attestation_json: background_agent_model_attestation_from_params(params)?
+                .map(|attestation| {
+                    serde_json::to_value(attestation)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|value| redact_state_json_string(&value))
+                })
+                .transpose()?,
         })
     }
+}
+
+fn background_agent_model_attestation_from_params(
+    params: &BackgroundAgentRunCreateParams,
+) -> anyhow::Result<Option<BackgroundAgentModelAttestation>> {
+    let Some(attestation) = params.model_attestation.as_ref() else {
+        return Ok(None);
+    };
+    if background_agent_configuration_model(&attestation.requested_configuration)?
+        != attestation.requested_model.as_deref()
+        || background_agent_configuration_model(&attestation.applied_configuration)?
+            != attestation.applied_model.as_deref()
+    {
+        anyhow::bail!(
+            "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: model fields do not match their configuration snapshots"
+        );
+    }
+    Ok(Some(BackgroundAgentModelAttestation {
+        agent_id: params.id.clone(),
+        idempotency_key_sha256: params
+            .idempotency_key
+            .as_deref()
+            .map(background_agent_idempotency_key_digest),
+        config_fingerprint: params.config_fingerprint.clone(),
+        requested_model: attestation.requested_model.clone(),
+        requested_configuration: attestation.requested_configuration.clone(),
+        applied_model: attestation.applied_model.clone(),
+        applied_configuration: attestation.applied_configuration.clone(),
+        bound_runtime_model: None,
+    }))
+}
+
+fn background_agent_configuration_model(value: &serde_json::Value) -> anyhow::Result<Option<&str>> {
+    let execution_context = value.get("executionContext").ok_or_else(|| {
+        anyhow::anyhow!(
+            "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: configuration snapshot is missing executionContext"
+        )
+    })?;
+    if execution_context.is_null() {
+        return Ok(None);
+    }
+    let execution_context = execution_context.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: executionContext must be an object or null"
+        )
+    })?;
+    match execution_context.get("model") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(model)) if !model.is_empty() => Ok(Some(model.as_str())),
+        Some(_) => anyhow::bail!(
+            "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: executionContext model must be a non-empty string or null"
+        ),
+    }
+}
+
+fn set_background_agent_configuration_model(
+    value: &mut serde_json::Value,
+    model: &str,
+) -> anyhow::Result<()> {
+    let execution_context = value
+        .get_mut("executionContext")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{BACKGROUND_AGENT_MODEL_ATTESTATION_MISMATCH}: applied configuration executionContext must be an object"
+            )
+        })?;
+    execution_context.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    Ok(())
 }
 
 /// Secret-safe projection of the execution-snapshot columns, for the same
@@ -2373,10 +2548,11 @@ INSERT INTO background_agent_runs (
     status_reason,
     config_fingerprint,
     version_fingerprint,
+    model_attestation_json,
     retention_state,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(params.id.as_str())
@@ -2398,6 +2574,7 @@ INSERT INTO background_agent_runs (
     .bind(columns.status_reason.as_deref())
     .bind(columns.config_fingerprint.as_deref())
     .bind(columns.version_fingerprint.as_deref())
+    .bind(columns.model_attestation_json.as_deref())
     .bind(crate::BackgroundAgentRetentionState::Active.as_str())
     .bind(now)
     .bind(now)
@@ -2436,6 +2613,7 @@ pub(in crate::runtime) fn background_agent_admission_identity_sha256(
         "authProfileRef": params.auth_profile_ref,
         "configFingerprint": params.config_fingerprint,
         "versionFingerprint": params.version_fingerprint,
+        "modelAttestation": params.model_attestation,
         "startEvent": start_event_payload_json,
         "executionSnapshot": {
             "snapshotKind": execution_snapshot_params.snapshot_kind,
@@ -2725,27 +2903,7 @@ pub(in crate::runtime) async fn validate_existing_background_agent_admission_in_
     params: &BackgroundAgentRunCreateParams,
     identity: ExistingBackgroundAgentAdmissionIdentity<'_>,
 ) -> anyhow::Result<Option<String>> {
-    let existing = sqlx::query_as::<
-        _,
-        (
-            String,
-            Option<String>,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ),
-    >(
+    let existing = sqlx::query_as::<_, ExistingBackgroundAgentAdmissionRow>(
         r#"
 SELECT
     id,
@@ -2763,6 +2921,7 @@ SELECT
     auth_profile_ref,
     config_fingerprint,
     version_fingerprint,
+    model_attestation_json,
     admission_identity_sha256
 FROM background_agent_runs
 WHERE idempotency_key = ?
@@ -2771,8 +2930,8 @@ WHERE idempotency_key = ?
     .bind(background_agent_idempotency_key_digest(idempotency_key))
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((
-        existing_id,
+    let Some(ExistingBackgroundAgentAdmissionRow {
+        id: existing_id,
         request_id,
         source,
         prompt_snapshot_ref,
@@ -2787,8 +2946,9 @@ WHERE idempotency_key = ?
         auth_profile_ref,
         config_fingerprint,
         version_fingerprint,
+        model_attestation_json,
         admission_identity_sha256,
-    )) = existing
+    }) = existing
     else {
         return Ok(None);
     };
@@ -2822,7 +2982,8 @@ WHERE idempotency_key = ?
         && spawn_linkage_json == requested.spawn_linkage_json
         && auth_profile_ref == requested.auth_profile_ref
         && config_fingerprint == requested.config_fingerprint
-        && version_fingerprint == requested.version_fingerprint;
+        && version_fingerprint == requested.version_fingerprint
+        && model_attestation_json == requested.model_attestation_json;
     if !identity_matches {
         anyhow::bail!(
             "{BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH}: \

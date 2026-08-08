@@ -2,6 +2,8 @@ use super::epoch_seconds_to_datetime;
 use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -113,6 +115,28 @@ impl BackgroundAgentRetentionState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentModelAttestation {
+    pub agent_id: String,
+    pub idempotency_key_sha256: Option<String>,
+    pub config_fingerprint: Option<String>,
+    pub requested_model: Option<String>,
+    pub requested_configuration: Value,
+    pub applied_model: Option<String>,
+    pub applied_configuration: Value,
+    pub bound_runtime_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentModelAttestationCreateParams {
+    pub requested_model: Option<String>,
+    pub requested_configuration: Value,
+    pub applied_model: Option<String>,
+    pub applied_configuration: Value,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundAgentRun {
     pub id: String,
@@ -135,6 +159,7 @@ pub struct BackgroundAgentRun {
     pub status_reason: Option<String>,
     pub config_fingerprint: Option<String>,
     pub version_fingerprint: Option<String>,
+    pub model_attestation: Option<BackgroundAgentModelAttestation>,
     pub retention_state: BackgroundAgentRetentionState,
     pub archive_after: Option<DateTime<Utc>>,
     pub delete_after: Option<DateTime<Utc>>,
@@ -200,6 +225,7 @@ pub struct BackgroundAgentRunCreateParams {
     pub status_reason: Option<String>,
     pub config_fingerprint: Option<String>,
     pub version_fingerprint: Option<String>,
+    pub model_attestation: Option<BackgroundAgentModelAttestationCreateParams>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +237,7 @@ pub struct BackgroundAgentThreadBindingParams {
     pub thread_store_kind: String,
     pub thread_store_id: Option<String>,
     pub rollout_path: Option<String>,
+    pub bound_runtime_model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +272,7 @@ pub struct BackgroundAgentRunRow {
     pub status_reason: Option<String>,
     pub config_fingerprint: Option<String>,
     pub version_fingerprint: Option<String>,
+    pub model_attestation_json: Option<String>,
     pub retention_state: String,
     pub archive_after: Option<i64>,
     pub delete_after: Option<i64>,
@@ -299,6 +327,11 @@ impl TryFrom<BackgroundAgentRunRow> for BackgroundAgentRun {
             status_reason: value.status_reason,
             config_fingerprint: value.config_fingerprint,
             version_fingerprint: value.version_fingerprint,
+            model_attestation: value
+                .model_attestation_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?,
             retention_state: BackgroundAgentRetentionState::parse(value.retention_state.as_str())?,
             archive_after: value
                 .archive_after

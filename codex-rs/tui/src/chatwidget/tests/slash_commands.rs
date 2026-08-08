@@ -89,6 +89,7 @@ fn test_background_agent(agent_id: &str, status: AgentRunStatus, updated_at: i64
         status_reason: None,
         config_fingerprint: None,
         version_fingerprint: None,
+        model_attestation: None,
         retention_state: AgentRetentionState::Active,
         archive_after: None,
         delete_after: None,
