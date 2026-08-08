@@ -45,6 +45,10 @@ MERGE_CONFLICT_OR_BLOCKING_STATES = {
     "DRAFT",
     "UNKNOWN",
 }
+WORKFLOW_RUNS_JQ = (
+    "[.workflow_runs[] | {id, name, status, conclusion, head_sha}]"
+)
+RUN_JOBS_JQ = "[.jobs[] | {id, name, status, conclusion}]"
 
 
 class GhCommandError(RuntimeError):
@@ -150,7 +154,7 @@ def pr_view_fields():
 
 
 def checks_fields():
-    return "name,state,bucket,link,workflow,event,startedAt,completedAt"
+    return "name,state,bucket"
 
 
 def resolve_pr(pr_spec, repo_override=None):
@@ -272,7 +276,15 @@ def get_pr_checks(pr_spec, repo):
         return []
     if not isinstance(data, list):
         raise GhCommandError("Unexpected payload from `gh pr checks`")
-    return data
+    return [
+        {
+            "name": str(check.get("name") or ""),
+            "state": str(check.get("state") or ""),
+            "bucket": str(check.get("bucket") or ""),
+        }
+        for check in data
+        if isinstance(check, dict)
+    ]
 
 
 def is_pending_check(check):
@@ -304,15 +316,33 @@ def summarize_checks(checks):
 def get_workflow_runs_for_sha(repo, head_sha):
     endpoint = f"repos/{repo}/actions/runs"
     data = gh_json(
-        ["api", endpoint, "-X", "GET", "-f", f"head_sha={head_sha}", "-f", "per_page=100"],
+        [
+            "api",
+            endpoint,
+            "-X",
+            "GET",
+            "-f",
+            f"head_sha={head_sha}",
+            "-f",
+            "per_page=100",
+            "--jq",
+            WORKFLOW_RUNS_JQ,
+        ],
         repo=repo,
     )
-    if not isinstance(data, dict):
+    if not isinstance(data, list):
         raise GhCommandError("Unexpected payload from actions runs API")
-    runs = data.get("workflow_runs") or []
-    if not isinstance(runs, list):
-        raise GhCommandError("Expected `workflow_runs` to be a list")
-    return runs
+    return [
+        {
+            "id": run.get("id"),
+            "name": str(run.get("name") or ""),
+            "status": str(run.get("status") or ""),
+            "conclusion": str(run.get("conclusion") or ""),
+            "head_sha": str(run.get("head_sha") or ""),
+        }
+        for run in data
+        if isinstance(run, dict)
+    ]
 
 
 def failed_runs_from_workflow_runs(runs, head_sha):
@@ -331,7 +361,6 @@ def failed_runs_from_workflow_runs(runs, head_sha):
                 "workflow_name": run.get("name") or run.get("display_title") or "",
                 "status": str(run.get("status") or ""),
                 "conclusion": conclusion,
-                "html_url": str(run.get("html_url") or ""),
             }
         )
     failed_runs.sort(key=lambda item: (str(item.get("workflow_name") or ""), str(item.get("run_id") or "")))
@@ -340,13 +369,31 @@ def failed_runs_from_workflow_runs(runs, head_sha):
 
 def get_jobs_for_run(repo, run_id):
     endpoint = f"repos/{repo}/actions/runs/{run_id}/jobs"
-    data = gh_json(["api", endpoint, "-X", "GET", "-f", "per_page=100"], repo=repo)
-    if not isinstance(data, dict):
+    data = gh_json(
+        [
+            "api",
+            endpoint,
+            "-X",
+            "GET",
+            "-f",
+            "per_page=100",
+            "--jq",
+            RUN_JOBS_JQ,
+        ],
+        repo=repo,
+    )
+    if not isinstance(data, list):
         raise GhCommandError("Unexpected payload from actions run jobs API")
-    jobs = data.get("jobs") or []
-    if not isinstance(jobs, list):
-        raise GhCommandError("Expected `jobs` to be a list")
-    return jobs
+    return [
+        {
+            "id": job.get("id"),
+            "name": str(job.get("name") or ""),
+            "status": str(job.get("status") or ""),
+            "conclusion": str(job.get("conclusion") or ""),
+        }
+        for job in data
+        if isinstance(job, dict)
+    ]
 
 
 def failed_jobs_from_workflow_runs(repo, runs, head_sha):
@@ -384,7 +431,6 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
                     "job_name": str(job.get("name") or ""),
                     "status": str(job.get("status") or ""),
                     "conclusion": conclusion,
-                    "html_url": str(job.get("html_url") or ""),
                     "logs_endpoint": logs_endpoint,
                 }
             )

@@ -6,6 +6,8 @@ import pytest
 
 
 MODULE_PATH = Path(__file__).with_name("gh_pr_watch.py")
+SKILL_PATH = MODULE_PATH.parent.parent / "SKILL.md"
+GITHUB_API_NOTES_PATH = MODULE_PATH.parent.parent / "references" / "github-api-notes.md"
 MODULE_SPEC = importlib.util.spec_from_file_location("gh_pr_watch", MODULE_PATH)
 gh_pr_watch = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
@@ -211,7 +213,167 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
             "job_name": "unit tests",
             "status": "completed",
             "conclusion": "failure",
-            "html_url": "https://github.com/openai/codex/actions/runs/99/job/555",
             "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
         }
     ]
+
+
+def test_check_metadata_is_projected_without_urls(monkeypatch):
+    synthetic_capability_url = (
+        "https://ci.example.invalid/enable-autofix?signature=synthetic-only"
+    )
+    gh_calls = []
+
+    def fake_gh_json(args, repo=None):
+        gh_calls.append({"args": args, "repo": repo})
+        if args[:2] == ["pr", "checks"]:
+            return [
+                {
+                    "name": "unit tests",
+                    "state": "FAILURE",
+                    "bucket": "fail",
+                    "link": synthetic_capability_url,
+                    "detailsUrl": synthetic_capability_url,
+                }
+            ]
+        if args[1].endswith("/actions/runs"):
+            return [
+                {
+                    "id": 99,
+                    "name": "CI",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": "abc123",
+                    "html_url": synthetic_capability_url,
+                }
+            ]
+        return [
+            {
+                "id": 555,
+                "name": "unit tests",
+                "status": "completed",
+                "conclusion": "failure",
+                "html_url": synthetic_capability_url,
+            }
+        ]
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", fake_gh_json)
+
+    checks = gh_pr_watch.get_pr_checks("123", "openai/codex")
+    workflow_runs = gh_pr_watch.get_workflow_runs_for_sha("openai/codex", "abc123")
+
+    assert {
+        "gh_calls": gh_calls,
+        "checks": checks,
+        "failed_runs": gh_pr_watch.failed_runs_from_workflow_runs(
+            workflow_runs, "abc123"
+        ),
+        "failed_jobs": gh_pr_watch.failed_jobs_from_workflow_runs(
+            "openai/codex", workflow_runs, "abc123"
+        ),
+    } == {
+        "gh_calls": [
+            {
+                "args": [
+                    "pr",
+                    "checks",
+                    "123",
+                    "--json",
+                    "name,state,bucket",
+                ],
+                "repo": "openai/codex",
+            },
+            {
+                "args": [
+                    "api",
+                    "repos/openai/codex/actions/runs",
+                    "-X",
+                    "GET",
+                    "-f",
+                    "head_sha=abc123",
+                    "-f",
+                    "per_page=100",
+                    "--jq",
+                    gh_pr_watch.WORKFLOW_RUNS_JQ,
+                ],
+                "repo": "openai/codex",
+            },
+            {
+                "args": [
+                    "api",
+                    "repos/openai/codex/actions/runs/99/jobs",
+                    "-X",
+                    "GET",
+                    "-f",
+                    "per_page=100",
+                    "--jq",
+                    gh_pr_watch.RUN_JOBS_JQ,
+                ],
+                "repo": "openai/codex",
+            },
+        ],
+        "checks": [
+            {
+                "name": "unit tests",
+                "state": "FAILURE",
+                "bucket": "fail",
+            }
+        ],
+        "failed_runs": [
+            {
+                "run_id": 99,
+                "workflow_name": "CI",
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        ],
+        "failed_jobs": [
+            {
+                "run_id": 99,
+                "workflow_name": "CI",
+                "run_status": "completed",
+                "run_conclusion": "failure",
+                "job_id": 555,
+                "job_name": "unit tests",
+                "status": "completed",
+                "conclusion": "failure",
+                "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
+            }
+        ],
+    }
+
+
+def test_written_check_commands_use_url_free_field_allowlists():
+    skill_text = SKILL_PATH.read_text()
+    api_notes_text = GITHUB_API_NOTES_PATH.read_text()
+
+    assert {
+        "skill_safe_checks": "`gh pr checks <pr-number> --json name,state,bucket`"
+        in skill_text,
+        "skill_safe_run": (
+            "`gh run view <run-id> --json "
+            "name,workflowName,conclusion,status,headSha`"
+        )
+        in skill_text,
+        "notes_safe_checks": "`gh pr checks --json name,state,bucket`"
+        in api_notes_text,
+        "notes_safe_run": (
+            "`gh run view <run-id> --json "
+            "name,workflowName,conclusion,status,headSha`"
+        )
+        in api_notes_text,
+        "skill_unsafe_run_absent": (
+            "--json jobs,name,workflowName" not in skill_text
+            and "status,url,headSha" not in skill_text
+        ),
+        "notes_unsafe_checks_absent": (
+            "--json name,state,bucket,link" not in api_notes_text
+        ),
+    } == {
+        "skill_safe_checks": True,
+        "skill_safe_run": True,
+        "notes_safe_checks": True,
+        "notes_safe_run": True,
+        "skill_unsafe_run_absent": True,
+        "notes_unsafe_checks_absent": True,
+    }

@@ -68,12 +68,20 @@ python3 .codewith/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number-or-url> 
 ## CI Failure Classification
 Use `gh` commands to inspect failed runs before deciding to rerun.
 
-- `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
-- `gh api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100`
+- `gh pr checks <pr-number> --json name,state,bucket`
+- `gh run view <run-id> --json name,workflowName,conclusion,status,headSha`
+- `gh api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100 --jq '[.jobs[] | {id, name, status, conclusion}]'`
 - `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/codex-gh-job-<job-id>-logs.zip`
 - `gh run view <run-id> --log-failed` as a fallback after the overall workflow run is complete
 
 `gh run view --log-failed` is workflow-run scoped and may not expose failed-job logs until the overall run finishes. For faster diagnosis, poll the run's jobs first and, as soon as a specific job has failed, fetch that job's logs directly from the Actions job logs endpoint. The watcher includes a `failed_jobs` list with each failed job's `job_id` and `logs_endpoint` when GitHub exposes one.
+
+### URL-free check metadata
+
+- Never use `gh pr view --json statusCheckRollup` for check inspection. That aggregate can include `detailsUrl` values that are signed CI capabilities rather than ordinary navigation links.
+- Check-state reads must use an explicit non-URL allowlist: check name plus status/conclusion fields (`name,state,bucket` for `gh pr checks`; `name,status,conclusion` for Actions runs/jobs).
+- Never request or emit `detailsUrl`, `link`, `url`, or `html_url` from check, run, or job metadata. Diagnose and rerun with the repository, head SHA, run/job IDs, names, status/conclusion, and the relative job-logs API endpoint.
+- Canonical PR URLs and trusted review-item URLs are separate from CI check metadata and may still be used for PR targeting or review handling.
 
 Prefer treating failures as branch-related when failed-job logs point to changed code (compile/test/lint/typecheck/snapshots/static analysis in touched areas).
 
