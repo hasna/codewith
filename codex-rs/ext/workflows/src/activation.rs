@@ -369,11 +369,7 @@ impl WorkflowActivationService {
                 );
                 return self
                     .record_failed_verifier_setup(
-                        run_id,
-                        generation,
-                        claimed,
-                        started,
-                        /*expected_exit_code*/ None,
+                        run_id, generation, claimed, started, /*expected_exit_code*/ None,
                     )
                     .await;
             }
