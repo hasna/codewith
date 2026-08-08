@@ -495,16 +495,29 @@ fn enforce_credit_control(
         (
             Some(budget_usd),
             WorkflowProviderCreditControl::Reserved {
+                reservation_id,
                 ceiling_usd,
+                spent_usd,
                 remaining_usd,
                 exhausted,
-                ..
             },
         ) => {
+            if reservation_id.trim().is_empty() {
+                return Err(route_error(
+                    "workflow_route_credit_accounting_invalid",
+                    "provider reservation id is missing",
+                ));
+            }
             if ceiling_usd != budget_usd {
                 return Err(route_error(
                     "workflow_route_credit_ceiling_mismatch",
                     "provider reservation ceiling differs from the requested budget",
+                ));
+            }
+            if !credit_accounting_balances(ceiling_usd, spent_usd, remaining_usd) {
+                return Err(route_error(
+                    "workflow_route_credit_accounting_invalid",
+                    "provider credit readback does not balance to the reserved ceiling",
                 ));
             }
             if *exhausted || decimal_is_zero(remaining_usd) {
@@ -538,6 +551,62 @@ fn decimal_is_zero(value: &str) -> bool {
             .chars()
             .filter(|character| character.is_ascii_digit())
             .all(|character| character == '0')
+}
+
+fn credit_accounting_balances(ceiling: &str, spent: &str, remaining: &str) -> bool {
+    let Some(scale) = [ceiling, spent, remaining]
+        .into_iter()
+        .map(decimal_scale)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|scales| scales.into_iter().max())
+    else {
+        return false;
+    };
+    let Some(ceiling) = decimal_at_scale(ceiling, scale) else {
+        return false;
+    };
+    let Some(spent) = decimal_at_scale(spent, scale) else {
+        return false;
+    };
+    let Some(remaining) = decimal_at_scale(remaining, scale) else {
+        return false;
+    };
+    spent
+        .checked_add(remaining)
+        .is_some_and(|total| total == ceiling)
+}
+
+fn decimal_scale(value: &str) -> Option<usize> {
+    let value = value.trim();
+    let mut parts = value.split('.');
+    let whole = parts.next()?;
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || whole.is_empty()
+        || !whole.chars().all(|character| character.is_ascii_digit())
+        || fraction.is_some_and(|fraction| {
+            fraction.is_empty()
+                || !fraction
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    Some(fraction.map_or(0, str::len))
+}
+
+fn decimal_at_scale(value: &str, scale: usize) -> Option<u128> {
+    let value = value.trim();
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > scale {
+        return None;
+    }
+    let mut digits = String::with_capacity(whole.len().saturating_add(scale));
+    digits.push_str(whole);
+    digits.push_str(fraction);
+    digits.extend(std::iter::repeat_n('0', scale.saturating_sub(fraction.len())));
+    digits.parse::<u128>().ok()
 }
 
 fn enforce_exact(
@@ -827,12 +896,9 @@ mod tests {
             let mut effective = effective_route();
             mutate(&mut effective);
             let provider_calls = AtomicUsize::new(0);
-            let error = invoke_provider_after_route_admission(
-                &exact_route(),
-                &effective,
-                &provider_calls,
-            )
-                .expect_err("mismatched route must fail closed");
+            let error =
+                invoke_provider_after_route_admission(&exact_route(), &effective, &provider_calls)
+                    .expect_err("mismatched route must fail closed");
             assert_eq!(error.code(), expected_code);
             assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
         }
@@ -888,12 +954,9 @@ mod tests {
             .fallback_required = true;
 
         let provider_calls = AtomicUsize::new(0);
-        let error = invoke_provider_after_route_admission(
-            &route,
-            &effective_route(),
-            &provider_calls,
-        )
-            .expect_err("required fallback cannot be ignored");
+        let error =
+            invoke_provider_after_route_admission(&route, &effective_route(), &provider_calls)
+                .expect_err("required fallback cannot be ignored");
         assert_eq!(error.code(), "workflow_route_required_fallback_missing");
         assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
@@ -975,5 +1038,32 @@ mod tests {
                 exhausted: false,
             }
         );
+    }
+
+    #[test]
+    fn inconsistent_provider_credit_readback_fails_closed() {
+        let mut route = exact_route();
+        route
+            .routing
+            .as_mut()
+            .expect("routing contract")
+            .request
+            .constraints
+            .budget_usd = Some("5.00".to_string());
+        let mut effective = effective_route();
+        effective.credit_control = WorkflowProviderCreditControl::Reserved {
+            reservation_id: "reservation-1".to_string(),
+            ceiling_usd: "5.00".to_string(),
+            spent_usd: "1.25".to_string(),
+            remaining_usd: "4.00".to_string(),
+            exhausted: false,
+        };
+        let provider_calls = AtomicUsize::new(0);
+
+        let error = invoke_provider_after_route_admission(&route, &effective, &provider_calls)
+            .expect_err("unbalanced provider accounting cannot admit work");
+
+        assert_eq!(error.code(), "workflow_route_credit_accounting_invalid");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
 }

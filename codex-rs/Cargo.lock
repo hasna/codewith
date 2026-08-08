@@ -2548,6 +2548,7 @@ dependencies = [
  "codex-utils-string",
  "codex-web-search-extension",
  "codex-windows-sandbox",
+ "codex-workflows",
  "core_test_support",
  "croner",
  "csv",

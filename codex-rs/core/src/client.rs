@@ -88,6 +88,7 @@ use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
+use codex_workflows::WorkflowRouteReceipt;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use futures::StreamExt;
@@ -180,6 +181,7 @@ struct ModelClientState {
     window_generation: AtomicU64,
     installation_id: String,
     provider: SharedModelProvider,
+    provider_id: String,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     parent_thread_id: Option<ThreadId>,
@@ -229,6 +231,7 @@ impl RequestRouteTelemetry {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     prompt_cache_key_override: Option<String>,
+    workflow_route_receipt: Option<WorkflowRouteReceipt>,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -410,7 +413,7 @@ impl ModelClient {
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
     ) -> Self {
         let model_provider =
-            create_model_provider_with_id(provider_id, provider_info, auth_manager);
+            create_model_provider_with_id(provider_id.clone(), provider_info, auth_manager);
         let codex_api_key_env_enabled = model_provider
             .auth_manager()
             .as_ref()
@@ -425,6 +428,7 @@ impl ModelClient {
                 window_generation: AtomicU64::new(0),
                 installation_id,
                 provider: model_provider,
+                provider_id,
                 auth_env_telemetry,
                 session_source,
                 parent_thread_id,
@@ -438,6 +442,7 @@ impl ModelClient {
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
             prompt_cache_key_override: None,
+            workflow_route_receipt: None,
         }
     }
 
@@ -447,6 +452,38 @@ impl ModelClient {
     ) -> Self {
         self.prompt_cache_key_override = prompt_cache_key_override;
         self
+    }
+
+    pub(crate) fn with_workflow_route_receipt(
+        mut self,
+        workflow_route_receipt: Option<WorkflowRouteReceipt>,
+    ) -> Self {
+        self.workflow_route_receipt = workflow_route_receipt;
+        self
+    }
+
+    fn enforce_workflow_provider_attempt(
+        &self,
+        model_info: &ModelInfo,
+        effort: Option<&ReasoningEffortConfig>,
+        service_tier: Option<&str>,
+    ) -> Result<()> {
+        let Some(receipt) = self.workflow_route_receipt.as_ref() else {
+            return Ok(());
+        };
+        let mut effective = receipt.effective.clone();
+        effective.provider = self.state.provider_id.clone();
+        effective.model = model_info.slug.clone();
+        effective.reasoning = effort.map(ToString::to_string).ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "workflow_route_reasoning_unavailable: provider request has no reasoning effort"
+                    .to_string(),
+            )
+        })?;
+        effective.service_tier = service_tier.map(str::to_string);
+        receipt
+            .enforce_provider_attempt(&effective)
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))
     }
 
     fn prompt_cache_key(&self) -> String {
@@ -560,6 +597,11 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
+        self.enforce_workflow_provider_attempt(
+            model_info,
+            settings.effort.as_ref(),
+            settings.service_tier.as_deref(),
+        )?;
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry =
@@ -653,6 +695,12 @@ impl ModelClient {
     ) -> Result<RealtimeWebrtcCallStart> {
         // Create the media call over HTTP first, then retain matching auth so realtime can attach
         // the server-side control WebSocket to the call id from that HTTP response.
+        if self.workflow_route_receipt.is_some() {
+            return Err(CodexErr::UnsupportedOperation(
+                "workflow_route_provider_call_unsupported: realtime calls are not part of the admitted workflow route"
+                    .to_string(),
+            ));
+        }
         let client_setup = self.current_client_setup().await?;
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
@@ -690,6 +738,8 @@ impl ModelClient {
         if raw_memories.is_empty() {
             return Ok(Vec::new());
         }
+
+        self.enforce_workflow_provider_attempt(model_info, effort.as_ref(), None)?;
 
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1452,6 +1502,11 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
+            self.client.enforce_workflow_provider_attempt(
+                model_info,
+                effort.as_ref(),
+                service_tier.as_deref(),
+            )?;
             ensure_remote_compaction_request_budget_available(request_budget)?;
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1577,6 +1632,11 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
+            self.client.enforce_workflow_provider_attempt(
+                model_info,
+                effort.as_ref(),
+                service_tier.as_deref(),
+            )?;
             ensure_remote_compaction_request_budget_available(request_budget)?;
             let client_setup = self.client.current_client_setup().await?;
             let transport = ReqwestTransport::new(build_reqwest_client());
@@ -1706,6 +1766,11 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
+            self.client.enforce_workflow_provider_attempt(
+                model_info,
+                effort.as_ref(),
+                service_tier.as_deref(),
+            )?;
             let client_setup = self.client.current_client_setup().await?;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),

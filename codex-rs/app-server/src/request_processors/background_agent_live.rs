@@ -4055,6 +4055,7 @@ fn enforce_workflow_route_config(
         credit_control: WorkflowProviderCreditControl::NotRequested,
     };
     receipt.enforce_provider_attempt(&effective)?;
+    config.workflow_route_receipt = Some(receipt);
     Ok(())
 }
 

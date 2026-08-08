@@ -30,6 +30,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -47,6 +48,10 @@ use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
 use codex_tools::ZaiWebSearchConfig;
+use codex_workflows::WorkflowEffectiveModelRoute;
+use codex_workflows::WorkflowModelRoute;
+use codex_workflows::WorkflowProviderCreditControl;
+use codex_workflows::WorkflowRouteReceipt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -146,6 +151,67 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+fn workflow_route_receipt_for_client(client: &ModelClient) -> WorkflowRouteReceipt {
+    let provider = client.state.provider_id.clone();
+    let requested = WorkflowModelRoute {
+        model_gateway: "direct".to_string(),
+        provider: provider.clone(),
+        model: "gpt-test".to_string(),
+        reasoning: "medium".to_string(),
+        service_tier: None,
+        approval_policy: None,
+        permission_profile: None,
+        routing: None,
+    };
+    WorkflowRouteReceipt {
+        requested,
+        effective: WorkflowEffectiveModelRoute {
+            model_gateway: "direct".to_string(),
+            provider,
+            model: "gpt-test".to_string(),
+            reasoning: "medium".to_string(),
+            service_tier: None,
+            auth_profile: None,
+            approval_policy: None,
+            permission_profile: None,
+            worktree_mode: "shared_repository".to_string(),
+            context_ceiling_tokens: None,
+            fallback_used: false,
+            credit_control: WorkflowProviderCreditControl::NotRequested,
+        },
+    }
+}
+
+#[test]
+fn workflow_provider_call_guard_is_two_sided_and_fails_before_call() {
+    let client = test_model_client(SessionSource::Exec);
+    let receipt = workflow_route_receipt_for_client(&client);
+    let client = client.with_workflow_route_receipt(Some(receipt));
+    let provider_calls = AtomicUsize::new(0);
+
+    client
+        .enforce_workflow_provider_attempt(
+            &test_model_info(),
+            Some(&ReasoningEffort::Medium),
+            None,
+        )
+        .expect("the exact admitted request must pass");
+    provider_calls.fetch_add(1, Ordering::SeqCst);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+
+    let mut mismatched_model = test_model_info();
+    mismatched_model.slug = "gpt-other".to_string();
+    let error = client
+        .enforce_workflow_provider_attempt(
+            &mismatched_model,
+            Some(&ReasoningEffort::Medium),
+            None,
+        )
+        .expect_err("a mismatched provider request must fail before the call");
+    assert!(error.to_string().contains("workflow_route_model_mismatch"));
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
 }
 
 fn test_session_telemetry() -> SessionTelemetry {
