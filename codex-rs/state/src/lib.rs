@@ -288,6 +288,7 @@ pub use runtime::WorkflowRunStepApprovalParams;
 pub use runtime::WorkflowRunVerifierClaimOutcome;
 pub use runtime::WorkflowRunVerifierClaimParams;
 pub use runtime::WorkflowRunVerifierClaimSelection;
+pub use runtime::WorkflowRunVerifierEffectPublishParams;
 pub use runtime::WorkflowRunVerifierOutcomeStatus;
 pub use runtime::WorkflowRunVerifierRecordResultOutcome;
 pub use runtime::WorkflowRunVerifierRecordResultParams;
