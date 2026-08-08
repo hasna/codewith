@@ -950,7 +950,9 @@ fn terminate_paused_runtime(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::future::pending;
     use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -959,18 +961,24 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::Mutex;
     use tokio::sync::mpsc;
+    use tokio::sync::Notify;
     use tokio::sync::oneshot;
 
+    use super::CellLifecycleFuture;
     use super::CellControlCommand;
     use super::CellControlContext;
     use super::CellId;
     use super::CellResponseSender;
+    use super::CodeModeNestedToolCall;
+    use super::CodeModeSessionDelegate;
     use super::CodeModeService;
     use super::Inner;
     use super::NoopCodeModeSessionDelegate;
+    use super::NotificationFuture;
     use super::PendingRuntimeMode;
     use super::RuntimeCommand;
     use super::RuntimeResponse;
+    use super::ToolInvocationFuture;
     use super::WaitOutcome;
     use super::WaitRequest;
     use super::WaitToPendingOutcome;
@@ -1016,6 +1024,52 @@ mod tests {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             next_cell_id: AtomicU64::new(1),
         })
+    }
+
+    struct BlockingBorrowedDependencyDelegate {
+        dependency_pin: StdMutex<Option<Arc<()>>>,
+        wait_started: Arc<Notify>,
+    }
+
+    impl CodeModeSessionDelegate for BlockingBorrowedDependencyDelegate {
+        fn invoke_tool<'a>(
+            &'a self,
+            _invocation: CodeModeNestedToolCall,
+            cancellation_token: tokio_util::sync::CancellationToken,
+        ) -> ToolInvocationFuture<'a> {
+            Box::pin(async move {
+                cancellation_token.cancelled().await;
+                Err("code mode nested tool call cancelled".to_string())
+            })
+        }
+
+        fn notify<'a>(
+            &'a self,
+            _call_id: String,
+            _cell_id: CellId,
+            _text: String,
+            _cancellation_token: tokio_util::sync::CancellationToken,
+        ) -> NotificationFuture<'a> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+            let dependency_pin = self
+                .dependency_pin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("borrowed dependency pin should be available once");
+            let wait_started = Arc::clone(&self.wait_started);
+            Box::pin(async move {
+                wait_started.notify_one();
+                pending::<()>().await;
+                drop(dependency_pin);
+                Ok(())
+            })
+        }
+
+        fn cell_closed(&self, _cell_id: &CellId) {}
     }
 
     #[tokio::test]
@@ -1998,5 +2052,55 @@ image({
         );
 
         let _ = runtime_tx.send(RuntimeCommand::Terminate);
+    }
+
+    #[tokio::test]
+    async fn terminate_drops_borrowed_dependency_waiter_and_its_session_pin() {
+        let dependency_pin = Arc::new(());
+        let weak_dependency_pin = Arc::downgrade(&dependency_pin);
+        let wait_started = Arc::new(Notify::new());
+        let delegate = Arc::new(BlockingBorrowedDependencyDelegate {
+            dependency_pin: StdMutex::new(Some(dependency_pin)),
+            wait_started: Arc::clone(&wait_started),
+        });
+        let service = CodeModeService::with_delegate(delegate.clone());
+
+        let response = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"text("done");"#.to_string(),
+                yield_time_ms: Some(1),
+                ..execute_request("")
+            },
+        )
+        .await;
+        assert_eq!(
+            response,
+            RuntimeResponse::Yielded {
+                cell_id: cell_id("1"),
+                content_items: vec![FunctionCallOutputContentItem::InputText {
+                    text: "done".to_string(),
+                }],
+            }
+        );
+        wait_started.notified().await;
+
+        assert_eq!(
+            service.terminate(cell_id("1")).await.unwrap(),
+            WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+            })
+        );
+        drop(service);
+        drop(delegate);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while weak_dependency_pin.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminated cell should drop its borrowed dependency waiter");
     }
 }
