@@ -1,6 +1,6 @@
 use super::*;
-use crate::runtime::background_agents::ExistingBackgroundAgentAdmissionIdentity;
 use crate::BackgroundAgentModelAttestationCreateParams;
+use crate::runtime::background_agents::ExistingBackgroundAgentAdmissionIdentity;
 use crate::runtime::background_agents::append_background_agent_event_in_tx;
 use crate::runtime::background_agents::background_agent_admission_identity_sha256;
 use crate::runtime::background_agents::background_agent_idempotency_key_digest;
