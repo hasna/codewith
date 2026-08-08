@@ -99,6 +99,7 @@ impl StateRuntime {
             &mut tx,
             params.run_id.as_str(),
             &params.owner_id,
+            self.workflow_owner_instance_id.as_str(),
             params.generation,
             now_ms,
         )
@@ -155,6 +156,7 @@ SET
     updated_at_ms = ?
 WHERE run_id = ?
   AND owner_id = ?
+  AND owner_instance_id = ?
   AND generation = ?
             "#,
         )
@@ -164,6 +166,7 @@ WHERE run_id = ?
         .bind(now_ms)
         .bind(params.run_id.as_str())
         .bind(params.owner_id.as_str())
+        .bind(self.workflow_owner_instance_id.as_str())
         .bind(params.generation)
         .execute(&mut *tx)
         .await?
@@ -229,6 +232,7 @@ WHERE run_id = ?
             &mut tx,
             params.run_id.as_str(),
             &params.owner_id,
+            self.workflow_owner_instance_id.as_str(),
             params.generation,
             now_ms,
         )

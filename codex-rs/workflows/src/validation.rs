@@ -416,9 +416,6 @@ fn validate_steps(spec: &WorkflowSpec) -> WorkflowSpecResult<()> {
             )));
         };
         model.validate(&format!("steps.{}.model", step.id))?;
-        if let Some(workspace) = &step.workspace {
-            validate_non_empty("step.workspace.mode", &workspace.mode)?;
-        }
         if let Some(parallel_group) = &step.parallel_group {
             validate_identifier("step.parallel_group", parallel_group)?;
         }

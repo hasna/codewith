@@ -166,6 +166,18 @@ pub fn remove_linked_git_worktree(
     run_git_for_status(base_repo_path, args, /*env*/ None)
 }
 
+pub fn delete_local_git_branch(base_repo_path: &Path, branch: &str) -> Result<(), GitToolingError> {
+    run_git_for_status(
+        base_repo_path,
+        [
+            OsString::from("branch"),
+            OsString::from("-D"),
+            OsString::from(branch),
+        ],
+        /*env*/ None,
+    )
+}
+
 pub fn merge_tree_dry_run(
     base_repo_path: &Path,
     target_ref: &str,

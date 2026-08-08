@@ -11,6 +11,7 @@ use crate::WorkflowModelRoutingDecisionStatus;
 use crate::WorkflowSpecError;
 use crate::WorkflowStatus;
 use crate::WorkflowStopCondition;
+use crate::WorkflowWorkspaceMode;
 use crate::parse_workflow_yaml;
 use crate::render_workflow_branch_prompt;
 
@@ -281,6 +282,42 @@ fn parses_dental_lead_saas_fixture() {
             "npm run build".to_string(),
         ],
         full_suite.commands
+    );
+}
+
+#[test]
+fn parses_typed_workspace_modes_and_rejects_unknown_modes() {
+    let isolated = parse_workflow_yaml(DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML)
+        .expect("known workspace modes should parse");
+    assert!(isolated.steps.iter().any(|step| {
+        step.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.mode == WorkflowWorkspaceMode::IsolatedWorktree)
+    }));
+
+    let shared_yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replacen(
+        "mode: \"isolated_worktree\"",
+        "mode: \"shared_repository\"",
+        1,
+    );
+    let shared =
+        parse_workflow_yaml(&shared_yaml).expect("shared repository workspace mode should parse");
+    assert!(shared.steps.iter().any(|step| {
+        step.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.mode == WorkflowWorkspaceMode::SharedRepository)
+    }));
+
+    let unknown_yaml = DENTAL_LEAD_SAAS_WORKFLOW_EXAMPLE_YAML.replacen(
+        "mode: \"isolated_worktree\"",
+        "mode: \"future_workspace_mode\"",
+        1,
+    );
+    let err = parse_workflow_yaml(&unknown_yaml)
+        .expect_err("unknown workspace modes must fail closed during parsing");
+    assert!(
+        err.to_string().contains("future_workspace_mode"),
+        "unexpected error: {err}"
     );
 }
 

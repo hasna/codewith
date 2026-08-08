@@ -10,6 +10,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub const DEFAULT_THREAD_WORKFLOW_LIST_LIMIT: u32 = 20;
@@ -388,6 +389,7 @@ LIMIT ? OFFSET ?
                 anyhow::anyhow!("workflow spec {} does not exist", params.workflow_record_id)
             })?;
         let source_thread_id = resolve_run_source_thread_id(&params, &spec_record)?;
+        let source_workspace = self.resolve_run_source_workspace(source_thread_id).await?;
         let spec = codex_workflows::parse_workflow_yaml(&spec_record.source_yaml)?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let mut tx = self.pool.begin().await?;
@@ -411,6 +413,12 @@ LIMIT ? OFFSET ?
                 run_id: run_id.clone(),
                 spec_record: &spec_record,
                 source_thread_id,
+                source_cwd: source_workspace
+                    .as_ref()
+                    .map(|workspace| workspace.cwd.as_path()),
+                source_repo_path: source_workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.repo_path.as_deref()),
                 idempotency_key: params.idempotency_key.as_deref(),
                 spec: &spec,
                 now_ms,
@@ -534,6 +542,7 @@ SET
     status_reason = ?,
     reason_code = ?,
     owner_id = NULL,
+    owner_instance_id = NULL,
     lease_expires_at_ms = NULL,
     heartbeat_at_ms = NULL,
     generation = generation + 1,
@@ -595,6 +604,7 @@ SET
     status_reason = ?,
     reason_code = ?,
     owner_id = NULL,
+    owner_instance_id = NULL,
     lease_expires_at_ms = NULL,
     heartbeat_at_ms = NULL,
     generation = generation + 1,
@@ -653,6 +663,7 @@ SET
     status_reason = NULL,
     reason_code = NULL,
     owner_id = NULL,
+    owner_instance_id = NULL,
     lease_expires_at_ms = NULL,
     heartbeat_at_ms = NULL,
     generation = generation + 1,
@@ -811,9 +822,16 @@ struct InsertWorkflowRunParams<'a> {
     run_id: String,
     spec_record: &'a crate::WorkflowSpecRecord,
     source_thread_id: Option<ThreadId>,
+    source_cwd: Option<&'a std::path::Path>,
+    source_repo_path: Option<&'a std::path::Path>,
     idempotency_key: Option<&'a str>,
     spec: &'a codex_workflows::WorkflowSpec,
     now_ms: i64,
+}
+
+struct WorkflowRunSourceWorkspace {
+    cwd: PathBuf,
+    repo_path: Option<PathBuf>,
 }
 
 pub(super) struct WorkflowRunEventAppend {
@@ -904,6 +922,27 @@ fn resolve_run_source_thread_id(
     Ok(params.source_thread_id.or(spec_record.source_thread_id))
 }
 
+impl WorkflowStore {
+    async fn resolve_run_source_workspace(
+        &self,
+        source_thread_id: Option<ThreadId>,
+    ) -> anyhow::Result<Option<WorkflowRunSourceWorkspace>> {
+        let Some(source_thread_id) = source_thread_id else {
+            return Ok(None);
+        };
+        let cwd: Option<String> = sqlx::query_scalar("SELECT cwd FROM threads WHERE id = ?")
+            .bind(source_thread_id.to_string())
+            .fetch_optional(self.pool.as_ref())
+            .await?;
+        let cwd = cwd.ok_or_else(|| {
+            anyhow::anyhow!("workflow source thread {source_thread_id} does not exist")
+        })?;
+        let cwd = PathBuf::from(cwd);
+        let repo_path = codex_git_utils::get_git_repo_root(cwd.as_path());
+        Ok(Some(WorkflowRunSourceWorkspace { cwd, repo_path }))
+    }
+}
+
 fn sanitized_workflow_pause_reason() -> &'static str {
     "workflow run paused"
 }
@@ -922,6 +961,8 @@ INSERT INTO workflow_runs (
     run_id,
     workflow_record_id,
     source_thread_id,
+    source_cwd,
+    source_repo_path,
     idempotency_key,
     spec_workflow_id,
     schema_version,
@@ -939,7 +980,7 @@ INSERT INTO workflow_runs (
     cleanup_json,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(workflow_record_id, idempotency_key) DO NOTHING
 RETURNING run_id
         "#,
@@ -950,6 +991,16 @@ RETURNING run_id
         params
             .source_thread_id
             .map(|thread_id| thread_id.to_string()),
+    )
+    .bind(
+        params
+            .source_cwd
+            .map(|path| path.to_string_lossy().into_owned()),
+    )
+    .bind(
+        params
+            .source_repo_path
+            .map(|path| path.to_string_lossy().into_owned()),
     )
     .bind(params.idempotency_key.map(redact_state_string))
     .bind(params.spec_record.spec_workflow_id.as_str())
@@ -1493,6 +1544,8 @@ fn workflow_run_select_columns() -> &'static str {
     run_id,
     workflow_record_id,
     source_thread_id,
+    source_cwd,
+    source_repo_path,
     idempotency_key,
     spec_workflow_id,
     schema_version,
@@ -1502,6 +1555,7 @@ fn workflow_run_select_columns() -> &'static str {
     reason_code,
     generation,
     owner_id,
+    owner_instance_id,
     lease_expires_at_ms,
     heartbeat_at_ms,
     last_event_seq,

@@ -5,6 +5,7 @@ use crate::runtime::background_agents::background_agent_admission_identity_sha25
 use crate::runtime::background_agents::background_agent_idempotency_key_digest;
 use crate::runtime::background_agents::count_live_or_recoverable_background_agent_runs_in_tx;
 use crate::runtime::background_agents::insert_background_agent_run_in_tx;
+use crate::runtime::background_agents::insert_background_agent_worktree_lease_in_tx;
 use crate::runtime::background_agents::recover_or_validate_background_agent_initial_state_in_tx;
 use crate::runtime::background_agents::validate_existing_background_agent_admission_in_tx;
 use crate::runtime::workflow_automation::arm_workflow_timers_for_succeeded_step_in_tx;
@@ -13,11 +14,21 @@ use crate::runtime::workflows::append_workflow_run_event_in_tx;
 use crate::runtime::workflows::maybe_snapshot_workflow_run_in_tx;
 use crate::runtime::workflows::snapshot_workflow_run_in_tx;
 use crate::runtime::workflows::workflow_state_json_string;
+use codex_git_utils::GitWorktreeAddOptions;
+use codex_git_utils::add_linked_git_worktree;
+use codex_git_utils::delete_local_git_branch;
+use codex_git_utils::get_git_worktree_status_snapshot;
+use codex_git_utils::remove_linked_git_worktree;
+use codex_git_utils::resolve_git_ref;
 use codex_workflows::WorkflowBranchPrompt;
+use codex_workflows::WorkflowWorkspace;
+use codex_workflows::WorkflowWorkspaceMode;
 use codex_workflows::render_workflow_branch_prompt;
 use serde_json::Value;
 use serde_json::json;
 use sqlx::Row;
+use std::path::Path;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 const DEFAULT_WORKFLOW_LEASE_DURATION_MS: i64 = 60_000;
@@ -46,6 +57,26 @@ pub struct WorkflowRunClaimOutcome {
     pub snapshot: crate::WorkflowRunSnapshot,
     pub generation: i64,
     pub lease_expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunHeartbeatParams {
+    pub run_id: String,
+    pub owner_id: String,
+    pub generation: i64,
+    pub lease_duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunHeartbeatOutcome {
+    pub lease_expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunFenceParams {
+    pub run_id: String,
+    pub owner_id: String,
+    pub generation: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +110,7 @@ pub struct WorkflowRunBranchAdmission {
     pub step_run_id: String,
     pub agent_id: String,
     pub background_agent_run_id: String,
+    pub managed_worktree_id: String,
     pub idempotency_key: String,
     pub model_route_json: Value,
     pub workspace_json: Option<Value>,
@@ -124,6 +156,7 @@ impl StateRuntime {
 UPDATE workflow_runs
 SET
     owner_id = ?,
+    owner_instance_id = ?,
     lease_expires_at_ms = ?,
     heartbeat_at_ms = ?,
     generation = generation + 1,
@@ -137,21 +170,22 @@ WHERE run_id = ?
   AND status NOT IN ('completed', 'failed', 'cancelled', 'paused')
   AND (
       owner_id IS NULL
-      OR owner_id = ?
-      OR lease_expires_at_ms IS NULL
-      OR lease_expires_at_ms <= ?
+      OR (
+          lease_expires_at_ms IS NOT NULL
+          AND lease_expires_at_ms <= ?
+      )
   )
 RETURNING generation
             "#,
         )
         .bind(params.owner_id.as_str())
+        .bind(self.workflow_owner_instance_id.as_str())
         .bind(lease_expires_at_ms)
         .bind(now_ms)
         .bind(crate::WorkflowRunStatus::Running.as_str())
         .bind(now_ms)
         .bind(now_ms)
         .bind(params.run_id.as_str())
-        .bind(params.owner_id.as_str())
         .bind(now_ms)
         .fetch_optional(&mut *tx)
         .await?;
@@ -187,6 +221,79 @@ RETURNING generation
         }))
     }
 
+    pub async fn heartbeat_workflow_run(
+        &self,
+        params: WorkflowRunHeartbeatParams,
+    ) -> anyhow::Result<Option<WorkflowRunHeartbeatOutcome>> {
+        validate_owner_id(&params.owner_id)?;
+        let lease_duration_ms = params
+            .lease_duration_ms
+            .unwrap_or(DEFAULT_WORKFLOW_LEASE_DURATION_MS);
+        if lease_duration_ms <= 0 {
+            anyhow::bail!("workflow run lease_duration_ms must be positive");
+        }
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let lease_expires_at_ms = now_ms.saturating_add(lease_duration_ms);
+        let row = sqlx::query(
+            r#"
+UPDATE workflow_runs
+SET
+    lease_expires_at_ms = MAX(lease_expires_at_ms, ?),
+    heartbeat_at_ms = ?,
+    updated_at_ms = ?
+WHERE run_id = ?
+  AND owner_id = ?
+  AND owner_instance_id = ?
+  AND generation = ?
+  AND lease_expires_at_ms > ?
+RETURNING lease_expires_at_ms
+            "#,
+        )
+        .bind(lease_expires_at_ms)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(params.run_id.as_str())
+        .bind(params.owner_id.as_str())
+        .bind(self.workflow_owner_instance_id.as_str())
+        .bind(params.generation)
+        .bind(now_ms)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(|row| {
+            Ok(WorkflowRunHeartbeatOutcome {
+                lease_expires_at_ms: row.try_get("lease_expires_at_ms")?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn workflow_run_fence_is_current(
+        &self,
+        params: WorkflowRunFenceParams,
+    ) -> anyhow::Result<bool> {
+        validate_owner_id(&params.owner_id)?;
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let current: Option<i64> = sqlx::query_scalar(
+            r#"
+SELECT 1
+FROM workflow_runs
+WHERE run_id = ?
+  AND owner_id = ?
+  AND owner_instance_id = ?
+  AND generation = ?
+  AND lease_expires_at_ms > ?
+            "#,
+        )
+        .bind(params.run_id)
+        .bind(params.owner_id)
+        .bind(self.workflow_owner_instance_id.as_str())
+        .bind(params.generation)
+        .bind(now_ms)
+        .fetch_optional(self.reader_pool.as_ref())
+        .await?;
+        Ok(current.is_some())
+    }
+
     pub async fn advance_workflow_run(
         &self,
         params: WorkflowRunAdvanceParams,
@@ -202,6 +309,7 @@ RETURNING generation
             &mut tx,
             params.run_id.as_str(),
             &params.owner_id,
+            self.workflow_owner_instance_id.as_str(),
             params.generation,
             now_ms,
         )
@@ -288,6 +396,7 @@ RETURNING generation
             &mut tx,
             params.run_id.as_str(),
             &params.owner_id,
+            self.workflow_owner_instance_id.as_str(),
             params.generation,
             now_ms,
         )
@@ -309,27 +418,53 @@ RETURNING generation
             }));
         }
 
-        let admission = admit_ready_workflow_branches_in_tx(
+        let mut provisioned_git_worktrees = Vec::new();
+        let admission = match admit_ready_workflow_branches_in_tx(
             &mut tx,
             &run,
             &params,
             &provider_env_key_present,
+            self.codex_home.as_path(),
+            &mut provisioned_git_worktrees,
             now_ms,
         )
-        .await?;
+        .await
+        {
+            Ok(admission) => admission,
+            Err(err) => {
+                tx.rollback().await?;
+                cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
+                return Err(err);
+            }
+        };
         let changed = admission.changed;
         let blocked_by_provider_preflight = admission.blocked_by_provider_preflight;
         if changed {
-            recompute_workflow_run_status_in_tx(
+            if let Err(err) = recompute_workflow_run_status_in_tx(
                 &mut tx,
                 params.run_id.as_str(),
                 params.owner_id.as_str(),
                 now_ms,
             )
-            .await?;
+            .await
+            {
+                tx.rollback().await?;
+                cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
+                return Err(err);
+            }
         }
-        let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
-        tx.commit().await?;
+        let snapshot = match snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                tx.rollback().await?;
+                cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
+                return Err(err);
+            }
+        };
+        if let Err(err) = tx.commit().await {
+            cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
+            return Err(err.into());
+        }
         if blocked_by_provider_preflight {
             self.thread_goals
                 .block_workflow_goal_plan_projection(params.run_id.as_str())
@@ -353,6 +488,7 @@ RETURNING generation
             &mut tx,
             params.run_id.as_str(),
             &params.owner_id,
+            self.workflow_owner_instance_id.as_str(),
             params.generation,
             now_ms,
         )
@@ -439,6 +575,7 @@ pub(super) async fn claim_checked_workflow_run_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
     owner_id: &str,
+    owner_instance_id: &str,
     generation: i64,
     now_ms: i64,
 ) -> anyhow::Result<Option<crate::WorkflowRun>> {
@@ -450,6 +587,9 @@ pub(super) async fn claim_checked_workflow_run_in_tx(
         return Ok(None);
     }
     if run.owner_id.as_deref() != Some(owner_id) {
+        return Ok(None);
+    }
+    if run.owner_instance_id.as_deref() != Some(owner_instance_id) {
         return Ok(None);
     }
     if run.generation != generation {
@@ -469,6 +609,8 @@ async fn admit_ready_workflow_branches_in_tx(
     run: &crate::WorkflowRun,
     params: &WorkflowRunBranchAdmissionParams,
     provider_env_key_present: &impl Fn(&str) -> bool,
+    codex_home: &Path,
+    provisioned_git_worktrees: &mut Vec<ProvisionedGitWorktree>,
     now_ms: i64,
 ) -> anyhow::Result<WorkflowRunBranchAdmissionTxOutcome> {
     let limits = WorkflowBranchLimits::from_run(run)?;
@@ -527,8 +669,8 @@ async fn admit_ready_workflow_branches_in_tx(
         }
         let model_route_json = branch_model_route_json(run, candidate.model_route_json.as_ref())?;
         let workspace_json = optional_workflow_state_data(candidate.workspace_json.as_ref())?;
-        let workspace_mode = workflow_workspace_mode(workspace_json.as_ref());
-        if workspace_mode == Some("isolated_worktree") {
+        let workspace_mode = workflow_workspace_mode(workspace_json.as_ref())?;
+        if workspace_mode == WorkflowWorkspaceMode::IsolatedWorktree {
             if isolated_worktree_count >= limits.max_worktrees {
                 continue;
             }
@@ -545,6 +687,27 @@ async fn admit_ready_workflow_branches_in_tx(
             existing_background_agent_run_id_by_idempotency_key_in_tx(tx, idempotency_key.as_str())
                 .await?
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let provisioned_workspace = provision_workflow_workspace(
+            codex_home,
+            run,
+            &candidate,
+            workspace_mode,
+            branch_attempt,
+        )?;
+        if provisioned_workspace.created_linked_worktree {
+            let Some(branch) = provisioned_workspace.branch.clone() else {
+                cleanup_provisioned_workflow_workspace(&provisioned_workspace);
+                anyhow::bail!(
+                    "isolated workflow worktree {} has no branch",
+                    provisioned_workspace.worktree_path.display()
+                );
+            };
+            provisioned_git_worktrees.push(ProvisionedGitWorktree {
+                base_repo_path: provisioned_workspace.base_repo_path.clone(),
+                worktree_path: provisioned_workspace.worktree_path.clone(),
+                branch,
+            });
+        }
         let admission_json = workflow_state_json_string(
             "workflow_branch_admission",
             json!({
@@ -556,6 +719,8 @@ async fn admit_ready_workflow_branches_in_tx(
                 "admittedAtMs": now_ms,
                 "route": workflow_branch_route_summary(&model_route_json),
                 "workspace": workspace_json,
+                "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
+                "cwd": provisioned_workspace.execution_cwd,
             }),
         )?;
         let updated = sqlx::query(
@@ -588,6 +753,10 @@ WHERE step_run_id = ?
         .await?
         .rows_affected();
         if updated == 0 {
+            if provisioned_workspace.created_linked_worktree {
+                cleanup_provisioned_workflow_workspace(&provisioned_workspace);
+                provisioned_git_worktrees.pop();
+            }
             continue;
         }
 
@@ -596,8 +765,10 @@ WHERE step_run_id = ?
             BackgroundBranchRunCreate {
                 run,
                 candidate: &candidate,
+                attempt: branch_attempt,
                 model_route_json: &model_route_json,
                 workspace_json: workspace_json.as_ref(),
+                provisioned_workspace: &provisioned_workspace,
                 background_agent_run_id: background_agent_run_id.as_str(),
                 idempotency_key: idempotency_key.as_str(),
                 params,
@@ -621,7 +792,8 @@ WHERE step_run_id = ?
                     "backgroundAgentRunId": background_agent_run_id,
                     "createdBackgroundAgentRun": created,
                     "route": workflow_branch_route_summary(&model_route_json),
-                    "workspaceMode": workspace_mode,
+                    "workspaceMode": provisioned_workspace.mode,
+                    "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
                 }),
                 now_ms,
             },
@@ -632,6 +804,7 @@ WHERE step_run_id = ?
             step_run_id: candidate.step_run_id,
             agent_id: candidate.agent_id,
             background_agent_run_id,
+            managed_worktree_id: provisioned_workspace.worktree_id,
             idempotency_key,
             model_route_json,
             workspace_json,
@@ -873,12 +1046,34 @@ struct WorkflowBranchProviderPreflightBlock {
 struct BackgroundBranchRunCreate<'a> {
     run: &'a crate::WorkflowRun,
     candidate: &'a ReadyBranchCandidate,
+    attempt: i64,
     model_route_json: &'a Value,
     workspace_json: Option<&'a Value>,
+    provisioned_workspace: &'a ProvisionedWorkflowWorkspace,
     background_agent_run_id: &'a str,
     idempotency_key: &'a str,
     params: &'a WorkflowRunBranchAdmissionParams,
     now_ms: i64,
+}
+
+struct ProvisionedWorkflowWorkspace {
+    worktree_id: String,
+    mode: WorkflowWorkspaceMode,
+    base_repo_path: PathBuf,
+    worktree_path: PathBuf,
+    execution_cwd: PathBuf,
+    branch: Option<String>,
+    head_sha: Option<String>,
+    status_snapshot_json: Value,
+    dirty: bool,
+    created_linked_worktree: bool,
+}
+
+#[derive(Clone)]
+struct ProvisionedGitWorktree {
+    base_repo_path: PathBuf,
+    worktree_path: PathBuf,
+    branch: String,
 }
 
 struct BackgroundAgentStatusSnapshotUpsert<'a> {
@@ -913,8 +1108,8 @@ WHERE run_id = ?
         let workspace_json = workspace_json
             .map(|value| serde_json::from_str::<Value>(value.as_str()))
             .transpose()?;
-        if workflow_workspace_mode(workspace_json.as_ref().and_then(|value| value.get("data")))
-            == Some("isolated_worktree")
+        if workflow_workspace_mode(workspace_json.as_ref().and_then(|value| value.get("data")))?
+            == WorkflowWorkspaceMode::IsolatedWorktree
         {
             isolated_worktree_count += 1;
         }
@@ -1103,8 +1298,10 @@ async fn create_background_branch_run_if_missing_in_tx(
     let BackgroundBranchRunCreate {
         run,
         candidate,
+        attempt,
         model_route_json,
         workspace_json,
+        provisioned_workspace,
         background_agent_run_id,
         idempotency_key,
         params,
@@ -1153,7 +1350,7 @@ async fn create_background_branch_run_if_missing_in_tx(
         version_fingerprint: params.version_fingerprint.clone(),
     };
     let start_event_payload = json!({
-        "cwd": Value::Null,
+        "cwd": provisioned_workspace.execution_cwd.to_string_lossy(),
         "prompt": prompt,
         "promptSnapshotRef": prompt_snapshot_ref,
     });
@@ -1165,6 +1362,7 @@ async fn create_background_branch_run_if_missing_in_tx(
             candidate,
             model_route_json,
             workspace_json,
+            provisioned_workspace,
             params,
         ),
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
@@ -1187,6 +1385,38 @@ async fn create_background_branch_run_if_missing_in_tx(
     .is_none();
     if created {
         insert_background_agent_run_in_tx(tx, &run_params, now).await?;
+        insert_background_agent_worktree_lease_in_tx(
+            tx,
+            &BackgroundAgentWorktreeLeaseCreateParams {
+                id: provisioned_workspace.worktree_id.clone(),
+                run_id: background_agent_run_id.to_string(),
+                identity: format!(
+                    "workflow:{}:step:{}:attempt:{}",
+                    run.run_id, candidate.step_id, attempt
+                ),
+                mode: workflow_background_workspace_mode(provisioned_workspace.mode),
+                base_repo_path: provisioned_workspace.base_repo_path.clone(),
+                worktree_path: provisioned_workspace.worktree_path.clone(),
+                branch: provisioned_workspace.branch.clone(),
+                head_sha: provisioned_workspace.head_sha.clone(),
+                status_snapshot_json: provisioned_workspace.status_snapshot_json.clone(),
+                dirty: provisioned_workspace.dirty,
+                cleanup_after: None,
+            },
+            now,
+        )
+        .await?;
+    } else if !workflow_worktree_attachment_matches_in_tx(
+        tx,
+        background_agent_run_id,
+        provisioned_workspace.worktree_id.as_str(),
+    )
+    .await?
+    {
+        anyhow::bail!(
+            "existing workflow AgentRun {background_agent_run_id} is not attached to managed worktree {}",
+            provisioned_workspace.worktree_id
+        );
     }
     let (event, _execution_snapshot_id) = recover_or_validate_background_agent_initial_state_in_tx(
         tx,
@@ -1274,6 +1504,7 @@ fn branch_execution_payload(
     candidate: &ReadyBranchCandidate,
     model_route_json: &Value,
     workspace_json: Option<&Value>,
+    provisioned_workspace: &ProvisionedWorkflowWorkspace,
     params: &WorkflowRunBranchAdmissionParams,
 ) -> Value {
     json!({
@@ -1282,8 +1513,9 @@ fn branch_execution_payload(
         "workflowStepId": candidate.step_id.as_str(),
         "workflowStepRunId": candidate.step_run_id.as_str(),
         "agentId": candidate.agent_id.as_str(),
-        "cwd": Value::Null,
-        "workspaceRoots": Value::Null,
+        "cwd": provisioned_workspace.execution_cwd.to_string_lossy(),
+        "workspaceRoots": [provisioned_workspace.worktree_path.to_string_lossy()],
+        "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
         "modelGateway": model_route_json.get("model_gateway"),
         "model": model_route_json.get("model"),
         "provider": model_route_json.get("provider"),
@@ -1299,6 +1531,38 @@ fn branch_execution_payload(
         "envSnapshotPolicy": "inherit-minimal",
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
     })
+}
+
+fn workflow_background_workspace_mode(mode: WorkflowWorkspaceMode) -> BackgroundAgentWorkspaceMode {
+    match mode {
+        WorkflowWorkspaceMode::IsolatedWorktree => BackgroundAgentWorkspaceMode::IsolatedWorktree,
+        WorkflowWorkspaceMode::SharedRepository => BackgroundAgentWorkspaceMode::SharedRepository,
+    }
+}
+
+async fn workflow_worktree_attachment_matches_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    background_agent_run_id: &str,
+    worktree_id: &str,
+) -> anyhow::Result<bool> {
+    let attached: Option<i64> = sqlx::query_scalar(
+        r#"
+SELECT 1
+FROM background_agent_runs run
+JOIN managed_worktree_assignments assignment
+  ON assignment.agent_run_id = run.id
+ AND assignment.detached_at_ms IS NULL
+WHERE run.id = ?
+  AND run.worktree_lease_id = ?
+  AND assignment.worktree_id = ?
+        "#,
+    )
+    .bind(background_agent_run_id)
+    .bind(worktree_id)
+    .bind(worktree_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(attached.is_some())
 }
 
 fn workflow_branch_route_summary(model_route_json: &Value) -> Value {
@@ -1324,10 +1588,216 @@ fn optional_workflow_state_data(value: Option<&Value>) -> anyhow::Result<Option<
     Ok(value.map(workflow_state_data).cloned())
 }
 
-fn workflow_workspace_mode(workspace_json: Option<&Value>) -> Option<&str> {
-    workspace_json
-        .and_then(|workspace_json| workspace_json.get("mode"))
-        .and_then(Value::as_str)
+fn workflow_workspace_mode(
+    workspace_json: Option<&Value>,
+) -> anyhow::Result<WorkflowWorkspaceMode> {
+    let Some(workspace_json) = workspace_json else {
+        return Ok(WorkflowWorkspaceMode::SharedRepository);
+    };
+    let workspace: WorkflowWorkspace =
+        serde_json::from_value(workspace_json.clone()).map_err(|err| {
+            anyhow::anyhow!("workflow workspace mode is invalid or unsupported: {err}")
+        })?;
+    Ok(workspace.mode)
+}
+
+fn provision_workflow_workspace(
+    codex_home: &Path,
+    run: &crate::WorkflowRun,
+    candidate: &ReadyBranchCandidate,
+    mode: WorkflowWorkspaceMode,
+    attempt: i64,
+) -> anyhow::Result<ProvisionedWorkflowWorkspace> {
+    let base_repo_path = run.source_repo_path.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "workflow run {} has no persisted source repository; branch admission refused before creating an AgentRun",
+            run.run_id
+        )
+    })?;
+    let source_cwd = run.source_cwd.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "workflow run {} has no persisted source cwd; branch admission refused before creating an AgentRun",
+            run.run_id
+        )
+    })?;
+    if !source_cwd.is_dir() {
+        anyhow::bail!(
+            "workflow source cwd {} is not an existing directory",
+            source_cwd.display()
+        );
+    }
+    let relative_cwd = source_cwd
+        .strip_prefix(base_repo_path.as_path())
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "workflow source cwd {} is outside persisted source repository {}",
+                source_cwd.display(),
+                base_repo_path.display()
+            )
+        })?
+        .to_path_buf();
+    let worktree_id = Uuid::new_v4().to_string();
+
+    match mode {
+        WorkflowWorkspaceMode::SharedRepository => {
+            let status_snapshot = get_git_worktree_status_snapshot(base_repo_path.as_path())?;
+            Ok(ProvisionedWorkflowWorkspace {
+                worktree_id,
+                mode,
+                base_repo_path: base_repo_path.clone(),
+                worktree_path: base_repo_path,
+                execution_cwd: source_cwd,
+                branch: status_snapshot.branch.clone(),
+                head_sha: status_snapshot.head_sha.clone(),
+                status_snapshot_json: serde_json::to_value(&status_snapshot)?,
+                dirty: status_snapshot.dirty,
+                created_linked_worktree: false,
+            })
+        }
+        WorkflowWorkspaceMode::IsolatedWorktree => {
+            let start_point =
+                resolve_git_ref(base_repo_path.as_path(), "HEAD")?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "workflow source repository {} has no resolvable HEAD",
+                        base_repo_path.display()
+                    )
+                })?;
+            let repo_key = StateRuntime::background_agent_identity_sha256(
+                base_repo_path.to_string_lossy().as_bytes(),
+            );
+            let worktree_path = codex_home
+                .join("worktrees")
+                .join("workflows")
+                .join(&repo_key[..16])
+                .join(worktree_id.as_str());
+            let run_key = workflow_git_component(run.run_id.as_str());
+            let step_key = workflow_git_component(candidate.step_id.as_str());
+            let branch = format!(
+                "codewith/workflow-{}-{}-{}-{}",
+                &run_key[..run_key.len().min(8)],
+                &step_key[..step_key.len().min(24)],
+                attempt,
+                &worktree_id[..8]
+            );
+            let parent = worktree_path.parent().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "workflow worktree path {} has no parent",
+                    worktree_path.display()
+                )
+            })?;
+            std::fs::create_dir_all(parent)?;
+            if let Err(err) = add_linked_git_worktree(
+                base_repo_path.as_path(),
+                GitWorktreeAddOptions {
+                    worktree_path: worktree_path.clone(),
+                    branch: branch.clone(),
+                    start_point,
+                },
+            ) {
+                let _ = remove_linked_git_worktree(
+                    base_repo_path.as_path(),
+                    worktree_path.as_path(),
+                    /*force*/ true,
+                );
+                let _ = delete_local_git_branch(base_repo_path.as_path(), branch.as_str());
+                return Err(err.into());
+            }
+            let status_snapshot = match get_git_worktree_status_snapshot(worktree_path.as_path()) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    let _ = remove_linked_git_worktree(
+                        base_repo_path.as_path(),
+                        worktree_path.as_path(),
+                        /*force*/ true,
+                    );
+                    let _ = delete_local_git_branch(base_repo_path.as_path(), branch.as_str());
+                    return Err(err.into());
+                }
+            };
+            let execution_cwd = worktree_path.join(relative_cwd);
+            if !execution_cwd.is_dir() {
+                let _ = remove_linked_git_worktree(
+                    base_repo_path.as_path(),
+                    worktree_path.as_path(),
+                    /*force*/ true,
+                );
+                let _ = delete_local_git_branch(base_repo_path.as_path(), branch.as_str());
+                anyhow::bail!(
+                    "workflow source cwd {} is not present in provisioned worktree {}",
+                    source_cwd.display(),
+                    worktree_path.display()
+                );
+            }
+            let status_snapshot_json = match serde_json::to_value(&status_snapshot) {
+                Ok(value) => value,
+                Err(err) => {
+                    let _ = remove_linked_git_worktree(
+                        base_repo_path.as_path(),
+                        worktree_path.as_path(),
+                        /*force*/ true,
+                    );
+                    let _ = delete_local_git_branch(base_repo_path.as_path(), branch.as_str());
+                    return Err(err.into());
+                }
+            };
+            Ok(ProvisionedWorkflowWorkspace {
+                worktree_id,
+                mode,
+                base_repo_path,
+                worktree_path,
+                execution_cwd,
+                branch: Some(branch),
+                head_sha: status_snapshot.head_sha.clone(),
+                status_snapshot_json,
+                dirty: status_snapshot.dirty,
+                created_linked_worktree: true,
+            })
+        }
+    }
+}
+
+fn workflow_git_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "workflow".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn cleanup_provisioned_workflow_workspace(workspace: &ProvisionedWorkflowWorkspace) {
+    if !workspace.created_linked_worktree {
+        return;
+    }
+    let _ = remove_linked_git_worktree(
+        workspace.base_repo_path.as_path(),
+        workspace.worktree_path.as_path(),
+        /*force*/ true,
+    );
+    if let Some(branch) = workspace.branch.as_deref() {
+        let _ = delete_local_git_branch(workspace.base_repo_path.as_path(), branch);
+    }
+}
+
+fn cleanup_provisioned_git_worktrees(worktrees: &[ProvisionedGitWorktree]) {
+    for worktree in worktrees.iter().rev() {
+        let _ = remove_linked_git_worktree(
+            worktree.base_repo_path.as_path(),
+            worktree.worktree_path.as_path(),
+            /*force*/ true,
+        );
+        let _ =
+            delete_local_git_branch(worktree.base_repo_path.as_path(), worktree.branch.as_str());
+    }
 }
 
 fn workflow_branch_idempotency_key(run_id: &str, step_id: &str, attempt: i64) -> String {
@@ -1665,6 +2135,7 @@ SET
     status_reason = COALESCE(status_reason, ?),
     reason_code = ?,
     owner_id = NULL,
+    owner_instance_id = NULL,
     lease_expires_at_ms = NULL,
     heartbeat_at_ms = ?,
     completed_at_ms = ?,
@@ -2175,7 +2646,9 @@ mod tests {
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use pretty_assertions::assert_eq;
+    use std::io::Write;
     use std::path::Path;
+    use std::process::Command;
     use std::sync::Arc;
 
     async fn test_runtime() -> Arc<StateRuntime> {
@@ -2189,15 +2662,53 @@ mod tests {
     }
 
     async fn upsert_test_thread(runtime: &StateRuntime, thread_id: ThreadId) {
-        let metadata = test_thread_metadata(
-            runtime.codex_home(),
-            thread_id,
-            runtime.codex_home().join("workspace"),
-        );
+        let workspace = runtime.codex_home().join("workspace");
+        initialize_test_git_repo(workspace.as_path());
+        let metadata = test_thread_metadata(runtime.codex_home(), thread_id, workspace);
         runtime
             .upsert_thread(&metadata)
             .await
             .expect("test thread should be upserted");
+    }
+
+    fn initialize_test_git_repo(repo_path: &Path) {
+        std::fs::create_dir_all(repo_path).expect("test repository directory should exist");
+        if repo_path.join(".git").exists() {
+            return;
+        }
+        run_test_git(repo_path, &["init"]);
+        std::fs::write(repo_path.join("README.md"), "workflow safety foundation\n")
+            .expect("test repository seed should write");
+        run_test_git(repo_path, &["add", "README.md"]);
+        run_test_git(
+            repo_path,
+            &[
+                "commit",
+                "--no-gpg-sign",
+                "--no-verify",
+                "-m",
+                "Initialize workflow test repository",
+            ],
+        );
+        run_test_git(repo_path, &["branch", "-M", "main"]);
+    }
+
+    fn run_test_git(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .env("GIT_AUTHOR_NAME", "Codewith Test")
+            .env("GIT_AUTHOR_EMAIL", "codewith-test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Codewith Test")
+            .env("GIT_COMMITTER_EMAIL", "codewith-test@example.invalid")
+            .output()
+            .expect("git command should start");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("git stdout should be utf-8")
     }
 
     fn orchestrator_workflow_yaml(
@@ -2512,7 +3023,7 @@ WHERE plan_id = ? AND key = ?
     }
 
     #[tokio::test]
-    async fn workflow_claim_fences_stale_owner_generation() {
+    async fn workflow_claim_requires_process_instance_heartbeat_and_expiry_takeover() {
         let runtime = test_runtime().await;
         let thread_id = test_thread_id();
         upsert_test_thread(&runtime, thread_id).await;
@@ -2537,31 +3048,95 @@ WHERE plan_id = ? AND key = ?
             .expect("run should claim");
         assert_eq!(1, claimed_a.generation);
 
-        let claimed_b = runtime
+        let heartbeat = runtime
+            .heartbeat_workflow_run(WorkflowRunHeartbeatParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "owner-a".to_string(),
+                generation: claimed_a.generation,
+                lease_duration_ms: Some(120_000),
+            })
+            .await
+            .expect("heartbeat should not error")
+            .expect("current owner instance should heartbeat");
+        assert!(
+            heartbeat.lease_expires_at_ms > claimed_a.lease_expires_at_ms,
+            "heartbeat must extend the live lease"
+        );
+
+        let second_runtime = StateRuntime::init(
+            runtime.codex_home().to_path_buf(),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("second runtime should initialize against the same state");
+        let same_name_reclaim = second_runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
-                owner_id: "owner-b".to_string(),
+                owner_id: "owner-a".to_string(),
                 lease_duration_ms: Some(60_000),
             })
             .await
             .expect("second claim should not error");
-        assert_eq!(None, claimed_b);
+        assert_eq!(
+            None, same_name_reclaim,
+            "a different process instance must not reclaim a live lease merely by using the same owner name"
+        );
+
+        sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = NULL WHERE run_id = ?")
+            .bind(run.run.run_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("test should clear the owner lease expiry");
+        let missing_expiry_reclaim = second_runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "owner-a".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("missing-expiry claim should not error");
+        assert_eq!(
+            None, missing_expiry_reclaim,
+            "an owned lease with no expiry must fail closed instead of permitting takeover"
+        );
 
         sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = 0 WHERE run_id = ?")
             .bind(run.run.run_id.as_str())
             .execute(runtime.pool.as_ref())
             .await
             .expect("lease should expire");
-        let claimed_b = runtime
+        let claimed_b = second_runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
-                owner_id: "owner-b".to_string(),
+                owner_id: "owner-a".to_string(),
                 lease_duration_ms: Some(60_000),
             })
             .await
             .expect("stale lease claim should succeed")
             .expect("run should reclaim");
         assert_eq!(2, claimed_b.generation);
+        assert!(
+            !runtime
+                .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "owner-a".to_string(),
+                    generation: claimed_a.generation,
+                })
+                .await
+                .expect("old fence should evaluate"),
+            "the expired process and generation must be fenced"
+        );
+        assert!(
+            second_runtime
+                .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "owner-a".to_string(),
+                    generation: claimed_b.generation,
+                })
+                .await
+                .expect("new fence should evaluate"),
+            "the takeover process and generation must own the current fence"
+        );
 
         let stale_advance = runtime
             .advance_workflow_run(WorkflowRunAdvanceParams {
@@ -2572,6 +3147,157 @@ WHERE plan_id = ? AND key = ?
             .await
             .expect("stale advance should not error");
         assert_eq!(None, stale_advance);
+    }
+
+    #[tokio::test]
+    async fn overlapping_long_verifier_effect_is_fenced_to_one_generation() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let marker = runtime.codex_home().join("verifier-external-effect");
+        let (run, _) = create_projected_run(
+            &runtime,
+            thread_id,
+            "wf_long_verifier_fence",
+            &marker,
+            /*include_second*/ false,
+        )
+        .await;
+        let first = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("first verifier claim should succeed")
+            .expect("first verifier claim should be current");
+        let first_generation = first.generation;
+        assert!(
+            runtime
+                .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                    run_id: run.run.run_id.clone(),
+                    owner_id: "verifier-owner".to_string(),
+                    generation: first_generation,
+                })
+                .await
+                .expect("pre-launch fence should evaluate"),
+            "the original verifier may launch only while its lease is current"
+        );
+        let result_barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let stale_worker = {
+            let runtime = runtime.clone();
+            let barrier = result_barrier.clone();
+            let marker = marker.clone();
+            let run_id = run.run.run_id.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let current = runtime
+                    .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                        run_id,
+                        owner_id: "verifier-owner".to_string(),
+                        generation: first_generation,
+                    })
+                    .await
+                    .expect("stale result fence should evaluate");
+                if current {
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(marker)
+                            .expect("stale marker should open"),
+                        "stale-generation"
+                    )
+                    .expect("stale marker should write");
+                }
+                current
+            })
+        };
+
+        sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = 0 WHERE run_id = ?")
+            .bind(run.run.run_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("first verifier lease should expire");
+        let takeover_runtime = StateRuntime::init(
+            runtime.codex_home().to_path_buf(),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("takeover runtime should initialize");
+        let takeover = takeover_runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("takeover claim should succeed")
+            .expect("expired verifier lease should be claimable");
+        let takeover_generation = takeover.generation;
+
+        let stale_launch = runtime
+            .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: first_generation,
+            })
+            .await
+            .expect("stale launch fence should evaluate");
+        assert!(!stale_launch);
+
+        let current_launch = takeover_runtime
+            .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: takeover_generation,
+            })
+            .await
+            .expect("takeover launch fence should evaluate");
+        assert!(current_launch);
+        let current_worker = {
+            let runtime = takeover_runtime.clone();
+            let barrier = result_barrier.clone();
+            let marker = marker.clone();
+            let run_id = run.run.run_id;
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let current = runtime
+                    .workflow_run_fence_is_current(WorkflowRunFenceParams {
+                        run_id,
+                        owner_id: "verifier-owner".to_string(),
+                        generation: takeover_generation,
+                    })
+                    .await
+                    .expect("takeover result fence should evaluate");
+                if current {
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(marker)
+                            .expect("current marker should open"),
+                        "current-generation"
+                    )
+                    .expect("current marker should write");
+                }
+                current
+            })
+        };
+        result_barrier.wait().await;
+        assert!(
+            !stale_worker.await.expect("stale worker should join"),
+            "the overlapping old verifier must be fenced before result publication"
+        );
+        assert!(
+            current_worker.await.expect("current worker should join"),
+            "the takeover verifier must remain current through result publication"
+        );
+        assert_eq!(
+            "current-generation\n",
+            std::fs::read_to_string(&marker).expect("one verifier marker should exist")
+        );
     }
 
     #[tokio::test]
@@ -2680,6 +3406,17 @@ WHERE plan_id = ? AND key = ?
             ),
         )
         .await;
+        let source_repo = run
+            .run
+            .source_repo_path
+            .clone()
+            .expect("workflow run should persist its source repository");
+        assert_eq!(
+            Some(runtime.codex_home().join("workspace")),
+            run.run.source_cwd
+        );
+        let source_status_before = get_git_worktree_status_snapshot(source_repo.as_path())
+            .expect("source checkout status should load");
         let claim = runtime
             .claim_workflow_run(WorkflowRunClaimParams {
                 run_id: run.run.run_id.clone(),
@@ -2718,6 +3455,10 @@ WHERE plan_id = ? AND key = ?
 
         assert!(admitted.changed);
         assert_eq!(2, admitted.admitted.len());
+        assert_ne!(
+            admitted.admitted[0].managed_worktree_id, admitted.admitted[1].managed_worktree_id,
+            "parallel isolated branches must have distinct canonical worktree ids"
+        );
         assert_eq!(
             vec!["branch_0".to_string(), "branch_1".to_string()],
             admitted
@@ -2762,6 +3503,10 @@ WHERE plan_id = ? AND key = ?
             .expect("background run should exist");
         assert_eq!(BackgroundAgentRunStatus::Queued, first_run.status);
         assert_eq!(
+            Some(first_branch.managed_worktree_id.as_str()),
+            first_run.worktree_lease_id.as_deref()
+        );
+        assert_eq!(
             Some("profile:workflow"),
             first_run.auth_profile_ref.as_deref()
         );
@@ -2785,6 +3530,212 @@ WHERE plan_id = ? AND key = ?
                 .payload_json
                 .get("reasoning")
                 .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some(first_branch.managed_worktree_id.as_str()),
+            execution_snapshot
+                .payload_json
+                .get("managedWorktreeId")
+                .and_then(Value::as_str)
+        );
+        let mut isolated_paths = Vec::new();
+        for branch in &admitted.admitted {
+            let branch_run = runtime
+                .get_background_agent_run(branch.background_agent_run_id.as_str())
+                .await
+                .expect("branch AgentRun should load")
+                .expect("branch AgentRun should exist");
+            assert_eq!(
+                Some(branch.managed_worktree_id.as_str()),
+                branch_run.worktree_lease_id.as_deref()
+            );
+            let lease = runtime
+                .get_background_agent_worktree_lease(branch.managed_worktree_id.as_str())
+                .await
+                .expect("branch worktree lease should load")
+                .expect("branch worktree lease should exist");
+            assert_eq!(BackgroundAgentWorkspaceMode::IsolatedWorktree, lease.mode);
+            assert_eq!(
+                source_repo.to_string_lossy().as_ref(),
+                lease.base_repo_path.as_str()
+            );
+            assert!(
+                Path::new(lease.worktree_path.as_str()).is_dir(),
+                "allocated isolated worktree must exist"
+            );
+            let assignment_count: i64 = sqlx::query_scalar(
+                r#"
+SELECT COUNT(*)
+FROM managed_worktree_assignments
+WHERE worktree_id = ?
+  AND agent_run_id = ?
+  AND detached_at_ms IS NULL
+                "#,
+            )
+            .bind(branch.managed_worktree_id.as_str())
+            .bind(branch.background_agent_run_id.as_str())
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("exact worktree assignment should load");
+            assert_eq!(1, assignment_count);
+            isolated_paths.push(lease.worktree_path);
+        }
+        assert_ne!(
+            isolated_paths[0], isolated_paths[1],
+            "parallel isolated branches must have distinct canonical paths"
+        );
+        assert_eq!(
+            source_status_before,
+            get_git_worktree_status_snapshot(source_repo.as_path())
+                .expect("source checkout status should remain readable"),
+            "workflow worktree allocation must not mutate the source checkout"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_provisioning_rolls_back_admission_and_removes_orphan_worktree() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let run = create_unprojected_run(
+            &runtime,
+            thread_id,
+            "wf_branch_provision_rollback",
+            parallel_branch_workflow_yaml(
+                "wf_branch_provision_rollback",
+                /*step_count*/ 1,
+                /*max_parallel_steps*/ 1,
+                /*max_agents*/ 1,
+                /*max_worktrees*/ 1,
+                "provision-rollback",
+            ),
+        )
+        .await;
+        let source_repo = run
+            .run
+            .source_repo_path
+            .clone()
+            .expect("workflow run should persist source repository");
+        let source_status_before = get_git_worktree_status_snapshot(source_repo.as_path())
+            .expect("source checkout status should load");
+        let source_worktrees_before =
+            run_test_git(source_repo.as_path(), &["worktree", "list", "--porcelain"]);
+        let source_branches_before = run_test_git(
+            source_repo.as_path(),
+            &["branch", "--format=%(refname:short)"],
+        );
+        let missing_source_cwd = source_repo.join("untracked-missing-source-cwd");
+        std::fs::create_dir_all(&missing_source_cwd)
+            .expect("untracked source cwd should exist only in the source checkout");
+        sqlx::query("UPDATE workflow_runs SET source_cwd = ? WHERE run_id = ?")
+            .bind(missing_source_cwd.to_string_lossy().into_owned())
+            .bind(run.run.run_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("test should inject missing source cwd");
+        let claim = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "rollback-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("claim should succeed")
+            .expect("run should claim");
+        runtime
+            .advance_workflow_run(WorkflowRunAdvanceParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "rollback-owner".to_string(),
+                generation: claim.generation,
+            })
+            .await
+            .expect("advance should succeed")
+            .expect("run should advance");
+
+        let error = admit_test_workflow_run_branches(
+            &runtime,
+            WorkflowRunBranchAdmissionParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "rollback-owner".to_string(),
+                generation: claim.generation,
+                auth_profile_ref: None,
+                config_fingerprint: None,
+                version_fingerprint: None,
+                parent_agent_run_id: None,
+                max_active_background_agent_runs: Some(10),
+            },
+        )
+        .await
+        .expect_err("missing source cwd should fail isolated worktree provisioning");
+        assert!(
+            error
+                .to_string()
+                .contains("is not present in provisioned worktree")
+        );
+
+        let snapshot = runtime
+            .workflows()
+            .get_workflow_run_snapshot(run.run.run_id.as_str())
+            .await
+            .expect("workflow snapshot should load")
+            .expect("workflow run should still exist");
+        assert_eq!(
+            crate::WorkflowRunStepStatus::Ready,
+            snapshot.steps[0].status
+        );
+        assert_eq!(None, snapshot.steps[0].background_agent_run_id);
+        assert_eq!(
+            0,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM background_agent_runs")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background AgentRun count should load")
+        );
+        assert_eq!(
+            0,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_worktree_assignments")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("worktree assignment count should load")
+        );
+        assert_eq!(
+            0,
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM background_agent_worktree_leases")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("background worktree lease count should load")
+        );
+        assert_eq!(
+            0,
+            runtime
+                .managed_worktrees()
+                .list_managed_worktrees_page(
+                    /*base_repo_path*/ None, /*include_deleted*/ true,
+                    /*cursor*/ None, /*limit*/ 10,
+                )
+                .await
+                .expect("managed worktrees should list")
+                .data
+                .len()
+        );
+        assert_eq!(
+            source_worktrees_before,
+            run_test_git(source_repo.as_path(), &["worktree", "list", "--porcelain"]),
+            "failed provisioning must not leave an orphan linked worktree"
+        );
+        assert_eq!(
+            source_branches_before,
+            run_test_git(
+                source_repo.as_path(),
+                &["branch", "--format=%(refname:short)"]
+            ),
+            "failed provisioning must not leave an orphan workflow branch"
+        );
+        assert_eq!(
+            source_status_before,
+            get_git_worktree_status_snapshot(source_repo.as_path())
+                .expect("source checkout status should remain readable"),
+            "failed provisioning must leave the source checkout unchanged"
         );
     }
 
