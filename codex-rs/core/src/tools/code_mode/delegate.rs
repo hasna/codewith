@@ -22,6 +22,7 @@ use super::call_nested_tool;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::unified_exec::UnifiedExecProcessHandle;
 
 pub(super) struct CodeModeDispatchBroker {
     dispatch_tx: async_channel::Sender<DispatchMessage>,
@@ -33,7 +34,7 @@ pub(super) struct CodeModeDispatchBroker {
 #[derive(Clone)]
 struct TrackedProcess {
     session: Weak<crate::session::session::Session>,
-    process_id: u32,
+    process: UnifiedExecProcessHandle,
     terminate_on_cell_cancel: bool,
 }
 
@@ -65,7 +66,7 @@ impl CodeModeDispatchBroker {
         &self,
         cell_id: CellId,
         session: Weak<crate::session::session::Session>,
-        process_id: u32,
+        process: UnifiedExecProcessHandle,
         terminate_on_cell_cancel: bool,
     ) {
         let mut tracked_processes = match self.tracked_processes.lock() {
@@ -75,14 +76,16 @@ impl CodeModeDispatchBroker {
         let cell_processes = tracked_processes.entry(cell_id).or_default();
         if let Some(tracked) = cell_processes
             .iter_mut()
-            .find(|tracked| tracked.process_id == process_id && tracked.session.ptr_eq(&session))
+            .find(|tracked| {
+                tracked.process.same_generation(&process) && tracked.session.ptr_eq(&session)
+            })
         {
             tracked.terminate_on_cell_cancel |= terminate_on_cell_cancel;
             return;
         }
         cell_processes.push(TrackedProcess {
             session,
-            process_id,
+            process,
             terminate_on_cell_cancel,
         });
     }
@@ -304,13 +307,7 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
     fn wait_for_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a> {
         Box::pin(async move {
             for tracked in self.tracked_processes(&cell_id) {
-                if let Some(session) = tracked.session.upgrade() {
-                    session
-                        .services
-                        .unified_exec_manager
-                        .wait_for_process_exit(tracked.process_id)
-                        .await;
-                }
+                tracked.process.wait_for_exit().await;
             }
             Ok(())
         })
@@ -326,7 +323,7 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
                     session
                         .services
                         .unified_exec_manager
-                        .terminate_process(tracked.process_id)
+                        .terminate_process(&tracked.process)
                         .await;
                 }
             }

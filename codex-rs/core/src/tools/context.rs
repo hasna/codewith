@@ -407,10 +407,6 @@ impl ToolOutput for ExecCommandToolOutput {
             JsonValue::String(format!("failed to serialize exec result: {err}"))
         })
     }
-
-    fn code_mode_live_process_id(&self) -> Option<u32> {
-        self.process_id
-    }
 }
 
 impl ExecCommandToolOutput {

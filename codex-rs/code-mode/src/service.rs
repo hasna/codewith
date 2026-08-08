@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::warn;
 
 use crate::FunctionCallOutputContentItem;
@@ -767,11 +768,11 @@ async fn run_cell_control(
                         }
                         let delegate = Arc::clone(&inner.delegate);
                         let completion_cell_id = cell_id.clone();
-                        completion_task = Some(tokio::spawn(async move {
+                        completion_task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
                             delegate
                                 .wait_for_cell_dependencies(completion_cell_id)
                                 .await
-                        }));
+                        })));
                     }
                 }
             }
@@ -867,6 +868,7 @@ async fn run_cell_control(
 
                         response_tx = Some(CellResponseSender::Runtime(next_response_tx));
                         termination_requested = true;
+                        drop(completion_task.take());
                         cancellation_token.cancel();
                         yield_timer = None;
                         let _ = runtime_tx.send(RuntimeCommand::Terminate);

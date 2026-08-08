@@ -26,10 +26,10 @@ use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
-use crate::tools::handlers::unified_exec::EXEC_COMMAND_TOOL_NAME;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
+use crate::unified_exec::UnifiedExecProcessHandle;
 use crate::unified_exec::resolve_max_tokens;
 use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
@@ -114,17 +114,20 @@ impl CodeModeService {
         self.dispatch_broker.tracked_process_count(cell_id)
     }
 
-    fn track_live_process(
+    pub(crate) fn track_process_for_source(
         &self,
-        cell_id: CellId,
+        source: &ToolCallSource,
         session: &Arc<Session>,
-        process_id: u32,
+        process: UnifiedExecProcessHandle,
         terminate_on_cell_cancel: bool,
     ) {
+        let ToolCallSource::CodeMode { cell_id, .. } = source else {
+            return;
+        };
         self.dispatch_broker.track_process(
-            cell_id,
+            CellId::new(cell_id.clone()),
             Arc::downgrade(session),
-            process_id,
+            process,
             terminate_on_cell_cancel,
         );
     }
@@ -254,7 +257,7 @@ fn truncate_code_mode_result(
 }
 
 async fn call_nested_tool(
-    exec: ExecContext,
+    _exec: ExecContext,
     tool_runtime: ToolCallRuntime,
     invocation: CodeModeNestedToolCall,
     cancellation_token: CancellationToken,
@@ -276,9 +279,6 @@ async fn call_nested_tool(
         Ok(payload) => payload,
         Err(error) => return Err(FunctionCallError::RespondToModel(error)),
     };
-    let terminate_on_cell_cancel =
-        tool_name.namespace.is_none() && tool_name.name == EXEC_COMMAND_TOOL_NAME;
-
     let call = ToolCall {
         tool_name,
         call_id: format!("{PUBLIC_TOOL_NAME}-{}", uuid::Uuid::new_v4()),
@@ -294,16 +294,7 @@ async fn call_nested_tool(
             cancellation_token,
         )
         .await?;
-    let (result, live_process_id) = result.code_mode_result_with_live_process_id();
-    if let Some(process_id) = live_process_id {
-        exec.session.services.code_mode_service.track_live_process(
-            cell_id,
-            &exec.session,
-            process_id,
-            terminate_on_cell_cancel,
-        );
-    }
-    Ok(result)
+    Ok(result.code_mode_result())
 }
 
 fn build_nested_tool_payload(

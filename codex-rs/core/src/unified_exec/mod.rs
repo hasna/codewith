@@ -23,7 +23,7 @@
 //! - `process_manager.rs`: orchestration (approvals, sandboxing, reuse) and request handling.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::Weak;
 
@@ -36,6 +36,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
@@ -92,7 +93,7 @@ pub(crate) struct ExecCommandRequest {
     pub command: Vec<String>,
     pub shell_type: ShellType,
     pub hook_command: String,
-    pub process_id: u32,
+    pub process: UnifiedExecProcessHandle,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub cwd: AbsolutePathBuf,
@@ -110,23 +111,100 @@ pub(crate) struct ExecCommandRequest {
 
 #[derive(Debug)]
 pub(crate) struct WriteStdinRequest<'a> {
-    pub process_id: u32,
+    pub process: UnifiedExecProcessHandle,
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub truncation_policy: TruncationPolicy,
 }
 
+/// Allocation-generation identity for one externally visible numeric process ID.
+///
+/// Numeric IDs may be reused after a process exits. Keeping this handle lets
+/// internal lifecycle operations distinguish the old allocation from a later
+/// process that happens to receive the same numeric ID.
+#[derive(Clone)]
+pub(crate) struct UnifiedExecProcessHandle {
+    inner: Arc<UnifiedExecProcessHandleInner>,
+}
+
+struct UnifiedExecProcessHandleInner {
+    process_id: u32,
+    exited: CancellationToken,
+}
+
+impl UnifiedExecProcessHandle {
+    fn new(process_id: u32) -> Self {
+        Self {
+            inner: Arc::new(UnifiedExecProcessHandleInner {
+                process_id,
+                exited: CancellationToken::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn process_id(&self) -> u32 {
+        self.inner.process_id
+    }
+
+    pub(crate) fn same_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub(crate) async fn wait_for_exit(&self) {
+        self.inner.exited.cancelled().await;
+    }
+
+    fn mark_exited(&self) {
+        self.inner.exited.cancel();
+    }
+}
+
+impl fmt::Debug for UnifiedExecProcessHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnifiedExecProcessHandle")
+            .field("process_id", &self.process_id())
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<u32, ProcessEntry>,
-    reserved_process_ids: HashSet<u32>,
+    reserved_processes: HashMap<u32, UnifiedExecProcessHandle>,
 }
 
 impl ProcessStore {
+    fn is_current(&self, process: &UnifiedExecProcessHandle) -> bool {
+        self.reserved_processes
+            .get(&process.process_id())
+            .is_some_and(|current| current.same_generation(process))
+    }
+
     fn remove(&mut self, process_id: u32) -> Option<ProcessEntry> {
-        self.reserved_process_ids.remove(&process_id);
-        self.processes.remove(&process_id)
+        let entry = self.processes.remove(&process_id);
+        if let Some(process) = self.reserved_processes.remove(&process_id) {
+            process.mark_exited();
+        } else if let Some(entry) = entry.as_ref() {
+            entry.process_handle.mark_exited();
+        }
+        entry
+    }
+
+    fn remove_process(&mut self, process: &UnifiedExecProcessHandle) -> Option<ProcessEntry> {
+        if !self.is_current(process) {
+            return None;
+        }
+        self.remove(process.process_id())
+    }
+}
+
+impl Drop for ProcessStore {
+    fn drop(&mut self) {
+        for process in self.reserved_processes.values() {
+            process.mark_exited();
+        }
     }
 }
 
@@ -154,7 +232,7 @@ impl Default for UnifiedExecProcessManager {
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
-    process_id: u32,
+    process_handle: UnifiedExecProcessHandle,
     hook_command: String,
     tty: bool,
     network_approval: Option<DeferredNetworkApproval>,
