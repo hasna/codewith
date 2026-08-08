@@ -45,6 +45,10 @@ All of these scripts use network, so when running in the sandbox, request escala
 - Defaults to direct download for public GitHub repos.
 - If download fails with auth/permission errors, falls back to git sparse checkout.
 - Aborts if the destination skill directory already exists.
+- Multiple-path installs are transactional: a failure removes only skill directories
+  created by that invocation and never replaces a prior destination.
+- Git fallback accepts an exact commit with `--ref` and clears failed clone state
+  before trying another authenticated transport.
 - Installs into `$CODEWITH_HOME/skills/<skill-name>` (defaults to `~/.codewith/skills`).
 - Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.
 - Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.
