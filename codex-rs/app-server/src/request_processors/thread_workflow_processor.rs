@@ -280,9 +280,10 @@ impl ThreadWorkflowRequestProcessor {
         if workflow.is_none() {
             return Err(invalid_request("workflow not found for thread"));
         }
-        let activation_service = self.activation_service.as_ref().ok_or_else(|| {
-            internal_error("workflow activation service is not initialized")
-        })?;
+        let activation_service = self
+            .activation_service
+            .as_ref()
+            .ok_or_else(|| internal_error("workflow activation service is not initialized"))?;
         let start_request = codex_workflows_extension::WorkflowStartRequest {
             workflow_record_id,
             source_thread_id: thread_id,
@@ -353,9 +354,10 @@ impl ThreadWorkflowRequestProcessor {
             .map_err(|err| internal_error(format!("failed to resume thread workflow run: {err}")))?
             .map(api_thread_workflow_run_snapshot_from_state);
         if run.is_some() {
-            let activation_service = self.activation_service.as_ref().ok_or_else(|| {
-                internal_error("workflow activation service is not initialized")
-            })?;
+            let activation_service = self
+                .activation_service
+                .as_ref()
+                .ok_or_else(|| internal_error("workflow activation service is not initialized"))?;
             activation_service
                 .activate(
                     run_id,

@@ -535,7 +535,10 @@ async fn workflow_start_activates_one_real_worker_and_one_verifier() -> Result<(
     })
     .await??;
 
-    assert_eq!(codex_state::WorkflowRunStatus::Completed, snapshot.run.status);
+    assert_eq!(
+        codex_state::WorkflowRunStatus::Completed,
+        snapshot.run.status
+    );
     assert_eq!(1, snapshot.steps.len());
     assert_eq!(
         codex_state::WorkflowRunStepStatus::Succeeded,

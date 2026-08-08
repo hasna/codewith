@@ -19,13 +19,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::WorkflowActivationConfig;
+use crate::WorkflowActivationService;
+use crate::WorkflowStartRequest;
 use crate::manager_output::goal_plan_projection_json;
 use crate::manager_output::run_snapshot_json;
 use crate::manager_output::run_summary_json;
 use crate::manager_output::workflow_json;
-use crate::WorkflowActivationConfig;
-use crate::WorkflowActivationService;
-use crate::WorkflowStartRequest;
 
 pub const MANAGE_WORKFLOW_TOOL_NAME: &str = "manage_workflow";
 
@@ -436,8 +436,7 @@ impl ManageWorkflowTool {
     }
 
     async fn resume_run(&self, args: ManageWorkflowArgs) -> Result<Value, FunctionCallError> {
-        let (state_db, _, activation_service, activation_config) =
-            self.activation_runtime()?;
+        let (state_db, _, activation_service, activation_config) = self.activation_runtime()?;
         let run_id = required_field(args.run_id, "run_id", "resume")?;
         if self.thread_run_snapshot(run_id.as_str()).await?.is_none() {
             return Ok(not_found_run_response("resume"));

@@ -19,7 +19,6 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_shell_command::shell_detect::ShellType;
-use codex_state::busy_retry::retry_on_busy;
 use codex_state::StateRuntime;
 use codex_state::WorkflowGoalPlanProjectionOutcome;
 use codex_state::WorkflowGoalPlanProjectionParams;
@@ -38,6 +37,7 @@ use codex_state::WorkflowRunVerifierClaimSelection;
 use codex_state::WorkflowRunVerifierOutcomeStatus;
 use codex_state::WorkflowRunVerifierRecordResultParams;
 use codex_state::WorkflowRunVerifierResultSummary;
+use codex_state::busy_retry::retry_on_busy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_workflows::WorkflowVerifier;
 use serde::Serialize;
@@ -99,10 +99,7 @@ impl WorkflowActivationService {
     pub fn new(state_db: Arc<StateRuntime>) -> Self {
         Self {
             state_db,
-            owner_instance_id: Arc::from(format!(
-                "workflow-activation:{}",
-                ThreadId::new()
-            )),
+            owner_instance_id: Arc::from(format!("workflow-activation:{}", ThreadId::new())),
             active_supervisors: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -187,7 +184,10 @@ impl WorkflowActivationService {
         let service = self.clone();
         tokio::spawn(async move {
             loop {
-                match service.run_supervisor(run_id.as_str(), config.clone()).await {
+                match service
+                    .run_supervisor(run_id.as_str(), config.clone())
+                    .await
+                {
                     Ok(()) => break,
                     Err(err) => {
                         tracing::warn!(
@@ -312,8 +312,7 @@ impl WorkflowActivationService {
                         BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT.to_string(),
                     ),
                     parent_agent_run_id: None,
-                    max_active_background_agent_runs: config
-                        .max_active_background_agent_runs,
+                    max_active_background_agent_runs: config.max_active_background_agent_runs,
                 })
                 .await?
             else {
@@ -437,8 +436,8 @@ impl WorkflowActivationService {
             }
         };
         let timeout = Duration::from_secs(definition.timeout_seconds.unwrap_or(1));
-        let output_limit = usize::try_from(definition.output_limit_bytes.unwrap_or(1))
-            .unwrap_or(usize::MAX);
+        let output_limit =
+            usize::try_from(definition.output_limit_bytes.unwrap_or(1)).unwrap_or(usize::MAX);
         let cancellation = CancellationToken::new();
         let fence_lost = Arc::new(AtomicBool::new(false));
         let heartbeat = self.spawn_verifier_heartbeat(
@@ -476,8 +475,7 @@ impl WorkflowActivationService {
                     network: None,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     windows_sandbox_level: config.windows_sandbox_level,
-                    windows_sandbox_private_desktop: config
-                        .windows_sandbox_private_desktop,
+                    windows_sandbox_private_desktop: config.windows_sandbox_private_desktop,
                     justification: None,
                     arg0: None,
                 },
@@ -554,8 +552,7 @@ impl WorkflowActivationService {
                     expected_exit_code: Some(expected_exit_code),
                     observed_exit_code,
                     timed_out,
-                    duration_ms: i64::try_from(started.elapsed().as_millis())
-                        .unwrap_or(i64::MAX),
+                    duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
                     output_bytes: i64::try_from(output_bytes).unwrap_or(i64::MAX),
                     output_truncated,
                 },
@@ -585,8 +582,7 @@ impl WorkflowActivationService {
                     expected_exit_code,
                     observed_exit_code: None,
                     timed_out: false,
-                    duration_ms: i64::try_from(started.elapsed().as_millis())
-                        .unwrap_or(i64::MAX),
+                    duration_ms: i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
                     output_bytes: 0,
                     output_truncated: false,
                 },
@@ -643,10 +639,7 @@ fn activation_config_fingerprint(config: &WorkflowActivationConfig) -> anyhow::R
         auth_profile_ref: config.auth_profile_ref.as_deref(),
         admission_schema: BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
     };
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&value)?)
-    ))
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
 fn workflow_state_data(value: &serde_json::Value) -> &serde_json::Value {
