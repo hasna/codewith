@@ -95,6 +95,10 @@ impl CodeModeDispatchBroker {
         tracked_processes.get(cell_id).cloned().unwrap_or_default()
     }
 
+    pub(super) fn tracked_process_count(&self, cell_id: &CellId) -> usize {
+        self.tracked_processes(cell_id).len()
+    }
+
     fn take_tracked_processes(&self, cell_id: &CellId) -> Vec<TrackedProcess> {
         let mut tracked_processes = match self.tracked_processes.lock() {
             Ok(tracked_processes) => tracked_processes,

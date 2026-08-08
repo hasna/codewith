@@ -110,6 +110,10 @@ impl CodeModeService {
         self.dispatch_broker.close_cell(cell_id);
     }
 
+    pub(crate) fn tracked_process_count(&self, cell_id: &CellId) -> usize {
+        self.dispatch_broker.tracked_process_count(cell_id)
+    }
+
     fn track_live_process(
         &self,
         cell_id: CellId,

@@ -935,6 +935,11 @@ text("unexpected completion");
     assert_eq!(code_started_items.len(), 1);
     let cell_id = extract_running_cell_id(text_item(&code_started_items, /*index*/ 0));
     fs_wait::wait_for_path_exists(&started_path, Duration::from_secs(5)).await?;
+    assert_eq!(
+        codex_core::test_support::code_mode_tracked_process_count(&test.codex, &cell_id),
+        1,
+        "owned nested exec should be registered before its initial yield returns"
+    );
 
     responses::mount_sse_once(
         &server,
@@ -985,7 +990,7 @@ text("unexpected completion");
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_stale_borrowed_process_generation_does_not_terminate_reused_id() -> Result<()> {
+async fn code_mode_stale_borrowed_process_generation_does_not_wait_on_reused_id() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -1055,7 +1060,8 @@ await tools.write_stdin({{
   yield_time_ms: 250,
 }});
 text("borrowed process tracked");
-await new Promise(() => {{}});
+await new Promise(resolve => setTimeout(resolve, 10_000));
+text("cell result ready");
 "#
     );
 
@@ -1167,24 +1173,28 @@ await new Promise(() => {{}});
                 "wait",
                 &serde_json::to_string(&serde_json::json!({
                     "cell_id": cell_id,
-                    "terminate": true,
+                    "yield_time_ms": 12_000,
                 }))?,
             ),
             ev_completed("resp-9"),
         ]),
     )
     .await;
-    responses::mount_sse_once(
+    let cell_waited = responses::mount_sse_once(
         &server,
         sse(vec![
-            ev_assistant_message("msg-5", "cell terminated"),
+            ev_assistant_message("msg-5", "cell completed"),
             ev_completed("resp-10"),
         ]),
     )
     .await;
 
-    test.submit_turn("terminate the stale borrowing cell")
+    test.submit_turn("wait for the borrowing cell result")
         .await?;
+
+    let cell_waited_items = function_tool_output_items(&cell_waited.single_request(), "call-5");
+    assert_eq!(cell_waited_items.len(), 1);
+    let cell_waited_text = text_item(&cell_waited_items, /*index*/ 0).to_string();
 
     responses::mount_sse_once(
         &server,
@@ -1225,6 +1235,15 @@ await new Promise(() => {{}});
 
     fs::write(&second_release_path, "release")?;
     fs_wait::wait_for_path_exists(&second_exit_path, Duration::from_secs(5)).await?;
+
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n",
+            r"cell result ready\n\z"
+        ),
+        &cell_waited_text,
+    );
 
     Ok(())
 }
