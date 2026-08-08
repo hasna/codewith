@@ -432,6 +432,110 @@ async fn set_pending_restores_deferred_node_for_later_activation() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn resume_goal_reconciles_restored_pending_node() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new_with_config(
+        runtime.clone(),
+        thread_id,
+        GoalExtensionConfig {
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::Off,
+            ..test_goal_extension_config()
+        },
+    )
+    .await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+    let tools = harness.tools();
+
+    let create_plan_tool = tool_by_name(&tools, "create_goal_plan");
+    let create = tool_call(
+        "create_goal_plan",
+        "call-create-single-node-plan",
+        json!({
+            "goals": [
+                { "key": "preservation", "objective": "Preserve prior work" }
+            ]
+        }),
+    );
+    let output = create_plan_tool.handle(create.clone()).await?;
+    let result = output.code_mode_result(&create.payload);
+    let node_id = result["goalPlans"][0]["nodes"][0]["nodeId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("preservation node id should be returned"))?
+        .to_string();
+    let goal_id = result["goal"]["goalId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("preservation goal id should be returned"))?
+        .to_string();
+    runtime
+        .thread_goals()
+        .account_thread_goal_usage(
+            thread_id,
+            /*time_delta_seconds*/ 4,
+            /*token_delta*/ 9,
+            Some(codex_state::ThreadGoalLineChangeStats {
+                lines_added: 13,
+                lines_deleted: 2,
+            }),
+            codex_state::GoalAccountingMode::ActiveOnly,
+            Some(goal_id.as_str()),
+        )
+        .await?;
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    update_tool
+        .handle(tool_call(
+            "update_goal",
+            "call-defer-preservation",
+            json!({ "status": "deferred" }),
+        ))
+        .await?;
+
+    let set_status_tool = tool_by_name(&tools, "set_goal_plan_node_status");
+    set_status_tool
+        .handle(tool_call(
+            "set_goal_plan_node_status",
+            "call-restore-deferred-preservation",
+            json!({
+                "node_id": node_id,
+                "status": "pending"
+            }),
+        ))
+        .await?;
+
+    let resume_tool = tool_by_name(&tools, "resume_goal");
+    let resume = tool_call("resume_goal", "call-resume-preservation", json!({}));
+    let output = resume_tool.handle(resume.clone()).await?;
+    let result = output.code_mode_result(&resume.payload);
+    assert_eq!(result["goal"]["goalId"], goal_id);
+    assert_eq!(result["goal"]["status"], "active");
+    assert_eq!(result["goal"]["tokensUsed"], 9);
+    assert_eq!(result["goal"]["timeUsedSeconds"], 4);
+
+    let plans = runtime
+        .thread_goals()
+        .list_thread_goal_plans(thread_id)
+        .await?;
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].nodes[0].node_id, node_id);
+    assert_eq!(
+        plans[0].nodes[0].status,
+        codex_state::ThreadGoalPlanNodeStatus::Active
+    );
+    assert_eq!(
+        plans[0].nodes[0].projected_goal_id.as_deref(),
+        Some(goal_id.as_str())
+    );
+    assert_eq!(plans[0].nodes[0].tokens_used, 9);
+    assert_eq!(plans[0].nodes[0].time_used_seconds, 4);
+    assert_eq!(plans[0].nodes[0].lines_added, 13);
+    assert_eq!(plans[0].nodes[0].lines_deleted, 2);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_plan_activates_first_goal_and_returns_plan() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
