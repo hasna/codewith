@@ -147,7 +147,7 @@ fn exec_server_env_for_request(
 }
 
 fn exec_server_params_for_request(
-    process_id: i32,
+    process_id: u32,
     request: &ExecRequest,
     tty: bool,
 ) -> codex_exec_server::ExecParams {
@@ -176,11 +176,11 @@ struct PreparedProcessHandles {
     session: Option<Arc<crate::session::session::Session>>,
     network_approval: Option<DeferredNetworkApproval>,
     hook_command: String,
-    process_id: i32,
+    process_id: u32,
     tty: bool,
 }
 
-fn exec_server_process_id(process_id: i32) -> String {
+fn exec_server_process_id(process_id: u32) -> String {
     process_id.to_string()
 }
 
@@ -330,7 +330,7 @@ fn terminate_process_on_network_denial(
 }
 
 impl UnifiedExecProcessManager {
-    pub(crate) async fn allocate_process_id(&self) -> i32 {
+    pub(crate) async fn allocate_process_id(&self) -> u32 {
         loop {
             let mut store = self.process_store.lock().await;
 
@@ -357,7 +357,7 @@ impl UnifiedExecProcessManager {
         }
     }
 
-    pub(crate) async fn release_process_id(&self, process_id: i32) {
+    pub(crate) async fn release_process_id(&self, process_id: u32) {
         let removed = {
             let mut store = self.process_store.lock().await;
             store.remove(process_id)
@@ -777,7 +777,7 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
-    async fn refresh_process_state(&self, process_id: i32) -> ProcessStatus {
+    async fn refresh_process_state(&self, process_id: u32) -> ProcessStatus {
         {
             let mut store = self.process_store.lock().await;
             let Some(entry) = store.processes.get(&process_id) else {
@@ -807,7 +807,7 @@ impl UnifiedExecProcessManager {
 
     async fn prepare_process_handles(
         &self,
-        process_id: i32,
+        process_id: u32,
         expected_process: &Arc<UnifiedExecProcess>,
     ) -> Result<PreparedProcessHandles, UnifiedExecError> {
         let mut store = self.process_store.lock().await;
@@ -857,7 +857,7 @@ impl UnifiedExecProcessManager {
         hook_command: String,
         cwd: AbsolutePathBuf,
         started_at: Instant,
-        process_id: i32,
+        process_id: u32,
         tty: bool,
         network_approval: Option<DeferredNetworkApproval>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
@@ -900,7 +900,7 @@ impl UnifiedExecProcessManager {
 
     pub(crate) async fn open_session_with_exec_env(
         &self,
-        process_id: i32,
+        process_id: u32,
         request: &ExecRequest,
         tty: bool,
         mut spawn_lifecycle: SpawnLifecycleHandle,
@@ -1259,7 +1259,7 @@ impl UnifiedExecProcessManager {
             return None;
         }
 
-        let mut meta: Vec<(i32, Instant, bool)> = store
+        let mut meta: Vec<(u32, Instant, bool)> = store
             .processes
             .iter()
             .map(|(id, entry)| (*id, entry.last_used, entry.process.has_exited()))
@@ -1282,14 +1282,14 @@ impl UnifiedExecProcessManager {
     }
 
     // Centralized pruning policy so we can easily swap strategies later.
-    fn process_id_to_prune_from_meta(meta: &[(i32, Instant, bool)]) -> Option<i32> {
+    fn process_id_to_prune_from_meta(meta: &[(u32, Instant, bool)]) -> Option<u32> {
         if meta.is_empty() {
             return None;
         }
 
         let mut by_recency = meta.to_vec();
         by_recency.sort_by_key(|(_, last_used, _)| Reverse(*last_used));
-        let protected: HashSet<i32> = by_recency
+        let protected: HashSet<u32> = by_recency
             .iter()
             .take(8)
             .map(|(process_id, _, _)| *process_id)
@@ -1333,7 +1333,7 @@ enum ProcessStatus {
     Alive {
         exit_code: Option<i32>,
         call_id: String,
-        process_id: i32,
+        process_id: u32,
     },
     Exited {
         exit_code: Option<i32>,

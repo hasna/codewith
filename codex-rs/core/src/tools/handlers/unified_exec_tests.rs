@@ -283,18 +283,20 @@ async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
 
 #[tokio::test]
 async fn write_stdin_routes_full_u32_session_id_domain_to_process_lookup() {
+    const FIRST_SESSION_ID_ABOVE_I32_MAX: u32 = 2_147_483_648;
     const REPRO_SESSION_ID: u32 = 4_147_572_478;
 
     for session_id in [
         1_000,
-        i32::MAX as u32 + 1,
+        FIRST_SESSION_ID_ABOVE_I32_MAX,
         REPRO_SESSION_ID,
         u32::MAX,
     ] {
         let payload = ToolPayload::Function {
             arguments: serde_json::json!({ "session_id": session_id }).to_string(),
         };
-        let invocation = invocation_for_payload("write_stdin", "write-stdin-boundary", payload).await;
+        let invocation =
+            invocation_for_payload("write_stdin", "write-stdin-boundary", payload).await;
         let Err(error) = WriteStdinHandler.handle(invocation).await else {
             panic!("missing session {session_id} should fail after process lookup");
         };

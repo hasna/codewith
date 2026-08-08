@@ -86,6 +86,28 @@ async fn exec_command_with_tty(
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
     let process_id = manager.allocate_process_id().await;
+    exec_command_with_process_id_and_tty(
+        session,
+        turn,
+        cmd,
+        yield_time_ms,
+        workdir,
+        process_id,
+        tty,
+    )
+    .await
+}
+
+async fn exec_command_with_process_id_and_tty(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    cmd: &str,
+    yield_time_ms: u64,
+    workdir: Option<PathBuf>,
+    process_id: u32,
+    tty: bool,
+) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    let manager = &session.services.unified_exec_manager;
     #[allow(deprecated)]
     let cwd = workdir
         .as_ref()
@@ -193,7 +215,7 @@ impl SpawnLifecycle for TestSpawnLifecycle {
 
 async fn write_stdin(
     session: &Arc<Session>,
-    process_id: i32,
+    process_id: u32,
     input: &str,
     yield_time_ms: u64,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
@@ -269,6 +291,43 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
             .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
             .contains("codex"),
         "expected environment variable output"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_stdin_reaches_live_process_with_session_id_above_i32_max() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    const REPRO_SESSION_ID: u32 = 4_147_572_478;
+    let (session, turn) = test_session_and_turn().await;
+    let open_process = exec_command_with_process_id_and_tty(
+        &session,
+        &turn,
+        r#"read line; printf 'received:%s\n' "$line""#,
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        REPRO_SESSION_ID,
+        /*tty*/ true,
+    )
+    .await?;
+
+    assert_eq!(open_process.process_id, Some(REPRO_SESSION_ID));
+
+    let output = write_stdin(
+        &session,
+        REPRO_SESSION_ID,
+        "hello\n",
+        /*yield_time_ms*/ 2_500,
+    )
+    .await?;
+
+    assert!(
+        output
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("received:hello"),
+        "write_stdin should reach the live process returned by exec_command"
     );
 
     Ok(())
