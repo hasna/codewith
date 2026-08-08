@@ -686,6 +686,7 @@ async fn code_mode_wait_stays_live_for_nested_write_stdin_session() -> Result<()
                 "exec_command",
                 &serde_json::to_string(&serde_json::json!({
                     "cmd": child_command,
+                    "tty": true,
                     "yield_time_ms": 100,
                 }))?,
             ),
