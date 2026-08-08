@@ -50,34 +50,67 @@ pub(in super::super) fn persisted_scheduled_turn_terminal(
         .completed_at
         .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
         .unwrap_or(fallback_completed_at);
-    let error = match turn.status {
-        codex_app_server_protocol::TurnStatus::Completed => {
-            let finish = rollout_items
-                .iter()
-                .filter_map(|item| match item {
-                    RolloutItem::EventMsg(event @ EventMsg::TurnComplete(completed))
-                        if completed.turn_id == turn_id =>
-                    {
-                        scheduled_turn_finish(event)
-                    }
-                    _ => None,
-                })
-                .last()?;
-            match finish {
-                ScheduledTurnFinish::Complete => None,
-                ScheduledTurnFinish::Failed(error) => Some(error),
+    let mut replaying_turn = false;
+    let mut replayed_error = None;
+    for item in &rollout_items {
+        match item {
+            RolloutItem::EventMsg(EventMsg::TurnStarted(started)) => {
+                if replaying_turn {
+                    break;
+                }
+                replaying_turn = started.turn_id == turn_id;
             }
+            RolloutItem::EventMsg(EventMsg::Error(error))
+                if replaying_turn && error.affects_turn_status() =>
+            {
+                replayed_error = Some(schedule_turn_event_error(error));
+                break;
+            }
+            RolloutItem::EventMsg(EventMsg::TurnComplete(completed))
+                if replaying_turn && completed.turn_id == turn_id =>
+            {
+                break;
+            }
+            RolloutItem::EventMsg(EventMsg::TurnAborted(aborted))
+                if replaying_turn && aborted.turn_id.as_deref() == Some(turn_id) =>
+            {
+                break;
+            }
+            _ => {}
         }
-        codex_app_server_protocol::TurnStatus::Failed => Some(
-            turn.error
-                .as_ref()
-                .map(schedule_turn_error)
-                .unwrap_or_else(|| schedule_run_error("scheduled turn failed")),
-        ),
-        codex_app_server_protocol::TurnStatus::Interrupted => {
-            Some(schedule_run_error("scheduled turn was interrupted"))
+    }
+    let error = if let Some(error) = replayed_error {
+        Some(error)
+    } else {
+        match turn.status {
+            codex_app_server_protocol::TurnStatus::Completed => {
+                let finish = rollout_items
+                    .iter()
+                    .filter_map(|item| match item {
+                        RolloutItem::EventMsg(event @ EventMsg::TurnComplete(completed))
+                            if completed.turn_id == turn_id =>
+                        {
+                            scheduled_turn_finish(event)
+                        }
+                        _ => None,
+                    })
+                    .last()?;
+                match finish {
+                    ScheduledTurnFinish::Complete => None,
+                    ScheduledTurnFinish::Failed(error) => Some(error),
+                }
+            }
+            codex_app_server_protocol::TurnStatus::Failed => Some(
+                turn.error
+                    .as_ref()
+                    .map(schedule_turn_error)
+                    .unwrap_or_else(|| schedule_run_error("scheduled turn failed")),
+            ),
+            codex_app_server_protocol::TurnStatus::Interrupted => {
+                Some(schedule_run_error("scheduled turn was interrupted"))
+            }
+            codex_app_server_protocol::TurnStatus::InProgress => return None,
         }
-        codex_app_server_protocol::TurnStatus::InProgress => return None,
     };
     Some(PersistedScheduledTurnTerminal {
         completed_at,

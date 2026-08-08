@@ -459,7 +459,23 @@ fn persisted_completed_scheduled_turn_is_terminal_for_the_matching_turn_only() {
     let history = resumed_history_with_turn_events(
         thread_id,
         [
+            turn_started("turn-other", /*started_at*/ 1_699_999_990),
+            EventMsg::Error(ErrorEvent {
+                message: "other turn failed".to_string(),
+                codex_error_info: None,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-other".to_string(),
+                last_agent_message: None,
+                completed_at: Some(1_699_999_999),
+                duration_ms: Some(9_000),
+                time_to_first_token_ms: None,
+            }),
             turn_started("turn-scheduled", /*started_at*/ 1_700_000_000),
+            EventMsg::Error(ErrorEvent {
+                message: "non-terminal rollback warning".to_string(),
+                codex_error_info: Some(CoreCodexErrorInfo::ThreadRollbackFailed),
+            }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-scheduled".to_string(),
                 last_agent_message: Some("done".to_string()),
@@ -483,7 +499,7 @@ fn persisted_completed_scheduled_turn_is_terminal_for_the_matching_turn_only() {
     );
     assert_eq!(
         None,
-        persisted_scheduled_turn_terminal(&history, "turn-other", at(/*seconds*/ 1_700_000_999),)
+        persisted_scheduled_turn_terminal(&history, "turn-missing", at(/*seconds*/ 1_700_000_999),)
     );
 }
 

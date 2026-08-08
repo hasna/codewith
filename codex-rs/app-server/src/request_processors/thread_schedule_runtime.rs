@@ -2631,6 +2631,14 @@ mod tests {
             .expect("retry should claim deferred schedule");
         assert_eq!(Some(wait.retry_at), retry_claim.run.scheduled_for);
         let completed_at = wait.retry_at + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &retry_claim,
+            /*goal_id*/ None,
+            wait.retry_at,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -2714,6 +2722,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            /*goal_id*/ None,
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -2809,6 +2825,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            Some(goal.goal_id.as_str()),
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -2900,6 +2924,11 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
+        let turn_id = claim
+            .run
+            .turn_id
+            .clone()
+            .expect("claimed occurrence should have a stable turn id");
         enqueue_and_start_claim(
             &state_db,
             &claim,
@@ -2917,7 +2946,7 @@ mod tests {
         .await
         .expect("state db should reopen");
         let recovered =
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart")
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, turn_id.as_str())
                 .await
                 .expect("run recovery should succeed")
                 .expect("running schedule should recover after restart");
@@ -2946,7 +2975,7 @@ mod tests {
         );
         assert_eq!(Some(completed_at), finished.1.completed_at);
         assert!(
-            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, "turn-after-restart",)
+            recover_scheduled_run_for_terminal_turn(&reopened, thread_id, turn_id.as_str())
                 .await
                 .expect("completed run lookup should succeed")
                 .is_none()
@@ -3033,6 +3062,14 @@ mod tests {
             .await
             .expect("claim should succeed")
             .expect("schedule should claim");
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            Some(goal.goal_id.as_str()),
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
@@ -3121,6 +3158,14 @@ mod tests {
             .expect("claim should succeed")
             .expect("schedule should claim");
         let completed_at = scheduled_for + chrono::Duration::seconds(5);
+        enqueue_and_start_claim(
+            &state_db,
+            &claim,
+            /*goal_id*/ None,
+            scheduled_for,
+            Duration::from_secs(300),
+        )
+        .await;
 
         let (finished_schedule, finished_run) = finish_scheduled_run_state(
             &state_db,
