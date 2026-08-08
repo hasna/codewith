@@ -92,7 +92,7 @@ pub(crate) struct ExecCommandRequest {
     pub command: Vec<String>,
     pub shell_type: ShellType,
     pub hook_command: String,
-    pub process_id: i32,
+    pub process_id: u32,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub cwd: AbsolutePathBuf,
@@ -110,7 +110,7 @@ pub(crate) struct ExecCommandRequest {
 
 #[derive(Debug)]
 pub(crate) struct WriteStdinRequest<'a> {
-    pub process_id: i32,
+    pub process_id: u32,
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
@@ -119,12 +119,12 @@ pub(crate) struct WriteStdinRequest<'a> {
 
 #[derive(Default)]
 pub(crate) struct ProcessStore {
-    processes: HashMap<i32, ProcessEntry>,
-    reserved_process_ids: HashSet<i32>,
+    processes: HashMap<u32, ProcessEntry>,
+    reserved_process_ids: HashSet<u32>,
 }
 
 impl ProcessStore {
-    fn remove(&mut self, process_id: i32) -> Option<ProcessEntry> {
+    fn remove(&mut self, process_id: u32) -> Option<ProcessEntry> {
         self.reserved_process_ids.remove(&process_id);
         self.processes.remove(&process_id)
     }
@@ -154,7 +154,7 @@ impl Default for UnifiedExecProcessManager {
 struct ProcessEntry {
     process: Arc<UnifiedExecProcess>,
     call_id: String,
-    process_id: i32,
+    process_id: u32,
     hook_command: String,
     tty: bool,
     network_approval: Option<DeferredNetworkApproval>,

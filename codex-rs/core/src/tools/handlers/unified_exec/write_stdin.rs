@@ -20,7 +20,7 @@ use super::post_unified_exec_tool_use_payload;
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
     // The model is trained on `session_id`.
-    session_id: i32,
+    session_id: u32,
     #[serde(default)]
     chars: String,
     #[serde(default = "super::default_write_stdin_yield_time_ms")]

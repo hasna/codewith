@@ -63,7 +63,7 @@ pub struct UnifiedExecRequest {
     pub command: Vec<String>,
     pub shell_type: ShellType,
     pub hook_command: String,
-    pub process_id: i32,
+    pub process_id: u32,
     pub cwd: AbsolutePathBuf,
     pub sandbox_cwd: AbsolutePathBuf,
     pub environment: Arc<Environment>,
