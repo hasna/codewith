@@ -3731,7 +3731,11 @@ async fn resolve_background_agent_config(
         .map(serde_json::from_value::<PermissionProfile>)
         .transpose()?;
     let default_permissions = payload
-        .and_then(|payload| payload.get("permissionProfile"))
+        .and_then(|payload| {
+            payload
+                .get("defaultPermissions")
+                .or_else(|| payload.get("permissionProfile"))
+        })
         .and_then(Value::as_str)
         .map(str::to_string);
     let sandbox_mode = if permission_profile.is_none() {

@@ -280,6 +280,8 @@ pub use workflow_orchestrator::WorkflowRunBranchReconcileOutcome;
 pub use workflow_orchestrator::WorkflowRunBranchReconcileParams;
 pub use workflow_orchestrator::WorkflowRunClaimOutcome;
 pub use workflow_orchestrator::WorkflowRunClaimParams;
+pub use workflow_orchestrator::WorkflowRunStartExecutionOutcome;
+pub use workflow_orchestrator::WorkflowRunStartExecutionParams;
 pub use workflow_verifiers::WorkflowRunVerifierClaimOutcome;
 pub use workflow_verifiers::WorkflowRunVerifierClaimParams;
 pub use workflow_verifiers::WorkflowRunVerifierClaimSelection;

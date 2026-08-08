@@ -599,6 +599,7 @@ impl MessageProcessor {
             } else {
                 thread_processor.start_background_agent_supervisor();
             }
+            thread_processor.start_workflow_run_supervisor();
         }
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),

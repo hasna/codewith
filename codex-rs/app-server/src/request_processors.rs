@@ -689,6 +689,7 @@ mod thread_schedule_default_prompt;
 mod thread_schedule_processor;
 mod thread_schedule_runtime;
 mod thread_workflow_processor;
+mod thread_workflow_runtime;
 mod token_usage_replay;
 mod turn_processor;
 mod usage_profile_broker;

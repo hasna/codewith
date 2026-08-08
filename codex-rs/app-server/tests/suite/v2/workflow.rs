@@ -2,6 +2,7 @@ use anyhow::Result;
 use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_rollout;
+use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use app_test_support::write_mock_provider_models_cache;
@@ -462,6 +463,86 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn started_workflow_worker_leaves_queue_and_reaches_run_commands_verifier() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("workflow worker done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), WorkflowsFeature::Enabled)?;
+    let thread_id = create_materialized_thread(codex_home.path(), "workflow executor admission")?;
+    let yaml = executable_workflow_yaml("wf_app_server_executor_admission");
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    initialize(&mut mcp, ExperimentalApiCapability::Enabled).await?;
+
+    let create_id = send_workflow_create(&mut mcp, thread_id.as_str(), yaml.as_str()).await?;
+    let create_resp = read_response(&mut mcp, create_id).await?;
+    let ThreadWorkflowCreateResponse { workflow } =
+        to_response::<ThreadWorkflowCreateResponse>(create_resp)?;
+    let start_id = mcp
+        .send_raw_request(
+            "thread/workflow/run/start",
+            Some(json!({
+                "threadId": thread_id.as_str(),
+                "workflowRecordId": workflow.workflow_record_id.as_str(),
+                "idempotencyKey": "executor-admission",
+            })),
+        )
+        .await?;
+    let start_resp = read_response(&mut mcp, start_id).await?;
+    let started = to_response::<ThreadWorkflowRunStartResponse>(start_resp)?;
+    let run_id = started.run.run.run_id;
+    let runtime = open_state_runtime(codex_home.path()).await?;
+
+    let (completed, worker) = timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let snapshot = runtime
+                .workflows()
+                .get_workflow_run_snapshot(run_id.as_str())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("workflow run disappeared"))?;
+            if let Some(background_agent_run_id) = snapshot
+                .steps
+                .first()
+                .and_then(|step| step.background_agent_run_id.as_deref())
+                && let Some(worker) = runtime
+                    .get_background_agent_run(background_agent_run_id)
+                    .await?
+                && worker.status == codex_state::BackgroundAgentRunStatus::Completed
+                && snapshot.run.status == codex_state::WorkflowRunStatus::Completed
+                && snapshot.verifiers.iter().any(|verifier| {
+                    verifier.status == codex_state::WorkflowRunStepVerifierStatus::Passed
+                })
+            {
+                return Ok::<_, anyhow::Error>((snapshot, worker));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
+
+    assert_eq!(
+        Some(codex_state::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION),
+        worker.version_fingerprint.as_deref()
+    );
+    assert!(
+        completed
+            .events
+            .iter()
+            .any(|event| event.event_type == "verifier_started")
+    );
+    assert!(
+        completed
+            .events
+            .iter()
+            .any(|event| event.event_type == "verifier_passed")
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn workflow_create_returns_sanitized_validation_error() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
@@ -791,6 +872,64 @@ steps:
           output_limit_bytes: 1024
           commands:
             - {command}
+artifacts:
+  retention: "preserve_evidence"
+  required: []
+cleanup:
+  on_cancel: []
+  on_complete: []
+"#
+    )
+}
+
+fn executable_workflow_yaml(workflow_id: &str) -> String {
+    format!(
+        r#"schema_version: "workflow.codex.codewith/v0"
+workflow_id: "{workflow_id}"
+display_name: "Workflow Executor Admission"
+source_prompt: "Run one real workflow branch and its deterministic verifier."
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "mock_provider"
+  model: "mock-model"
+  reasoning: "high"
+limits:
+  max_parallel_steps: 1
+  max_agents: 1
+  max_worktrees: 1
+  max_runtime_seconds: 60
+  max_step_runtime_seconds: 30
+  max_tokens: 1000
+  max_tool_calls: 10
+approvals:
+  required_before: []
+agents:
+  - id: "executor"
+    display_name: "Executor-Archimedes"
+    role: "Complete the workflow branch."
+    model:
+      model_gateway: "hasna"
+      provider: "mock_provider"
+      model: "mock-model"
+      reasoning: "high"
+steps:
+  - id: "execute"
+    title: "Execute the admitted branch"
+    agent: "executor"
+    depends_on: []
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "command_check"
+          type: "run_commands"
+          cwd: "."
+          sandbox: "read-only"
+          network: "disabled"
+          timeout_seconds: 5
+          output_limit_bytes: 1024
+          commands:
+            - "true"
 artifacts:
   retention: "preserve_evidence"
   required: []

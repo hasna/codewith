@@ -291,6 +291,74 @@ WHERE run_id = ?
     }
 }
 
+pub(super) async fn requeue_running_workflow_verifiers_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    run_id: &str,
+    owner_id: &str,
+    generation: i64,
+    now_ms: i64,
+) -> anyhow::Result<usize> {
+    let rows = sqlx::query(
+        r#"
+UPDATE workflow_run_step_verifiers
+SET
+    status = ?,
+    status_reason = ?,
+    reason_code = ?,
+    completed_at_ms = NULL,
+    updated_at_ms = ?
+WHERE run_id = ?
+  AND status = 'running'
+RETURNING
+    verifier_run_id,
+    step_id,
+    attempt_count,
+    (
+        SELECT step_run_id
+        FROM workflow_run_steps step
+        WHERE step.run_id = workflow_run_step_verifiers.run_id
+          AND step.step_id = workflow_run_step_verifiers.step_id
+    ) AS step_run_id
+        "#,
+    )
+    .bind(crate::WorkflowRunStepVerifierStatus::Blocked.as_str())
+    .bind(VERIFIER_RETRY_PENDING_REASON)
+    .bind(VERIFIER_RETRY_PENDING_REASON_CODE)
+    .bind(now_ms)
+    .bind(run_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    for row in &rows {
+        let verifier_run_id: String = row.try_get("verifier_run_id")?;
+        let step_id: String = row.try_get("step_id")?;
+        let step_run_id: String = row.try_get("step_run_id")?;
+        let attempt_count: i64 = row.try_get("attempt_count")?;
+        append_workflow_run_event_in_tx(
+            tx,
+            run_id,
+            WorkflowRunEventAppend {
+                event_type: "verifier_interrupted",
+                actor_kind: "orchestrator",
+                actor_id: Some(owner_id.to_string()),
+                step_run_id: Some(step_run_id),
+                verifier_run_id: Some(verifier_run_id),
+                visibility: "internal",
+                payload: json!({
+                    "stepId": step_id,
+                    "generation": generation,
+                    "attempt": attempt_count,
+                    "reasonCode": VERIFIER_RETRY_PENDING_REASON_CODE,
+                }),
+                now_ms,
+            },
+        )
+        .await?;
+    }
+
+    Ok(rows.len())
+}
+
 async fn claim_next_run_commands_verifier_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     run_id: &str,
@@ -1187,6 +1255,215 @@ artifacts:"#,
         assert!(!result_json.contains("true "));
         assert!(!event_payloads.contains("RAW_COMMAND_SECRET"));
         assert!(!event_payloads.contains("true "));
+    }
+
+    #[tokio::test]
+    async fn running_verifier_is_requeued_when_same_owner_reclaims_after_restart() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let (run, generation) =
+            create_claimed_waiting_run(&runtime, thread_id, "wf_verifier_restart", "true").await;
+
+        let first_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation,
+                selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
+            })
+            .await
+            .expect("verifier claim should succeed")
+            .expect("verifier should claim");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            first_claim.verifier.status
+        );
+
+        let restarted = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("restarted owner claim should succeed")
+            .expect("same owner should reclaim the workflow");
+        assert!(restarted.generation > generation);
+
+        let recovered = restarted
+            .snapshot
+            .verifiers
+            .iter()
+            .find(|verifier| verifier.verifier_run_id == first_claim.verifier.verifier_run_id)
+            .expect("recovered verifier should remain in the snapshot");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Blocked,
+            recovered.status
+        );
+        assert_eq!(
+            Some(VERIFIER_RETRY_PENDING_REASON_CODE),
+            recovered.reason_code.as_deref()
+        );
+
+        let stale_result = runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation,
+                verifier_run_id: recovered.verifier_run_id.clone(),
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_summary(),
+            })
+            .await
+            .expect("stale verifier result should be rejected without an error");
+        assert!(
+            stale_result.is_none(),
+            "the previous generation must not complete the requeued verifier"
+        );
+
+        let replacement_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: restarted.generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    recovered.verifier_run_id.clone(),
+                ),
+            })
+            .await
+            .expect("replacement verifier claim should succeed")
+            .expect("interrupted verifier should be claimable again");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            replacement_claim.verifier.status
+        );
+        assert_eq!(2, replacement_claim.verifier.attempt_count);
+
+        let recorded = runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation: restarted.generation,
+                verifier_run_id: replacement_claim.verifier.verifier_run_id,
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_summary(),
+            })
+            .await
+            .expect("replacement verifier result should record")
+            .expect("replacement verifier result should update");
+        assert_eq!(
+            crate::WorkflowRunStatus::Completed,
+            recorded.snapshot.run.status
+        );
+        assert_eq!(
+            1,
+            recorded
+                .snapshot
+                .events
+                .iter()
+                .filter(|event| event.event_type == "verifier_passed")
+                .count(),
+            "only the replacement generation may complete the verifier"
+        );
+        assert!(
+            recorded
+                .snapshot
+                .events
+                .iter()
+                .any(|event| event.event_type == "verifier_interrupted"),
+            "restart recovery should leave an explicit audit event"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_running_verifier_is_requeued_after_workflow_lease_takeover() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+        let (run, generation) =
+            create_claimed_waiting_run(&runtime, thread_id, "wf_verifier_lease_takeover", "true")
+                .await;
+
+        let first_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation,
+                selection: WorkflowRunVerifierClaimSelection::NextRunCommands,
+            })
+            .await
+            .expect("verifier claim should succeed")
+            .expect("verifier should claim");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            first_claim.verifier.status
+        );
+
+        sqlx::query("UPDATE workflow_runs SET lease_expires_at_ms = 0 WHERE run_id = ?")
+            .bind(run.run.run_id.as_str())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("workflow lease should expire");
+        let takeover = runtime
+            .claim_workflow_run(WorkflowRunClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "replacement-owner".to_string(),
+                lease_duration_ms: Some(60_000),
+            })
+            .await
+            .expect("replacement owner claim should succeed")
+            .expect("expired workflow lease should be claimable");
+        assert!(takeover.generation > generation);
+
+        let recovered = takeover
+            .snapshot
+            .verifiers
+            .iter()
+            .find(|verifier| verifier.verifier_run_id == first_claim.verifier.verifier_run_id)
+            .expect("recovered verifier should remain in the snapshot");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Blocked,
+            recovered.status
+        );
+        assert_eq!(
+            Some(VERIFIER_RETRY_PENDING_REASON_CODE),
+            recovered.reason_code.as_deref()
+        );
+
+        let stale_result = runtime
+            .record_workflow_run_verifier_result(WorkflowRunVerifierRecordResultParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "verifier-owner".to_string(),
+                generation,
+                verifier_run_id: recovered.verifier_run_id.clone(),
+                outcome: WorkflowRunVerifierOutcomeStatus::Passed,
+                summary: passing_summary(),
+            })
+            .await
+            .expect("stale verifier result should be rejected without an error");
+        assert!(
+            stale_result.is_none(),
+            "the previous owner and generation must not complete the requeued verifier"
+        );
+
+        let replacement_claim = runtime
+            .claim_workflow_run_verifier(WorkflowRunVerifierClaimParams {
+                run_id: run.run.run_id.clone(),
+                owner_id: "replacement-owner".to_string(),
+                generation: takeover.generation,
+                selection: WorkflowRunVerifierClaimSelection::VerifierRunId(
+                    recovered.verifier_run_id.clone(),
+                ),
+            })
+            .await
+            .expect("replacement verifier claim should succeed")
+            .expect("interrupted verifier should be claimable again");
+        assert_eq!(
+            crate::WorkflowRunStepVerifierStatus::Running,
+            replacement_claim.verifier.status
+        );
+        assert_eq!(2, replacement_claim.verifier.attempt_count);
     }
 
     #[tokio::test]

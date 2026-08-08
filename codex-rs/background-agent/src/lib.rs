@@ -6,7 +6,9 @@ pub mod process_lifecycle;
 mod supervisor;
 pub mod worker_admission;
 
+pub use codex_state::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION;
 pub use codex_state::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
+pub use codex_state::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT;
 pub use codex_state::BackgroundAgentDesiredState;
 pub use codex_state::BackgroundAgentEvent;
 pub use codex_state::BackgroundAgentExecutionHandleParams;
@@ -30,8 +32,6 @@ pub use codex_state::BackgroundAgentWorktreeLeaseCreateParams;
 pub use supervisor::DurableAgentSupervisor;
 pub use supervisor::DurableAgentSupervisorConfig;
 
-pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str =
-    "codewith.background-agent.admission.v1";
 pub const BACKGROUND_AGENT_ADMISSION_CAPACITY_EXCEEDED: &str =
     "background_agent_admission_capacity_exceeded";
 pub const BACKGROUND_AGENT_ADMISSION_IDENTITY_MISMATCH: &str =
@@ -42,10 +42,6 @@ pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH: &str =
     "background_agent_admission_schema_mismatch";
 pub const BACKGROUND_AGENT_DAEMON_INCOMPATIBLE: &str = "background_agent_daemon_incompatible";
 pub const BACKGROUND_AGENT_DAEMON_PROTOCOL_VERSION: u32 = 1;
-pub const BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT: &str = concat!(
-    "codewith.background-agent.runtime.v1:",
-    env!("CARGO_PKG_VERSION")
-);
 pub const DEFAULT_MAX_ACTIVE_BACKGROUND_AGENT_RUNS: i64 = 8;
 
 /// Durable run roster used by the background-agent supervisor.
