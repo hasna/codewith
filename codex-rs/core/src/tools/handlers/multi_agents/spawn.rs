@@ -142,6 +142,7 @@ async fn handle_spawn_agent(
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
+            initial_task_message_id: None,
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
         },

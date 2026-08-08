@@ -1330,6 +1330,98 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_spawn_preserves_large_initial_task_for_every_fork_mode() -> Result<()> {
+    for fork_turns in ["none", "1", "all"] {
+        let server = start_mock_server().await;
+        let task_name = format!("large_payload_{fork_turns}");
+        let task_path = format!("/root/{task_name}");
+        let initial_task = format!(
+            "verbatim-start-{fork_turns}-{}-verbatim-end-{fork_turns}",
+            "x".repeat(8 * 1024)
+        );
+        let spawn_args = serde_json::to_string(&json!({
+            "message": initial_task,
+            "task_name": task_name,
+            "fork_turns": fork_turns,
+        }))?;
+        mount_sse_once_match(
+            &server,
+            |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+            sse(vec![
+                ev_response_created("resp-parent-1"),
+                ev_function_call(SPAWN_CALL_ID, "spawn_agent", &spawn_args),
+                ev_completed("resp-parent-1"),
+            ]),
+        )
+        .await;
+        let child_task_path = task_path.clone();
+        let child_request_log = mount_sse_once_match(
+            &server,
+            move |req: &wiremock::Request| {
+                body_contains(req, child_task_path.as_str())
+                    && body_contains(req, "\"type\":\"agent_message\"")
+                    && !body_contains(req, SPAWN_CALL_ID)
+            },
+            sse(vec![
+                ev_response_created("resp-child-1"),
+                ev_completed("resp-child-1"),
+            ]),
+        )
+        .await;
+        mount_sse_once_match(
+            &server,
+            |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+            sse(vec![
+                ev_response_created("resp-parent-2"),
+                ev_assistant_message("msg-parent-2", "done"),
+                ev_completed("resp-parent-2"),
+            ]),
+        )
+        .await;
+
+        let mut builder = test_codex().with_model("koffing").with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        });
+        let test = builder.build(&server).await?;
+
+        test.submit_turn(TURN_1_PROMPT).await?;
+
+        let request_description = format!("large initial task for fork_turns={fork_turns}");
+        let child_request = wait_for_matching_request(
+            &child_request_log,
+            request_description.as_str(),
+            |request| request.body_contains_text(initial_task.as_str()),
+        )
+        .await?;
+        assert!(child_request.body_contains_text("\"type\":\"agent_message\""));
+        assert!(child_request.body_contains_text("encrypted_content"));
+        assert_eq!(
+            child_request
+                .body_json()
+                .to_string()
+                .matches(initial_task.as_str())
+                .count(),
+            1,
+            "initial task must reach the first child request exactly once for fork_turns={fork_turns}"
+        );
+        assert_eq!(
+            child_request_log.requests().len(),
+            1,
+            "spawn must emit one first child request for fork_turns={fork_turns}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

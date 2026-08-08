@@ -60,6 +60,7 @@ pub(crate) enum SpawnAgentForkMode {
 pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_parent_spawn_call_id: Option<String>,
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
+    pub(crate) initial_task_message_id: Option<String>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
 }
@@ -161,6 +162,34 @@ impl AgentControl {
                 &state,
                 state
                     .deliver_inter_agent_communication(agent_id, communication)
+                    .await,
+            )
+            .await;
+        if result.is_ok() {
+            match last_task_message {
+                Some(last_task_message) => self
+                    .state
+                    .update_last_task_message(agent_id, last_task_message),
+                None => self.state.clear_last_task_message(agent_id),
+            }
+        }
+        result
+    }
+
+    pub(crate) async fn send_initial_agent_task(
+        &self,
+        agent_id: ThreadId,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        let last_task_message = last_task_message_from_communication(&communication);
+        let state = self.upgrade()?;
+        let result = self
+            .handle_thread_request_result(
+                agent_id,
+                &state,
+                state
+                    .deliver_initial_agent_task(agent_id, message_id, communication)
                     .await,
             )
             .await;

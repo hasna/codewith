@@ -463,6 +463,35 @@ pub async fn enqueue_inter_agent_communication(
     Ok(())
 }
 
+/// Records a spawned agent's initial task under a stable spawn-call id without synchronously
+/// waking pending work.
+pub async fn enqueue_initial_agent_task(
+    sess: &Arc<Session>,
+    message_id: String,
+    communication: InterAgentCommunication,
+) -> CodexResult<()> {
+    let deferred_delivery = if communication.trigger_turn {
+        sess.input_queue
+            .defer_mailbox_delivery_for_active_turn(&sess.active_turn)
+            .await
+    } else {
+        None
+    };
+    if let Err(err) = sess
+        .input_queue
+        .enqueue_initial_task_with_id(message_id, communication)
+        .await
+    {
+        if let Some((turn_state, previous_phase)) = deferred_delivery {
+            sess.input_queue
+                .restore_mailbox_delivery_phase(turn_state.as_ref(), previous_phase)
+                .await;
+        }
+        return Err(CodexErr::InvalidRequest(err.to_string()));
+    }
+    Ok(())
+}
+
 pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command: String) {
     if let Some((turn_context, cancellation_token)) =
         sess.active_turn_context_and_cancellation_token().await

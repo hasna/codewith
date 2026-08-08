@@ -7,6 +7,7 @@ use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
@@ -91,6 +92,7 @@ impl Error for MailboxQueueFull {}
 pub(crate) struct InputQueue {
     mailbox_tx: watch::Sender<()>,
     mailbox_pending_mails: Mutex<VecDeque<QueuedMailboxMessage>>,
+    initial_task_delivery_ids: Mutex<HashSet<String>>,
 }
 
 impl InputQueue {
@@ -99,6 +101,7 @@ impl InputQueue {
         Self {
             mailbox_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            initial_task_delivery_ids: Mutex::new(HashSet::new()),
         }
     }
 
@@ -129,6 +132,36 @@ impl InputQueue {
             return Err(MailboxQueueFull::new(MAX_MAILBOX_CONTEXT_QUEUE_ITEMS));
         }
         mails.push_back(QueuedMailboxMessage { id, communication });
+        drop(mails);
+        self.mailbox_tx.send_replace(());
+        Ok(())
+    }
+
+    /// Enqueue the spawned agent's initial task exactly once under a stable spawn-call id.
+    ///
+    /// The id remains recorded after the task drains so an acknowledgement retry cannot inject the
+    /// task a second time into a later turn. This path is used only for the one initial task of a
+    /// newly spawned child; retries reuse the same id, so the retained set normally has one entry
+    /// and cannot grow with arbitrary mailbox traffic.
+    pub(crate) async fn enqueue_initial_task_with_id(
+        &self,
+        id: String,
+        communication: InterAgentCommunication,
+    ) -> Result<(), MailboxQueueFull> {
+        let mut mails = self.mailbox_pending_mails.lock().await;
+        let mut initial_task_delivery_ids = self.initial_task_delivery_ids.lock().await;
+        if initial_task_delivery_ids.contains(&id) {
+            return Ok(());
+        }
+        if mails.len() >= MAX_MAILBOX_CONTEXT_QUEUE_ITEMS {
+            return Err(MailboxQueueFull::new(MAX_MAILBOX_CONTEXT_QUEUE_ITEMS));
+        }
+        mails.push_back(QueuedMailboxMessage {
+            id: id.clone(),
+            communication,
+        });
+        initial_task_delivery_ids.insert(id);
+        drop(initial_task_delivery_ids);
         drop(mails);
         self.mailbox_tx.send_replace(());
         Ok(())
@@ -200,16 +233,22 @@ impl InputQueue {
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<ResponseItem> {
         let mut mails = self.mailbox_pending_mails.lock().await;
+        let initial_task_delivery_ids = self.initial_task_delivery_ids.lock().await;
         let drain_count = mails.len().min(MAX_MAILBOX_CONTEXT_QUEUE_ITEMS);
         let items = mails
             .drain(..drain_count)
             .map(|mail| {
-                ResponseItem::from(
-                    MailboxContextFragment::new(mail.communication).into_response_input_item(),
-                )
+                if initial_task_delivery_ids.contains(&mail.id) {
+                    mail.communication.to_model_input_item()
+                } else {
+                    ResponseItem::from(
+                        MailboxContextFragment::new(mail.communication).into_response_input_item(),
+                    )
+                }
             })
             .collect();
         let has_more = !mails.is_empty();
+        drop(initial_task_delivery_ids);
         drop(mails);
         if has_more {
             self.mailbox_tx.send_replace(());
@@ -492,6 +531,57 @@ mod tests {
             ]
         );
         assert!(!input_queue.has_pending_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_delivers_large_initial_task_exactly_once() {
+        let input_queue = InputQueue::new();
+        let initial_task = "initial task ".repeat(2_000);
+        let communication = InterAgentCommunication::new_encrypted(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            Vec::new(),
+            initial_task.clone(),
+            /*trigger_turn*/ true,
+        );
+
+        for _ in 0..2 {
+            input_queue
+                .enqueue_initial_task_with_id("spawn-call-1".to_string(), communication.clone())
+                .await
+                .expect("initial task should enqueue idempotently");
+        }
+
+        let items = input_queue.drain_mailbox_input_items().await;
+        assert_eq!(items.len(), 1);
+        let ResponseItem::AgentMessage {
+            author,
+            recipient,
+            content,
+        } = &items[0]
+        else {
+            panic!("encrypted initial task should retain the native agent message shape");
+        };
+        assert_eq!(author, "/root");
+        assert_eq!(recipient, "/root/worker");
+        let [
+            codex_protocol::models::AgentMessageInputContent::EncryptedContent {
+                encrypted_content,
+            },
+        ] = content.as_slice()
+        else {
+            panic!("initial task should retain one encrypted content item");
+        };
+        assert_eq!(encrypted_content, &initial_task);
+
+        input_queue
+            .enqueue_initial_task_with_id("spawn-call-1".to_string(), communication)
+            .await
+            .expect("delivered initial task retry should be an idempotent success");
+        assert!(
+            input_queue.drain_mailbox_input_items().await.is_empty(),
+            "delivered initial task must not be injected into a later turn"
+        );
     }
 
     #[tokio::test]

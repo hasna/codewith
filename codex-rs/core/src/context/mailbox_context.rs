@@ -282,6 +282,24 @@ mod tests {
     }
 
     #[test]
+    fn initial_task_preserves_large_encrypted_content_verbatim() {
+        let initial_task = "initial task ".repeat(2_000);
+        let mut communication = communication(String::new());
+        communication.encrypted_content = Some(initial_task.clone());
+
+        let fragment = MailboxContextFragment::initial_task(communication);
+        let rendered = fragment.render();
+        let parsed = serde_json::from_str::<InterAgentCommunication>(rendered.as_str())
+            .expect("initial task context should remain parseable");
+
+        assert_eq!(
+            parsed.encrypted_content.as_deref(),
+            Some(initial_task.as_str())
+        );
+        assert_eq!(parsed.content, "");
+    }
+
+    #[test]
     fn mailbox_context_fragment_falls_back_when_metadata_exceeds_item_bound() {
         let long_agent = format!("/root/{}", "a".repeat(20_000));
         let communication = InterAgentCommunication::new(

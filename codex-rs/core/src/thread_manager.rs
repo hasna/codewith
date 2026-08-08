@@ -1190,6 +1190,37 @@ impl ThreadManagerState {
         Ok(message_id)
     }
 
+    /// Delivers a spawned agent's initial task under the stable parent tool-call id.
+    ///
+    /// The input queue retains that id after delivery so a retry acknowledges success without
+    /// injecting a duplicate task into a later child turn.
+    pub(crate) async fn deliver_initial_agent_task(
+        &self,
+        thread_id: ThreadId,
+        message_id: String,
+        communication: InterAgentCommunication,
+    ) -> CodexResult<String> {
+        let thread = self.get_thread(thread_id).await?;
+        let trigger_turn = communication.trigger_turn;
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((
+                thread_id,
+                Op::InterAgentCommunication {
+                    communication: communication.clone(),
+                },
+            ));
+        }
+        thread
+            .enqueue_initial_agent_task_with_id(message_id.clone(), communication)
+            .await?;
+        if trigger_turn {
+            let _ = thread.submit(Op::WakePendingWork).await;
+        }
+        Ok(message_id)
+    }
+
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.threads.write().await.remove(thread_id)
