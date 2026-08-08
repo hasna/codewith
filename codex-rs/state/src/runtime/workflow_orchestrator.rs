@@ -3321,7 +3321,7 @@ WHERE plan_id = ? AND key = ?
                         std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open(marker)
+                            .open(&marker)
                             .expect("current marker should open"),
                         "current-generation"
                     )?;
