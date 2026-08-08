@@ -50,8 +50,7 @@ mod tests {
         .await
         .expect("state db should initialize");
         let thread_id = ThreadId::new();
-        let now = chrono::DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
-            .expect("test timestamp should be valid");
+        let now = Utc::now();
         let mut builder = ThreadMetadataBuilder::new(
             thread_id,
             temp_dir.path().join("thread.jsonl"),
@@ -158,7 +157,7 @@ mod tests {
         let complete = EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn_id.clone(),
             last_agent_message: Some("finished after rollback warning".to_string()),
-            completed_at: Some(1_700_000_001),
+            completed_at: Some(now.timestamp() + 1),
             duration_ms: Some(1_000),
             time_to_first_token_ms: Some(100),
         });
