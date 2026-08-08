@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn legacy_active_run_insert_fails_closed_without_matching_occurrence() {
