@@ -439,19 +439,18 @@ WHERE run_id = ?
         };
         let changed = admission.changed;
         let blocked_by_provider_preflight = admission.blocked_by_provider_preflight;
-        if changed {
-            if let Err(err) = recompute_workflow_run_status_in_tx(
+        if changed
+            && let Err(err) = recompute_workflow_run_status_in_tx(
                 &mut tx,
                 params.run_id.as_str(),
                 params.owner_id.as_str(),
                 now_ms,
             )
             .await
-            {
-                tx.rollback().await?;
-                cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
-                return Err(err);
-            }
+        {
+            tx.rollback().await?;
+            cleanup_provisioned_git_worktrees(&provisioned_git_worktrees);
+            return Err(err);
         }
         let snapshot = match snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await {
             Ok(snapshot) => snapshot,
