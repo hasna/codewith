@@ -23,8 +23,13 @@ use codex_git_utils::remove_linked_git_worktree;
 use codex_git_utils::resolve_git_ref;
 use codex_protocol::models::PermissionProfile;
 use codex_workflows::WorkflowBranchPrompt;
+use codex_workflows::WorkflowModelRoute;
+use codex_workflows::WorkflowRouteEnforcementError;
+use codex_workflows::WorkflowRouteReceipt;
+use codex_workflows::WorkflowRouteRuntime;
 use codex_workflows::WorkflowWorkspace;
 use codex_workflows::WorkflowWorkspaceMode;
+use codex_workflows::admit_workflow_model_route_for_runtime;
 use codex_workflows::render_workflow_branch_prompt;
 use serde_json::Value;
 use serde_json::json;
@@ -105,6 +110,7 @@ pub struct WorkflowRunBranchAdmissionParams {
     pub version_fingerprint: Option<String>,
     pub runtime_package_fingerprint: Option<String>,
     pub permission_profile_json: Value,
+    pub route_runtime: WorkflowRouteRuntime,
     pub parent_agent_run_id: Option<String>,
     pub max_active_background_agent_runs: Option<i64>,
 }
@@ -119,6 +125,7 @@ pub struct WorkflowRunBranchAdmission {
     pub idempotency_key: String,
     pub model_route_json: Value,
     pub workspace_json: Option<Value>,
+    pub route_receipt: WorkflowRouteReceipt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -630,6 +637,8 @@ async fn admit_ready_workflow_branches_in_tx(
     provisioned_git_worktrees: &mut Vec<ProvisionedGitWorktree>,
     now_ms: i64,
 ) -> anyhow::Result<WorkflowRunBranchAdmissionTxOutcome> {
+    let mut route_runtime = params.route_runtime.clone();
+    route_runtime.auth_profile = params.auth_profile_ref.clone();
     let limits = WorkflowBranchLimits::from_run(run)?;
     let active_counts = active_workflow_branch_counts_in_tx(tx, run.run_id.as_str()).await?;
     let mut capacity = limits
@@ -654,6 +663,29 @@ async fn admit_ready_workflow_branches_in_tx(
     let mut changed = false;
     for candidate in &candidates {
         let model_route_json = branch_model_route_json(run, candidate.model_route_json.as_ref())?;
+        let workspace_json = optional_workflow_state_data(candidate.workspace_json.as_ref())?;
+        let route_receipt = workflow_branch_route_receipt(
+            &model_route_json,
+            workspace_json.as_ref(),
+            &route_runtime,
+        );
+        if let Err(error) = route_receipt {
+            changed |= block_workflow_branch_provider_preflight_in_tx(
+                tx,
+                run,
+                params,
+                candidate,
+                &model_route_json,
+                &WorkflowBranchProviderPreflightBlock {
+                    env_key: None,
+                    reason: error.to_string(),
+                    reason_code: error.code().to_string(),
+                },
+                now_ms,
+            )
+            .await?;
+            continue;
+        }
         let Some(preflight_block) =
             workflow_branch_provider_preflight_block(&model_route_json, provider_env_key_present)
         else {
@@ -687,6 +719,11 @@ async fn admit_ready_workflow_branches_in_tx(
         let model_route_json = branch_model_route_json(run, candidate.model_route_json.as_ref())?;
         let workspace_json = optional_workflow_state_data(candidate.workspace_json.as_ref())?;
         let workspace_mode = workflow_workspace_mode(workspace_json.as_ref())?;
+        let route_receipt = workflow_branch_route_receipt(
+            &model_route_json,
+            workspace_json.as_ref(),
+            &route_runtime,
+        )?;
         if workspace_mode == WorkflowWorkspaceMode::IsolatedWorktree {
             if isolated_worktree_count >= limits.max_worktrees {
                 continue;
@@ -735,6 +772,8 @@ async fn admit_ready_workflow_branches_in_tx(
                 "attempt": branch_attempt,
                 "admittedAtMs": now_ms,
                 "route": workflow_branch_route_summary(&model_route_json),
+                "routeReceipt": &route_receipt,
+                "terminalCreditAccounting": route_receipt.terminal_credit_accounting(),
                 "workspace": workspace_json,
                 "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
                 "cwd": provisioned_workspace.execution_cwd,
@@ -784,6 +823,7 @@ WHERE step_run_id = ?
                 candidate: &candidate,
                 attempt: branch_attempt,
                 model_route_json: &model_route_json,
+                route_receipt: &route_receipt,
                 workspace_json: workspace_json.as_ref(),
                 provisioned_workspace: &provisioned_workspace,
                 background_agent_run_id: background_agent_run_id.as_str(),
@@ -809,6 +849,7 @@ WHERE step_run_id = ?
                     "backgroundAgentRunId": background_agent_run_id,
                     "createdBackgroundAgentRun": created,
                     "route": workflow_branch_route_summary(&model_route_json),
+                    "routeReceipt": &route_receipt,
                     "workspaceMode": provisioned_workspace.mode,
                     "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
                 }),
@@ -825,6 +866,7 @@ WHERE step_run_id = ?
             idempotency_key,
             model_route_json,
             workspace_json,
+            route_receipt,
         });
     }
     Ok(WorkflowRunBranchAdmissionTxOutcome {
@@ -1055,9 +1097,9 @@ struct ReadyBranchCandidate {
 }
 
 struct WorkflowBranchProviderPreflightBlock {
-    env_key: &'static str,
-    reason: &'static str,
-    reason_code: &'static str,
+    env_key: Option<&'static str>,
+    reason: String,
+    reason_code: String,
 }
 
 struct BackgroundBranchRunCreate<'a> {
@@ -1065,6 +1107,7 @@ struct BackgroundBranchRunCreate<'a> {
     candidate: &'a ReadyBranchCandidate,
     attempt: i64,
     model_route_json: &'a Value,
+    route_receipt: &'a WorkflowRouteReceipt,
     workspace_json: Option<&'a Value>,
     provisioned_workspace: &'a ProvisionedWorkflowWorkspace,
     background_agent_run_id: &'a str,
@@ -1208,8 +1251,8 @@ WHERE step_run_id = ?
         "#,
     )
     .bind(crate::WorkflowRunStepStatus::Blocked.as_str())
-    .bind(preflight_block.reason)
-    .bind(preflight_block.reason_code)
+    .bind(preflight_block.reason.as_str())
+    .bind(preflight_block.reason_code.as_str())
     .bind(now_ms)
     .bind(candidate.step_run_id.as_str())
     .execute(&mut **tx)
@@ -1234,8 +1277,8 @@ WHERE run_id = ?
         "#,
     )
     .bind(crate::WorkflowRunStepVerifierStatus::Blocked.as_str())
-    .bind(preflight_block.reason)
-    .bind(preflight_block.reason_code)
+    .bind(preflight_block.reason.as_str())
+    .bind(preflight_block.reason_code.as_str())
     .bind(now_ms)
     .bind(now_ms)
     .bind(run.run_id.as_str())
@@ -1256,7 +1299,7 @@ WHERE run_id = ?
                 "stepId": candidate.step_id.as_str(),
                 "agentId": candidate.agent_id.as_str(),
                 "missingEnvKey": preflight_block.env_key,
-                "reasonCode": preflight_block.reason_code,
+                "reasonCode": preflight_block.reason_code.as_str(),
                 "route": workflow_branch_route_summary(model_route_json),
             }),
             now_ms,
@@ -1281,9 +1324,9 @@ fn workflow_branch_provider_preflight_block(
     }
 
     Some(WorkflowBranchProviderPreflightBlock {
-        env_key: OPENROUTER_API_KEY_ENV_VAR,
-        reason: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON,
-        reason_code: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE,
+        env_key: Some(OPENROUTER_API_KEY_ENV_VAR),
+        reason: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON.to_string(),
+        reason_code: WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE.to_string(),
     })
 }
 
@@ -1317,6 +1360,7 @@ async fn create_background_branch_run_if_missing_in_tx(
         candidate,
         attempt,
         model_route_json,
+        route_receipt,
         workspace_json,
         provisioned_workspace,
         background_agent_run_id,
@@ -1344,6 +1388,16 @@ async fn create_background_branch_run_if_missing_in_tx(
         "agentId": candidate.agent_id.as_str(),
         "parallelGroup": candidate.parallel_group.as_deref(),
     });
+    let recovery_policy = WORKFLOW_BRANCH_RECOVERY_POLICY;
+    let execution_payload = branch_execution_payload(
+        run,
+        candidate,
+        workspace_json,
+        provisioned_workspace,
+        params,
+        recovery_policy,
+        route_receipt,
+    );
     let run_params = BackgroundAgentRunCreateParams {
         id: background_agent_run_id.to_string(),
         idempotency_key: Some(idempotency_key.to_string()),
@@ -1365,26 +1419,28 @@ async fn create_background_branch_run_if_missing_in_tx(
         status_reason: Some("queued by workflow branch admission".to_string()),
         config_fingerprint: params.config_fingerprint.clone(),
         version_fingerprint: params.version_fingerprint.clone(),
-        model_attestation: None,
+        model_attestation: Some(BackgroundAgentModelAttestationCreateParams {
+            requested_model: Some(route_receipt.requested.model.clone()),
+            requested_configuration: json!({
+                "executionContext": &route_receipt.requested,
+                "routeReceipt": route_receipt,
+            }),
+            applied_model: Some(route_receipt.effective.model.clone()),
+            applied_configuration: json!({
+                "executionContext": &execution_payload,
+                "routeReceipt": route_receipt,
+            }),
+        }),
     };
     let start_event_payload = json!({
         "cwd": provisioned_workspace.execution_cwd.to_string_lossy(),
         "prompt": prompt,
         "promptSnapshotRef": prompt_snapshot_ref,
     });
-    let recovery_policy = WORKFLOW_BRANCH_RECOVERY_POLICY;
     let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: background_agent_run_id.to_string(),
         snapshot_kind: "initial_execution_context".to_string(),
-        payload_json: branch_execution_payload(
-            run,
-            candidate,
-            model_route_json,
-            workspace_json,
-            provisioned_workspace,
-            params,
-            recovery_policy,
-        ),
+        payload_json: execution_payload,
         recovery_policy: recovery_policy.to_string(),
         config_fingerprint: params.config_fingerprint.clone(),
     };
@@ -1522,11 +1578,11 @@ ON CONFLICT(run_id) DO UPDATE SET
 fn branch_execution_payload(
     run: &crate::WorkflowRun,
     candidate: &ReadyBranchCandidate,
-    model_route_json: &Value,
     workspace_json: Option<&Value>,
     provisioned_workspace: &ProvisionedWorkflowWorkspace,
     params: &WorkflowRunBranchAdmissionParams,
     recovery_policy: &str,
+    route_receipt: &WorkflowRouteReceipt,
 ) -> Value {
     json!({
         "snapshotSource": "workflow/branch_admission",
@@ -1537,12 +1593,12 @@ fn branch_execution_payload(
         "cwd": provisioned_workspace.execution_cwd.to_string_lossy(),
         "workspaceRoots": [provisioned_workspace.worktree_path.to_string_lossy()],
         "managedWorktreeId": provisioned_workspace.worktree_id.as_str(),
-        "modelGateway": model_route_json.get("model_gateway"),
-        "model": model_route_json.get("model"),
-        "provider": model_route_json.get("provider"),
-        "reasoning": model_route_json.get("reasoning"),
-        "serviceTier": model_route_json.get("service_tier"),
-        "approvalPolicy": model_route_json.get("approval_policy"),
+        "modelGateway": route_receipt.effective.model_gateway.as_str(),
+        "model": route_receipt.effective.model.as_str(),
+        "provider": route_receipt.effective.provider.as_str(),
+        "reasoning": route_receipt.effective.reasoning.as_str(),
+        "serviceTier": route_receipt.effective.service_tier.as_deref(),
+        "approvalPolicy": route_receipt.effective.approval_policy.as_deref(),
         "permissionProfile": params.permission_profile_json.clone(),
         "authProfileIdentitySha256": params
             .auth_profile_ref
@@ -1555,7 +1611,34 @@ fn branch_execution_payload(
         "packageFingerprint": params.runtime_package_fingerprint,
         "recoveryPolicy": recovery_policy,
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
+        "routeReceipt": route_receipt,
+        "contextCeilingTokens": route_receipt.effective.context_ceiling_tokens,
+        "creditAccounting": route_receipt.terminal_credit_accounting(),
     })
+}
+
+fn workflow_branch_route_receipt(
+    model_route_json: &Value,
+    workspace_json: Option<&Value>,
+    runtime: &WorkflowRouteRuntime,
+) -> Result<WorkflowRouteReceipt, WorkflowRouteEnforcementError> {
+    let requested = serde_json::from_value::<WorkflowModelRoute>(model_route_json.clone())
+        .map_err(|err| {
+            WorkflowRouteEnforcementError::new(
+                "workflow_route_schema_invalid",
+                format!("workflow route is invalid: {err}"),
+            )
+        })?;
+    let worktree_mode = match workflow_workspace_mode(workspace_json).map_err(|err| {
+        WorkflowRouteEnforcementError::new(
+            "workflow_route_worktree_mode_invalid",
+            err.to_string(),
+        )
+    })? {
+        WorkflowWorkspaceMode::IsolatedWorktree => "isolated_worktree",
+        WorkflowWorkspaceMode::SharedRepository => "shared_repository",
+    };
+    admit_workflow_model_route_for_runtime(&requested, runtime, worktree_mode)
 }
 
 fn validate_workflow_permission_profile_json(
@@ -2896,7 +2979,7 @@ cleanup:
             .collect::<String>();
         let steps = (0..step_count)
             .map(|index| {
-                let route = if index == 0 {
+                let route = if index == 0 && title_suffix == "missing-openrouter-env" {
                     r#"    model:
       model_gateway: "openrouter"
       provider: "openrouter"
@@ -3046,6 +3129,31 @@ cleanup:
     fn read_only_permission_profile_json() -> Value {
         serde_json::to_value(PermissionProfile::read_only())
             .expect("read-only permission profile should serialize")
+    }
+
+    fn workflow_route_runtime() -> WorkflowRouteRuntime {
+        WorkflowRouteRuntime {
+            model_gateway: Some("hasna".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            reasoning: Some("high".to_string()),
+            permission_profile: Some("read-only".to_string()),
+            context_window_tokens: Some(128_000),
+            ..Default::default()
+        }
+    }
+
+    fn openrouter_workflow_route_runtime() -> WorkflowRouteRuntime {
+        WorkflowRouteRuntime {
+            model_gateway: Some("openrouter".to_string()),
+            provider: Some("openrouter".to_string()),
+            model: Some("openai/gpt-oss-120b".to_string()),
+            reasoning: Some("xhigh".to_string()),
+            service_tier: Some("priority".to_string()),
+            permission_profile: Some("read-only".to_string()),
+            context_window_tokens: Some(128_000),
+            ..Default::default()
+        }
     }
 
     async fn mark_projected_node_complete(
@@ -3536,6 +3644,7 @@ WHERE plan_id = ? AND key = ?
                 version_fingerprint: Some("version-workflow".to_string()),
                 runtime_package_fingerprint: Some("package-workflow".to_string()),
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3750,6 +3859,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: permission_profile_json.clone(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3830,6 +3940,7 @@ WHERE worktree_id = ?
                     version_fingerprint: None,
                     runtime_package_fingerprint: None,
                     permission_profile_json,
+                    route_runtime: workflow_route_runtime(),
                     parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
@@ -3942,6 +4053,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4077,8 +4189,9 @@ WHERE worktree_id = ?
                     config_fingerprint: None,
                     version_fingerprint: None,
                     runtime_package_fingerprint: None,
-                    permission_profile_json: read_only_permission_profile_json(),
-                    parent_agent_run_id: None,
+                permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: openrouter_workflow_route_runtime(),
+                parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
                 |env_key| {
@@ -4214,8 +4327,9 @@ WHERE worktree_id = ?
                     config_fingerprint: None,
                     version_fingerprint: None,
                     runtime_package_fingerprint: None,
-                    permission_profile_json: read_only_permission_profile_json(),
-                    parent_agent_run_id: None,
+                permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: openrouter_workflow_route_runtime(),
+                parent_agent_run_id: None,
                     max_active_background_agent_runs: Some(10),
                 },
                 |_| true,
@@ -4276,6 +4390,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4323,6 +4438,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4361,6 +4477,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4461,6 +4578,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4480,6 +4598,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4515,6 +4634,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4585,6 +4705,7 @@ WHERE worktree_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -4740,6 +4861,7 @@ WHERE run_id = ?
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -5245,6 +5367,7 @@ cleanup:
                 version_fingerprint: None,
                 runtime_package_fingerprint: None,
                 permission_profile_json: read_only_permission_profile_json(),
+                route_runtime: workflow_route_runtime(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             })

@@ -118,6 +118,9 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
+use codex_workflows::WorkflowProviderCreditControl;
+use codex_workflows::WorkflowEffectiveModelRoute;
+use codex_workflows::WorkflowRouteReceipt;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
@@ -2070,7 +2073,7 @@ async fn reconcile_background_agent_worker_processes(
             continue;
         };
         let worker_admission =
-            match revalidate_background_agent_worker_admission(&context, run.id.as_str()).await {
+            match revalidate_background_agent_worker_admission(&context, &run).await {
                 Ok(worker_admission) => worker_admission,
                 Err(err) => {
                     fail_claimed_background_agent_worker_process(
@@ -2211,15 +2214,19 @@ async fn reconcile_background_agent_worker_processes(
 
 async fn revalidate_background_agent_worker_admission(
     context: &BackgroundAgentProcessSupervisorContext,
-    run_id: &str,
+    run: &BackgroundAgentRun,
 ) -> anyhow::Result<Option<WorkerAdmission>> {
     let snapshot = context
         .state_db
-        .get_background_agent_initial_execution_snapshot(run_id)
+        .get_background_agent_initial_execution_snapshot(run.id.as_str())
         .await?
         .with_context(|| {
-            format!("background agent `{run_id}` is missing its initial execution context snapshot")
+            format!(
+                "background agent `{}` is missing its initial execution context snapshot",
+                run.id
+            )
         })?;
+    validate_workflow_route_snapshot(run, &snapshot)?;
     let Some(admission) = worker_admission_from_snapshot(&snapshot.payload_json)? else {
         return Ok(None);
     };
@@ -3791,6 +3798,7 @@ async fn resolve_background_agent_config(
             "{BACKGROUND_AGENT_ADMISSION_PROFILE_MISMATCH}: loaded worker auth profile does not match the admitted run"
         );
     }
+    enforce_workflow_route_config(run, &snapshot, &mut config)?;
     if let Some(retry_at) =
         background_agent_exact_profile_retry_at(context, &config, run.auth_profile_ref.as_deref())
             .await
@@ -3903,6 +3911,143 @@ fn validate_background_agent_initial_execution_snapshot(
             "{BACKGROUND_AGENT_ADMISSION_SCHEMA_MISMATCH}: persisted execution snapshot recovery policy does not match its envelope"
         );
     }
+    Ok(())
+}
+
+fn validate_workflow_route_snapshot(
+    run: &BackgroundAgentRun,
+    snapshot: &BackgroundAgentExecutionSnapshot,
+) -> anyhow::Result<Option<WorkflowRouteReceipt>> {
+    if run.source != "workflow" {
+        return Ok(None);
+    }
+    let receipt_value = snapshot
+        .payload_json
+        .get("routeReceipt")
+        .ok_or_else(|| anyhow::anyhow!("workflow_route_receipt_missing: workflow execution snapshot has no route receipt"))?;
+    let receipt = serde_json::from_value::<WorkflowRouteReceipt>(receipt_value.clone())
+        .map_err(|err| anyhow::anyhow!("workflow_route_receipt_invalid: {err}"))?;
+    receipt.enforce_provider_attempt(&receipt.effective)?;
+    if !matches!(
+        receipt.effective.credit_control,
+        WorkflowProviderCreditControl::NotRequested
+    ) {
+        anyhow::bail!(
+            "workflow_route_credit_ceiling_unavailable: background-agent provider runtime has no pre-launch credit reservation controller"
+        );
+    }
+
+    let attestation = run.model_attestation.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "workflow_route_receipt_missing: workflow background-agent run has no model attestation"
+        )
+    })?;
+    if attestation.requested_model.as_deref() != Some(receipt.requested.model.as_str())
+        || attestation.applied_model.as_deref() != Some(receipt.effective.model.as_str())
+        || attestation.requested_configuration.get("routeReceipt") != Some(receipt_value)
+        || attestation.applied_configuration.get("routeReceipt") != Some(receipt_value)
+    {
+        anyhow::bail!(
+            "workflow_route_receipt_mismatch: workflow model attestation differs from its execution snapshot"
+        );
+    }
+    if run.auth_profile_ref.as_deref() != receipt.effective.auth_profile.as_deref() {
+        anyhow::bail!(
+            "workflow_route_auth_profile_mismatch: admitted auth profile differs from the immutable route receipt"
+        );
+    }
+    let payload = snapshot.payload_json.as_object().ok_or_else(|| {
+        anyhow::anyhow!("workflow_route_receipt_invalid: workflow execution snapshot is not an object")
+    })?;
+    let scalar_matches = |key: &str, expected: Option<&str>| {
+        payload
+            .get(key)
+            .map_or(expected.is_none(), |value| value.as_str() == expected)
+    };
+    if !scalar_matches("modelGateway", Some(receipt.effective.model_gateway.as_str()))
+        || !scalar_matches("provider", Some(receipt.effective.provider.as_str()))
+        || !scalar_matches("model", Some(receipt.effective.model.as_str()))
+        || !scalar_matches("reasoning", Some(receipt.effective.reasoning.as_str()))
+        || !scalar_matches("serviceTier", receipt.effective.service_tier.as_deref())
+        || !scalar_matches(
+            "approvalPolicy",
+            receipt.effective.approval_policy.as_deref(),
+        )
+    {
+        anyhow::bail!(
+            "workflow_route_receipt_mismatch: workflow execution snapshot route fields differ from its immutable receipt"
+        );
+    }
+    if payload.get("contextCeilingTokens")
+        != Some(&serde_json::to_value(receipt.effective.context_ceiling_tokens)?)
+        || payload.get("creditAccounting")
+            != Some(&serde_json::to_value(receipt.terminal_credit_accounting())?)
+    {
+        anyhow::bail!(
+            "workflow_route_receipt_mismatch: workflow execution snapshot accounting differs from its immutable receipt"
+        );
+    }
+    let workspace_mode = payload
+        .get("workspace")
+        .and_then(|workspace| workspace.get("mode"))
+        .and_then(Value::as_str);
+    if workspace_mode != Some(receipt.effective.worktree_mode.as_str()) {
+        anyhow::bail!(
+            "workflow_route_worktree_mode_mismatch: execution workspace differs from the immutable route receipt"
+        );
+    }
+    Ok(Some(receipt))
+}
+
+fn enforce_workflow_route_config(
+    run: &BackgroundAgentRun,
+    snapshot: &BackgroundAgentExecutionSnapshot,
+    config: &mut codex_core::config::Config,
+) -> anyhow::Result<()> {
+    let Some(receipt) = validate_workflow_route_snapshot(run, snapshot)? else {
+        return Ok(());
+    };
+    if let Some(context_ceiling_tokens) = receipt.effective.context_ceiling_tokens {
+        let context_ceiling_tokens = i64::try_from(context_ceiling_tokens).map_err(|_| {
+            anyhow::anyhow!(
+                "workflow_route_context_ceiling_invalid: context ceiling exceeds the runtime range"
+            )
+        })?;
+        config.model_context_window = Some(context_ceiling_tokens);
+        config.model_auto_compact_token_limit = config
+            .model_auto_compact_token_limit
+            .map(|limit| limit.min(context_ceiling_tokens));
+    }
+    let effective = WorkflowEffectiveModelRoute {
+        model_gateway: config.model_gateway_id.clone(),
+        provider: config.model_provider_id.clone(),
+        model: config.model.clone().ok_or_else(|| {
+            anyhow::anyhow!("workflow_route_model_unavailable: loaded worker model is missing")
+        })?,
+        reasoning: config
+            .model_reasoning_effort
+            .as_ref()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "workflow_route_reasoning_unavailable: loaded worker reasoning is missing"
+                )
+            })?,
+        service_tier: config.service_tier.clone(),
+        auth_profile: config.selected_auth_profile.clone(),
+        approval_policy: Some(config.permissions.approval_policy.value().to_string()),
+        permission_profile: config
+            .permissions
+            .active_permission_profile()
+            .map(|profile| profile.id),
+        worktree_mode: receipt.effective.worktree_mode.clone(),
+        context_ceiling_tokens: config
+            .model_context_window
+            .and_then(|tokens| u64::try_from(tokens).ok()),
+        fallback_used: receipt.effective.fallback_used,
+        credit_control: WorkflowProviderCreditControl::NotRequested,
+    };
+    receipt.enforce_provider_attempt(&effective)?;
     Ok(())
 }
 

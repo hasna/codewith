@@ -41,6 +41,13 @@ use codex_state::WorkflowRunVerifierResultSummary;
 use codex_state::busy_retry::retry_on_busy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_workflows::WorkflowVerifier;
+use codex_workflows::WorkflowProviderCreditControl;
+use codex_workflows::WorkflowModelRoute;
+use codex_workflows::WorkflowRouteReceipt;
+use codex_workflows::WorkflowRouteRuntime;
+use codex_workflows::WorkflowWorkspaceMode;
+use codex_workflows::admit_workflow_model_route_for_runtime;
+use codex_workflows::parse_workflow_yaml;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -145,6 +152,7 @@ where
 pub struct WorkflowActivationConfig {
     pub auth_profile_ref: Option<String>,
     pub permission_profile: PermissionProfile,
+    pub route_runtime: WorkflowRouteRuntime,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub use_legacy_landlock: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
@@ -157,6 +165,18 @@ impl Default for WorkflowActivationConfig {
         Self {
             auth_profile_ref: None,
             permission_profile: PermissionProfile::read_only(),
+            route_runtime: WorkflowRouteRuntime {
+                model_gateway: None,
+                provider: None,
+                model: None,
+                reasoning: None,
+                service_tier: None,
+                auth_profile: None,
+                approval_policy: None,
+                permission_profile: None,
+                context_window_tokens: None,
+                credit_control: WorkflowProviderCreditControl::Unavailable,
+            },
             codex_linux_sandbox_exe: None,
             use_legacy_landlock: false,
             windows_sandbox_level: WindowsSandboxLevel::Disabled,
@@ -200,6 +220,14 @@ impl WorkflowActivationService {
         &self,
         request: WorkflowStartRequest,
     ) -> anyhow::Result<WorkflowStartOutcome> {
+        let spec_record = self
+            .state_db
+            .workflows()
+            .get_workflow_spec(request.workflow_record_id.as_str())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("workflow spec record not found"))?;
+        let spec = parse_workflow_yaml(spec_record.source_yaml.as_str())?;
+        validate_workflow_routes_before_effects(&spec, &request.activation_config.route_runtime)?;
         let create_params = WorkflowRunCreateParams {
             workflow_record_id: request.workflow_record_id,
             source_thread_id: Some(request.source_thread_id),
@@ -409,6 +437,7 @@ impl WorkflowActivationService {
                     BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT.to_string(),
                 ),
                 permission_profile_json: permission_profile_json.clone(),
+                route_runtime: config.route_runtime.clone(),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: config.max_active_background_agent_runs,
             };
@@ -481,6 +510,22 @@ impl WorkflowActivationService {
             }
         };
         let expected_exit_code = definition.expected_exit_code.unwrap_or(0);
+        if let Err(err) = validate_verifier_route(&claimed, &config.route_runtime) {
+            tracing::warn!(
+                workflow_run_id = %run_id,
+                verifier_run_id = %claimed.verifier.verifier_run_id,
+                "workflow verifier route is not admitted: {err}"
+            );
+            return self
+                .record_failed_verifier_setup(
+                    run_id,
+                    generation,
+                    claimed,
+                    started,
+                    Some(expected_exit_code),
+                )
+                .await;
+        }
         let execution_root = match verifier_execution_root(&claimed) {
             Ok(execution_root) => execution_root,
             Err(err) => {
@@ -568,6 +613,15 @@ impl WorkflowActivationService {
                 cancellation.cancel();
                 let _ = heartbeat.await;
                 return Ok(false);
+            }
+            if let Err(err) = validate_verifier_route(&claimed, &config.route_runtime) {
+                tracing::warn!(
+                    workflow_run_id = %run_id,
+                    verifier_run_id = %claimed.verifier.verifier_run_id,
+                    "workflow verifier route changed before command execution: {err}"
+                );
+                passed = false;
+                break;
             }
             command_count = command_count.saturating_add(1);
             let output = process_exec_tool_call(
@@ -747,19 +801,88 @@ impl WorkflowActivationService {
     }
 }
 
+fn validate_verifier_route(
+    claimed: &WorkflowRunVerifierClaimOutcome,
+    runtime: &WorkflowRouteRuntime,
+) -> anyhow::Result<WorkflowRouteReceipt> {
+    let requested_value = claimed.step.model_route_json.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("workflow_route_receipt_missing: verifier step has no model route")
+    })?;
+    let requested = serde_json::from_value::<WorkflowModelRoute>(
+        workflow_state_data(requested_value).clone(),
+    )?;
+    let admitted_value = claimed
+        .step
+        .branch_admission_json
+        .as_ref()
+        .and_then(|admission| workflow_state_data(admission).get("routeReceipt"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "workflow_route_receipt_missing: verifier step has no admitted route receipt"
+            )
+        })?;
+    let admitted = serde_json::from_value::<WorkflowRouteReceipt>(admitted_value.clone())?;
+    let worktree_mode = match claimed
+        .step
+        .workspace_json
+        .as_ref()
+        .map(workflow_state_data)
+        .and_then(|workspace| workspace.get("mode"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("isolated_worktree") => "isolated_worktree",
+        Some("shared_repository") => "shared_repository",
+        Some(other) => anyhow::bail!(
+            "workflow_route_worktree_mode_invalid: unsupported verifier worktree mode `{other}`"
+        ),
+        None => "shared_repository",
+    };
+    let current = admit_workflow_model_route_for_runtime(&requested, runtime, worktree_mode)?;
+    if current != admitted {
+        anyhow::bail!(
+            "workflow_route_receipt_mismatch: verifier route differs from branch admission"
+        );
+    }
+    admitted.enforce_provider_attempt(&current.effective)?;
+    Ok(admitted)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkflowActivationFingerprint<'a> {
     auth_profile_ref: Option<&'a str>,
+    route_runtime: &'a WorkflowRouteRuntime,
     admission_schema: &'static str,
 }
 
 fn activation_config_fingerprint(config: &WorkflowActivationConfig) -> anyhow::Result<String> {
     let value = WorkflowActivationFingerprint {
         auth_profile_ref: config.auth_profile_ref.as_deref(),
+        route_runtime: &config.route_runtime,
         admission_schema: BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
     };
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+}
+
+fn validate_workflow_routes_before_effects(
+    spec: &codex_workflows::WorkflowSpec,
+    runtime: &WorkflowRouteRuntime,
+) -> anyhow::Result<()> {
+    for step in &spec.steps {
+        let path = format!("steps.{}.model", step.id);
+        let route = step.model.as_ref().unwrap_or(&spec.execution_defaults);
+        let workspace_mode = step
+            .workspace
+            .as_ref()
+            .map_or(WorkflowWorkspaceMode::SharedRepository, |workspace| workspace.mode);
+        let worktree_mode = match workspace_mode {
+            WorkflowWorkspaceMode::IsolatedWorktree => "isolated_worktree",
+            WorkflowWorkspaceMode::SharedRepository => "shared_repository",
+        };
+        admit_workflow_model_route_for_runtime(route, runtime, worktree_mode)
+            .map_err(|err| anyhow::anyhow!("{path}: {err}"))?;
+    }
+    Ok(())
 }
 
 fn workflow_state_data(value: &serde_json::Value) -> &serde_json::Value {
