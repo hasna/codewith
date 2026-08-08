@@ -819,6 +819,7 @@ mod tests {
                     version_fingerprint: Some(
                         crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
                     ),
+                    model_attestation: None,
                 },
                 &json!({
                     "prompt": format!("prompt for {id}"),

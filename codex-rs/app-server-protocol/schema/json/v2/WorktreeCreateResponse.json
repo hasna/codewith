@@ -233,6 +233,16 @@
             "string",
             "null"
           ]
+        },
+        "modelAttestation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentModelAttestation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -469,6 +479,51 @@
         "auto"
       ],
       "type": "string"
+    },
+    "AgentModelAttestation": {
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "appliedConfiguration": true,
+        "appliedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "boundRuntimeModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "configFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKeySha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requestedConfiguration": true,
+        "requestedModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agentId",
+        "requestedConfiguration",
+        "appliedConfiguration"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

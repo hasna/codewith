@@ -1347,6 +1347,7 @@ async fn create_background_branch_run_if_missing_in_tx(
         status_reason: Some("queued by workflow branch admission".to_string()),
         config_fingerprint: params.config_fingerprint.clone(),
         version_fingerprint: params.version_fingerprint.clone(),
+        model_attestation: None,
     };
     let start_event_payload = json!({
         "cwd": provisioned_workspace.execution_cwd.to_string_lossy(),

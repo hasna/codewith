@@ -12,6 +12,8 @@ pub use codex_state::BackgroundAgentEvent;
 pub use codex_state::BackgroundAgentExecutionHandleParams;
 pub use codex_state::BackgroundAgentExecutionSnapshot;
 pub use codex_state::BackgroundAgentExecutionSnapshotParams;
+pub use codex_state::BackgroundAgentModelAttestation;
+pub use codex_state::BackgroundAgentModelAttestationCreateParams;
 pub use codex_state::BackgroundAgentPendingInteraction;
 pub use codex_state::BackgroundAgentPendingInteractionCreateParams;
 pub use codex_state::BackgroundAgentPendingInteractionKind;

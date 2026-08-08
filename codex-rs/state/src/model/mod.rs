@@ -30,6 +30,8 @@ pub use background_agent::BackgroundAgentEvent;
 pub use background_agent::BackgroundAgentExecutionHandleParams;
 pub use background_agent::BackgroundAgentExecutionSnapshot;
 pub use background_agent::BackgroundAgentExecutionSnapshotParams;
+pub use background_agent::BackgroundAgentModelAttestation;
+pub use background_agent::BackgroundAgentModelAttestationCreateParams;
 pub use background_agent::BackgroundAgentPendingInteraction;
 pub use background_agent::BackgroundAgentPendingInteractionCreateParams;
 pub use background_agent::BackgroundAgentPendingInteractionKind;

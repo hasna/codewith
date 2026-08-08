@@ -14,6 +14,8 @@ pub use interaction::BackgroundAgentPendingInteractionRow;
 pub use interaction::BackgroundAgentPendingInteractionStatus;
 pub use run::BackgroundAgentDesiredState;
 pub use run::BackgroundAgentExecutionHandleParams;
+pub use run::BackgroundAgentModelAttestation;
+pub use run::BackgroundAgentModelAttestationCreateParams;
 pub use run::BackgroundAgentProcessHandleRecord;
 pub use run::BackgroundAgentRetentionState;
 pub use run::BackgroundAgentRun;

@@ -3450,6 +3450,7 @@ async fn run_background_agent_worker(
         thread_store_kind: BACKGROUND_AGENT_THREAD_STORE_KIND.to_string(),
         thread_store_id: Some(session_id_string.clone()),
         rollout_path: rollout_path.clone(),
+        bound_runtime_model: session_configured.model.clone(),
     };
     let bound = retry_transient_sqlite_busy("bind background agent thread", || {
         context
@@ -3483,6 +3484,7 @@ async fn run_background_agent_worker(
             "threadId": thread_id.to_string(),
             "sessionId": session_id_string,
             "rolloutPath": rollout_path,
+            "boundRuntimeModel": session_configured.model,
         }),
         recovery_policy: "resume_or_orphan".to_string(),
         config_fingerprint: run.config_fingerprint.clone(),
@@ -7186,6 +7188,7 @@ done
                     version_fingerprint: Some(
                         BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
                     ),
+                    model_attestation: None,
                 },
                 &start_event_payload,
                 &execution_snapshot_params,

@@ -23,6 +23,7 @@ use codex_background_agent::worker_admission::verify_worker_admission;
 use codex_core::config::find_codex_home;
 use codex_protocol::models::PermissionProfile;
 use codex_state::BackgroundAgentExecutionSnapshotParams;
+use codex_state::BackgroundAgentModelAttestationCreateParams;
 use codex_state::BackgroundAgentPendingInteractionStatus;
 use codex_state::BackgroundAgentRun;
 use codex_state::BackgroundAgentRunCreateParams;
@@ -1164,6 +1165,10 @@ async fn start_agent(
         recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
         config_fingerprint: Some(config_fingerprint.clone()),
     };
+    let model_attestation_configuration = json!({
+        "executionContext": snapshot_params.payload_json.clone(),
+    });
+    let applied_model = runtime_context.and_then(|context| context.model.clone());
     // The state DB is shared across many concurrent processes; every write
     // below retries transient SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT contention
     // with backoff instead of failing the whole `agent start` invocation.
@@ -1189,6 +1194,12 @@ async fn start_agent(
         }),
         config_fingerprint: Some(config_fingerprint),
         version_fingerprint: Some(BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string()),
+        model_attestation: Some(BackgroundAgentModelAttestationCreateParams {
+            requested_model: applied_model.clone(),
+            requested_configuration: model_attestation_configuration.clone(),
+            applied_model,
+            applied_configuration: model_attestation_configuration,
+        }),
     };
     retry_on_busy("reconcile stale background agents before admission", || {
         state_db.orphan_stale_background_agent_runs(Duration::from_secs(30))
@@ -1432,6 +1443,7 @@ fn run_json(run: BackgroundAgentRun) -> Value {
         "statusReason": run.status_reason,
         "configFingerprint": run.config_fingerprint,
         "versionFingerprint": run.version_fingerprint,
+        "modelAttestation": run.model_attestation,
         "retentionState": run.retention_state.as_str(),
         "supervisorId": run.supervisor_id,
         "generation": run.generation,

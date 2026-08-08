@@ -23,6 +23,7 @@ use codex_app_server_protocol::AgentExecutionSnapshot;
 use codex_app_server_protocol::AgentLifecycleEffect;
 use codex_app_server_protocol::AgentListParams;
 use codex_app_server_protocol::AgentListResponse;
+use codex_app_server_protocol::AgentModelAttestation;
 use codex_app_server_protocol::AgentPendingInteraction;
 use codex_app_server_protocol::AgentPendingInteractionKind;
 use codex_app_server_protocol::AgentPendingInteractionRespondParams;
@@ -70,6 +71,7 @@ use codex_background_agent::BackgroundAgentDesiredState;
 use codex_background_agent::BackgroundAgentEvent;
 use codex_background_agent::BackgroundAgentExecutionSnapshot;
 use codex_background_agent::BackgroundAgentExecutionSnapshotParams;
+use codex_background_agent::BackgroundAgentModelAttestationCreateParams;
 use codex_background_agent::BackgroundAgentPendingInteraction;
 use codex_background_agent::BackgroundAgentPendingInteractionKind;
 use codex_background_agent::BackgroundAgentPendingInteractionStatus;
@@ -218,6 +220,13 @@ impl BackgroundAgentRequestProcessor {
                 config_fingerprint: config_fingerprint.as_deref(),
                 version_fingerprint: version_fingerprint.as_deref(),
             });
+        let requested_model = execution_context
+            .as_ref()
+            .and_then(|context| context.model.clone());
+        let applied_model = execution_payload
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         let create_params = BackgroundAgentRunCreateParams {
             id: agent_id.clone(),
             idempotency_key,
@@ -236,6 +245,16 @@ impl BackgroundAgentRequestProcessor {
             status_reason: Some("queued for background-agent supervisor".to_string()),
             config_fingerprint: config_fingerprint.clone(),
             version_fingerprint,
+            model_attestation: Some(BackgroundAgentModelAttestationCreateParams {
+                requested_model,
+                requested_configuration: json!({
+                    "executionContext": execution_context.as_ref(),
+                }),
+                applied_model,
+                applied_configuration: json!({
+                    "executionContext": execution_payload,
+                }),
+            }),
         };
         let prompt_sha256 = format!("{:x}", Sha256::digest(prompt.as_bytes()));
         let start_event_payload = json!({
@@ -1491,6 +1510,18 @@ fn api_agent_run_from_state(value: BackgroundAgentRun) -> AgentRun {
         status_reason: value.status_reason,
         config_fingerprint: value.config_fingerprint,
         version_fingerprint: value.version_fingerprint,
+        model_attestation: value
+            .model_attestation
+            .map(|attestation| AgentModelAttestation {
+                agent_id: attestation.agent_id,
+                idempotency_key_sha256: attestation.idempotency_key_sha256,
+                config_fingerprint: attestation.config_fingerprint,
+                requested_model: attestation.requested_model,
+                requested_configuration: attestation.requested_configuration,
+                applied_model: attestation.applied_model,
+                applied_configuration: attestation.applied_configuration,
+                bound_runtime_model: attestation.bound_runtime_model,
+            }),
         retention_state: match value.retention_state {
             codex_state::BackgroundAgentRetentionState::Active => AgentRetentionState::Active,
             codex_state::BackgroundAgentRetentionState::Archived => AgentRetentionState::Archived,
@@ -2015,6 +2046,7 @@ mod tests {
                 status_reason: Some("queued by processor test".to_string()),
                 config_fingerprint: Some("cfg-test".to_string()),
                 version_fingerprint: Some("version-test".to_string()),
+                model_attestation: None,
             })
             .await?;
         state_db
