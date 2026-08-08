@@ -181,10 +181,6 @@ impl AnyToolResult {
         result.to_response_item(&call_id, &payload)
     }
 
-    pub(crate) fn code_mode_result(self) -> serde_json::Value {
-        self.code_mode_result_with_live_process_id().0
-    }
-
     pub(crate) fn code_mode_result_with_live_process_id(self) -> (serde_json::Value, Option<u32>) {
         let Self {
             payload, result, ..

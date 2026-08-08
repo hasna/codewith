@@ -368,10 +368,9 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
         post_tool_use_payload: None,
     };
 
-    assert_eq!(
-        result.code_mode_result(),
-        serde_json::json!({ "typed": true })
-    );
+    let (code_mode_result, live_process_id) = result.code_mode_result_with_live_process_id();
+    assert_eq!(code_mode_result, serde_json::json!({ "typed": true }));
+    assert_eq!(live_process_id, None);
 }
 
 #[tokio::test]
