@@ -402,7 +402,8 @@ async fn set_pending_restores_deferred_node_for_later_activation() -> anyhow::Re
             }),
         ))
         .await
-        .expect_err("active node should remain ineligible for pending restoration");
+        .err()
+        .expect("active node should remain ineligible for pending restoration");
     assert!(
         err.to_string()
             .contains("can only mark completed or deferred goal-plan nodes pending"),
