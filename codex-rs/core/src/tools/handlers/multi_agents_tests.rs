@@ -1355,6 +1355,146 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_inherits_live_session_auth_profile_for_every_fork_mode() {
+    for fork_turns in ["none", "1", "all"] {
+        let (mut session, mut turn) = make_session_and_context().await;
+        save_test_auth_profile(&turn, "project-default");
+        save_test_auth_profile(&turn, "healthy-selected");
+        let mut config = (*turn.config).clone();
+        config.selected_auth_profile = Some("project-default".to_string());
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        set_turn_config(&mut turn, config);
+        session
+            .update_settings(crate::session::SessionSettingsUpdate {
+                auth_profile: Some(Some("healthy-selected".to_string())),
+                ..Default::default()
+            })
+            .await
+            .expect("live session auth profile should update");
+        assert_eq!(
+            session.selected_auth_profile().await.as_deref(),
+            Some("healthy-selected")
+        );
+
+        let manager = thread_manager();
+        let root = manager
+            .start_thread((*turn.config).clone())
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let task_name = format!("profile_{fork_turns}");
+
+        let output = SpawnAgentHandlerV2::default()
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "inspect this repo",
+                    "task_name": task_name,
+                    "fork_turns": fork_turns,
+                })),
+            ))
+            .await
+            .expect("spawn should inherit the live session profile");
+        let (content, _) = expect_text_output(output);
+        let result: serde_json::Value =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let child_thread_id = session
+            .services
+            .agent_control
+            .resolve_agent_reference(
+                session.thread_id,
+                &turn.session_source,
+                result["task_name"]
+                    .as_str()
+                    .expect("spawned task name should be present"),
+            )
+            .await
+            .expect("spawned task name should resolve");
+        let snapshot = manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+
+        assert_eq!(
+            snapshot.selected_auth_profile.as_deref(),
+            Some("healthy-selected"),
+            "fork_turns={fork_turns} must use the live parent session profile"
+        );
+    }
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_does_not_substitute_stale_turn_profile() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    save_test_auth_profile(&turn, "project-default");
+    let mut config = (*turn.config).clone();
+    config.selected_auth_profile = Some("project-default".to_string());
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    assert_eq!(session.selected_auth_profile().await, None);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "no_profile_substitution",
+                "fork_turns": "all",
+            })),
+        ))
+        .await
+        .expect("spawn should not substitute the stale turn profile");
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(
+            session.thread_id,
+            &turn.session_source,
+            result["task_name"]
+                .as_str()
+                .expect("spawned task name should be present"),
+        )
+        .await
+        .expect("spawned task name should resolve");
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.selected_auth_profile, None);
+}
+
+#[tokio::test]
 async fn spawn_agent_returns_agent_id_without_task_name() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
