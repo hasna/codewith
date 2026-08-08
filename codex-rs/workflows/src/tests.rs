@@ -350,9 +350,9 @@ fn rejects_draft_without_adversarial_reviewer_or_review_step() {
 
     let err = parse_workflow_yaml(&yaml).expect_err("adversarial work should remain required");
 
-    assert!(
-        err.to_string().contains("must include adversarial work"),
-        "unexpected error: {err}"
+    assert_eq!(
+        "workflow spec is invalid: draft workflows must include adversarial work by at least one agent or one step",
+        err.to_string()
     );
 }
 
