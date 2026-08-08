@@ -264,13 +264,12 @@ WHERE schedule_id = ? AND lease_id = ?
     .expect("new-runtime once finalization step should update the schedule");
     assert_eq!(1, result.rows_affected());
 
-    let occurrence_state: Option<String> = sqlx::query_scalar(
-        "SELECT state FROM thread_schedule_occurrences WHERE occurrence_id = ?",
-    )
-    .bind(claim.run.run_id.as_str())
-    .fetch_optional(runtime.pool.as_ref())
-    .await
-    .expect("terminal occurrence should load");
+    let occurrence_state: Option<String> =
+        sqlx::query_scalar("SELECT state FROM thread_schedule_occurrences WHERE occurrence_id = ?")
+            .bind(claim.run.run_id.as_str())
+            .fetch_optional(runtime.pool.as_ref())
+            .await
+            .expect("terminal occurrence should load");
     assert_eq!(
         Some("terminal".to_string()),
         occurrence_state,

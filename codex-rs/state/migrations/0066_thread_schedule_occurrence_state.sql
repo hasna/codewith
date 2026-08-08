@@ -146,6 +146,7 @@ WHEN NEW.status IN ('paused', 'expired')
      SELECT 1
      FROM thread_schedule_occurrences
      WHERE thread_schedule_occurrences.schedule_id = NEW.schedule_id
+       AND thread_schedule_occurrences.state != 'terminal'
  )
 BEGIN
     UPDATE thread_schedule_runs
