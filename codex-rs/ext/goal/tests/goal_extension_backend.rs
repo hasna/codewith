@@ -23,6 +23,8 @@ use codex_extension_api::ToolSpec;
 use codex_extension_api::ToolStartInput;
 use codex_extension_api::ToolWorktreeMutationSignal;
 use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnCompletionDecision;
+use codex_extension_api::TurnCompletionInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
@@ -163,6 +165,167 @@ async fn installed_goal_tools_include_resume_goal() -> anyhow::Result<()> {
         ],
         tool_names(&tools)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unfinished_active_goal_plan_blocks_terminal_turn_completion() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "first".to_string(),
+                    objective: "complete the first node".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: Vec::new(),
+                },
+                codex_state::ThreadGoalPlanNodeCreateParams {
+                    key: "second".to_string(),
+                    objective: "continue with the second node".to_string(),
+                    assigned_thread_id: None,
+                    title: None,
+                    priority: 0,
+                    token_budget: None,
+                    depends_on: vec!["first".to_string()],
+                },
+            ],
+        })
+        .await?;
+    let active_goal = created
+        .activated_goal
+        .ok_or_else(|| anyhow::anyhow!("first goal should activate"))?;
+    let completed_goal = runtime
+        .thread_goals()
+        .update_thread_goal(
+            thread_id,
+            codex_state::GoalUpdate {
+                objective: None,
+                title: None,
+                status: Some(codex_state::ThreadGoalStatus::Complete),
+                token_budget: None,
+                expected_goal_id: Some(active_goal.goal_id),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should complete"))?;
+    let outcome = runtime
+        .thread_goals()
+        .complete_goal_plan_node_and_maybe_advance(
+            thread_id,
+            &completed_goal,
+            codex_state::ThreadGoalPlanAutoExecute::Off,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal plan should update"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Active,
+        outcome.snapshot.plan.status
+    );
+    assert_eq!(0, outcome.snapshot.usage_summary().active_node_count);
+    assert_eq!(1, outcome.snapshot.usage_summary().ready_node_count);
+
+    let decision = harness.turn_completion_decision("turn-1").await;
+    assert!(
+        matches!(decision, TurnCompletionDecision::Continue(_)),
+        "an unfinished active plan must reject terminal completion"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_or_waiting_goal_plan_allows_terminal_turn_completion() -> anyhow::Result<()> {
+    for status in [
+        codex_state::ThreadGoalStatus::Paused,
+        codex_state::ThreadGoalStatus::Blocked,
+        codex_state::ThreadGoalStatus::UsageLimited,
+        codex_state::ThreadGoalStatus::BudgetLimited,
+    ] {
+        let runtime = test_runtime().await?;
+        let thread_id = test_thread_id()?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "wait intentionally",
+                status,
+                /*token_budget*/ None,
+            )
+            .await?;
+        let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+        assert!(matches!(
+            harness.turn_completion_decision("turn-wait").await,
+            TurnCompletionDecision::Allow
+        ));
+    }
+
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    let created = runtime
+        .thread_goals()
+        .create_thread_goal_plan(codex_state::ThreadGoalPlanCreateParams {
+            thread_id,
+            auto_execute: codex_state::ThreadGoalPlanAutoExecute::ReadyOnly,
+            max_tokens: None,
+            nodes: vec![codex_state::ThreadGoalPlanNodeCreateParams {
+                key: "only".to_string(),
+                objective: "finish the plan".to_string(),
+                assigned_thread_id: None,
+                title: None,
+                priority: 0,
+                token_budget: None,
+                depends_on: Vec::new(),
+            }],
+        })
+        .await?;
+    let active_goal = created
+        .activated_goal
+        .ok_or_else(|| anyhow::anyhow!("goal should activate"))?;
+    let completed_goal = runtime
+        .thread_goals()
+        .update_thread_goal(
+            thread_id,
+            codex_state::GoalUpdate {
+                objective: None,
+                title: None,
+                status: Some(codex_state::ThreadGoalStatus::Complete),
+                token_budget: None,
+                expected_goal_id: Some(active_goal.goal_id),
+            },
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should complete"))?;
+    let outcome = runtime
+        .thread_goals()
+        .complete_goal_plan_node_and_maybe_advance(
+            thread_id,
+            &completed_goal,
+            codex_state::ThreadGoalPlanAutoExecute::Off,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal plan should update"))?;
+    assert_eq!(
+        codex_state::ThreadGoalPlanStatus::Complete,
+        outcome.snapshot.plan.status
+    );
+    assert!(matches!(
+        harness.turn_completion_decision("turn-complete").await,
+        TurnCompletionDecision::Allow
+    ));
     Ok(())
 }
 
@@ -5565,6 +5728,32 @@ impl GoalExtensionHarness {
                     turn_store: &turn_store,
                 })
                 .await;
+        }
+    }
+
+    async fn turn_completion_decision(&self, turn_id: &str) -> TurnCompletionDecision {
+        let turn_store = ExtensionData::new(turn_id);
+        let mut continuation_items = Vec::new();
+        for contributor in self.registry.turn_lifecycle_contributors() {
+            match contributor
+                .on_turn_completion(TurnCompletionInput {
+                    turn_id,
+                    session_store: &self.session_store,
+                    thread_store: &self.thread_store,
+                    turn_store: &turn_store,
+                })
+                .await
+            {
+                TurnCompletionDecision::Allow => {}
+                TurnCompletionDecision::Continue(mut items) => {
+                    continuation_items.append(&mut items);
+                }
+            }
+        }
+        if continuation_items.is_empty() {
+            TurnCompletionDecision::Allow
+        } else {
+            TurnCompletionDecision::Continue(continuation_items)
         }
     }
 

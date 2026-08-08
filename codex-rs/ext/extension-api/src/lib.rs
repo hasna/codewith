@@ -48,6 +48,8 @@ pub use contributors::ToolLifecycleFuture;
 pub use contributors::ToolStartInput;
 pub use contributors::ToolWorktreeMutationSignal;
 pub use contributors::TurnAbortInput;
+pub use contributors::TurnCompletionDecision;
+pub use contributors::TurnCompletionInput;
 pub use contributors::TurnErrorInput;
 pub use contributors::TurnInputContext;
 pub use contributors::TurnInputContributor;

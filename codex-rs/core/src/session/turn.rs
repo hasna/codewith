@@ -390,6 +390,17 @@ pub(crate) async fn run_turn(
                     if stop_outcome.should_stop {
                         break;
                     }
+                    let extension_continuation_items = sess
+                        .evaluate_turn_completion_lifecycle(turn_context.as_ref())
+                        .await;
+                    if !extension_continuation_items.is_empty() {
+                        sess.record_conversation_items(
+                            &turn_context,
+                            extension_continuation_items.as_slice(),
+                        )
+                        .await;
+                        continue;
+                    }
                     if run_legacy_after_agent_hook(
                         &sess,
                         &turn_context,

@@ -1,4 +1,5 @@
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
@@ -24,6 +25,30 @@ pub struct TurnStartInput<'a> {
     pub thread_store: &'a ExtensionData,
     /// Store scoped to this turn runtime.
     pub turn_store: &'a ExtensionData,
+}
+
+/// Input supplied when the model has produced a terminal response but before
+/// the host accepts it as the end of the turn.
+pub struct TurnCompletionInput<'a> {
+    /// Stable host-owned turn identifier.
+    pub turn_id: &'a str,
+    /// Store scoped to the host session runtime.
+    pub session_store: &'a ExtensionData,
+    /// Store scoped to this thread runtime.
+    pub thread_store: &'a ExtensionData,
+    /// Store scoped to this turn runtime.
+    pub turn_store: &'a ExtensionData,
+}
+
+/// Extension-owned decision at the model-response termination boundary.
+#[derive(Debug, Default)]
+pub enum TurnCompletionDecision {
+    /// Accept the model response as terminal for the current turn.
+    #[default]
+    Allow,
+    /// Record the supplied internal context and continue sampling in the same
+    /// turn instead of emitting a terminal completion.
+    Continue(Vec<ResponseItem>),
 }
 
 /// Input supplied when the host completes a turn.
