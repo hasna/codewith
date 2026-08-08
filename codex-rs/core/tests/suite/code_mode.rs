@@ -24,6 +24,7 @@ use core_test_support::apps_test_server::DIRECT_CALENDAR_APP_ONLY_TOOL;
 use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::assert_regex_match;
+use core_test_support::fs_wait;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
@@ -498,6 +499,153 @@ text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marke
     assert_eq!(parsed.get("exit_code").and_then(Value::as_i64), Some(0));
     assert!(parsed.get("wall_time_seconds").is_some());
     assert!(parsed.get("session_id").is_none());
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_wait_stays_live_until_nested_exec_session_exits() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let test = builder.build(&server).await?;
+    let release_path = test.workspace_path("code-mode-nested-exec.release");
+    let nested_result_path = test.workspace_path("code-mode-nested-exec-result.ready");
+    let nested_exit_path = test.workspace_path("code-mode-nested-exec-exit.ready");
+    let release_path_quoted = shlex::try_join([release_path.to_string_lossy().as_ref()])?;
+    let nested_result_path_quoted =
+        shlex::try_join([nested_result_path.to_string_lossy().as_ref()])?;
+    let nested_exit_path_quoted = shlex::try_join([nested_exit_path.to_string_lossy().as_ref()])?;
+    let child_command = format!(
+        "while [ ! -f {release_path_quoted} ]; do sleep 0.05; done; \
+         printf nested-child-finished; printf done > {nested_exit_path_quoted}"
+    );
+    let result_ready_command = format!("printf ready > {nested_result_path_quoted}");
+    let code = format!(
+        r#"// @exec: {{"yield_time_ms": 25}}
+const background = await tools.exec_command({{
+  cmd: {child_command:?},
+  yield_time_ms: 100,
+}});
+await tools.exec_command({{ cmd: {result_ready_command:?} }});
+text(JSON.stringify(background));
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", &code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the nested background exec").await?;
+
+    let first_items = custom_tool_output_items(&first_completion.single_request(), "call-1");
+    assert_eq!(first_items.len(), 1);
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    fs_wait::wait_for_path_exists(&nested_result_path, Duration::from_secs(5)).await?;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id.clone(),
+                    "yield_time_ms": 250,
+                }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "still waiting"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("poll while the nested exec is live")
+        .await?;
+
+    let second_items = function_tool_output_items(&second_completion.single_request(), "call-2");
+    fs::write(&release_path, "release")?;
+    fs_wait::wait_for_path_exists(&nested_exit_path, Duration::from_secs(5)).await?;
+
+    assert_eq!(second_items.len(), 2);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script running with cell ID \d+\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&second_items, /*index*/ 0),
+    );
+    let nested_result: Value = serde_json::from_str(text_item(&second_items, /*index*/ 1))?;
+    assert!(
+        nested_result
+            .get("session_id")
+            .and_then(Value::as_u64)
+            .is_some(),
+        "live nested exec result should retain its session id: {nested_result}"
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-5"),
+            responses::ev_function_call(
+                "call-3",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id,
+                    "yield_time_ms": 2_000,
+                }))?,
+            ),
+            ev_completed("resp-5"),
+        ]),
+    )
+    .await;
+    let third_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-3", "done"),
+            ev_completed("resp-6"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait for nested exec completion").await?;
+
+    let third_items = function_tool_output_items(&third_completion.single_request(), "call-3");
+    assert_eq!(third_items.len(), 1);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&third_items, /*index*/ 0),
+    );
 
     Ok(())
 }
