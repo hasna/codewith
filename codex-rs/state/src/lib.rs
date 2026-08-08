@@ -25,6 +25,13 @@ pub use runtime::StateRuntimeStartupLock;
 pub use runtime::acquire_state_runtime_startup_lock;
 pub use runtime::state_runtime_startup_lock_path;
 
+pub const BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION: &str =
+    "codewith.background-agent.admission.v1";
+pub const BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT: &str = concat!(
+    "codewith.background-agent.runtime.v1:",
+    env!("CARGO_PKG_VERSION")
+);
+
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;
 /// Low-level storage engine: useful for focused tests.

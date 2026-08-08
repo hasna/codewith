@@ -342,7 +342,9 @@ impl ManageWorkflowTool {
                 owner_id: format!("workflow-manager:{thread_id}"),
                 auth_profile_ref: None,
                 config_fingerprint: None,
-                version_fingerprint: None,
+                version_fingerprint: Some(
+                    codex_state::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+                ),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: None,
             })

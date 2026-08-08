@@ -8,6 +8,7 @@ use crate::runtime::background_agents::insert_background_agent_run_in_tx;
 use crate::runtime::background_agents::recover_or_validate_background_agent_initial_state_in_tx;
 use crate::runtime::background_agents::validate_existing_background_agent_admission_in_tx;
 use crate::runtime::workflow_automation::arm_workflow_timers_for_succeeded_step_in_tx;
+use crate::runtime::workflow_verifiers::requeue_running_workflow_verifiers_in_tx;
 use crate::runtime::workflows::WorkflowRunEventAppend;
 use crate::runtime::workflows::append_workflow_run_event_in_tx;
 use crate::runtime::workflows::maybe_snapshot_workflow_run_in_tx;
@@ -31,6 +32,7 @@ const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON: &str =
     "OpenRouter workflow branch requires OPENROUTER_API_KEY before admission";
 const WORKFLOW_BRANCH_PROVIDER_ENV_MISSING_REASON_CODE: &str =
     "workflow_branch_provider_env_missing";
+const WORKFLOW_BRANCH_RECOVERY_POLICY: &str = "abort_mid_turn_resume_at_safe_boundary";
 const WORKFLOW_BRANCH_SOURCE: &str = "workflow";
 const WORKFLOW_BRANCH_THREAD_STORE_KIND: &str = "background-agent";
 
@@ -340,7 +342,7 @@ RETURNING generation
             WorkflowRunEventAppend {
                 event_type: "claimed",
                 actor_kind: "orchestrator",
-                actor_id: Some(params.owner_id),
+                actor_id: Some(params.owner_id.clone()),
                 step_run_id: None,
                 verifier_run_id: None,
                 visibility: "internal",
@@ -350,6 +352,14 @@ RETURNING generation
                 }),
                 now_ms,
             },
+        )
+        .await?;
+        requeue_running_workflow_verifiers_in_tx(
+            &mut tx,
+            params.run_id.as_str(),
+            params.owner_id.as_str(),
+            generation,
+            now_ms,
         )
         .await?;
         let snapshot = snapshot_workflow_run_in_tx(&mut tx, params.run_id.as_str()).await?;
@@ -1077,6 +1087,13 @@ struct BackgroundBranchRunCreate<'a> {
     now_ms: i64,
 }
 
+struct WorkflowBranchExecutionIdentity {
+    cwd: String,
+    workspace_roots: Vec<String>,
+    config_fingerprint: String,
+    version_fingerprint: String,
+}
+
 struct BackgroundAgentStatusSnapshotUpsert<'a> {
     run_id: &'a str,
     seq: i64,
@@ -1314,6 +1331,14 @@ async fn create_background_branch_run_if_missing_in_tx(
         agent_id: candidate.agent_id.as_str(),
         parallel_group: candidate.parallel_group.as_deref(),
     });
+    let prompt_sha256 = StateRuntime::background_agent_identity_sha256(prompt.as_bytes());
+    let execution_identity = workflow_branch_execution_identity(
+        run,
+        candidate,
+        model_route_json,
+        workspace_json,
+        params,
+    )?;
     let prompt_snapshot_ref = format!("workflow:{}:step:{}:prompt", run.run_id, candidate.step_id);
     let spawn_linkage_json = json!({
         "schemaVersion": "workflow.branch_spawn/v0",
@@ -1345,13 +1370,15 @@ async fn create_background_branch_run_if_missing_in_tx(
         spawn_linkage_json: Some(spawn_linkage_json),
         auth_profile_ref: params.auth_profile_ref.clone(),
         status_reason: Some("queued by workflow branch admission".to_string()),
-        config_fingerprint: params.config_fingerprint.clone(),
-        version_fingerprint: params.version_fingerprint.clone(),
+        config_fingerprint: Some(execution_identity.config_fingerprint.clone()),
+        version_fingerprint: Some(execution_identity.version_fingerprint.clone()),
     };
     let start_event_payload = json!({
-        "cwd": Value::Null,
+        "cwd": execution_identity.cwd.as_str(),
         "prompt": prompt,
+        "promptSha256": prompt_sha256,
         "promptSnapshotRef": prompt_snapshot_ref,
+        "initialGoalObjective": Value::Null,
     });
     let execution_snapshot_params = BackgroundAgentExecutionSnapshotParams {
         run_id: background_agent_run_id.to_string(),
@@ -1362,9 +1389,10 @@ async fn create_background_branch_run_if_missing_in_tx(
             model_route_json,
             workspace_json,
             params,
+            &execution_identity,
         ),
-        recovery_policy: "abort_mid_turn_resume_at_safe_boundary".to_string(),
-        config_fingerprint: params.config_fingerprint.clone(),
+        recovery_policy: WORKFLOW_BRANCH_RECOVERY_POLICY.to_string(),
+        config_fingerprint: Some(execution_identity.config_fingerprint.clone()),
     };
     let admission_identity_sha256 = background_agent_admission_identity_sha256(
         &run_params,
@@ -1465,12 +1493,75 @@ ON CONFLICT(run_id) DO UPDATE SET
     Ok(())
 }
 
+fn workflow_branch_execution_identity(
+    run: &crate::WorkflowRun,
+    candidate: &ReadyBranchCandidate,
+    model_route_json: &Value,
+    workspace_json: Option<&Value>,
+    params: &WorkflowRunBranchAdmissionParams,
+) -> anyhow::Result<WorkflowBranchExecutionIdentity> {
+    let version_fingerprint = params
+        .version_fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION);
+    if version_fingerprint != crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION {
+        anyhow::bail!(
+            "background_agent_admission_schema_mismatch: workflow branch requested incompatible background-agent admission schema `{version_fingerprint}`"
+        );
+    }
+
+    let cwd = std::env::current_dir()
+        .map_err(|err| anyhow::anyhow!("failed to resolve workflow branch cwd: {err}"))?
+        .to_string_lossy()
+        .into_owned();
+    if cwd.is_empty() {
+        anyhow::bail!("workflow branch cwd must not be empty");
+    }
+    let workspace_roots = vec![cwd.clone()];
+    let config_fingerprint = if let Some(config_fingerprint) = params
+        .config_fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        config_fingerprint.to_string()
+    } else {
+        let auth_profile_identity_sha256 =
+            params.auth_profile_ref.as_deref().map(|profile| {
+                StateRuntime::background_agent_identity_sha256(profile.as_bytes())
+            });
+        let config_identity = json!({
+            "snapshotSource": "workflow/branch_admission",
+            "workflowRunId": run.run_id.as_str(),
+            "workflowStepId": candidate.step_id.as_str(),
+            "workflowStepRunId": candidate.step_run_id.as_str(),
+            "cwd": cwd.as_str(),
+            "workspaceRoots": &workspace_roots,
+            "modelRoute": model_route_json,
+            "workspace": workspace_json,
+            "authProfileIdentitySha256": auth_profile_identity_sha256,
+        });
+        let serialized = serde_json::to_vec(&config_identity)?;
+        StateRuntime::background_agent_identity_sha256(serialized.as_slice())
+    };
+
+    Ok(WorkflowBranchExecutionIdentity {
+        cwd,
+        workspace_roots,
+        config_fingerprint,
+        version_fingerprint: version_fingerprint.to_string(),
+    })
+}
+
 fn branch_execution_payload(
     run: &crate::WorkflowRun,
     candidate: &ReadyBranchCandidate,
     model_route_json: &Value,
     workspace_json: Option<&Value>,
     params: &WorkflowRunBranchAdmissionParams,
+    execution_identity: &WorkflowBranchExecutionIdentity,
 ) -> Value {
     json!({
         "snapshotSource": "workflow/branch_admission",
@@ -1478,22 +1569,36 @@ fn branch_execution_payload(
         "workflowStepId": candidate.step_id.as_str(),
         "workflowStepRunId": candidate.step_run_id.as_str(),
         "agentId": candidate.agent_id.as_str(),
-        "cwd": Value::Null,
-        "workspaceRoots": Value::Null,
+        "cwd": execution_identity.cwd.as_str(),
+        "initialGoalObjective": Value::Null,
+        "workspaceRoots": &execution_identity.workspace_roots,
         "modelGateway": model_route_json.get("model_gateway"),
         "model": model_route_json.get("model"),
         "provider": model_route_json.get("provider"),
         "reasoning": model_route_json.get("reasoning"),
         "serviceTier": model_route_json.get("service_tier"),
         "approvalPolicy": model_route_json.get("approval_policy"),
-        "permissionProfile": model_route_json.get("permission_profile"),
+        "permissionProfile": Value::Null,
+        "defaultPermissions": model_route_json.get("permission_profile"),
+        "sandboxPolicy": Value::Null,
+        "networkPolicy": Value::Null,
+        "mcpToolAllowlist": Value::Null,
         "authProfileIdentitySha256": params
             .auth_profile_ref
             .as_deref()
             .map(|profile| StateRuntime::background_agent_identity_sha256(profile.as_bytes())),
+        "managedWorktreeId": Value::Null,
         "workspace": workspace_json,
         "envSnapshotPolicy": "inherit-minimal",
+        "shellSnapshot": Value::Null,
+        "configSourceHashes": Value::Null,
         "maxRuntimeSeconds": workflow_state_data(&run.limits_json).get("max_step_runtime_seconds"),
+        "maxTokens": workflow_state_data(&run.limits_json).get("max_tokens"),
+        "configFingerprint": execution_identity.config_fingerprint.as_str(),
+        "versionFingerprint": execution_identity.version_fingerprint.as_str(),
+        "packageFingerprint": crate::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+        "recoveryPolicy": WORKFLOW_BRANCH_RECOVERY_POLICY,
+        "midTurnCrashSemantics": WORKFLOW_BRANCH_RECOVERY_POLICY,
     })
 }
 
@@ -3106,7 +3211,9 @@ WHERE plan_id = ? AND key = ?
                 generation: claim.generation,
                 auth_profile_ref: Some("profile:workflow".to_string()),
                 config_fingerprint: Some("cfg-workflow".to_string()),
-                version_fingerprint: Some("version-workflow".to_string()),
+                version_fingerprint: Some(
+                    crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION.to_string(),
+                ),
                 parent_agent_run_id: None,
                 max_active_background_agent_runs: Some(10),
             },
@@ -3164,6 +3271,25 @@ WHERE plan_id = ? AND key = ?
             Some("profile:workflow"),
             first_run.auth_profile_ref.as_deref()
         );
+        assert_eq!(
+            Some("cfg-workflow"),
+            first_run.config_fingerprint.as_deref()
+        );
+        assert_eq!(
+            Some(crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION),
+            first_run.version_fingerprint.as_deref()
+        );
+        assert!(
+            runtime
+                .background_agent_admission_is_ready(
+                    first_branch.background_agent_run_id.as_str(),
+                    crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION,
+                    crate::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT,
+                )
+                .await
+                .expect("background run admission readiness should load"),
+            "workflow branch must persist a supervisor-compatible admission envelope"
+        );
         let execution_snapshot = runtime
             .get_latest_background_agent_execution_snapshot(
                 first_branch.background_agent_run_id.as_str(),
@@ -3183,6 +3309,54 @@ WHERE plan_id = ? AND key = ?
             execution_snapshot
                 .payload_json
                 .get("reasoning")
+                .and_then(Value::as_str)
+        );
+        assert!(
+            execution_snapshot
+                .payload_json
+                .get("cwd")
+                .and_then(Value::as_str)
+                .is_some_and(|cwd| !cwd.is_empty())
+        );
+        assert_eq!(
+            Some("cfg-workflow"),
+            execution_snapshot
+                .payload_json
+                .get("configFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some(crate::BACKGROUND_AGENT_ADMISSION_SCHEMA_VERSION),
+            execution_snapshot
+                .payload_json
+                .get("versionFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some(crate::BACKGROUND_AGENT_RUNTIME_COMPATIBILITY_FINGERPRINT),
+            execution_snapshot
+                .payload_json
+                .get("packageFingerprint")
+                .and_then(Value::as_str)
+        );
+        assert_eq!(
+            Some(WORKFLOW_BRANCH_RECOVERY_POLICY),
+            execution_snapshot
+                .payload_json
+                .get("recoveryPolicy")
+                .and_then(Value::as_str)
+        );
+        assert!(
+            execution_snapshot
+                .payload_json
+                .get("permissionProfile")
+                .is_some_and(Value::is_null)
+        );
+        assert_eq!(
+            Some("workspace-write"),
+            execution_snapshot
+                .payload_json
+                .get("defaultPermissions")
                 .and_then(Value::as_str)
         );
     }
