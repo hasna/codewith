@@ -9,6 +9,7 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 codex-protocol = { workspace = true }
+codex-git-utils = { workspace = true }
 codex-secrets = { workspace = true }
 codex-workflows = { workspace = true }
 dirs = { workspace = true }
@@ -27,7 +28,6 @@ uuid = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
-codex-git-utils = { workspace = true }
 codex-prompts = { workspace = true }
 pretty_assertions = { workspace = true }
 

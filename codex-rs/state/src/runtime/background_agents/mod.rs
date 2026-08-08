@@ -16,5 +16,6 @@ pub(in crate::runtime) use runs::count_live_or_recoverable_background_agent_runs
 pub(in crate::runtime) use runs::insert_background_agent_run_in_tx;
 pub(in crate::runtime) use runs::recover_or_validate_background_agent_initial_state_in_tx;
 pub(in crate::runtime) use runs::validate_existing_background_agent_admission_in_tx;
+pub(in crate::runtime) use worktrees::insert_background_agent_worktree_lease_in_tx;
 
 use super::*;

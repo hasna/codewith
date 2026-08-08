@@ -371,6 +371,8 @@ async fn workflow_run_lifecycle_projects_tasks_and_returns_sanitized_state() -> 
         started.goal_plan.as_ref().map(|plan| plan.nodes.len())
     );
     assert!(!marker.exists());
+    assert_no_execution_side_effects(codex_home.path(), parse_thread_id(thread_id.as_str())?)
+        .await?;
 
     let list_id = mcp
         .send_raw_request(

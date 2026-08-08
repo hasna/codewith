@@ -650,6 +650,25 @@ mod tests {
         assert!(!serialized.contains("definition_json"));
         assert!(!serialized.contains("eventPayload"));
         assert!(!serialized.contains("source_prompt"));
+        assert_eq!(
+            Vec::<codex_state::BackgroundAgentRun>::new(),
+            state_db
+                .list_background_agent_runs(Some(10))
+                .await
+                .expect("background agent runs should list")
+        );
+        assert_eq!(
+            Vec::<codex_state::ManagedWorktree>::new(),
+            state_db
+                .managed_worktrees()
+                .list_managed_worktrees_page(
+                    /*base_repo_path*/ None, /*include_deleted*/ true,
+                    /*cursor*/ None, /*limit*/ 10,
+                )
+                .await
+                .expect("managed worktrees should list")
+                .data
+        );
 
         let pause = call_tool(&tool, json!({ "action": "pause", "run_id": run_id })).await;
         assert_eq!(pause["run"]["run"]["status"], "paused");

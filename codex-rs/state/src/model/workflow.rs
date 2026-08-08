@@ -6,6 +6,7 @@ use codex_protocol::ThreadId;
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use std::path::PathBuf;
 
 use super::epoch_millis_to_datetime;
 
@@ -294,6 +295,8 @@ pub struct WorkflowRun {
     pub run_id: String,
     pub workflow_record_id: String,
     pub source_thread_id: Option<ThreadId>,
+    pub source_cwd: Option<PathBuf>,
+    pub source_repo_path: Option<PathBuf>,
     pub idempotency_key: Option<String>,
     pub spec_workflow_id: String,
     pub schema_version: String,
@@ -303,6 +306,7 @@ pub struct WorkflowRun {
     pub reason_code: Option<String>,
     pub generation: i64,
     pub owner_id: Option<String>,
+    pub owner_instance_id: Option<String>,
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub heartbeat_at: Option<DateTime<Utc>>,
     pub last_event_seq: i64,
@@ -395,6 +399,8 @@ pub(crate) struct WorkflowRunRow {
     pub run_id: String,
     pub workflow_record_id: String,
     pub source_thread_id: Option<String>,
+    pub source_cwd: Option<String>,
+    pub source_repo_path: Option<String>,
     pub idempotency_key: Option<String>,
     pub spec_workflow_id: String,
     pub schema_version: String,
@@ -404,6 +410,7 @@ pub(crate) struct WorkflowRunRow {
     pub reason_code: Option<String>,
     pub generation: i64,
     pub owner_id: Option<String>,
+    pub owner_instance_id: Option<String>,
     pub lease_expires_at_ms: Option<i64>,
     pub heartbeat_at_ms: Option<i64>,
     pub last_event_seq: i64,
@@ -427,6 +434,8 @@ impl WorkflowRunRow {
             run_id: row.try_get("run_id")?,
             workflow_record_id: row.try_get("workflow_record_id")?,
             source_thread_id: row.try_get("source_thread_id")?,
+            source_cwd: row.try_get("source_cwd")?,
+            source_repo_path: row.try_get("source_repo_path")?,
             idempotency_key: row.try_get("idempotency_key")?,
             spec_workflow_id: row.try_get("spec_workflow_id")?,
             schema_version: row.try_get("schema_version")?,
@@ -436,6 +445,7 @@ impl WorkflowRunRow {
             reason_code: row.try_get("reason_code")?,
             generation: row.try_get("generation")?,
             owner_id: row.try_get("owner_id")?,
+            owner_instance_id: row.try_get("owner_instance_id")?,
             lease_expires_at_ms: row.try_get("lease_expires_at_ms")?,
             heartbeat_at_ms: row.try_get("heartbeat_at_ms")?,
             last_event_seq: row.try_get("last_event_seq")?,
@@ -466,6 +476,8 @@ impl TryFrom<WorkflowRunRow> for WorkflowRun {
                 .source_thread_id
                 .map(|thread_id| ThreadId::from_string(&thread_id))
                 .transpose()?,
+            source_cwd: row.source_cwd.map(PathBuf::from),
+            source_repo_path: row.source_repo_path.map(PathBuf::from),
             idempotency_key: row.idempotency_key,
             spec_workflow_id: row.spec_workflow_id,
             schema_version: row.schema_version,
@@ -475,6 +487,7 @@ impl TryFrom<WorkflowRunRow> for WorkflowRun {
             reason_code: row.reason_code,
             generation: row.generation,
             owner_id: row.owner_id,
+            owner_instance_id: row.owner_instance_id,
             lease_expires_at: row
                 .lease_expires_at_ms
                 .map(epoch_millis_to_datetime)

@@ -269,7 +269,14 @@ pub struct WorkflowStep {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowWorkspace {
-    pub mode: String,
+    pub mode: WorkflowWorkspaceMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowWorkspaceMode {
+    IsolatedWorktree,
+    SharedRepository,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

@@ -3,6 +3,190 @@ use crate::BackgroundAgentWorkspaceMode;
 use crate::runtime::managed_worktrees::managed_worktree_path_key;
 use crate::runtime::managed_worktrees::path_to_db_string;
 
+pub(in crate::runtime) async fn insert_background_agent_worktree_lease_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    params: &BackgroundAgentWorktreeLeaseCreateParams,
+    now: i64,
+) -> anyhow::Result<()> {
+    let base_repo_path_key = managed_worktree_path_key(&params.base_repo_path);
+    let worktree_path_key = managed_worktree_path_key(&params.worktree_path);
+    let base_repo_path = path_to_db_string(&params.base_repo_path);
+    let worktree_path = path_to_db_string(&params.worktree_path);
+    let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
+    let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
+    if params.mode == BackgroundAgentWorkspaceMode::SharedRepository {
+        let active_shared_repo_lease: Option<(String,)> = sqlx::query_as(
+            r#"
+SELECT id
+FROM background_agent_worktree_leases
+WHERE mode = 'shared_repository'
+  AND base_repo_path = ?
+  AND released_at IS NULL
+  AND deleted_at IS NULL
+LIMIT 1
+            "#,
+        )
+        .bind(base_repo_path.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((lease_id,)) = active_shared_repo_lease {
+            anyhow::bail!(
+                "shared repository {base_repo_path} is already leased by background agent worktree lease {lease_id}"
+            );
+        }
+    }
+    if params.mode == BackgroundAgentWorkspaceMode::IsolatedWorktree {
+        let active_path_lease: Option<(String,)> = sqlx::query_as(
+            r#"
+SELECT id
+FROM background_agent_worktree_leases
+WHERE mode = 'isolated_worktree'
+  AND worktree_path = ?
+  AND deleted_at IS NULL
+LIMIT 1
+            "#,
+        )
+        .bind(worktree_path.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((lease_id,)) = active_path_lease {
+            anyhow::bail!(
+                "isolated worktree path {worktree_path} is already leased by background agent worktree lease {lease_id}"
+            );
+        }
+    }
+    sqlx::query(
+        r#"
+INSERT INTO background_agent_worktree_leases (
+    id,
+    run_id,
+    identity,
+    mode,
+    base_repo_path,
+    worktree_path,
+    branch,
+    head_sha,
+    status_snapshot_json,
+    dirty,
+    cleanup_after,
+    created_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(params.id.as_str())
+    .bind(params.run_id.as_str())
+    .bind(params.identity.as_str())
+    .bind(params.mode.as_str())
+    .bind(base_repo_path.as_str())
+    .bind(worktree_path.as_str())
+    .bind(params.branch.as_deref())
+    .bind(params.head_sha.as_deref())
+    .bind(status_snapshot_json.as_str())
+    .bind(if params.dirty { 1 } else { 0 })
+    .bind(cleanup_after)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+INSERT INTO managed_worktrees (
+    worktree_id,
+    identity,
+    mode,
+    base_repo_path,
+    worktree_path,
+    base_repo_path_key,
+    worktree_path_key,
+    branch,
+    base_sha,
+    head_sha,
+    lifecycle_status,
+    status_snapshot_json,
+    dirty,
+    cleanup_policy,
+    force_delete_requested,
+    owner_kind,
+    owner_agent_run_id,
+    created_at_ms,
+    updated_at_ms,
+    cleanup_after_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(params.id.as_str())
+    .bind(params.identity.as_str())
+    .bind(params.mode.as_str())
+    .bind(base_repo_path.as_str())
+    .bind(worktree_path.as_str())
+    .bind(base_repo_path_key)
+    .bind(worktree_path_key)
+    .bind(params.branch.as_deref())
+    .bind(params.head_sha.as_deref())
+    .bind(params.head_sha.as_deref())
+    .bind(ManagedWorktreeLifecycleStatus::Active.as_str())
+    .bind(status_snapshot_json.as_str())
+    .bind(params.dirty)
+    .bind(
+        if params.cleanup_after.is_some() {
+            ManagedWorktreeCleanupPolicy::DeleteIfClean
+        } else {
+            ManagedWorktreeCleanupPolicy::Retain
+        }
+        .as_str(),
+    )
+    .bind(false)
+    .bind(ManagedWorktreeOwnerKind::BackgroundAgent.as_str())
+    .bind(params.run_id.as_str())
+    .bind(now * 1000)
+    .bind(now * 1000)
+    .bind(cleanup_after.map(|timestamp| timestamp * 1000))
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+INSERT INTO managed_worktree_assignments (
+    assignment_id,
+    worktree_id,
+    thread_id,
+    agent_run_id,
+    attached_at_ms,
+    detached_at_ms
+) VALUES (?, ?, NULL, ?, ?, NULL)
+        "#,
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(params.id.as_str())
+    .bind(params.run_id.as_str())
+    .bind(now * 1000)
+    .execute(&mut **tx)
+    .await?;
+
+    let run_update = sqlx::query(
+        r#"
+UPDATE background_agent_runs
+SET worktree_lease_id = ?, updated_at = ?
+WHERE id = ? AND (worktree_lease_id IS NULL OR worktree_lease_id = ?)
+        "#,
+    )
+    .bind(params.id.as_str())
+    .bind(now)
+    .bind(params.run_id.as_str())
+    .bind(params.id.as_str())
+    .execute(&mut **tx)
+    .await?;
+    if run_update.rows_affected() == 0 {
+        anyhow::bail!(
+            "background agent run {} already has a different worktree lease",
+            params.run_id
+        );
+    }
+    Ok(())
+}
+
 impl StateRuntime {
     pub async fn list_background_agent_worktree_leases(
         &self,
@@ -62,187 +246,8 @@ LIMIT ? OFFSET ?
         params: &BackgroundAgentWorktreeLeaseCreateParams,
     ) -> anyhow::Result<BackgroundAgentWorktreeLease> {
         let now = Utc::now().timestamp();
-        let base_repo_path_key = managed_worktree_path_key(&params.base_repo_path);
-        let worktree_path_key = managed_worktree_path_key(&params.worktree_path);
-        let base_repo_path = path_to_db_string(&params.base_repo_path);
-        let worktree_path = path_to_db_string(&params.worktree_path);
-        let cleanup_after = params.cleanup_after.map(|timestamp| timestamp.timestamp());
-        let status_snapshot_json = redact_state_json_string(&params.status_snapshot_json)?;
         let mut tx = self.pool.begin().await?;
-        if params.mode == BackgroundAgentWorkspaceMode::SharedRepository {
-            let active_shared_repo_lease: Option<(String,)> = sqlx::query_as(
-                r#"
-SELECT id
-FROM background_agent_worktree_leases
-WHERE mode = 'shared_repository'
-  AND base_repo_path = ?
-  AND released_at IS NULL
-  AND deleted_at IS NULL
-LIMIT 1
-            "#,
-            )
-            .bind(base_repo_path.as_str())
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some((lease_id,)) = active_shared_repo_lease {
-                tx.rollback().await?;
-                anyhow::bail!(
-                    "shared repository {base_repo_path} is already leased by background agent worktree lease {lease_id}"
-                );
-            }
-        }
-        if params.mode == BackgroundAgentWorkspaceMode::IsolatedWorktree {
-            let active_path_lease: Option<(String,)> = sqlx::query_as(
-                r#"
-SELECT id
-FROM background_agent_worktree_leases
-WHERE mode = 'isolated_worktree'
-  AND worktree_path = ?
-  AND deleted_at IS NULL
-LIMIT 1
-                "#,
-            )
-            .bind(worktree_path.as_str())
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some((lease_id,)) = active_path_lease {
-                tx.rollback().await?;
-                anyhow::bail!(
-                    "isolated worktree path {worktree_path} is already leased by background agent worktree lease {lease_id}"
-                );
-            }
-        }
-        sqlx::query(
-            r#"
-INSERT INTO background_agent_worktree_leases (
-    id,
-    run_id,
-    identity,
-    mode,
-    base_repo_path,
-    worktree_path,
-    branch,
-    head_sha,
-    status_snapshot_json,
-    dirty,
-    cleanup_after,
-    created_at,
-    updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(params.id.as_str())
-        .bind(params.run_id.as_str())
-        .bind(params.identity.as_str())
-        .bind(params.mode.as_str())
-        .bind(base_repo_path.as_str())
-        .bind(worktree_path.as_str())
-        .bind(params.branch.as_deref())
-        .bind(params.head_sha.as_deref())
-        .bind(status_snapshot_json.as_str())
-        .bind(if params.dirty { 1 } else { 0 })
-        .bind(cleanup_after)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-INSERT INTO managed_worktrees (
-    worktree_id,
-    identity,
-    mode,
-    base_repo_path,
-    worktree_path,
-    base_repo_path_key,
-    worktree_path_key,
-    branch,
-    base_sha,
-    head_sha,
-    lifecycle_status,
-    status_snapshot_json,
-    dirty,
-    cleanup_policy,
-    force_delete_requested,
-    owner_kind,
-    owner_agent_run_id,
-    created_at_ms,
-    updated_at_ms,
-    cleanup_after_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(params.id.as_str())
-        .bind(params.identity.as_str())
-        .bind(params.mode.as_str())
-        .bind(base_repo_path.as_str())
-        .bind(worktree_path.as_str())
-        .bind(base_repo_path_key)
-        .bind(worktree_path_key)
-        .bind(params.branch.as_deref())
-        .bind(params.head_sha.as_deref())
-        .bind(params.head_sha.as_deref())
-        .bind(ManagedWorktreeLifecycleStatus::Active.as_str())
-        .bind(status_snapshot_json.as_str())
-        .bind(params.dirty)
-        .bind(
-            if params.cleanup_after.is_some() {
-                ManagedWorktreeCleanupPolicy::DeleteIfClean
-            } else {
-                ManagedWorktreeCleanupPolicy::Retain
-            }
-            .as_str(),
-        )
-        .bind(false)
-        .bind(ManagedWorktreeOwnerKind::BackgroundAgent.as_str())
-        .bind(params.run_id.as_str())
-        .bind(now * 1000)
-        .bind(now * 1000)
-        .bind(cleanup_after.map(|timestamp| timestamp * 1000))
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-INSERT INTO managed_worktree_assignments (
-    assignment_id,
-    worktree_id,
-    thread_id,
-    agent_run_id,
-    attached_at_ms,
-    detached_at_ms
-) VALUES (?, ?, NULL, ?, ?, NULL)
-            "#,
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(params.id.as_str())
-        .bind(params.run_id.as_str())
-        .bind(now * 1000)
-        .execute(&mut *tx)
-        .await?;
-
-        let run_update = sqlx::query(
-            r#"
-UPDATE background_agent_runs
-SET worktree_lease_id = ?, updated_at = ?
-WHERE id = ? AND (worktree_lease_id IS NULL OR worktree_lease_id = ?)
-            "#,
-        )
-        .bind(params.id.as_str())
-        .bind(now)
-        .bind(params.run_id.as_str())
-        .bind(params.id.as_str())
-        .execute(&mut *tx)
-        .await?;
-        if run_update.rows_affected() == 0 {
-            tx.rollback().await?;
-            anyhow::bail!(
-                "background agent run {} already has a different worktree lease",
-                params.run_id
-            );
-        }
-
+        insert_background_agent_worktree_lease_in_tx(&mut tx, params, now).await?;
         tx.commit().await?;
         self.get_background_agent_worktree_lease(params.id.as_str())
             .await?

@@ -46,6 +46,7 @@ pub use worktree::GitWorktreeAddOptions;
 pub use worktree::GitWorktreeEntry;
 pub use worktree::GitWorktreeStatusSnapshot;
 pub use worktree::add_linked_git_worktree;
+pub use worktree::delete_local_git_branch;
 pub use worktree::fast_forward_merge_ref;
 pub use worktree::get_git_worktree_status_snapshot;
 pub use worktree::list_git_worktrees;

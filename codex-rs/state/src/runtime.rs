@@ -97,6 +97,7 @@ use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::warn;
+use uuid::Uuid;
 
 mod agent_jobs;
 mod backfill;
@@ -280,6 +281,9 @@ pub use workflow_orchestrator::WorkflowRunBranchReconcileOutcome;
 pub use workflow_orchestrator::WorkflowRunBranchReconcileParams;
 pub use workflow_orchestrator::WorkflowRunClaimOutcome;
 pub use workflow_orchestrator::WorkflowRunClaimParams;
+pub use workflow_orchestrator::WorkflowRunFenceParams;
+pub use workflow_orchestrator::WorkflowRunHeartbeatOutcome;
+pub use workflow_orchestrator::WorkflowRunHeartbeatParams;
 pub use workflow_verifiers::WorkflowRunVerifierClaimOutcome;
 pub use workflow_verifiers::WorkflowRunVerifierClaimParams;
 pub use workflow_verifiers::WorkflowRunVerifierClaimSelection;
@@ -381,6 +385,7 @@ pub struct RuntimeDbPath {
 pub struct StateRuntime {
     codex_home: PathBuf,
     default_provider: String,
+    workflow_owner_instance_id: String,
     /// Single-connection writer pool for the state DB (see
     /// [`WRITER_MAX_CONNECTIONS`]). All writes and read-then-write
     /// transactions run here; this is the pool every store is handed.
@@ -630,6 +635,7 @@ impl StateRuntime {
             memories_pool: Arc::clone(&memories_pool),
             codex_home,
             default_provider,
+            workflow_owner_instance_id: Uuid::new_v4().to_string(),
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
         });
         if let Err(err) =

@@ -45,6 +45,7 @@ pub use spec::WorkflowStopCondition;
 pub use spec::WorkflowVerifier;
 pub use spec::WorkflowVerifierRetryPolicy;
 pub use spec::WorkflowWorkspace;
+pub use spec::WorkflowWorkspaceMode;
 
 pub const MAX_WORKFLOW_PROMPT_FIELD_CHARS: usize = 240;
 pub const MAX_WORKFLOW_YAML_BYTES: usize = 256 * 1024;
