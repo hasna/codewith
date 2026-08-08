@@ -14,6 +14,67 @@ use crate::WorkflowStopCondition;
 use crate::parse_workflow_yaml;
 use crate::render_workflow_branch_prompt;
 
+const SINGLE_REVIEWER_WORKFLOW_YAML: &str = r#"
+schema_version: "workflow.codex.codewith/v0"
+workflow_id: "wf_single_adversarial_review"
+display_name: "Single adversarial review"
+source_prompt: "Run one independent adversarial review."
+status: "draft"
+execution_defaults:
+  model_gateway: "hasna"
+  provider: "openai"
+  model: "gpt-5.4"
+  reasoning: "high"
+limits:
+  max_parallel_steps: 1
+  max_agents: 1
+  max_worktrees: 1
+  max_runtime_seconds: 3600
+  max_step_runtime_seconds: 1200
+  max_tokens: 100000
+  max_tool_calls: 100
+approvals:
+  required_before: []
+agents:
+  - id: "adversarial_reviewer"
+    display_name: "Adversary-Hypatia"
+    role: "Run the one independent adversarial review."
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+steps:
+  - id: "initial_adversarial_review"
+    title: "Run the initial adversarial review"
+    agent: "adversarial_reviewer"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on: []
+    outputs:
+      - "review.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "review_verdict_present"
+          type: "artifact_contains"
+          artifact: "review.md"
+          must_contain:
+            - "GO"
+artifacts:
+  retention: "preserve_evidence"
+  required:
+    - "review.md"
+cleanup:
+  on_cancel:
+    - "stop_child_agents"
+  on_complete:
+    - "archive_events"
+"#;
+
 fn yaml_key<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
     let key = serde_yaml::Value::String(key.to_string());
     value.as_mapping()?.get(&key)
@@ -220,6 +281,78 @@ fn parses_dental_lead_saas_fixture() {
             "npm run build".to_string(),
         ],
         full_suite.commands
+    );
+}
+
+#[test]
+fn accepts_single_adversarial_reviewer_and_initial_review_step() {
+    let spec = parse_workflow_yaml(SINGLE_REVIEWER_WORKFLOW_YAML)
+        .expect("one adversarial reviewer and one initial review step should parse");
+
+    assert_eq!(1, spec.agents.len());
+    assert_eq!(1, spec.steps.len());
+    assert_eq!("adversarial_reviewer", spec.agents[0].id);
+    assert_eq!("initial_adversarial_review", spec.steps[0].id);
+}
+
+#[test]
+fn accepts_single_adversarial_reviewer_with_focused_rereview() {
+    let focused_rereview = r#"  - id: "focused_adversarial_rereview"
+    title: "Re-review named adversarial findings after NO_GO"
+    agent: "adversarial_reviewer"
+    model:
+      model_gateway: "hasna"
+      provider: "openai"
+      model: "gpt-5.4"
+      reasoning: "high"
+    depends_on:
+      - "initial_adversarial_review"
+    approval_gate: "initial_review_returned_no_go"
+    outputs:
+      - "focused-review.md"
+    completion:
+      model_marked_state: "candidate_succeeded"
+      verifiers:
+        - id: "focused_review_verdict_present"
+          type: "artifact_contains"
+          artifact: "focused-review.md"
+          must_contain:
+            - "GO"
+"#;
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
+        .replace("artifacts:\n", &format!("{focused_rereview}artifacts:\n"));
+
+    let spec = parse_workflow_yaml(&yaml)
+        .expect("the same reviewer should be allowed to perform a focused re-review");
+
+    assert_eq!(1, spec.agents.len());
+    assert_eq!(2, spec.steps.len());
+    assert_eq!(
+        "adversarial_reviewer", spec.steps[1].agent,
+        "the focused re-review must reuse the fixed reviewer"
+    );
+}
+
+#[test]
+fn rejects_draft_without_adversarial_reviewer_or_review_step() {
+    let yaml = SINGLE_REVIEWER_WORKFLOW_YAML
+        .replace("adversarial_reviewer", "reviewer")
+        .replace("Adversary-Hypatia", "Reviewer-Hypatia")
+        .replace(
+            "Run the one independent adversarial review.",
+            "Run the independent review.",
+        )
+        .replace("initial_adversarial_review", "initial_review")
+        .replace(
+            "Run the initial adversarial review",
+            "Run the initial review",
+        );
+
+    let err = parse_workflow_yaml(&yaml).expect_err("adversarial work should remain required");
+
+    assert_eq!(
+        "workflow spec is invalid: draft workflows must include adversarial work by at least one agent or one step",
+        err.to_string()
     );
 }
 

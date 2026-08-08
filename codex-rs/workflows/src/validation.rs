@@ -776,9 +776,9 @@ fn validate_adversarial_work(spec: &WorkflowSpec) -> WorkflowSpecResult<()> {
         .iter()
         .filter(|step| is_adversarial_text(&step.id) || is_adversarial_text(&step.title))
         .count();
-    if adversarial_agents < 2 && adversarial_steps < 2 {
+    if adversarial_agents == 0 && adversarial_steps == 0 {
         return Err(WorkflowSpecError::invalid(
-            "draft workflows must include adversarial work by at least two agents or two steps",
+            "draft workflows must include adversarial work by at least one agent or one step",
         ));
     }
     Ok(())
