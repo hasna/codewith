@@ -491,8 +491,38 @@ async fn mark_goal_plan_node_pending_in_tx(
             cleared_goal: false,
         });
     }
+    if node.status == crate::ThreadGoalPlanNodeStatus::Deferred {
+        // Unlike undoing a completed node, restoring a deferred node retains its
+        // accumulated accounting and projected-goal provenance for the next
+        // activation.
+        sqlx::query(
+            r#"
+UPDATE thread_goal_plan_nodes
+SET
+    status = ?,
+    updated_at_ms = ?
+WHERE node_id = ?
+            "#,
+        )
+        .bind(crate::ThreadGoalPlanNodeStatus::Pending.as_str())
+        .bind(now_ms)
+        .bind(&node.node_id)
+        .execute(&mut **tx)
+        .await?;
+
+        recalculate_goal_plan_status_in_tx(tx, &node.plan_id, now_ms).await?;
+        let snapshot = snapshot_thread_goal_plan_in_tx(tx, &node.plan_id).await?;
+        let node = snapshot_node(&snapshot, &node.node_id)?;
+        return Ok(ThreadGoalPlanNodeMutationOutcome {
+            snapshot,
+            node,
+            goal: None,
+            activated_goal: None,
+            cleared_goal: false,
+        });
+    }
     if node.status != crate::ThreadGoalPlanNodeStatus::Complete {
-        anyhow::bail!("can only mark completed goal-plan nodes undone");
+        anyhow::bail!("can only mark completed or deferred goal-plan nodes pending");
     }
 
     let cleared_goal = if let Some(projected_goal_id) = node.projected_goal_id.as_deref() {
