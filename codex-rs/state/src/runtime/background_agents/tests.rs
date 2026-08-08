@@ -1,6 +1,7 @@
 use super::*;
 use crate::BACKGROUND_AGENT_EVENT_CURSOR_COMPACTED;
 use crate::BackgroundAgentExecutionHandleParams;
+use crate::BackgroundAgentModelAttestationCreateParams;
 use crate::BackgroundAgentPendingInteractionKind;
 use crate::BackgroundAgentWorkspaceMode;
 use crate::DirectionalThreadSpawnEdgeStatus;
