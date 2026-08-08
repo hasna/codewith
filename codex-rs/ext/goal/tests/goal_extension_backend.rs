@@ -464,10 +464,20 @@ async fn resume_goal_reconciles_restored_pending_node() -> anyhow::Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("preservation node id should be returned"))?
         .to_string();
-    let goal_id = result["goal"]["goalId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("preservation goal id should be returned"))?
-        .to_string();
+    let activate_tool = tool_by_name(&tools, "activate_goal_plan_node");
+    activate_tool
+        .handle(tool_call(
+            "activate_goal_plan_node",
+            "call-activate-preservation",
+            json!({ "node_id": node_id }),
+        ))
+        .await?;
+    let goal_id = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("preservation goal should be active"))?
+        .goal_id;
     runtime
         .thread_goals()
         .account_thread_goal_usage(
