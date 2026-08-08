@@ -965,6 +965,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         thread_id: primary_thread_id_for_span.clone(),
                         target: review_target_to_api(review_request.target),
                         delivery: None,
+                        publisher_context: None,
                     },
                 },
                 "review/start",
@@ -2149,6 +2150,7 @@ fn build_review_request(args: &ReviewArgs) -> anyhow::Result<ReviewRequest> {
     Ok(ReviewRequest {
         target,
         user_facing_hint: None,
+        review_envelope: None,
     })
 }
 

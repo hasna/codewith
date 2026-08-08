@@ -1424,6 +1424,16 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ReviewStartResponse,
     },
+    ReviewPublisherStatusRead => "review/publisher/status/read" {
+        params: v2::ReviewPublisherStatusReadParams,
+        serialization: global_shared_read("review-publisher"),
+        response: v2::ReviewPublisherStatusReadResponse,
+    },
+    ReviewPublisherReplay => "review/publisher/replay" {
+        params: v2::ReviewPublisherReplayParams,
+        serialization: global("review-publisher"),
+        response: v2::ReviewPublisherReplayResponse,
+    },
 
     ModelList => "model/list" {
         params: v2::ModelListParams,

@@ -39,6 +39,7 @@ pub(super) async fn spawn_review_thread(
     );
 
     let review_prompt = resolved.prompt.clone();
+    let review_envelope = resolved.review_envelope.clone();
     let provider = parent_turn_context.provider.clone();
     let auth_manager = parent_turn_context.auth_manager.clone();
     let model_info = review_model_info.clone();
@@ -183,12 +184,14 @@ pub(super) async fn spawn_review_thread(
     // TODO(ccunningham): Review turns currently rely on `spawn_task` for TurnComplete but do not
     // emit a parent TurnStarted. Consider giving review a full parent turn lifecycle
     // (TurnStarted + TurnComplete) for consistency with other standalone tasks.
-    sess.spawn_task(tc.clone(), input, ReviewTask::new()).await;
+    sess.spawn_task(tc.clone(), input, ReviewTask::new(review_envelope.clone()))
+        .await;
 
     // Announce entering review mode so UIs can switch modes.
     let review_request = ReviewRequest {
         target: resolved.target,
         user_facing_hint: Some(resolved.user_facing_hint),
+        review_envelope,
     };
     sess.send_event(&tc, EventMsg::EnteredReviewMode(review_request))
         .await;

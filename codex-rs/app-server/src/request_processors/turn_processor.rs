@@ -499,6 +499,7 @@ impl TurnRequestProcessor {
         let review_request = ReviewRequest {
             target: core_target,
             user_facing_hint: Some(hint.clone()),
+            review_envelope: None,
         };
 
         Ok((review_request, hint))
@@ -1311,10 +1312,12 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         turn: Turn,
         review_thread_id: String,
+        review_run_id: Option<String>,
     ) {
         let response = ReviewStartResponse {
             turn,
             review_thread_id,
+            review_run_id,
         };
         self.outgoing
             .send_response(request_id.clone(), response)
@@ -1328,6 +1331,7 @@ impl TurnRequestProcessor {
         review_request: ReviewRequest,
         display_text: &str,
         parent_thread_id: String,
+        review_run_id: Option<String>,
     ) -> std::result::Result<(), JSONRPCErrorError> {
         let turn_id = self
             .submit_core_op(
@@ -1337,8 +1341,12 @@ impl TurnRequestProcessor {
             )
             .await
             .map_err(|err| internal_error(format!("failed to start review: {err}")))?;
+        if let Some(review_run_id) = review_run_id.as_deref() {
+            self.bind_review_turn(review_run_id, turn_id.as_str())
+                .await?;
+        }
         let turn = Self::build_review_turn(turn_id, display_text);
-        self.emit_review_started(request_id, turn, parent_thread_id)
+        self.emit_review_started(request_id, turn, parent_thread_id, review_run_id)
             .await;
         Ok(())
     }
@@ -1350,6 +1358,7 @@ impl TurnRequestProcessor {
         parent_thread: Arc<CodexThread>,
         review_request: ReviewRequest,
         display_text: &str,
+        review_run_id: Option<String>,
     ) -> std::result::Result<(), JSONRPCErrorError> {
         parent_thread.ensure_rollout_materialized().await;
         parent_thread.flush_rollout().await.map_err(|err| {
@@ -1366,7 +1375,11 @@ impl TurnRequestProcessor {
                 ))
             })?;
 
-        let mut config = self.config.as_ref().clone();
+        let mut config = if review_request.review_envelope.is_some() {
+            parent_thread.config().await.as_ref().clone()
+        } else {
+            self.config.as_ref().clone()
+        };
         if let Some(review_model) = &config.review_model {
             config.model = Some(review_model.clone());
         }
@@ -1446,9 +1459,13 @@ impl TurnRequestProcessor {
                 internal_error(format!("failed to start detached review turn: {err}"))
             })?;
 
+        if let Some(review_run_id) = review_run_id.as_deref() {
+            self.bind_review_turn(review_run_id, turn_id.as_str())
+                .await?;
+        }
         let turn = Self::build_review_turn(turn_id, display_text);
         let review_thread_id = thread_id.to_string();
-        self.emit_review_started(request_id, turn, review_thread_id)
+        self.emit_review_started(request_id, turn, review_thread_id, review_run_id)
             .await;
 
         Ok(())
@@ -1463,11 +1480,47 @@ impl TurnRequestProcessor {
             thread_id,
             target,
             delivery,
+            publisher_context,
         } = params;
 
         let (parent_thread_id, parent_thread) = self.load_thread(&thread_id).await?;
-        let (review_request, display_text) = Self::review_request_from_target(target)?;
-        match delivery.unwrap_or(ApiReviewDelivery::Inline).to_core() {
+        if let Some(context) = publisher_context.as_ref() {
+            match &target {
+                ApiReviewTarget::BaseBranch { branch }
+                    if branch.trim() == context.base_ref.trim() => {}
+                _ => {
+                    return Err(invalid_request(
+                        "publisherContext requires a baseBranch target matching baseRef"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        let (mut review_request, display_text) = Self::review_request_from_target(target)?;
+        let review_run = if let Some(context) = publisher_context {
+            let cwd = parent_thread.config_snapshot().await.cwd;
+            let envelope = super::build_review_envelope(cwd.as_path(), context).await?;
+            let state_db = self.state_db.as_ref().ok_or_else(|| {
+                internal_error("review publisher requires durable state".to_string())
+            })?;
+            let snapshot = state_db
+                .review_publisher()
+                .start_review_run(codex_state::ReviewPublisherStartParams {
+                    thread_id: parent_thread_id.to_string(),
+                    envelope: envelope.clone(),
+                })
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to persist review publisher start: {err}"))
+                })?;
+            let run = Some((snapshot.run.review_run_id, envelope.envelope_sha256.clone()));
+            review_request.review_envelope = Some(envelope);
+            run
+        } else {
+            None
+        };
+        let review_run_id = review_run.as_ref().map(|(run_id, _)| run_id.clone());
+        let result = match delivery.unwrap_or(ApiReviewDelivery::Inline).to_core() {
             CoreReviewDelivery::Inline => {
                 self.start_inline_review(
                     request_id,
@@ -1475,8 +1528,9 @@ impl TurnRequestProcessor {
                     review_request,
                     &display_text,
                     thread_id,
+                    review_run_id,
                 )
-                .await?;
+                .await
             }
             CoreReviewDelivery::Detached => {
                 self.start_detached_review(
@@ -1485,11 +1539,56 @@ impl TurnRequestProcessor {
                     parent_thread,
                     review_request,
                     &display_text,
+                    review_run_id,
                 )
-                .await?;
+                .await
+            }
+        };
+        if result.is_err() {
+            if let Some((review_run_id, envelope_sha256)) = review_run {
+                self.terminalize_review_start_failure(review_run_id, envelope_sha256)
+                    .await;
             }
         }
-        Ok(())
+        result
+    }
+
+    async fn bind_review_turn(
+        &self,
+        review_run_id: &str,
+        turn_id: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        let state_db = self
+            .state_db
+            .as_ref()
+            .ok_or_else(|| internal_error("review publisher requires durable state".to_string()))?;
+        state_db
+            .review_publisher()
+            .bind_review_turn(review_run_id, turn_id)
+            .await
+            .map_err(|err| internal_error(format!("failed to bind review publisher turn: {err}")))
+    }
+
+    async fn terminalize_review_start_failure(
+        &self,
+        review_run_id: String,
+        envelope_sha256: String,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        if let Err(err) = state_db
+            .review_publisher()
+            .complete_review_run(codex_state::ReviewPublisherCompleteParams {
+                review_run_id,
+                envelope_sha256,
+                review_output: None,
+                terminal_reason_override: Some("review_start_failed".to_string()),
+            })
+            .await
+        {
+            warn!("failed to terminalize review publisher start failure: {err}");
+        }
     }
 
     async fn turn_interrupt_inner(

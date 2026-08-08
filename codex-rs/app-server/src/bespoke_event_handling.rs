@@ -1377,6 +1377,27 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::ExitedReviewMode(review_event) => {
+            if let Some(envelope) = review_event.review_envelope.as_ref() {
+                if let Some(state_db) = conversation.state_db() {
+                    let review_run_id = codex_state::review_run_id_from_envelope_sha256(
+                        envelope.envelope_sha256.as_str(),
+                    );
+                    if let Err(err) = state_db
+                        .review_publisher()
+                        .complete_review_run(codex_state::ReviewPublisherCompleteParams {
+                            review_run_id,
+                            envelope_sha256: envelope.envelope_sha256.clone(),
+                            review_output: review_event.review_output.clone(),
+                            terminal_reason_override: None,
+                        })
+                        .await
+                    {
+                        warn!("failed to persist review publisher terminal event: {err}");
+                    }
+                } else {
+                    warn!("review publisher terminal event has no durable state runtime");
+                }
+            }
             let review = match review_event.review_output {
                 Some(output) => render_review_output_text(&output),
                 None => REVIEW_FALLBACK_MESSAGE.to_string(),

@@ -35,6 +35,8 @@ use crate::request_processors::PluginRequestProcessor;
 use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::RemoteDispatchRequestProcessor;
+use crate::request_processors::ReviewPublisherDispatcherRuntime;
+use crate::request_processors::ReviewPublisherRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadMailboxDispatcherRuntime;
@@ -201,6 +203,8 @@ pub(crate) struct MessageProcessor {
     plugin_processor: PluginRequestProcessor,
     remote_control_processor: RemoteControlRequestProcessor,
     remote_dispatch_processor: RemoteDispatchRequestProcessor,
+    review_publisher_dispatcher_runtime: ReviewPublisherDispatcherRuntime,
+    review_publisher_processor: ReviewPublisherRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_mailbox_dispatcher_runtime: Option<ThreadMailboxDispatcherRuntime>,
@@ -504,6 +508,10 @@ impl MessageProcessor {
         let machine_registry_processor = MachineRegistryRequestProcessor::new(state_db.clone());
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let remote_dispatch_processor = RemoteDispatchRequestProcessor::new(state_db.clone());
+        let review_publisher_dispatcher_runtime =
+            ReviewPublisherDispatcherRuntime::new(state_db.clone());
+        review_publisher_dispatcher_runtime.start();
+        let review_publisher_processor = ReviewPublisherRequestProcessor::new(state_db.clone());
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
             Arc::clone(&thread_manager),
@@ -677,6 +685,8 @@ impl MessageProcessor {
             plugin_processor,
             remote_control_processor,
             remote_dispatch_processor,
+            review_publisher_dispatcher_runtime,
+            review_publisher_processor,
             search_processor,
             thread_goal_processor,
             thread_mailbox_dispatcher_runtime,
@@ -709,6 +719,7 @@ impl MessageProcessor {
         if let Some(runtime) = self.thread_mailbox_dispatcher_runtime.as_ref() {
             runtime.shutdown();
         }
+        self.review_publisher_dispatcher_runtime.shutdown();
         self.thread_monitor_runtime.shutdown();
         self.thread_schedule_runtime.shutdown();
     }
@@ -894,6 +905,9 @@ impl MessageProcessor {
         if let Some(runtime) = self.thread_mailbox_dispatcher_runtime.as_ref() {
             runtime.drain_background_tasks().await;
         }
+        self.review_publisher_dispatcher_runtime
+            .drain_background_tasks()
+            .await;
         self.thread_monitor_runtime.drain_background_tasks().await;
         self.thread_schedule_runtime.drain_background_tasks().await;
         self.thread_processor.drain_background_tasks().await;
@@ -1873,6 +1887,12 @@ impl MessageProcessor {
             }
             ClientRequest::ReviewStart { params, .. } => {
                 self.turn_processor.review_start(&request_id, params).await
+            }
+            ClientRequest::ReviewPublisherStatusRead { params, .. } => {
+                self.review_publisher_processor.status_read(params).await
+            }
+            ClientRequest::ReviewPublisherReplay { params, .. } => {
+                self.review_publisher_processor.replay(params).await
             }
             ClientRequest::McpServerOauthLogin { params, .. } => {
                 self.mcp_processor.mcp_server_oauth_login(params).await

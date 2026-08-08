@@ -115,6 +115,7 @@ mod memories;
 mod monitors;
 mod pending_interactions;
 mod remote_control;
+mod review_publisher;
 mod schedules;
 #[cfg(test)]
 mod test_support;
@@ -245,6 +246,20 @@ pub use pending_interactions::PendingInteractionListParams;
 pub use pending_interactions::PendingInteractionPage;
 pub use pending_interactions::PendingInteractionRespondForSourceParams;
 pub use remote_control::RemoteControlEnrollmentRecord;
+pub use review_publisher::REVIEW_ENVELOPE_SCHEMA_VERSION;
+pub use review_publisher::REVIEW_PUBLISHER_EVENT_SCHEMA_VERSION;
+pub use review_publisher::REVIEW_PUBLISHER_IMMUTABLE_CONFLICT;
+pub use review_publisher::ReviewPublisherClaimParams;
+pub use review_publisher::ReviewPublisherCompleteParams;
+pub use review_publisher::ReviewPublisherDeliveryAckParams;
+pub use review_publisher::ReviewPublisherDeliveryFailParams;
+pub use review_publisher::ReviewPublisherFailureDisposition;
+pub use review_publisher::ReviewPublisherStartParams;
+pub use review_publisher::ReviewPublisherStore;
+pub use review_publisher::map_review_output;
+pub use review_publisher::review_candidate_sha256;
+pub use review_publisher::review_envelope_sha256;
+pub use review_publisher::review_run_id_from_envelope_sha256;
 pub use schedules::MAX_THREAD_SCHEDULE_NESTING_DEPTH;
 pub use schedules::ScheduleStore;
 pub use schedules::ThreadScheduleClaim;
@@ -407,6 +422,7 @@ pub struct StateRuntime {
     thread_monitors: MonitorStore,
     local_active_sessions: LocalActiveSessionStore,
     webhook_events: WebhookEventStore,
+    review_publisher: ReviewPublisherStore,
     machine_registry: MachineRegistryStore,
     mailbox_messages: MailboxMessageStore,
     managed_worktrees: ManagedWorktreeStore,
@@ -623,6 +639,7 @@ impl StateRuntime {
             thread_monitors: MonitorStore::new(Arc::clone(&pool)),
             local_active_sessions: LocalActiveSessionStore::new(Arc::clone(&pool)),
             webhook_events: WebhookEventStore::new(Arc::clone(&pool)),
+            review_publisher: ReviewPublisherStore::new(Arc::clone(&pool)),
             machine_registry: MachineRegistryStore::new(Arc::clone(&pool)),
             mailbox_messages: MailboxMessageStore::new(Arc::clone(&pool)),
             managed_worktrees: ManagedWorktreeStore::new(Arc::clone(&pool)),
@@ -687,6 +704,10 @@ impl StateRuntime {
 
     pub fn webhook_events(&self) -> &WebhookEventStore {
         &self.webhook_events
+    }
+
+    pub fn review_publisher(&self) -> &ReviewPublisherStore {
+        &self.review_publisher
     }
 
     pub fn machine_registry(&self) -> &MachineRegistryStore {
