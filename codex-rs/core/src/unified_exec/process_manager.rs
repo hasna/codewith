@@ -709,7 +709,7 @@ impl UnifiedExecProcessManager {
             session,
             network_approval,
             hook_command,
-            process_id,
+            process_id: _,
             tty,
             ..
         } = self
