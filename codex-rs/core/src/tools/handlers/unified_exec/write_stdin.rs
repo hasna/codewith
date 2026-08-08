@@ -52,6 +52,7 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         let ToolInvocation {
             session,
             turn,
+            source,
             payload,
             ..
         } = invocation;
@@ -66,11 +67,25 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        let process = session
+            .services
+            .unified_exec_manager
+            .process_handle(args.session_id)
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
+            })?;
+        session.services.code_mode_service.track_process_for_source(
+            &source,
+            &session,
+            process.clone(),
+            /*terminate_on_cell_cancel*/ false,
+        );
         let response = session
             .services
             .unified_exec_manager
             .write_stdin(WriteStdinRequest {
-                process_id: args.session_id,
+                process,
                 input: &args.chars,
                 yield_time_ms: args.yield_time_ms,
                 max_output_tokens: args.max_output_tokens,

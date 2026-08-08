@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::warn;
 
 use crate::FunctionCallOutputContentItem;
@@ -41,6 +42,8 @@ pub type CodeModeSessionProviderFuture<'a> =
 pub type ToolInvocationFuture<'a> =
     Pin<Box<dyn Future<Output = Result<JsonValue, String>> + Send + 'a>>;
 pub type NotificationFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+/// A host lifecycle operation for resources owned by one code-mode cell.
+pub type CellLifecycleFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct CellId(String);
@@ -95,6 +98,16 @@ pub trait CodeModeSessionDelegate: Send + Sync {
         text: String,
         cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a>;
+
+    /// Waits until resources created by nested tools in this cell are terminal.
+    fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Terminates resources created by nested tools in this cell.
+    fn terminate_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
 
     /// Releases delegate state associated with a cell after it reaches a terminal state.
     fn cell_closed(&self, cell_id: &CellId);
@@ -548,6 +561,15 @@ fn send_yield_response(
     }
 }
 
+fn move_pending_result_content(
+    pending_result: &mut Option<PendingResult>,
+    content_items: &mut Vec<FunctionCallOutputContentItem>,
+) {
+    if let Some(result) = pending_result.as_mut() {
+        content_items.append(&mut result.content_items);
+    }
+}
+
 async fn run_cell_control(
     inner: Arc<Inner>,
     context: CellControlContext,
@@ -567,6 +589,8 @@ async fn run_cell_control(
     let mut content_items = Vec::new();
     let mut pending_tool_call_ids = Vec::new();
     let mut pending_result: Option<PendingResult> = None;
+    let mut result_ready = false;
+    let mut completion_task = None;
     let mut response_tx = Some(initial_response_tx);
     let mut termination_requested = false;
     let mut runtime_closed = false;
@@ -585,6 +609,7 @@ async fn run_cell_control(
                 let Some(event) = maybe_event else {
                     runtime_closed = true;
                     if termination_requested {
+                        move_pending_result_content(&mut pending_result, &mut content_items);
                         if let Some(response_tx) = response_tx.take() {
                             let response = RuntimeResponse::Terminated {
                                 cell_id: cell_id.clone(),
@@ -595,6 +620,15 @@ async fn run_cell_control(
                         break;
                     }
                     if pending_result.is_none() {
+                        let delegate = Arc::clone(&inner.delegate);
+                        if let Err(err) = delegate
+                            .terminate_cell_dependencies(cell_id.clone())
+                            .await
+                        {
+                            warn!(
+                                "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                            );
+                        }
                         let result = PendingResult {
                             content_items: std::mem::take(&mut content_items),
                             error_text: Some("exec runtime ended unexpectedly".to_string()),
@@ -607,6 +641,7 @@ async fn run_cell_control(
                         ) {
                             break;
                         }
+                        result_ready = true;
                     }
                     continue;
                 };
@@ -699,7 +734,6 @@ async fn run_cell_control(
                         stored_value_writes,
                         error_text,
                     } => {
-                        yield_timer = None;
                         if termination_requested {
                             if let Some(response_tx) = response_tx.take() {
                                 let response = RuntimeResponse::Terminated {
@@ -716,18 +750,29 @@ async fn run_cell_control(
                             .lock()
                             .await
                             .extend(stored_value_writes);
-                        let result = PendingResult {
+                        let runtime_failed = error_text.is_some();
+                        pending_result = Some(PendingResult {
                             content_items: std::mem::take(&mut content_items),
                             error_text,
-                        };
-                        if send_or_buffer_result(
-                            &cell_id,
-                            result,
-                            &mut response_tx,
-                            &mut pending_result,
-                        ) {
-                            break;
+                        });
+                        if runtime_failed {
+                            let delegate = Arc::clone(&inner.delegate);
+                            if let Err(err) = delegate
+                                .terminate_cell_dependencies(cell_id.clone())
+                                .await
+                            {
+                                warn!(
+                                    "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                                );
+                            }
                         }
+                        let delegate = Arc::clone(&inner.delegate);
+                        let completion_cell_id = cell_id.clone();
+                        completion_task = Some(AbortOnDropHandle::new(tokio::spawn(async move {
+                            delegate
+                                .wait_for_cell_dependencies(completion_cell_id)
+                                .await
+                        })));
                     }
                 }
             }
@@ -736,6 +781,46 @@ async fn run_cell_control(
                     && !err.is_cancelled()
                 {
                     warn!("code mode notification task failed: {err}");
+                }
+            }
+            completion = async {
+                match completion_task.as_mut() {
+                    Some(completion_task) => completion_task.await,
+                    None => std::future::pending().await,
+                }
+            }, if completion_task.is_some() => {
+                completion_task = None;
+                result_ready = true;
+                let error_text = match completion {
+                    Ok(Ok(())) => None,
+                    Ok(Err(err)) => Some(err),
+                    Err(err) => Some(format!("code mode dependency wait failed: {err}")),
+                };
+                if let Some(error_text) = error_text
+                    && let Some(result) = pending_result.as_mut()
+                    && result.error_text.is_none()
+                {
+                    result.error_text = Some(error_text);
+                }
+                if termination_requested {
+                    move_pending_result_content(&mut pending_result, &mut content_items);
+                    if let Some(response_tx) = response_tx.take() {
+                        let response = RuntimeResponse::Terminated {
+                            cell_id: cell_id.clone(),
+                            content_items: std::mem::take(&mut content_items),
+                        };
+                        send_terminal_response(response_tx, response);
+                    }
+                    break;
+                }
+                if let Some(response_tx) = response_tx.take()
+                    && let Some(result) = pending_result.take()
+                {
+                    send_terminal_response(
+                        response_tx,
+                        pending_result_response(&cell_id, result),
+                    );
+                    break;
                 }
             }
             maybe_command = control_rx.recv() => {
@@ -747,7 +832,9 @@ async fn run_cell_control(
                         yield_time_ms,
                         response_tx: next_response_tx,
                     } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let _ = next_response_tx.send(pending_result_response(&cell_id, result));
                             break;
                         }
@@ -758,7 +845,9 @@ async fn run_cell_control(
                     CellControlCommand::PollToPending {
                         response_tx: next_response_tx,
                     } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let response = pending_result_response(&cell_id, result);
                             let _ = next_response_tx
                                 .send(ExecuteToPendingOutcome::Completed(response));
@@ -770,19 +859,32 @@ async fn run_cell_control(
                         resume_paused_runtime(&runtime_control_tx, pending_mode);
                     }
                     CellControlCommand::Terminate { response_tx: next_response_tx } => {
-                        if let Some(result) = pending_result.take() {
+                        if result_ready
+                            && let Some(result) = pending_result.take()
+                        {
                             let _ = next_response_tx.send(pending_result_response(&cell_id, result));
                             break;
                         }
 
                         response_tx = Some(CellResponseSender::Runtime(next_response_tx));
                         termination_requested = true;
+                        drop(completion_task.take());
                         cancellation_token.cancel();
                         yield_timer = None;
                         let _ = runtime_tx.send(RuntimeCommand::Terminate);
                         terminate_paused_runtime(&runtime_control_tx, pending_mode);
                         let _ = runtime_terminate_handle.terminate_execution();
+                        let delegate = Arc::clone(&inner.delegate);
+                        if let Err(err) = delegate
+                            .terminate_cell_dependencies(cell_id.clone())
+                            .await
+                        {
+                            warn!(
+                                "failed to terminate code mode dependencies for cell {cell_id}: {err}"
+                            );
+                        }
                         if runtime_closed {
+                            move_pending_result_content(&mut pending_result, &mut content_items);
                             if let Some(response_tx) = response_tx.take() {
                                 let response = RuntimeResponse::Terminated {
                                     cell_id: cell_id.clone(),
@@ -805,6 +907,7 @@ async fn run_cell_control(
                 }
             } => {
                 yield_timer = None;
+                move_pending_result_content(&mut pending_result, &mut content_items);
                 send_yield_response(&cell_id, &mut content_items, &mut response_tx);
             }
         }
@@ -849,7 +952,9 @@ fn terminate_paused_runtime(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::future::pending;
     use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -857,19 +962,25 @@ mod tests {
     use codex_protocol::ToolName;
     use pretty_assertions::assert_eq;
     use tokio::sync::Mutex;
+    use tokio::sync::Notify;
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
 
     use super::CellControlCommand;
     use super::CellControlContext;
     use super::CellId;
+    use super::CellLifecycleFuture;
     use super::CellResponseSender;
+    use super::CodeModeNestedToolCall;
     use super::CodeModeService;
+    use super::CodeModeSessionDelegate;
     use super::Inner;
     use super::NoopCodeModeSessionDelegate;
+    use super::NotificationFuture;
     use super::PendingRuntimeMode;
     use super::RuntimeCommand;
     use super::RuntimeResponse;
+    use super::ToolInvocationFuture;
     use super::WaitOutcome;
     use super::WaitRequest;
     use super::WaitToPendingOutcome;
@@ -915,6 +1026,52 @@ mod tests {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             next_cell_id: AtomicU64::new(1),
         })
+    }
+
+    struct BlockingBorrowedDependencyDelegate {
+        dependency_pin: StdMutex<Option<Arc<()>>>,
+        wait_started: Arc<Notify>,
+    }
+
+    impl CodeModeSessionDelegate for BlockingBorrowedDependencyDelegate {
+        fn invoke_tool<'a>(
+            &'a self,
+            _invocation: CodeModeNestedToolCall,
+            cancellation_token: tokio_util::sync::CancellationToken,
+        ) -> ToolInvocationFuture<'a> {
+            Box::pin(async move {
+                cancellation_token.cancelled().await;
+                Err("code mode nested tool call cancelled".to_string())
+            })
+        }
+
+        fn notify<'a>(
+            &'a self,
+            _call_id: String,
+            _cell_id: CellId,
+            _text: String,
+            _cancellation_token: tokio_util::sync::CancellationToken,
+        ) -> NotificationFuture<'a> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn wait_for_cell_dependencies<'a>(&'a self, _cell_id: CellId) -> CellLifecycleFuture<'a> {
+            let dependency_pin = self
+                .dependency_pin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("borrowed dependency pin should be available once");
+            let wait_started = Arc::clone(&self.wait_started);
+            Box::pin(async move {
+                wait_started.notify_one();
+                pending::<()>().await;
+                drop(dependency_pin);
+                Ok(())
+            })
+        }
+
+        fn cell_closed(&self, _cell_id: &CellId) {}
     }
 
     #[tokio::test]
@@ -1897,5 +2054,55 @@ image({
         );
 
         let _ = runtime_tx.send(RuntimeCommand::Terminate);
+    }
+
+    #[tokio::test]
+    async fn terminate_drops_borrowed_dependency_waiter_and_its_session_pin() {
+        let dependency_pin = Arc::new(());
+        let weak_dependency_pin = Arc::downgrade(&dependency_pin);
+        let wait_started = Arc::new(Notify::new());
+        let delegate = Arc::new(BlockingBorrowedDependencyDelegate {
+            dependency_pin: StdMutex::new(Some(dependency_pin)),
+            wait_started: Arc::clone(&wait_started),
+        });
+        let service = CodeModeService::with_delegate(delegate.clone());
+
+        let response = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"text("done");"#.to_string(),
+                yield_time_ms: Some(1),
+                ..execute_request("")
+            },
+        )
+        .await;
+        assert_eq!(
+            response,
+            RuntimeResponse::Yielded {
+                cell_id: cell_id("1"),
+                content_items: vec![FunctionCallOutputContentItem::InputText {
+                    text: "done".to_string(),
+                }],
+            }
+        );
+        wait_started.notified().await;
+
+        assert_eq!(
+            service.terminate(cell_id("1")).await.unwrap(),
+            WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                cell_id: cell_id("1"),
+                content_items: Vec::new(),
+            })
+        );
+        drop(service);
+        drop(delegate);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while weak_dependency_pin.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminated cell should drop its borrowed dependency waiter");
     }
 }

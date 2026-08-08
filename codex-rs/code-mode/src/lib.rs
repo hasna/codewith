@@ -30,6 +30,7 @@ pub use runtime::WaitRequest;
 pub use runtime::WaitToPendingOutcome;
 pub use runtime::WaitToPendingRequest;
 pub use service::CellId;
+pub use service::CellLifecycleFuture;
 pub use service::CodeModeService;
 pub use service::CodeModeSession;
 pub use service::CodeModeSessionDelegate;

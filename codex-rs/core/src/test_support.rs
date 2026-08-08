@@ -45,6 +45,15 @@ pub fn set_deterministic_process_ids(enabled: bool) {
     unified_exec::set_deterministic_process_ids_for_tests(enabled);
 }
 
+pub fn code_mode_tracked_process_count(thread: &crate::CodexThread, cell_id: &str) -> usize {
+    thread
+        .codex
+        .session
+        .services
+        .code_mode_service
+        .tracked_process_count(&codex_code_mode::CellId::new(cell_id.to_string()))
+}
+
 pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {
     AuthManager::from_auth_for_testing(auth)
 }

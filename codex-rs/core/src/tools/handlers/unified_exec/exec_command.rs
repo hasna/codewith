@@ -34,6 +34,7 @@ use codex_utils_output_truncation::approx_token_count;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
+use super::EXEC_COMMAND_TOOL_NAME;
 use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
 use super::get_command;
@@ -74,7 +75,7 @@ impl ExecCommandHandler {
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("exec_command")
+        ToolName::plain(EXEC_COMMAND_TOOL_NAME)
     }
 
     fn spec(&self) -> ToolSpec {
@@ -101,6 +102,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             turn,
             tracker,
             call_id,
+            source,
             payload,
             ..
         } = invocation;
@@ -143,7 +145,6 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             &cwd,
         )
         .await;
-        let process_id = manager.allocate_process_id().await;
         let shell_mode =
             shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
         let resolved_command = get_command(
@@ -196,7 +197,6 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             )
         {
             let approval_policy = effective_turn_settings.approval_policy;
-            manager.release_process_id(process_id).await;
             return Err(FunctionCallError::RespondToModel(format!(
                 "approval policy is {approval_policy:?}; reject command — you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
             )));
@@ -221,10 +221,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             |permissions| Ok(Some(permissions)),
         ) {
             Ok(normalized) => normalized,
-            Err(err) => {
-                manager.release_process_id(process_id).await;
-                return Err(FunctionCallError::RespondToModel(err));
-            }
+            Err(err) => return Err(FunctionCallError::RespondToModel(err)),
         };
 
         if let Some(output) = intercept_apply_patch(
@@ -240,7 +237,6 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         )
         .await?
         {
-            manager.release_process_id(process_id).await;
             return Ok(boxed_tool_output(ExecCommandToolOutput {
                 event_call_id: String::new(),
                 chunk_id: String::new(),
@@ -256,6 +252,13 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             }));
         }
 
+        let process = manager.allocate_process().await;
+        session.services.code_mode_service.track_process_for_source(
+            &source,
+            &session,
+            process.clone(),
+            /*terminate_on_cell_cancel*/ true,
+        );
         emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
         match manager
             .exec_command(
@@ -263,7 +266,7 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     command,
                     shell_type,
                     hook_command: hook_command.clone(),
-                    process_id,
+                    process,
                     yield_time_ms,
                     max_output_tokens,
                     cwd,

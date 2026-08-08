@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 
 use codex_code_mode::CellId;
+use codex_code_mode::CellLifecycleFuture;
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_code_mode::CodeModeSessionDelegate;
 use codex_code_mode::NotificationFuture;
@@ -20,11 +22,20 @@ use super::call_nested_tool;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::unified_exec::UnifiedExecProcessHandle;
 
 pub(super) struct CodeModeDispatchBroker {
     dispatch_tx: async_channel::Sender<DispatchMessage>,
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
     dispatch_gates: Arc<Mutex<HashMap<CellId, watch::Sender<bool>>>>,
+    tracked_processes: Arc<Mutex<HashMap<CellId, Vec<TrackedProcess>>>>,
+}
+
+#[derive(Clone)]
+struct TrackedProcess {
+    session: Weak<crate::session::session::Session>,
+    process: UnifiedExecProcessHandle,
+    terminate_on_cell_cancel: bool,
 }
 
 impl CodeModeDispatchBroker {
@@ -34,6 +45,7 @@ impl CodeModeDispatchBroker {
             dispatch_tx,
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
+            tracked_processes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -43,6 +55,56 @@ impl CodeModeDispatchBroker {
 
     pub(super) fn close_cell(&self, cell_id: &CellId) {
         remove_dispatch_gate(&self.dispatch_gates, cell_id);
+        let mut tracked_processes = match self.tracked_processes.lock() {
+            Ok(tracked_processes) => tracked_processes,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        tracked_processes.remove(cell_id);
+    }
+
+    pub(super) fn track_process(
+        &self,
+        cell_id: CellId,
+        session: Weak<crate::session::session::Session>,
+        process: UnifiedExecProcessHandle,
+        terminate_on_cell_cancel: bool,
+    ) {
+        let mut tracked_processes = match self.tracked_processes.lock() {
+            Ok(tracked_processes) => tracked_processes,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let cell_processes = tracked_processes.entry(cell_id).or_default();
+        if let Some(tracked) = cell_processes.iter_mut().find(|tracked| {
+            tracked.process.same_generation(&process) && tracked.session.ptr_eq(&session)
+        }) {
+            tracked.terminate_on_cell_cancel |= terminate_on_cell_cancel;
+            return;
+        }
+        cell_processes.push(TrackedProcess {
+            session,
+            process,
+            terminate_on_cell_cancel,
+        });
+    }
+
+    fn tracked_processes(&self, cell_id: &CellId) -> Vec<TrackedProcess> {
+        let tracked_processes = match self.tracked_processes.lock() {
+            Ok(tracked_processes) => tracked_processes,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        tracked_processes.get(cell_id).cloned().unwrap_or_default()
+    }
+
+    pub(super) fn tracked_process_count(&self, cell_id: &CellId) -> usize {
+        self.tracked_processes(cell_id).len()
+    }
+
+    fn take_tracked_processes(&self, cell_id: &CellId) -> Vec<TrackedProcess> {
+        let mut tracked_processes = match self.tracked_processes.lock() {
+            Ok(tracked_processes) => tracked_processes,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        tracked_processes.remove(cell_id).unwrap_or_default()
     }
 
     pub(super) fn start_turn_worker(
@@ -236,6 +298,33 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
                     Err("code mode notification cancelled".to_string())
                 }
             }
+        })
+    }
+
+    fn wait_for_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async move {
+            for tracked in self.tracked_processes(&cell_id) {
+                tracked.process.wait_for_exit().await;
+            }
+            Ok(())
+        })
+    }
+
+    fn terminate_cell_dependencies<'a>(&'a self, cell_id: CellId) -> CellLifecycleFuture<'a> {
+        Box::pin(async move {
+            for tracked in self.take_tracked_processes(&cell_id) {
+                if !tracked.terminate_on_cell_cancel {
+                    continue;
+                }
+                if let Some(session) = tracked.session.upgrade() {
+                    session
+                        .services
+                        .unified_exec_manager
+                        .terminate_process(&tracked.process)
+                        .await;
+                }
+            }
+            Ok(())
         })
     }
 

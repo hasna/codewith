@@ -29,6 +29,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
+use crate::unified_exec::UnifiedExecProcessHandle;
 use crate::unified_exec::resolve_max_tokens;
 use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
@@ -107,6 +108,28 @@ impl CodeModeService {
 
     pub(crate) fn finish_cell_dispatch(&self, cell_id: &CellId) {
         self.dispatch_broker.close_cell(cell_id);
+    }
+
+    pub(crate) fn tracked_process_count(&self, cell_id: &CellId) -> usize {
+        self.dispatch_broker.tracked_process_count(cell_id)
+    }
+
+    pub(crate) fn track_process_for_source(
+        &self,
+        source: &ToolCallSource,
+        session: &Arc<Session>,
+        process: UnifiedExecProcessHandle,
+        terminate_on_cell_cancel: bool,
+    ) {
+        let ToolCallSource::CodeMode { cell_id, .. } = source else {
+            return;
+        };
+        self.dispatch_broker.track_process(
+            CellId::new(cell_id.clone()),
+            Arc::downgrade(session),
+            process,
+            terminate_on_cell_cancel,
+        );
     }
 
     pub(crate) fn start_turn_worker(
@@ -256,7 +279,6 @@ async fn call_nested_tool(
         Ok(payload) => payload,
         Err(error) => return Err(FunctionCallError::RespondToModel(error)),
     };
-
     let call = ToolCall {
         tool_name,
         call_id: format!("{PUBLIC_TOOL_NAME}-{}", uuid::Uuid::new_v4()),

@@ -85,29 +85,22 @@ async fn exec_command_with_tty(
     tty: bool,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
-    let process_id = manager.allocate_process_id().await;
-    exec_command_with_process_id_and_tty(
-        session,
-        turn,
-        cmd,
-        yield_time_ms,
-        workdir,
-        process_id,
-        tty,
-    )
-    .await
+    let process = manager.allocate_process().await;
+    exec_command_with_process_and_tty(session, turn, cmd, yield_time_ms, workdir, process, tty)
+        .await
 }
 
-async fn exec_command_with_process_id_and_tty(
+async fn exec_command_with_process_and_tty(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
     cmd: &str,
     yield_time_ms: u64,
     workdir: Option<PathBuf>,
-    process_id: u32,
+    process_handle: UnifiedExecProcessHandle,
     tty: bool,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
     let manager = &session.services.unified_exec_manager;
+    let process_id = process_handle.process_id();
     #[allow(deprecated)]
     let cwd = workdir
         .as_ref()
@@ -138,7 +131,7 @@ async fn exec_command_with_process_id_and_tty(
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
-            process_id,
+            process_handle: process_handle.clone(),
             hook_command: cmd.to_string(),
             tty,
             network_approval: None,
@@ -183,7 +176,7 @@ async fn exec_command_with_process_id_and_tty(
     let response_process_id = if process_started_alive && !has_exited {
         Some(process_id)
     } else {
-        manager.release_process_id(process_id).await;
+        manager.release_process(&process_handle).await;
         None
     };
 
@@ -219,11 +212,16 @@ async fn write_stdin(
     input: &str,
     yield_time_ms: u64,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    let process = session
+        .services
+        .unified_exec_manager
+        .process_handle(process_id)
+        .await?;
     session
         .services
         .unified_exec_manager
         .write_stdin(WriteStdinRequest {
-            process_id,
+            process,
             input,
             yield_time_ms,
             max_output_tokens: None,
@@ -302,13 +300,18 @@ async fn write_stdin_reaches_live_process_with_session_id_above_i32_max() -> any
 
     const REPRO_SESSION_ID: u32 = 4_147_572_478;
     let (session, turn) = test_session_and_turn().await;
-    let open_process = exec_command_with_process_id_and_tty(
+    let process = session
+        .services
+        .unified_exec_manager
+        .reserve_process_id_for_tests(REPRO_SESSION_ID)
+        .await;
+    let open_process = exec_command_with_process_and_tty(
         &session,
         &turn,
         r#"read line; printf 'received:%s\n' "$line""#,
         /*yield_time_ms*/ 250,
         /*workdir*/ None,
-        REPRO_SESSION_ID,
+        process,
         /*tty*/ true,
     )
     .await?;
