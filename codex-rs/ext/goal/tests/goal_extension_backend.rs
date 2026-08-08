@@ -390,7 +390,7 @@ async fn completed_delegate_does_not_guard_unfinished_owner_plan() -> anyhow::Re
             limit: 10,
         })
         .await?;
-    assert_eq!(Vec::new(), waits.data);
+    assert!(waits.data.is_empty());
     Ok(())
 }
 
