@@ -69,6 +69,21 @@ fn durable_parses_as_explicit_persistent_mode() {
 }
 
 #[test]
+fn task_marker_accepts_a_canonical_todos_task_uuid() {
+    const TASK_ID: &str = "5a0c359e-a437-4415-81c7-f2ec09995739";
+
+    let cli = Cli::try_parse_from([
+        "codex-exec",
+        "--task-marker",
+        TASK_ID,
+        "summarize",
+    ])
+    .expect("a canonical Todos task UUID should be accepted as a process marker");
+
+    assert_eq!(cli.prompt.as_deref(), Some("summarize"));
+}
+
+#[test]
 fn durable_conflicts_with_ephemeral() {
     let error = Cli::try_parse_from(["codex-exec", "--durable", "--ephemeral", "summarize"])
         .expect_err("storage modes should be mutually exclusive");
